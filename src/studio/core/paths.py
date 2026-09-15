@@ -86,6 +86,14 @@ class StudioPaths:
         return self.home / "prompts"
 
     @property
+    def glossary_file(self) -> Path:
+        """读音纠正词表（T2.5 · §04.3.6）：`prompts/shared/glossary.yaml`。
+
+        **热重载**：改它不需要重启 TTS 服务（`tts/text_normalize.py` 按 mtime 重载）。
+        """
+        return self.prompts_dir / "shared" / "glossary.yaml"
+
+    @property
     def schemas_dir(self) -> Path:
         return self.home / "schemas"
 
