@@ -2,7 +2,7 @@
 
 > 唯一真相源 = `data/studio.db`（SQLite，WAL，**30 表**）。全部 DDL 采用**纯 SQL 迁移文件**（`src/studio/db/migrations/000N_*.sql`），ORM 只映射、不建表。
 > 依赖前提：SQLite ≥3.35（`UPDATE ... RETURNING`）、JSON1 扩展（3.38+ 默认启用）。本机 3.51.1 ✅
-> **本节的 DDL 已用本机 `sqlite3 3.51.1` 实际执行验证**：**29 表 / 60 索引 / 6 触发器 / `integrity_check=ok` / `foreign_key_check` 为空**。
+> **本节的 DDL 已用本机 `sqlite3 3.51.1` 实际执行验证**：**30 表 / 61 索引 / 6 触发器 / `integrity_check=ok` / `foreign_key_check` 为空**。
 > 另已实测：`report_schedules` 的**部分唯一索引**（同周期仅 1 个启用）、`at_time` CHECK、`weekly 必须给 weekday` CHECK、到期查询只取启用项 —— 全部符合预期。
 
 ---

@@ -1400,6 +1400,14 @@ T1.12 ✅             （一键启动）
 >
 > 注 2：**M1 仍未算过**（T1.12 裁定 108）：一键启动已可用，但「5 进程全 ready」要等 T2.2 / T2.6 / T3.x / T4.11
 > ⇒ M1 的验收口径 = 「`api` ready + 其余**如实报降级**且不阻塞」。T2.1 起被 E5（CosyVoice 权重）硬阻塞 ⇒ **已先做 T4.1**（前端脚手架，P1，无外部依赖，2026-09-14 ✅）。
+>
+> 注 3：**下一批可开工任务**（依赖已满足，不碰 E1–E5）——
+> ① **`T2.5` 文本归一化与切分**（P0 · 依赖 T1.10 ✅）：T2 里**唯一**不被 E5 卡住的任务；交付 `src/studio/tts/{normalize,segmenter}.py` + `tests/unit/tts/test_normalize.py`（≥40 黄金用例）+ `test_segmenter.py` + glossary 热更新；⚠️ **不 import `pynini` / `WeTextProcessing`**（R5，Windows 装不上）。
+> ② **`T3.1` 素材入库补全**（P0 · 依赖 T1.3 ✅）：T4.8 已建好扫盘 / sha256 / 时长 / 响度 / 缩略图 / 入库主干，**缺口** = pHash + 帧哈希、黑帧段落排除、`studio assets ingest --kind parkour|bgm` CLI、`tests/integration/test_broll_ingest.py`；E1/E3 用 `scripts/seed_placeholder_assets.py` 的占位素材撑门禁。
+> ③ **`T3.2` 水印资产与合成 profile**（P0 · 依赖 T1.2 / T1.3 ✅）：T4.7 已做配置侧，**缺口** = `watermark.png` 入库校验（尺寸 / 透明通道 / 存在性）、水印参数模型（位置枚举 / 偶数边距 / 宽度 ≤ 画布 1/4 / 透明度）、`studio render profile --show`、**`RENDER_WATERMARK_MISSING` 硬门禁**（D5：缺失 ⇒ 拒绝渲染，不降级）、`tests/unit/render/test_watermark.py`。
+>
+> **这三件之后全线硬阻塞**：`T2.1`（E5 权重）⇒ T2.2–T2.9 ⇒ `T3.3`（还需 T2.7 时间轴）⇒ T3.4–T3.7 ⇒ `T4.6` 与 `T5.1` 起全部；`T4.5` 另需 T2.9。
+> ⇒ **E5（CosyVoice 权重）与 E2（水印 PNG）是本轮唯一的关键路径瓶颈**，其余外部项只影响各自任务的真机验收。
 
 ---
 
