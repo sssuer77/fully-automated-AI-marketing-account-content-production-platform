@@ -1,0 +1,60 @@
+[project]
+name = "studio"
+version = "0.1.0"
+description = "AI 全自动营销号制片台（本地部署 · 单机全链路）"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.34",
+  "pydantic>=2.8",
+  "pydantic-settings>=2.6",
+  "SQLAlchemy[asyncio]>=2.0.30",
+  "aiosqlite>=0.20",
+  "httpx>=0.27",
+  "tenacity>=9.0",
+  "structlog>=24.1",
+  "typer>=0.15",
+  "rich>=13.9",
+  "PyYAML>=6.0",
+  "jsonschema>=4.23",
+  "python-ulid>=2.7",
+  "psutil>=6.0",
+  "APScheduler>=3.10",
+  "playwright>=1.48",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.24",
+  "pytest-xdist>=3.6",
+  "respx>=0.21",
+  "freezegun>=1.5",
+  "types-jsonschema>=4.23",
+  "types-psutil>=6.0",
+  "types-PyYAML>=6.0",
+  "ruff>=0.7",
+  "mypy>=1.11",
+  "pre-commit>=3.8",
+]
+
+[project.scripts]
+studio = "studio.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/studio"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/studio", "README.md"]
+
+# ── 显式"不安装"清单（§01.6.3 · 架构约束，防技术栈回退）────────────────
+# 禁止引入：redis / celery / rq / dramatiq / docker / psycopg / pymongo /
+#           ffmpeg-python / moviepy / pynini / WeTextProcessing /
+#           edge-tts / azure-cognitiveservices-speech / 任何验证码识别库
+# 违反即为架构回退（队列 = SQLite，渲染 = argv 子进程，发布 = Playwright）。

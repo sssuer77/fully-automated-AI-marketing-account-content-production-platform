@@ -1,0 +1,33 @@
+{
+  "name": "studio-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "AI 全自动营销号制片台 · 网页实时操作台（T4.x）",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest run",
+    "gen:api": "openapi-typescript openapi.json -o src/api/types.gen.ts",
+    "size": "node scripts/check-dist-size.mjs",
+    "verify": "npm run typecheck && npm run test && npm run build && npm run size"
+  },
+  "dependencies": {
+    "pinia": "^2.3.0",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "openapi-typescript": "^7.4.4",
+    "typescript": "~5.6.3",
+    "vite": "^6.0.7",
+    "vitest": "^3.2.7",
+    "vue-tsc": "^2.1.10"
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://studio.local/schemas/review_result.schema.json",
+  "title": "ReviewerOutput",
+  "description": "§04.1.6 Reviewer：LLM 只给六维度明细 + 问题清单；总分/等级/裁决由服务端算（裁定 89）",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["llm_detail", "issues"],
+  "properties": {
+    "llm_detail": {
+      "type": "object",
+      "description": "原文 §2.2⑤ 六项，各 0–10 分 + 评语",
+      "additionalProperties": false,
+      "required": [
+        "hook_opening",
+        "positioning_fit",
+        "oral_style",
+        "emotion_rhythm",
+        "ending_cta",
+        "forbidden"
+      ],
+      "properties": {
+        "hook_opening": {"$ref": "#/$defs/channel_item"},
+        "positioning_fit": {"$ref": "#/$defs/channel_item"},
+        "oral_style": {"$ref": "#/$defs/channel_item"},
+        "emotion_rhythm": {"$ref": "#/$defs/channel_item"},
+        "ending_cta": {"$ref": "#/$defs/channel_item"},
+        "forbidden": {"$ref": "#/$defs/channel_item"}
+      }
+    },
+    "issues": {
+      "type": "array",
+      "description": "问题清单；target 是机器可读的落点，Editor 的改动授权范围就是它",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "severity", "target", "detail", "suggestion"],
+        "properties": {
+          "code": {"type": "string", "minLength": 1, "maxLength": 40},
+          "severity": {"enum": ["block", "major", "minor"]},
+          "target": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40,
+            "description": "hook | segment:N | cta | global"
+          },
+          "detail": {"type": "string", "minLength": 1, "maxLength": 200},
+          "suggestion": {"type": "string", "minLength": 1, "maxLength": 200}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "channel_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "comment"],
+      "properties": {
+        "score": {"type": "number", "minimum": 0, "maximum": 10},
+        "comment": {"type": "string", "minLength": 1, "maxLength": 200}
+      }
+    }
+  }
+}

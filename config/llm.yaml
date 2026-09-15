@@ -1,0 +1,50 @@
+# ── LLM 双通道网关（§01.2.4 · R6 / R16）──────────────────────────────
+# ★ 密钥铁律：本文件**只允许出现环境变量名**（api_key_env），绝不写密钥本体。
+#   密钥走 STUDIO_LLM_API_KEY 环境变量；写进来会被 config.validate 直接拒绝。
+schema_version: "1.0"
+
+default_profile: cloud
+
+profiles:
+  cloud:
+    engine: oi_compatible
+    base_url: https://api.openai.com/v1
+    api_key_env: STUDIO_LLM_API_KEY
+    model: gpt-5.6-terra
+    timeout_sec: 120
+    max_retries: 3
+    temperature: 0.8
+    json_mode: true
+    cost_per_1k_in: 0.0
+    cost_per_1k_out: 0.0
+
+  local:
+    engine: ollama
+    base_url: http://127.0.0.1:11434
+    api_key_env: null
+    model: qwen2.5:7b
+    timeout_sec: 300
+    max_retries: 2
+    temperature: 0.8
+    json_mode: true
+    cost_per_1k_in: 0.0
+    cost_per_1k_out: 0.0
+
+# 按 Agent 分派；fallback 为 null 表示"该 Agent 不允许降级到本地"
+routing:
+  planner:  { profile: cloud, fallback: local }
+  ideator:  { profile: cloud, fallback: local }
+  director: { profile: cloud, fallback: local }
+  writer:   { profile: cloud, fallback: local }
+  reviewer: { profile: cloud, fallback: local }
+  editor:   { profile: cloud, fallback: local }
+  cover:    { profile: local, fallback: cloud }
+
+# R16 成本闸门
+budget:
+  per_task_token_limit: 60000
+  per_day_cost_usd_limit: 5.0
+  on_exceed: switch_to_local   # switch_to_local | fail_task | alert_only
+
+# 本地通道启动探测（GET {base_url}/api/tags）；不可用则标记，避免无效重试
+probe_local_on_start: true

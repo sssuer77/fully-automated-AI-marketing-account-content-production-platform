@@ -1,0 +1,62 @@
+# ── Python ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+dist/
+build/
+
+# ── 运行数据（P1：媒资与 DB 绝不入 git）──────────────────
+/data/
+/models/
+/backups/
+
+# ── 密钥（绝不入库，§README.6）───────────────────────────
+.env
+.env.local
+config/secrets.yaml
+config/secrets.*.yaml
+!config/secrets.example.yaml
+config/*.local.yaml
+!config/llm.example.yaml
+!config/persona.example.yaml
+
+# ── 模型缓存（落 D 盘，防误提交）────────────────────────
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.onnx
+
+# ── 前端 ────────────────────────────────────────────────
+web/node_modules/
+web/dist/
+web/.vite/
+web/coverage/
+web/*.tsbuildinfo
+# 生成物**故意入库**（T4.1）：OpenAPI / WS 契约的漂移只有在 diff 里才看得见，
+# 也因此 `npm run build` 能从干净克隆直接跑。禁止手改；后端改完跑 `tasks.ps1 web:gen`。
+!web/openapi.json
+!web/src/api/types.gen.ts
+!web/src/ws/events.ts
+
+# ── TTS 运行时项目 ──────────────────────────────────────
+tts/.venv/
+tts/uv.lock
+
+# ── Playwright 登录态（敏感，禁止备份外传）──────────────
+data/browser_profile/
+
+# ── 编辑器 / 系统 ───────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini

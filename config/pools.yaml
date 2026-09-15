@@ -1,0 +1,82 @@
+# ── 四池并发 · 租约 · 退避（§01.4.4 / §03.4）──────────────────────────
+# 队列 = SQLite DB-as-Queue + 租约；**不用 Celery/rq/asyncio.Queue**（§1.4 论证）。
+# voice/render 并发默认 1（8 GB 显存保守值），T2.2 实测后回写。
+schema_version: "1.0"
+
+# 全局
+global:
+  enabled: true
+  gpu_mutex_name: Global\studio_gpu_lock   # GPU 滤镜 / Whisper 对轴时持有
+  render_threads: 5                        # ffmpeg -threads（12 核留核给 TTS/API）
+
+pools:
+  draft:
+    unit_type: task
+    concurrency: 2
+    poll_ms: 1000
+    lease_sec: 180
+    backoff_base_ms: 5000
+    backoff_max_ms: 30000
+    unit_timeout_sec: 120        # 单次 LLM
+    max_attempts: 3
+    priority: 100
+
+  voice:
+    unit_type: sentence
+    concurrency: 1               # ⚠️ 显存保守值；T2.2 bench 后回写
+    poll_ms: 500
+    lease_sec: 90
+    backoff_base_ms: 3000
+    backoff_max_ms: 20000
+    unit_timeout_sec: 60
+    max_attempts: 3
+    priority: 200
+
+  render:
+    unit_type: final             # 一期单遍合成只产 final；二期加 scene
+    concurrency: 1               # ⚠️ 与 voice 共享显存，默认 1
+    poll_ms: 500
+    lease_sec: 600
+    backoff_base_ms: 10000
+    backoff_max_ms: 60000
+    unit_timeout_sec: 900
+    max_attempts: 2
+    priority: 300
+
+  publish:
+    unit_type: publish
+    concurrency: 1               # R13：串行发布，账号风控
+    poll_ms: 5000
+    lease_sec: 600
+    backoff_base_ms: 60000
+    backoff_max_ms: 600000
+    unit_timeout_sec: 600
+    max_attempts: 3
+    priority: 400
+    daily_limit_per_account: 3   # ≤3 条/天/账号
+    min_gap_min: 30              # 两条间隔 ≥30 分钟
+
+# 自动降并发保护（§01.4.4）
+auto_concurrency:
+  enabled: true
+  oom_threshold: 2               # 连续 2 次 TTS_OOM ⇒ 并发 −1（下限 1）
+  recover_after_min: 5           # 连续 5 分钟无 OOM 且显存 < 60% ⇒ +1
+  gpu_mem_high_ratio: 0.60
+
+# 死信与告警
+dead_letter:
+  on_dead_alert: true            # attempts ≥ max_attempts ⇒ dead + system.alert(JOB_DEAD)
+
+# ── 无人值守守护与故障自愈（T4.11 · §01.2.1 / §03.7.5）──────────────
+# 阈值可配是硬要求：水位门禁误判时改这一节即可，不必改代码、不必重跑迁移。
+watchdog:
+  enabled: true
+  tick_sec: 5.0                    # 判死靠 PID 台账（不是 15s 心跳）⇒ 15s 内重启
+  guard_services: [api, tts, draft, voice, render]   # 守护者守不了自己所在的那个进程
+  restart_base_ms: 5000            # 指数退避 5s → 10s → 20s … 封顶 300s
+  restart_max_ms: 300000
+  restart_limit: 20                # 10 分钟窗口内最多重启 20 次；超限停手 + 告警
+  restart_window_sec: 600
+  restart_ready_timeout_sec: 6.0   # 重启后等就绪的预算（守护自己也要活着）
+  disk_gate_pools: [render, publish]   # free_D < 门禁 ⇒ 暂停这两池认领（§01.7）
+  manual_pool_after: 3             # attempt_count ≥ 3 ⇒ manual_pool（§1.7）

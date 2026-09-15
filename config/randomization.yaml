@@ -1,0 +1,82 @@
+# ── 防搬运随机化（§04.2.4 · P3）──────────────────────────────────────
+# 铁律：①决策在编译前、结果落盘 ②种子 = f(task_id, template_version, attempt_no)
+#      ③随机不得改变信息层（字幕/人声/关键文字永不随机）④约束优先于随机 ⑤可审计
+schema_version: "1.0"
+
+mode: standard          # standard（一期默认，对齐原文 §4.2）| aggressive（九维全开）
+
+seed:
+  strategy: task_template_attempt   # 种子来源；保证可复现 + 可"再换一版"
+  attempt_max: 3                    # 相似度审计不通过 ⇒ attempt_no+1，≤3 次
+
+# 九维随机化矩阵（standard 档只启用 dims 1/2/3/7/8/9）
+dimensions:
+  clip_selection:                   # ①素材选择
+    enabled: true
+    avoid_recent_tasks: 10          # 近 K=10 任务未使用（broll_usage）
+    allow_reuse_in_same_video: false
+    min_usable_ms: 1500
+
+  in_point:                         # ②入点选择
+    enabled: true
+    edge_guard_ms: 1500             # 必须避开素材首尾 1.5s
+
+  cut_rhythm:                       # ③镜头切分节奏
+    enabled: true
+    min_segment_ms: 2500
+    max_segment_ms: 5500
+    hard_min_ms: 1500               # 禁止 <1.5s 碎切
+
+  geometry:                         # ④几何变换（aggressive）
+    enabled: false
+    zoom_min: 1.02
+    zoom_max: 1.12
+    roi_jitter_ratio: 0.10
+    mirror_probability: 0.35
+    speed_min: 0.92
+    speed_max: 1.10
+
+  color:                            # ⑤色彩变换（aggressive）
+    enabled: false
+    brightness_delta: 0.03
+    contrast_delta: 0.06
+    saturation_delta: 0.08
+    gamma_delta: 0.04
+    lut_pool: []
+
+  texture:                          # ⑥纹理 / 噪点（aggressive）
+    enabled: false
+    noise_strength_pool: [0, 4, 6]
+    vignette_min: 0.15
+    vignette_max: 0.35
+
+  transition:                       # ⑦转场
+    enabled: true
+    pool: [fade, slideleft, circleopen, dissolve, smoothleft, fadeblack]
+    min_ms: 300
+    max_ms: 700
+    forbid_consecutive_same: true
+
+  audio:                            # ⑧音频
+    enabled: true
+    bgm_random: true
+    bgm_start_offset_max_ms: 15000
+    voice_layer_random: false       # 人声层永不随机
+
+  encoder_jitter:                   # ⑨编码抖动
+    enabled: true
+    cq_delta: 2
+    crf_delta: 1
+    gop_min: 48
+    gop_max: 72
+    quality_floor_cq: 25            # 不得超出画质下限
+
+# 相似度审计门禁（§04.2.4.5 · R3）
+similarity_audit:
+  enabled: true
+  broll_overlap_max: 0.30           # 与最近 10 个成片的 clip 交集
+  phash_hamming_max: 8              # 抽 8 帧 pHash
+  phash_high_similar_ratio_max: 0.05
+  ssim_threshold: 0.92
+  audio_similarity_max: 0.60
+  on_fail: resample                 # resample | warn

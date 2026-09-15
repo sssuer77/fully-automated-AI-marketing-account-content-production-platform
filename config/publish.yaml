@@ -1,0 +1,123 @@
+# ── 发布配置（§06.2.3 · R13 / R14 · D1 多账号结构 + 默认单账号）──────
+# ★ R14：自动发布不可逆 ⇒ enabled 默认 false，且 require_confirm 默认 true。
+#   两个开关必须**同时**满足才允许无人确认发布。
+schema_version: "1.0"
+
+enabled: false                 # ★ 出厂关闭：不发出去，先跑通链路
+require_confirm: true          # 发布前确认闸（复用 §04.4.4 确认闸机制）
+dry_run: false                 # true ⇒ 走完流程到"确认发布"前一步并截图
+
+handoff:
+  enabled: false
+  adapter: local               # local | <外部实现>
+
+# D1：结构支持多账号，默认只启用 1 个
+accounts:
+  - account_id: acc_main
+    platform: douyin
+    display_name: 主账号
+    profile_dir: data/browser_profile/acc_main   # 持久化登录态（.gitignore）
+    enabled: true
+    daily_limit: 3
+    min_gap_min: 30
+
+# 一线平台（一期必做）
+platforms:
+  douyin:
+    publisher: douyin
+    profile: douyin_1080x1920_30fps_v1
+    enabled: true
+    title_max: 55
+    caption_max: 1000
+    tag_syntax: "#{tag}"
+    tag_max: 5
+    daily_limit: 3
+    min_gap_min: 30
+    cover_required: true
+    selectors_version: "2026-09-13"
+  kuaishou:
+    publisher: kuaishou
+    profile: douyin_1080x1920_30fps_v1
+    enabled: true
+    title_max: 60
+    caption_max: 1000
+    tag_syntax: "#{tag}"
+    tag_max: 5
+    daily_limit: 3
+    min_gap_min: 30
+    cover_required: false
+    selectors_version: "2026-09-13"
+  shipinhao:
+    publisher: shipinhao
+    profile: douyin_1080x1920_30fps_v1
+    enabled: true
+    title_max: 1000
+    caption_max: 1000
+    tag_syntax: "#{tag}"
+    tag_max: 3
+    daily_limit: 3
+    min_gap_min: 30
+    cover_required: false
+    selectors_version: "2026-09-13"
+
+# 二线平台（保留接口与 profile，一期 enabled=false · Q9）
+  xiaohongshu:
+    publisher: xiaohongshu
+    profile: xhs_1080x1440_30fps_v1
+    enabled: false
+    title_max: 20
+    caption_max: 1000
+    tag_syntax: "#{tag}"
+    tag_max: 10
+    daily_limit: 3
+    min_gap_min: 30
+    cover_required: true
+    selectors_version: "2026-09-13"
+  bilibili:
+    publisher: bilibili
+    profile: bili_1920x1080_30fps_v1
+    enabled: false
+    title_max: 80
+    caption_max: 2000
+    tag_syntax: "{tag}"
+    tag_max: 10
+    daily_limit: 3
+    min_gap_min: 30
+    cover_required: false
+    selectors_version: "2026-09-13"
+  xigua:
+    publisher: xigua
+    profile: bili_1920x1080_30fps_v1
+    enabled: false
+    title_max: 30
+    caption_max: 1000
+    tag_syntax: "#{tag}"
+    tag_max: 5
+    daily_limit: 3
+    min_gap_min: 30
+    cover_required: false
+    selectors_version: "2026-09-13"
+  weibo:
+    publisher: weibo
+    profile: douyin_1080x1920_30fps_v1
+    enabled: false
+    title_max: 100
+    caption_max: 2000
+    tag_syntax: "#{tag}#"
+    tag_max: 5
+    daily_limit: 3
+    min_gap_min: 30
+    cover_required: false
+    selectors_version: "2026-09-13"
+
+# 数据回收时点（小时）；T5.4 落地
+metrics_schedule_hours: [1, 6, 24, 72]
+
+# 发布前二次校验（§06.4 三道门禁）
+precheck:
+  require_watermark: true        # D5 必做，不通过 ⇒ 拒绝发布
+  lufs_min: -16.5
+  lufs_max: -15.5
+  true_peak_max_dbtp: -1.0
+  block_on_similarity: false     # 相似度仅 warn，不阻塞（P4）
+  scan_forbidden_words: true     # persona.forbidden + banned_words.yaml

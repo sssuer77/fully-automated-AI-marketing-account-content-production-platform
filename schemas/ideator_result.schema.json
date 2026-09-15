@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://studio.local/schemas/ideator_result.schema.json",
+  "title": "IdeatorOutput",
+  "description": "§04.1.3 Ideator（批量选题）：单个方向 3–5 个选题",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "topics"
+  ],
+  "properties": {
+    "topics": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "hook_type",
+          "angle",
+          "exec_feasible",
+          "score",
+          "reason"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50
+          },
+          "hook_type": {
+            "enum": [
+              "conflict",
+              "suspense",
+              "contrast",
+              "number",
+              "other"
+            ]
+          },
+          "angle": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "exec_feasible": {
+            "type": "boolean"
+          },
+          "score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
+      }
+    }
+  }
+}

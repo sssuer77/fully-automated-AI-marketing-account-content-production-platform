@@ -1,0 +1,359 @@
+# §05 落地任务拆解清单（五阶段 · 49 个原子任务）
+
+> 验收命令中 `studio` = `uv run studio`（即 `src/studio/cli.py`）。测试标记：`gpu` / `slow` / `e2e` / `contract` / `net`（需网络）。
+> 每个任务都满足 §README.8 的通用 DoD（契约先行 / 幂等 / 可观测 / 可降级 / 无静默失败 / 可冷启动 / 超时硬约束 / 零人工）。
+> 阶段划分依据原文 §9.2 的四阶段，**T5 为第六部分（原文缺失）重建后新增**（原文 §8/§9.3 明确要求发布与数据回收，但 §9.2 未列阶段）。
+
+---
+
+## 5.0 阶段总览与关键路径
+
+| 阶段 | 主题 | 任务数 | 原文对应 | 里程碑门禁 |
+| --- | --- | --- | --- | --- |
+| **T1** | 基座 + 智能体脚手架 + 选题池 + WebUI 骨架 | 12 | 阶段一 | **M1** |
+| **T2** | CosyVoice3 配音（熊大熊二 + 按句续传） | 9 | 阶段二 | **M2** |
+| **T3** | 渲染引擎（**一期：单遍合成 + 固定水印**） | 7 | 阶段三 | **M3** |
+| **T4** | 四池并行 + 网页实时操作台 + 无人值守 | 13 | 阶段四 | **M4** |
+| **T5** | 发布 + **定时任务** + **数据报告** + 数据回流（第六部分重建 + 口述 D7/D9） | 8 | §8 / §9.3 | **M5** |
+| | **合计** | **49** | | |
+
+**关键路径**
+
+```
+     → T3.1 → T3.2 → T3.3 → T3.4 → T3.7 ─(M3)          ← ★ 一期只到单遍合成；三层模板属二期
+     → T4.11 → T4.12 ─(M4) → T5.1 → T5.2 → T5.3 → T5.6 → T5.4 → T5.7 → T5.5 → T5.8 ─(M5)
+```
+
+**必须先启动的外部依赖（有 lead time，越早越好）**
+
+| 项 | 阻塞 | 要求 | 当前状态 |
+| --- | --- | --- | --- |
+| 🔴 **MC 跑酷素材（★由你提供，D3）** | T3.1 | 放入 `data/assets/mc_parkour/`，建议 ≥60 条 / ≥30 分钟 | **`D:\MC` 为空** |
+| 🔴 **BGM 音乐库** | T3.1 | ≥20 首授权曲（可选，缺失则静音降级） | **`D:\MUSIC` 为空** |
+| 🔴 **熊大熊二原声录制** | T2.4 | 各 2–3 段，10–30s/段，**无背景音乐** | 缺失 |
+| 🔴 **水印 PNG** | T3.2 | `templates/<tid>/assets/images/watermark.png`（**必做**，D5） | 缺失 |
+| 🔴 **CosyVoice 权重下载** | T2.1 | 2–4 GB，落 `models/` 或 `D:\ai_models` | 缺失（版本待核验 Q7） |
+| 🟡 **LLM API Key** | T1.9 | [OI] 兼容接口 | 未提供（T1.8 代码已用脚本化传输全覆盖，**不阻塞**；`studio llm probe` 报 `no_key`） |
+| 🟡 **`config/persona.yaml` 填写** | T1.9 | 人设/口吻/受众/口癖/禁区 | 缺失（**唯一人工必填**） |
+| ✅ 前端脚手架与设计系统 | T4.1 | 可与 T2/T3 并行 | **已交付（2026-09-14）**：无外部依赖，先于 T2/T3 完成 |
+
+> **素材/权重缺失不阻塞开发**：T3.1/T3.7 提供黑屏降级（§04.2.8.6），T2.8 提供"字幕模式"降级（§04.3.3）——链路始终可跑通，素材到位后自动提升画质。
+
+**第一周建议顺序**：`T1.1 → T1.3 → T1.5`（立骨架）→ `T1.2 → T1.4`（配置与 16 态状态机）→ `T1.6 → T1.7`（Worker 与日志/WS）→ `T1.8 ✅`（LLM 网关）→ `T1.9 → T1.10 → T1.11`（Agent 链条与确认闸）→ `T1.12 ✅`（一键启动）。
+
+---
+
+## 5.1 阶段 T1 · 基座 + 智能体脚手架 + 选题池（12 任务）
+
+| ID | 模块与目标 | 依赖 | 验收标准 / 验证命令 | 风险点与降级预案 |
+| --- | --- | --- | --- | --- |
+| **T1.1** | **仓库骨架 + 双 venv + `doctor`**：目录树（§02.2）、uv 建 app(3.12)/tts(3.11)、**环境变量重定向**（§README.6） | — | `studio doctor --json` → `ok=true`（FFmpeg/NVENC/字体/磁盘/DB/环境变量逐项）；`uv run python -V` = 3.12.x；`uv run --project tts python -c "import torch;print(torch.__version__,torch.cuda.is_available())"` = `2.4.0+cu121 True` | **R1 磁盘**：C 盘仅 1.80 GB ⇒ `TEMP`/`HF_HOME`/`UV_CACHE_DIR`/`PIP_CACHE_DIR`/`PLAYWRIGHT_BROWSERS_PATH` 全量重定向 D 盘；`doctor` 断言 `free_C ≥ 1GB`、`free_D ≥ 15GB`，否则**拒绝启动** |
+| **T1.2** | **配置系统**：`persona.yaml`/`llm.yaml`/`app.yaml`/`pools.yaml`/`outputs.yaml`/`randomization.yaml`/`publish.yaml` + 环境变量覆盖 + 启动校验 | T1.1 | `studio config dump --json` 与 `config/*.yaml` 一致；`pytest tests/unit/core/test_config.py -q`（缺字段 / 非法值 / 未知键 / 越界路径 / **未设密码但开启局域网** 五类用例） | 密钥泄漏 ⇒ `llm.yaml` 只存 `api_key_env` 名，密钥走环境变量且入 `.gitignore`；persona 缺字段 ⇒ **启动即报错**并打印模板路径 |
+| **T1.3** | **数据库与迁移框架**：**29 表** DDL（§03.3）、迁移器、checksum 校验、`db check` | T1.2 | `studio db migrate` → `sqlite3 data/studio.db "SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"` = **29**；`studio db check` 断言 `journal_mode=wal` / `foreign_keys=1` / `integrity_check=ok` / `foreign_key_check` 为空；**连续执行两次结果一致**（幂等）；`pytest tests/integration/test_migrations.py -q` | **R10 锁竞争** ⇒ WAL + `busy_timeout=5000` + 短事务（<20ms，禁事务内 I/O）；历史迁移 checksum 变化 ⇒ 拒绝启动；**改 CHECK 需走四步重建**（§03.7.3，已验证） |
+| **T1.4** | **领域模型与 16 态状态机**：`TaskStatus`(16)/`Grade`/`PoolName`(4)/`PublishStatus` + `ALLOWED_TRANSITIONS` + `TaskService.transition()` 单入口 + `version` 乐观锁 + `task_events` 审计 | T1.3 | `pytest tests/unit/domain/test_state_machine.py -q`（**16×16 全矩阵**参数化：合法迁移通过、非法抛 `IllegalTransition`）；`pytest tests/contract/test_no_direct_status_write.py`（静态校验：仓储层外无 `UPDATE tasks SET status`） | 状态旁路 ⇒ 单入口 + 静态检查 + 触发器兜底；并发写 ⇒ `version` 乐观锁 + `ConcurrentModification` 重试 ≤3 |
+| **T1.5** | **队列内核（四池）**：`JobStore`（§03.4）——单语句原子认领、租约、续租、sweeper 回收 + 退避、依赖解锁、死信、幂等入队、`publish` 限频守卫 | T1.3 | `pytest tests/integration/test_queue_lease.py -q`：①优先级认领顺序正确；②租约未过期不回收 / 过期回收 + 退避；③依赖 2 级解锁；④`attempts ≥ max` ⇒ `dead`；⑤幂等入队不重复；⑥`CHECK` 拒绝非法状态；`pytest tests/contract/test_no_direct_job_write.py` | 重复执行 ⇒ 单语句认领 + 租约（陷阱 #2）；空转吃 CPU ⇒ 指数退避休眠（200ms→2s），**禁 busy-loop**；死信无告警 ⇒ 强制 `system.alert(JOB_DEAD)` |
+| **T1.6** | **Worker 框架（四池）**：认领循环、心跳上报（5s）、优雅退出（`draining`）、信号处理（Ctrl+C）、崩溃恢复 | T1.5 | `pytest tests/integration/test_worker_lifecycle.py -q`（**37 例**）：①`SIGINT` ⇒ 跑完当前单元后退出（不丢进度）；②心跳超 15s ⇒ 标记 `dead` ⇒ supervisor 重启；③重启后租约被 sweeper 回收并重新认领；加 `pytest tests/unit/pools/test_heartbeat.py -q`（**36 例**）+ `pytest tests/contract/test_no_direct_heartbeat_write.py -q`（**5 例**） | 硬杀进程留"假完成" ⇒ 先写 `.partial` 再原子改名（陷阱 #9）；worker 泄漏 ⇒ RSS 持续增长告警；心跳表被越权写 ⇒ 监测误报/漏报（契约测试静态拦截）；测试里漏 `request_stop()` ⇒ 脉冲线程泄漏（陷阱 #34） |
+| **T1.7** | **日志与 WS 骨架**：`system_logs` 写入契约（先落库后广播）、`/ws/ui`、**8 通道**、100ms 合并、2Hz/任务限流、环形缓冲、`since_id` 补发、`seq` 缺口检测 | T1.6 | `pytest tests/integration/test_ws_replay.py -q`（**24 例**）：①断线重连按 `since_id` 补发且不丢不重；②高频进度被合并到 ≤2Hz；③慢客户端被断开（1008 + `WS_CLIENT_SLOW`）；加 `pytest tests/unit/ws -q`（**38 例**）+ `pytest tests/contract/test_ws_protocol.py -q`（**19 例**，直接解析 §04.4 比对通道/信封/事件表/告警码/阈值） | 前端被刷爆 ⇒ 合并窗口 + 限流 + 环形缓冲（陷阱 #12）；日志断线丢失 ⇒ **先落库再广播**（陷阱 #13）；`system.alert` 永不合并/永不丢弃；mypy「同一文件两个模块名」**顺带掩盖**真实类型错误 ⇒ 修完必须重跑（陷阱 #35） |
+| **T1.8** ✅ | **LLM 双通道网关**：云端 [OI] 兼容 + 本地兜底、JSON Schema 强校验、修复重试 ≤3、熔断、`llm_calls` 记账、**token 预算闸门**（R16）、提示词注册表 | T1.2 | `pytest tests/unit/agents -q`（**31 例**）：①schema 不合法 ⇒ 每通道 1+3 次后返回 `LLM_SCHEMA_INVALID`；②云端 5xx/超时 ⇒ 自动切本地兜底；③超预算 ⇒ 按 `on_exceed` 三策略处理；④每次调用写 `llm_calls`（token/成本/耗时/model/prompt_version）；加 `pytest tests/contract/test_llm_gateway.py -q`（**10 例**：`llm_calls` 唯一写入方 / `agents` 分层 / 密钥不入库 / `CallStatus`↔DDL / manifest sha256）；`studio llm probe` + `studio prompts verify` | **R6** 输出非结构化/限流/超预算 ⇒ Schema 强校验 + 修复重试 + 本地兜底 + 成本记账；**R16** 成本失控 ⇒ 任务级 token 上限 + 成本面板 + 超限切本地；单次硬超时 120s；**失败也记账**（陷阱 #37）；提示词**禁控制流**（陷阱 #38） |
+| **T1.9** | **输入源解析 + Planner + Ideator + 选题池**：`hot_items`/`feedback_items` 解析（§04.1.7）、5–8 方向、每方向 4 选题、**两级去重**（R15）、选题入池 | T1.8 | `studio topics analyze` 产出 5–8 方向；`studio topics ideate` 产出 20–32 选题；`pytest tests/integration/test_topic_pool.py -q`：①热点行解析（缺字段跳过 + warn）；②反馈自由文本容错（Q4）；③归一化哈希去重；④相似度 ≥0.85 降分并标 `similar_to`；⑤4 条 Planner 规则校验（含"被吐槽"降权 +500） | **R15 选题同质化** ⇒ 两级去重 + 历史库比对；**grounding 不足**（无热点无反馈）⇒ 仅凭 persona 产出 + 打 `low_grounding` 标记；单方向失败不影响其他方向（每方向独立 job） |
+| **T1.10** ✅ | **Director + Writer**：大纲（钩子 / 3–5 段含要点+画面建议+情绪 / CTA / 时长预估）→ 600–800 字口播稿 → **逐句落库**（同一事务） | T1.9 | `pytest tests/unit/agents/test_director.py -q`（段数 3–5、每段 80–350 字、Σ 600–800、时长 60–180s）；`pytest tests/unit/agents/test_writer.py -q`（字数、口癖命中 ≥2、句长 ≤28、禁区命中即 block、单人占比 ≤70%）；`pytest tests/contract/test_director_schema.py test_script_schema.py`；`pytest tests/integration/test_script_pipeline.py -q`（①700 字/20 句两表同事务落库 ②seq 连续且句长 ≤28 ③超长句切分**不重写** ④禁区 block 且不留半成品 ⑤越界重写 ≤2 取最接近 ⑥时长用**算出来的**值 ⑦重跑复用任务且只留一版 `is_active=1` ⑧LLM 超时 ⇒ `failed` + `last_healthy_status` 断点） | 字数越界 ⇒ 重写 ≤2 次，仍越界取最接近版本 + `warn`；口癖缺失 ⇒ 重写；**句长 >28 字** ⇒ 强制切分（不重写）；"有稿无句"半成品 ⇒ 同事务写入 `scripts` + `script_sentences` |
+| **T1.11** ✅ | **双通道评分 + Editor + 确认闸**：规则 4 项 + LLM 六维度、`0.3×规则+0.7×LLM`、A/B/C 分级、改稿 ≤2 轮、**分级放行**、`approvals` + `audit_ops` | T1.10 | `pytest tests/integration/test_scoring.py -q`（`8.0/9.0→8.7→A`、`7.0/6.0→6.3→B`、`4.0/4.5→4.35→C` 三条基线）；`pytest tests/e2e/test_approval_flow.py -q`：①A 级自动放行并写 `approved_by='auto_approve_A'`；②B 级进 `awaiting_approval`；③reject 必填 comment 且 `revision_round+1`；④改稿 2 轮后仍 B ⇒ 进闸（**不无限循环**）；⑤人工退回后重审**不再烧改稿轮次**（`round_no` 只保下界，裁定 100）；⑥规则通道四项 + 六维度各自可复算（`pytest tests/unit/domain/test_scoring.py -q` 97 passed） | **R16** 改稿烧 token ⇒ 轮次硬上限 2；C 级误废弃 ⇒ 选题候选置 `rejected`（**可人工捞回**）；Editor 乱改 ⇒ diff 断言"只改 issues 涉及段落" |
+| **T1.12** ✅ | **一键启动与关停**：`启动.bat` → doctor 门禁 → 拉起 5 进程（API/TTS/draft/voice/render）→ 健康等待 → **浏览器自动打开** → `停止.bat` 三级优雅关停（契约 §04.8） | T1.11 | `studio service start --no-browser` ⇒ `ok=true`、`ready=['api']`、`degraded=['tts','draft','voice','render']`、`elapsed_ms≈4.8s`（含 `uv run` 开销；进程内直调 ≈1.4s）、`/api/v1/health` 回 `ok=true`；`ops\status.ps1` ⇒ `api` 的 pid / 8787 / 端口占用=是；`ops\stop_all.ps1` ⇒ `stopped=['api']`、`forced=[]`、155ms；`pytest tests/unit/services/test_service_manager.py -q` ⇒ 54 passed；`tasks.ps1 check` ⇒ 1791 passed / 32 skipped | 端口占用 ⇒ 启动前探测，且与「已在运行」**分开报**；**WebUI 挂掉不影响后台任务**（原文 §7.4）⇒ 五进程各自 `Popen` + 独立日志；未就绪 ⇒ 报 `degraded` 且**不拉起空转 worker**（裁定 103 / **108：M1 的「5 进程全 ready」顺延到 M4**） |
+---
+
+## 5.2 阶段 T2 · CosyVoice3 配音（9 任务 · 原文第三部分）
+
+| ID | 模块与目标 | 依赖 | 验收标准 / 验证命令 | 风险点与降级预案 |
+| --- | --- | --- | --- | --- |
+| **T2.1** | **tts venv + 模型权重就位**：Python 3.11 + torch 2.4.0+cu121（复用 `D:\Torch` 预置 wheel）+ CosyVoice 源码（**revision 锁定**）+ 权重落 `models/` 或 `D:\ai_models` | T1.1 | `uv run --project tts python -c "import torch,cosyvoice;print(torch.__version__,torch.cuda.is_available())"` = `2.4.0+cu121 True`；`python scripts/smoke_cosyvoice.py --self-test` 打印模型路径/设备/权重 revision 并成功合成 1 句；权重目录与体积记入 `docs/runbook/tts_models.md` | **Q7 版本核验**：原文写 `CosyVoice3-0.5B`，FunAudioLLM 已知发布 CosyVoice / CosyVoice2-0.5B ⇒ **以实际能下载跑通的版本为准**，revision 写入留痕；**R5**：`pynini`/`WeTextProcessing` 在 Windows 装不上 ⇒ 不 import `tn`；下载中断 ⇒ ModelScope 缓存续传 |
+| **T2.2** | **常驻推理服务 + 并发实测标定**（★裁决 C8）：`/health` `/warmup` `/unload` `/voices` `/synth`、GPU 串行信号量、fp16 常驻、空闲 20min 卸载、429 背压 | T2.1 | `curl 127.0.0.1:8811/health` → `{ready:true,device:"cuda",model_state:"ready"}`；`python scripts/bench_tts.py --concurrency 1,2,3` 输出**各并发下的峰值显存与 RTF**，写出建议值到 `docs/runbook/tts_concurrency.md`；fp16 常驻 < 4 GB | **R4/C8 显存**：8 GB 卡且桌面占 1.49 GB ⇒ **默认并发 1**；若实测 3 并发 OOM ⇒ **正式否决原文的 3 并**并记录依据；显存不足 ⇒ 自动 `unload` 重载；服务崩溃 ⇒ supervisor 重启（T4.11）；**禁 bf16**（Turing 无原生支持） |
+| **T2.3** | **引擎适配层与路由**：§04.3.2 的 `VoiceEngine` ABC 实现、多引擎路由、熔断、§04.3.3 降级决策表落地 | T2.2 | `pytest tests/unit/tts/test_router.py -q`（§04.3.3 决策表**逐条**：OOM / 超时 / 静音 / 爆音 / 引擎宕 / 连续失败熔断）；`pytest tests/contract/test_voice_engine_abc.py`（Mock / 服务 / CosyVoice 三实现均满足 ABC） | 引擎"假成功"（返回静音）⇒ `RMS < -50 dBFS` 判 `TTS_SILENT`；熔断阈值可配（默认连续 3 句）；熔断后任务**不失败**，转"字幕模式" |
+| **T2.4** | **原声入库与音色注册（`bigbear`/`littlebear`）**：目录契约、质量校验（段数/时长/无 BGM/无削波/有效语音占比）、零样本复刻注册、试听样本 | T2.2 | `python scripts/ingest_voice_src.py --voice bigbear` 校验通过并注册；`studio tts list` 可见 `bigbear`/`littlebear`；`pytest tests/integration/test_voice_profile.py -q`（段数<2 / 时长越界 / 削波 / 采样率不足 **四类拒绝**）；`-k quality`（含 BGM 被标 `warn`） | **R2 版权**：《熊出没》IP 音色复刻存在声音权/著作权风险 ⇒ ①音色 ID 与展现名**可配置解耦**；②支持一键替换为自录音色；③WebUI 显著合规提示；④`profile.json` 来源登记留档；参考音质量差 ⇒ 入库校验 + 试听确认 + 可重录替换 |
+| **T2.5** | **文本归一化与切分**：数字/英文/多音字归一化（**幂等**）、标点→停顿映射、单句 ≤28 字切分、glossary 热更新 | T1.10 | `pytest tests/unit/tts/test_normalize.py -q`（≥40 条黄金用例：日期/百分比/英文缩写/多音字/emoji/超长句）；`pytest tests/unit/tts/test_segmenter.py -q`（每片 4–28 字且不破坏语义边界）；幂等性属性测试 `normalize(normalize(x)) == normalize(x)` | **R7 长句漂移** ⇒ 单句硬上限 + 自动切分并回写 DB；误读 ⇒ `glossary.yaml` 热更新且变更即回归；**不引入 `pynini`**（R5） |
+| **T2.6** | **按句合成流水线 + 句级缓存**：sentence 单元 job、`tts_hash` 缓存命中、单句重试/降级、`version` 竞态保护 | T2.3–T2.5, T1.5 | `pytest tests/integration/test_sentence_resume.py -q`：①杀进程重启后已完成句**引擎调用次数为 0**（Mock 计数断言）；②第 3 句注入失败 ⇒ 仅该句重试成功；③编辑某句后仅该句失效重合成；④缓存命中率 ≥30%；⑤产物落 `data/output/voice/<task_id>/s001.wav` | 缓存污染 ⇒ 哈希含引擎版本/音色/文本/参数；**R4** 缓存占盘 ⇒ LRU 5 GB；句级写冲突 ⇒ `version` 校验失败即**丢弃音频重合成** |
+| **T2.7** | **时长时间轴**：`ffprobe` 实测时长、句间停顿 + 抖动（种子派生）、`timeline.json`（§04.2.7）、批量回写 `start_ms/end_ms` | T2.6 | `pytest tests/integration/test_timeline.py -q`（单调不重叠、总时长 = Σ句时长 + Σ停顿 + tail）；`python scripts/av_sync_audit.py --timeline … --wav … --tol 30ms` 通过；`voice_master.wav` 时长与 `timeline.total_ms` 偏差 ≤30ms | **R9 音画不同步**：统一 48kHz mono s16 + `concat` filter + 显式总时长；句子重合成后**必须全量重算时间轴**（禁止增量拼接）；**不信任引擎返回的时长**，一律 ffprobe 实测 |
+| **T2.8** | **配音阶段编排与降级演练**：voice stage 接入 orchestrator、`voicing → queued_render` 守卫（全部句 `done/skipped` + timeline 校验）、故障注入开关 | T2.7, T1.11 | `studio pipeline run <task_id> --until voicing` 跑通；`STUDIO_FAULT=tts_fail_sentence=3` ⇒ 单句重试成功；`STUDIO_FAULT=tts_down=1` ⇒ **全句 `skipped` + 等长静音 + 任务仍推进到 `queued_render`**，`quality.degrade_reason='tts_unavailable'`（原文 §3.4） | 全池失败 ⇒ 熔断 + 任务失败但保留 `retry_from`；`skipped` 句 >20% ⇒ `quality.warn` + WebUI 高亮；**不允许因 TTS 故障阻塞产线**（原文 §1.2 原则4） |
+| **T2.9** | **配音服务化操作接口**（原文 §7.2 配音面板的服务端支撑）：单句重配、单句试听、任务级换音色（重配受影响句） | T2.6, T1.7 | `POST /api/v1/sentences/{id}/resynth` ⇒ 该句 `done` 回 `pending` → 重合成 → **时间轴重算**（总时长变化可见）；`GET /api/v1/media/{path}` 可播放单句 wav；`PATCH /api/v1/tasks/{id}/voice_map` ⇒ 受影响句全部失效并重配；三者均写 `audit_ops` | 换音色触发全量重配 ⇒ 明确提示"将重配 N 句"并二次确认；重配期间禁止渲染（守卫：`voicing` 态不允许 render 认领） |
+---
+
+## 5.3 阶段 T3 · 渲染引擎（**一期：单遍合成 + 固定水印** · 7 任务）
+
+> ⚠️ **v3.1 范围收敛（口述 D2/D5 · 裁决 C12/C13）**：一期渲染 = **音画合成 + 固定水印**，一次 ffmpeg 调用直出 `final.mp4`。
+> **不做**句子↔镜头对齐（D2），**不做**场景中间产物、三层模板编排（C13 ⇒ 降为二期 P1）。
+> 契约见 §04.2.8；二期任务见本节末「二期（P1）预留」。
+
+| ID | 模块与目标 | 依赖 | 验收标准 / 验证命令 | 风险点与降级预案 |
+| --- | --- | --- | --- | --- |
+| **T3.1** | **素材入库（跑酷 + BGM）**：`data/assets/mc_parkour/parkour_*.mp4` 通配命名、缩略图、指纹（sha256 + pHash）、可用区间、**授权登记**；**BGM 库**（支持经 WebUI 素材库导入 · Q12）；`studio assets ingest` | T1.3（**素材由用户提供**，D3） | `studio assets ingest --dir <源> --license self_recorded` 成功；`studio assets stats` 显示 `clips`/总时长/`bgm` 数量；**缺 `license` 直接拒绝入库**；`pytest tests/integration/test_broll_ingest.py -q`（重复素材按 sha256/pHash 拒绝、黑帧段落自动排除、`usable_from/to_ms` 正确） | **R3 版权** ⇒ 只收自录/授权（`license` 枚举强制 + `proof_path`）；🔴 **素材未到位** ⇒ 走**黑屏降级**（§04.2.8.6）保证链路不断；建议 T1 期间即把素材放入目录 |
+| **T3.2** | **水印资产与合成 profile**：`watermark.png` 入库与校验、位置/边距/宽度/透明度参数、`config/outputs.yaml` 合成 profile（1080×1920/30fps/libx264 CRF21/faststart/bt709）+ **720P 保底档** | T1.2, T1.3 | `studio render profile --show` 打印合成 profile；水印 PNG 缺失 ⇒ **渲染直接报错** `RENDER_WATERMARK_MISSING`（D5 必做，不静默跳过）；`pytest tests/unit/render/test_watermark.py -q`（位置枚举/边距偶数校验/宽度上限 1/4 画布/透明度范围） | **水印是必做项**（口述 D5）⇒ 缺失时**拒绝渲染**而非降级；位置越界 ⇒ 编译期报错；宽度过大 ⇒ 夹取到画布 1/4 并 `warn` |
+| **T3.3** | **`CompositePlan` 与单遍编译器**：§04.2.8.2 数据结构、`total_ms` 由 ffprobe 实测、`filter_complex` 生成（跑酷循环裁长 → 缩放铺满 → 水印 overlay → 混音）、`ff_path()` 转义、语法预检、节点守卫 | T3.1, T3.2, T2.7 | `studio render plan --task <id> --out plan.json` 产出合法 `CompositePlan`；`pytest tests/unit/render/test_composite.py -q`：①`total_ms = ffprobe(voice_master) + tail_ms`；②`fps=30` 在 `scale` 前；③`overlay` x/y 为偶数；④`amix` 含 `normalize=0`；⑤`estimated_nodes > 60` ⇒ 触发分块；`pytest tests/golden/test_filtergraph.py -q`（含中文/空格/冒号路径）；语法预检退出码 0 | **R8 复杂度爆炸** ⇒ 节点守卫 + 分块降级（§04.2.8.6）；`ass`/水印路径报错 ⇒ 统一 `ff_path()`（陷阱 #6）；命令行超长 ⇒ `-filter_complex_script` 文件（陷阱 #7） |
+| **T3.4** | **单遍合成执行器**：argv 数组（**不用 shell**）、`-progress pipe:1` 进度解析、超时/取消（杀进程树）、`.partial` 原子改名、stderr 截断留痕、`composite_hash` 整片缓存 | T3.3 | `pytest tests/integration/test_composite_runner.py -q`：①进度百分比可解析；②超时 ⇒ 杀进程树且不留子进程；③中断 ⇒ 目标文件不存在但 `.partial` 被清理；④`argv` 不含 shell 拼接（静态断言）；⑤同 `composite_hash` 二次运行**不调用 ffmpeg**（Mock 计数）；⑥人声或素材改动 ⇒ 哈希变化 ⇒ 重渲 | 崩溃留"假完成" ⇒ `.partial` + `os.replace`（陷阱 #9）；僵尸 ffmpeg ⇒ 杀进程树；**缓存复用旧产物** ⇒ 哈希含 canonical plan + 输入 sha256（陷阱 #8）；NVENC 失败 ⇒ 回退 `libx264` |
+| **T3.5** | **字幕生成（可选，默认开启 · Q11）**：ASS 生成（自动换行 / 每行限字 / 描边 / 居中）、说话人样式、中文断行、字体校验、安全区；开关 `render.burn_subtitle` | T3.3 | `pytest tests/golden/test_ass.py -q`（golden 比对 ASS 文本）；`pytest tests/unit/render/test_subtitle.py -q`：①每行 ≤13 字、≤2 行；②**不在数字/英文单词中间断行**；③`MarginV ≥ safe_area.bottom`；④字体缺失 ⇒ 报错而非豆腐块；⑤UTF-8 无 BOM + LF；开关关闭 ⇒ 产物无字幕层（断言） | 字幕豆腐块 ⇒ 内置字体 + `fontsdir` + 启动校验（陷阱 #5）；时间错位 ⇒ 时间**只**取自 `voice_master` 实测的句级时长；**关掉字幕必须仍能出片**（可选性验证） |
+| **T3.6** | **混音与响度**：人声直通 + BGM 侧链 ducking + 两遍 `loudnorm` + 限幅兜底；BGM 缺失 ⇒ 单轨静音降级 | T3.3 | `python scripts/audio_qc.py --in voice_master.wav --mix final.mp4` 输出 `lufs ∈ [-16.5,-15.5]`、`true_peak ≤ -1.0`；`pytest tests/integration/test_mixdown.py -q`：①`amix` 含 `normalize=0`（静态断言）；②`loudnorm` 两遍（第二遍带 `measured_*`）；③`alimiter` 存在；④BGM 缺失 ⇒ 单轨人声且不报错 | 人声偏小 ⇒ `normalize=0` + 两遍 loudnorm（陷阱 #4）；削波 ⇒ `alimiter=limit=0.95`；BGM 压住人声 ⇒ ducking 参数（threshold 0.05 / ratio 8 / attack 20 / release 420） |
+| **T3.7** | **成片交付、manifest 与降级链**：`final.mp4` 落盘 + `manifest.json`（含 `CompositePlan` + `composite_hash`）+ `quality_json` 回填；**720P 保底** + 黑屏降级 + 分块降级 | T3.4–T3.6 | `studio pipeline run <task_id> --until completed` 产出 `final/final.mp4`；`pytest tests/e2e/test_render_e2e.py -m "e2e and slow" -q`；`python scripts/audio_qc.py --task <id>` 通过；`python scripts/dup_audit.py --task <id>` 通过；**注入素材为空 ⇒ 黑屏出片**；**注入编码失败 ⇒ 720P 保底出片**；`manifest.json` 含水印标记与随机化留痕 | **R9 已按 C12 降级**：仅保留 CFR + 显式 `-t` + 禁 `-shortest`（陷阱 #3）；**水印缺失 ⇒ 拒绝出片**；渲染反复失败 ⇒ 720P → 仍失败 ⇒ `manual_pool` |
+
+**一期交付判定（M3 门禁）**：换稿不重剪 —— **同素材、同水印、换稿件** ⇒ 直接出新片；网页一键触发并在线预览。
+
+### 5.3.1 二期（P1）预留任务 · 三层模板场景编排（**不阻塞 M3**）
+
+> 保留原文 §4 的三层模板设计（Video→Scene→Component）。**一期不实现**，二期按需启动。契约见 §04.2.1–§04.2.7、§03.6。
+
+| ID | 模块与目标 | 依赖 | 说明 |
+| --- | --- | --- | --- |
+| **T3-P1** | 三层模板契约与加载器（YAML → Pydantic → DB；组件六类；八类校验） | T3.7 | §03.6 / §04.2.0 |
+| **T3-P2** | IR 与构建器（`VideoIR` + bind pass + `$` 变量绑定） | T3-P1 | §04.2.1 |
+| **T3-P3** | 自动填充 + `repeat_last` 场景扩展（克隆场景强制重抽素材、禁绝对时间） | T3-P2 | §04.2.2 / §04.2.3 |
+| **T3-P4** | 场景级 filtergraph 编译 + 场景中间产物缓存 + 场景级重试 + 合流 | T3-P3 | §04.2.5；ADR-004 |
+
+> **二期启动条件**（三者同时满足）：①一期稳定出片 ≥100 条；②确有"片头/片尾/多段镜头编排"需求；③磁盘与时间预算允许（§README.7 二期占用约翻倍）。
+
+## 5.4 阶段 T4 · 网页实时操作台 + 四池并行 + 无人值守（13 任务 · 原文第七部分）
+
+| ID | 模块与目标 | 依赖 | 验收标准 / 验证命令 | 风险点与降级预案 |
+| --- | --- | --- | --- | --- |
+| **T4.1** ✅ | **前端脚手架与设计系统**：Vite + Vue3 + TS + Pinia、深色控制台布局、API 类型自动生成（OpenAPI）、WS 客户端（重连/补发/`seq` 缺口检测） | T1.7 | ✅ **2026-09-14 实测**：`npm run typecheck` 零错误；`npm run test` **29 passed**（4 文件）；`npm run build` 成功且 dist **0.09 MB < 3 MB**；`npm run size` OK；`pytest tests/contract/test_web_contracts.py` **7 passed**；`tasks.ps1 check` **1798 passed / 32 skipped** | 类型漂移 ⇒ 生成物入库 + 契约测试逐字比对 + 静态扫描 `fetch(`（陷阱 #58/#59）；WS 重连风暴 ⇒ 指数退避（1s→2s→4s→8s→**上限 15s**，永不放弃）；重连后 `seq` 基线未重置 ⇒ 每重连白跑一轮 `resync`（陷阱 #60） |
+| **T4.2** ✅ | **① 总览台**：四池状态、队列长度、今日产量、资源占用（CPU/内存/显存/磁盘）+ **启动/暂停/一键全自动** | T4.1, T1.5 | 页面显示四池 `pending/claimed/failed/dead` 与 worker 心跳；`free_D < 15GB` 时显示 `DISK_LOW` 告警；点"一键全自动"⇒ `auto_approve_policy=GRADE_AB` 且写 `audit_ops`；暂停某池 ⇒ 该池停止认领但**在途跑完** · ✅ **2026-09-14 实测**：`pytest tests/integration/test_overview_api.py` **34 例**（四池/心跳 stale/本地日窗口/资源快照/暂停语义/一键全自动/`DISK_LOW` 去重/三个 WS 事件/启动单飞）；前端 `vitest` **153 例**（新增 overview store **20**）；`tasks.ps1 check` **1924 passed**；`web:verify` 全绿 · dist **0.17 MB** | 误触全自动 ⇒ 二次确认 + `audit_ops` 留痕 + 可一键回退 `GRADE_A`；指标采样开销 ⇒ 0.2 Hz（5s）+ 整拍丢线程池；"今日"用 UTC 日会算错一天（陷阱 #75）；在 API 进程里停自己（陷阱 #76）；采样泵跨线程 `publish()`（陷阱 #77）；首拍健康被当成"恢复"（陷阱 #78） |
+| **T4.3** ✅ | **② 选题面板**（★新增）：方向卡片（含**历史批次**）、选题瀑布流、评分理由、勾选入队（**两步确认**）、导入热点（扫盘 / 网页粘贴）、触发分析 / 生成选题、人工加选题 | T1.9, T4.1 | 导入 `data/hot/*.md` ⇒ 方向卡片出现（WS `direction.batch_ready`）；触发分析 ⇒ 5–8 方向；瀑布流显示 `score` 与 `reason`；勾选 ⇒ 创建任务（`topic.selected`）；人工加选题 ⇒ 直接入库并写 `audit_ops` · ✅ **2026-09-14 实测**：`pytest tests/integration/test_topics_api.py` **15 例**（8 条路径 / 单飞 409 / 逐条部分失败 / 幂等复用 / `draft_now` 出稿 / 人工加选题留痕 / 两种热点入口 / WS 扇出）；前端 `vitest` **133 例**（新增 topics store **39**）；`tasks.ps1 check` **1890 passed**；`web:verify` 全绿 · dist **0.15 MB** | 选题过多导致勾选疲劳 ⇒ 按 `score` 降序 + 方向分组 + 默认折叠；重复勾选 ⇒ `idempotency_key` 防重复建任务；长任务被连点 / 双标签页重放 ⇒ **单飞守卫 409（不排队）**；动作刚报的错被紧随的刷新抹掉 ⇒ 动作级 / 拉取级**两条错误信道**（陷阱 #71） |
+| **T4.4** ✅ | **③ 稿件面板 + 确认闸**：稿件全文、审稿评分（**双通道明细**）、修改版本对比、确认/退回/放弃、批量操作 | T1.11, T4.1 | 展示 `rule_detail` + `llm_detail` 六维度 + `issues`；版本对比可看 `v1→v2` diff；**退回必填意见**；批量通过 ⇒ 逐条写 `audit_ops`；`revision_round` 可见（原文 §2.2⑦"呈现稿件+评分+修改次数"）· ✅ **2026-09-14 实测**：`pytest tests/integration/test_{approvals,scripts}_api.py` **35 例**（六条路径 / 批量部分失败 / 捞回恢复选题 / 版本 diff）；`pytest tests/unit/domain/test_diff.py` **11 例** + `tests/unit/ws/test_hub_events.py` **11 例**；前端 `vitest` **94 例**（新增 scripts store **37**）；`tasks.ps1 check` **1875 passed**；`web:verify` 全绿 · dist **0.13 MB** | 误点放弃 ⇒ 二次确认 + 可"捞回"（`discarded → pending`）；批量操作误伤 ⇒ 显示待处理清单再确认 |
+| **T4.5** | **④ 配音面板**：逐句进度条（已完成/进行中/失败/跳过）、换音色、重配某句、试听单句 | T2.9, T4.1 | 逐句状态实时刷新（WS `sentence.updated`）；重配某句 ⇒ 该句回 `pending` 并重合成；换音色 ⇒ 提示"将重配 N 句"并二次确认；试听 ⇒ 可播放单句 wav；`skipped` 句高亮 + 原因可见 | 重配期间渲染抢跑 ⇒ 守卫：`voicing` 态不允许 render 认领；试听与合成抢 GPU ⇒ 试听走缓存文件，**不触发新合成** |
+| **T4.6** | **⑤ 渲染面板**：**单遍合成进度**、**ffmpeg 日志**、成片列表、触发渲染、**在线播放**（"场景进度/换模板"随 C13 延后二期） | T3.4, T3.7, T4.1 | 合成进度按 `-progress` 推进（WS `render.progress`）；ffmpeg 日志按 `source=render.*` 过滤并高亮 `warn/error`；成片列表可在线播放（HTTP Range）；触发渲染 ⇒ 入队 render 池；**水印缺失 ⇒ 面板显示 `RENDER_WATERMARK_MISSING` 且不出片** | 日志量大 ⇒ 前端只订阅 `render.*` + 环形缓冲 200 条；在线播放占用带宽 ⇒ 本机回环，无风险；重复触发 ⇒ 幂等键 + `composite_hash` 缓存直接命中 |
+| **T4.7** ✅ | **⑥ 合成配置面板**（**一期**：合成 profile / 水印 / 字幕样式表单编辑；**二期**：三层模板可视化编辑） | T3.2, T4.1 | **一期（必做）**：表单编辑合成 profile（分辨率/帧率/CRF/720P 保底档）、水印（位置/边距/宽度/透明度）、字幕（字号/描边/每行字数），保存前强制 `validate`（**不写 DB**：`config/outputs.yaml` 是唯一真相 · 裁定 165/166）；改动写 `audit_ops` 且 `version +1`；**二期**再启用层结构树 + 组件增删 + 实时预览 · ✅ **2026-09-14 实测**：后端 `test_yaml_lines.py` **17 例** + `test_outputs_store.py` **24 例** + `test_outputs_api.py` **24 例**（合计 **65 例**）；前端 `outputs.test.ts` **32 例**（前端合计 **230 例**）；`tasks.ps1 check` **2080 passed / 32 skipped / 1 deselected**；`web:verify` 全绿 · dist **0.22 MB** | **R17 工作量被低估** ⇒ 一期只做表单编辑，拖拽定位与三层模板树**随 C13 延后二期**；编辑破坏配置 ⇒ 保存前强制 `validate`，不通过拒绝保存；并发编辑 ⇒ `source_sha256` 比对 |
+| **T4.8** ✅ | **⑦ 素材库**：跑酷素材 / 原声 / **BGM** 的列表、**导入（Q12：BGM 必须可导入）**、预览、试听、标记（启用/禁用）、授权信息、统计 | T3.1, T4.1 | 列表显示 `license`/`use_count`/`last_used_at`/`has_text`；导入（跑酷 / 原声 / **BGM**）⇒ 自动入库（指纹/缩略图/可用区间/时长）；**BGM 入库后立即可被混音随机选中**（T3.6 无需改配置 · Q12）；禁用 ⇒ 随机化不再选中；统计满足 `clips ≥ 60 且 ≥ 30min`；**R2 合规提示常驻** · ✅ **2026-09-15 实测**：`pytest tests/integration/test_assets_api.py` **26 例**（六端点 / `dry_run` 预览一个字节都不写库 / 逐条部分失败 / 坏文件不中断整批 / 缺授权拒绝入库 / 重扫不覆盖人工字段 / 幂等不留痕 / `strays` 如实报）；素材库相关单测 **222 例**（`assets` 76 + `test_asset_service` 40 + `test_asset_repo` 21 + `test_media` 51 + `test_files` 8 + API 26）；迁移 `0009_assets`（`voice_profiles` + `idx_voice_enabled` ⇒ **30 表 / 61 索引 / 9 迁移**）；`scripts/seed_placeholder_assets.py` 真机跑通（60 跑酷 × 32s = **32 分钟** + 3 BGM + 2 音色，耗时 **74s**，占位标黄）；前端 `vitest` **284 例**（新增 assets store **18** + `http` PATCH **3**）；`tasks.ps1 check` **2468 passed / 32 skipped / 1 deselected**；`web:verify` 全绿 · dist **0.26 MB** | 素材不足 ⇒ 显著提示“当前为黑屏降级模式”；误删 ⇒ 只允许禁用（不物理删除）+ `audit_ops`；**重扫把人工标记抹掉** ⇒ 只刷机器事实（陷阱 #92）；**短片段当合格素材** ⇒ `BROLL_MIN_USABLE_MS=4500` 硬判据（陷阱 #93）；占位素材被当真 ⇒ `tags:["placeholder"]` 标黄 |
+| **T4.9** ✅ | **⑧ 实时日志**：分级/任务/来源过滤、搜索、告警高亮、导出 NDJSON、断线重连不丢 | T1.7, T4.1 | ✅ **2026-09-14 实测**：`pytest tests/integration/test_logs_api.py` **19 例**（过滤组合 / LIKE 转义 / NDJSON 导出 / `until_id` 窗口 / 上限 422）；前端 `vitest` **57 例**（含过滤、告警、补洞、导出）；`tasks.ps1 check` **1818 passed**；`web:verify` 全绿 · dist **0.10 MB** | 高频日志拖慢前端 ⇒ 合并 + 环形缓冲（陷阱 #12）；`debug` 默认丢弃（不落库）；导出超大 ⇒ 服务端**流式** + 每页 500 行；**WS 有损** ⇒ 跳号时用 REST `since_id` 补洞（陷阱 #61/#62） |
+| **T4.10** ✅ | **四池调度控制台**：池状态/积压/并发旋钮/暂停恢复/优先级/死信重投 + **并发自动降级** | T1.5, T4.2 | 并发旋钮 ⇒ 写 `pool_settings` + `audit_ops`，生效无需重启；暂停/恢复**不丢进度**（在途跑完）；死信重投 ⇒ `dead → pending` 且 `audit_ops`；连续 `TTS_OOM` 达 `oom_threshold`（默认 2）⇒ **自动降并发**并告警 · ✅ **2026-09-14 实测**：`pytest tests/integration/test_pools_api.py` **29 例**（配置值 vs 运行值并排 / voice 上限 3 / 幂等不重复留痕 / 下调不杀在途 / 死信逐条重投 / 连续 OOM 降级 + 告警 + 留痕 / 成功归零 / 下限仍告警 / YAML 开关生效）；迁移 `0007_pool_autodegrade`（`consecutive_oom`）；前端 `vitest` **172 例**（新增 pools store **19**）；`tasks.ps1 check` **1953 passed**；`web:verify` 全绿 · dist **0.18 MB** | 并发调太高 ⇒ 上限硬编码（≤8，voice ≤3）+ 影响提示；自动降级抖动 ⇒ 判据 `== threshold`（不是 `>=`）+ 降级后需人工确认恢复；静默降不动 ⇒ 已在下限仍告警（陷阱 #79/#80/#81） |
+| **T4.11** ✅ | **无人值守编排与故障自愈**：supervisor 守护 5 进程、崩溃重启（指数退避）、磁盘/显存水位门禁、自动重试与死信告警、**人工池** | T4.10, T2.8 | 杀任一 worker ⇒ 15s 内被重启并恢复认领；`free_D < 15GB` ⇒ 暂停 render/publish 认领 + `DISK_LOW`；任务 `attempt_count ≥ 3` ⇒ `manual_pool` 并在总览台可见；**连续运行 24h 无人工干预** · ✅ **2026-09-14 实测**：后端 `test_watchdog_service.py` **27 例** + `test_watchdog_api.py` **7 例**（合计 **34 例**：判死 / 指数退避 / 上限停手 / 未就绪不硬拉 / 水位门禁 / 人工覆盖 / 并发回升 / 人工池可见 / 停用照留痕）；前端 `overview.test.ts` **25 例**（前端合计 **235 例**）；`tasks.ps1 check` **2115 passed / 32 skipped / 1 deselected**；`web:verify` 全绿 · dist **0.22 MB**；契约 §04.5.10 · ⏳ **24h 长跑与真机杀进程演练未做**（守护侧能力已就位，随 T4.12 观测面单独验收） | 重启风暴 ⇒ 指数退避 + 重启次数上限（超限停止并告警）；水位门禁误判 ⇒ 阈值可配 + 手动覆盖（写 `audit_ops`）；**人工池必须可见**，否则违背 P4 |
+| **T4.12** ✅ | **观测、备份与交付**：指标面板、每日 DB 备份与**恢复演练**、媒资 GC（§03.7.5）、运维手册（6 个应急剧本 + 导航）、**操作审计页** | T4.11 | `scripts/backup_db.ps1` 产出日备；**恢复演练**：还原到临时库 → `db check` 通过 → 抽查 3 张表行数；`studio gc run` 按 TTL 清理且**不误删成片**；`docs/runbook/` 剧本齐备；审计页可按任务/操作人筛选 · ✅ **2026-09-14 实测**：`pytest tests/unit/db/test_backup.py tests/integration/test_backup_cli.py tests/unit/gc tests/integration/test_gc_cli.py tests/integration/test_audit_api.py tests/integration/test_metrics_api.py -q` ⇒ **130 例**（32+10+57+11+12+8）；`scripts/restore_db.ps1 -Force` ⇒ **exit 0**（活库基线失败项 0 / 备份版本落后 `db.indexes` / 备份自身问题 0）；`studio db check` ⇒ 8 项全 ok（29 表 / **60 索引** / 6 触发器 / 8 迁移）；前端 `vitest` **263 例**（新增 audit **15** + metrics **13**）；`tasks.ps1 check` ⇒ **2245 passed / 32 skipped / 1 deselected**；`web:verify` 全绿 · dist **0.24 MB** | **R11 媒资无限增长** ⇒ 保留策略 + GC + 水位门禁（陷阱 #15）；误删成片 ⇒ GC 白名单（`final/`、`output/`、`covers/` 永不清理）+ **唯一删除闸口** `guard_path()`；备份占盘 ⇒ 7 日备 + 4 周备，计入水位；**刚上过迁移 ⇒ 盘上最新备份必然落后**（陷阱 #89）；**新鲜度按日期零点算**会把刚跑完的日备报成「11 小时前」（陷阱 #90）；**VACUUM 要 2 倍空间 + 独占写** ⇒ 先钉检查点、失败即中止（陷阱 #91） |
+| **T4.13** ✅ | **人物库面板**（persona 编辑 / 切换 / 回滚）：展示激活人物（来源 / 版本 / `sha256` / `last_error`）、人物库列表（含无效条目原因）、表单编辑（人设 / 口吻 / 受众 / 口癖 / 禁区 / 篇幅）、**一键切换**（旧版自动备份到 `data/backups/persona/`）与**另存为**、切换即广播 `system.persona_changed` | T1.2+ | 面板可改 / 可切 / 可回滚；`validate` 不通过 ⇒ **拒绝保存**；改完后续任务立即生效且**在跑任务不中断**；`pytest tests/unit/core/test_persona_store.py -q` 全绿 · ✅ **2026-09-14 实测**：后端 `test_persona_store.py` **74 例** + `test_persona_api.py` **35 例**；前端 `persona.test.ts` **26 例**（前端合计 **198 例**）；`tasks.ps1 check` **2014 passed / 32 skipped**；`web:verify` 全绿 · dist **0.20 MB** | **E7 唯一人工必填** ⇒ 常驻提示"禁区词经规则通道全量扫描"；多进程无 IPC ⇒ 以"下次 `current()` 生效"为准；T5.7 报告写回 persona **必须走 `PersonaStore`**（禁止直接改文件） |
+---
+
+## 5.5 阶段 T5 · 发布、定时、报告与数据回流（8 任务 · 第六部分重建 + 口述 D7/D9）
+
+> ⚠️ **本阶段为第六部分（原文缺失）重建后的新增阶段**：原文 §1.1 把"⑤ 成片与发布"列为五大子系统之一，§8 明确"自动发布→数据回收→记忆沉淀"，§9.3 把"发布/数据回收"列为**自动**项，但 §9.2 的四阶段未包含它 ⇒ 独立为 T5。
+> **v3.1 扩展**：按口述 D7（定时任务）与 D9（整合报告）新增 T5.6 / T5.7；按 D1（多账号结构支持）新增 T5.8。
+> **默认关闭**（`publish.enabled=false`）：先跑通 T1–T4 验证出片质量，人工确认后再开启（R14）。
+> 子系统行为见 **§06**；接口签名见 **§04.6**；数据表见 **§03.3.15 / §03.3.18 / §03.3.19**。
+
+| ID | 模块与目标 | 依赖 | 验收标准 / 验证命令 | 风险点与降级预案 |
+| --- | --- | --- | --- | --- |
+| **T5.1** | **快速封面 + 发布前二次校验**（§06.3 / §06.4）：ffmpeg 抽帧 + `drawtext` 标题 → 封面；发布前重跑**门禁**（水印 / 响度 / 相似度）+ 标题/文案禁区词扫描 | T3.7 | `studio publish cover --task <id>` → `data/output/covers/{时间戳}_{task_id}_cover.jpg`（1080×1920，标题清晰可读）；`pytest tests/unit/publish/test_cover.py -q`（文字溢出自动缩放、抽帧失败降级纯色底）；**发布前校验**：**水印缺失 / 响度越界 / 命中禁区** ⇒ **拒绝发布并转 `manual_required`**（不静默放行） | **R14 不可逆** ⇒ 发布前二次校验 + `publish.require_confirm=true`；封面文字溢出 ⇒ 自动缩放（最小 60pt）+ 换行 + 边界校验；标题超长（小红书 ≤20 字）⇒ 按 profile 裁剪 + `warn`；**C12**：`av_sync` 仅诊断，**不**作为门禁 |
+| **T5.2** | **发布平台适配层与 profile**（§06.2 / §06.5 · **A1 多平台**）：`Publisher` ABC 实现（**一线**：抖音/快手/视频号；**二线**仅保留接口）、持久化登录态、登录态探测、上传+填标题/文案/话题+选封面、**选择器集中化** | T5.1 | `pytest tests/contract/test_publisher_abc.py -q`（Mock 实现可替换）；**`studio publish dry-run --task <id> --platform douyin`** 走完流程到"确认发布"前一步并截图，**不真正发布**；`health()` 正确报告"未登录"/"登录态已过期"；`pytest tests/integration/test_publish_dryrun.py -m "e2e and slow" -q`；**标题回读比对**（§06.5.3 第⑤步）通过 | **R13 风控** ⇒ 限频 + 登录态失效即转人工 + **不实现验证码绕过/不自动登录**（合规底线）；页面改版导致选择器失效 ⇒ `publish/selectors/<platform>.yaml` 集中配置便于热修 + 失败截图取证 + `selectors_version` 留痕；**R18 范围膨胀** ⇒ 一期只做一线三平台，二线仅留接口与 profile（Q9 默认） |
+| **T5.3** | **发布池 worker + 限频 + 失败转人工**（§06.5.4 / §06.10）：`publish` 池、≤3 条/天/账号、间隔 ≥30min、重试 ≤3 指数退避、失败转"待人工发布" | T5.2, T1.5 | `pytest tests/integration/test_publish_pool.py -q`：①第 4 条当天被限频**自动顺延**（不是失败）；②连续失败 3 次 ⇒ `publications.status='manual_required'` 且**任务仍为 `completed`**（不回退）；③幂等键 `sha256(task_id\|platform\|account_id)` 防重复发布（**已真机验证唯一键生效**）；`GET /api/v1/publish/queue` 可查待人工列表 | 发布失败不应让成片不可用 ⇒ 任务停 `completed`，发布单独重试；**账号风险** ⇒ 限频 + 告警 + 可一键关闭发布（`publish.enabled=false` 立即生效）；多账号 ⇒ 限频**按账号独立计数** |
+| **T5.4** | **数据回收 + 记忆沉淀闭环**（§06.6 / §06.8）：T+1h/6h/24h/72h 采集播放/点赞/评论/分享；高互动评论入 `feedback_items`；低互动选题降权（≤20%）；汇总进 `data/feedback/auto_*.md` 供下轮 Planner 消费 | T5.3 | `pytest tests/integration/test_metrics_recycle.py -q`（定时触发、`metrics_json` 与 `metrics_history_json` 正确落库）；手工：发布后 T+1h 能在发布面板看到数据；`data/feedback/auto_YYYYMM.md` 生成且**能被 T1.9 的解析器直接消费**（闭环验证：下一轮 Planner 的 `grounded_on` 含 `{"type":"feedback","source":"auto"}`） | 平台数据接口变动 ⇒ 抓取失败记 `warn` **不阻塞**；字段缺失 ⇒ 允许 `None`（**禁止用 0 冒充**）；回流数据污染历史反馈 ⇒ `is_auto=1` 区分，Planner 可配置是否采纳；低互动降权导致选题收敛 ⇒ 降权幅度**上限 20%** |
+| **T5.5** | **发布面板 + 合规留档 + 外部对接**（§06.11 / §06.12）：面板**七区块**（待发布/发布中/已发布/数据回流/待人工/**定时计划**/**报告**）、`HandoffAdapter`、来源登记留档、发布应急剧本 | T5.4 | 发布面板七区块可用；`manual_required` 可重试/可标记已人工处理/可取消，且**三者均写 `audit_ops`**；`HandoffAdapter` 默认 `LocalHandoffAdapter` 可 push 自包含交付包（视频/封面/ASS/稿件/manifest/质检）；`docs/runbook/publish_selector.md` 与 `publish_account.md` 剧本齐备；**R2 合规提示常驻**于发布面板与素材库 | 外部对接未定义 ⇒ A2：**内置实现完整链路** + 预留 `HandoffAdapter`（外部实现 ABC 即可接入，不影响主流程）；`manual_required` 堆积 ⇒ 面板顶部计数 + 告警；剧本过时 ⇒ 每次页面改版热修后更新剧本版本号 |
+| **T5.6** | **定时发布调度（★口述 D7 新增）**（§06.5.5 / §04.6.5.1）：`scheduler_service`（30s tick）、三种模式（`at_time`/`daily_window`/`interval`）、窗口内**随机取时刻 + 抖动**、`next_run_at` 持久化、到点**才**创建 job、**策略可编辑**（WebUI CRUD：模式 / 窗口 / 抖动 / 启停 · Q14） | T5.3 | `pytest tests/integration/test_scheduler.py -q`：①窗口模式在 `[18:00,21:30]` 内取时刻且叠加 ≤15min 抖动；②**同一 schedule + 同一天多次计算得到同一时刻**（幂等，重启不漂移）；③未到点/已停用的计划**不**被取到（真机已验证该查询）；④到点 ⇒ 创建 `publish` job 且**不占用 worker 空转**；⑤被限频 ⇒ `last_result='skipped_ratelimit'` + 顺延（不算失败）；⑥`publish.enabled=false` ⇒ 空转且记 `skipped_disabled`；⑦连续失败 ≥5 次 ⇒ `system.alert`；⑧计划增删改启停均写 `audit_ops`；⑨**非法窗口参数被拒绝**（非 `HH:MM` / `start ≥ end` / `jitter_min > 120`）且不落库；⑩编辑策略 ⇒ **同事务重算 `next_run_at`**（陷阱 #33） | **定时 ≠ 免限频** ⇒ 限频守卫叠加生效（§03.4.4）；**机器特征** ⇒ 窗口随机 + 抖动（R13）；**重启丢计划** ⇒ `next_run_at` 落库；**重复发布** ⇒ 发布幂等键兜底；调度器本身崩溃 ⇒ supervisor 守护（T4.11） |
+| **T5.7** | **数据报告与决策闭环（★口述 D9 新增）**（§06.7 / §04.6.5.2）：日/周/月报告生成（**纯 SQL 聚合 + 规则归因，不调 LLM**）、七维归因、`insights` 决策建议 + 置信度、**人工采纳写回** persona/方向权重、**周期可编辑**（`report_schedules` CRUD · Q15） | T5.4 | `pytest tests/integration/test_reports.py -q`：①周报生成含 `summary_md` + `data_json` + `insights`；②**同周期重复生成不重复插入**（真机已验证 UNIQUE 生效）；③`n<10` ⇒ `confidence='low'` 且 WebUI 强制显示"样本不足"；④`POST /reports/{id}/insights/{idx}/apply` ⇒ 写入 persona/方向权重 + `audit_ops`；⑤**闭环**：采纳后下一轮 Planner 的 `grounded_on` 可见该偏好；⑥非法 `period` 被 CHECK 拒绝（真机已验证）；`GET /reports/{id}/export?format=md` 可导出；⑦**周期编辑**（daily/weekly/monthly 的 `weekday`/`day_of_month`/`at_time`/`lookback_days`/`include`）⇒ `next_run_at` 重算 + `audit_ops`；⑧**同周期仅 1 个启用**（真机已验证部分唯一索引）；⑨停用 ⇒ 不再被到期查询取到 | **数据噪声直接改生产策略** ⇒ `insights` **必须人工采纳**（不自动改配置）；**样本不足误导** ⇒ 置信度分级 + 强制警示；**报告烧钱** ⇒ 不调 LLM（纯 SQL），需要自然语言总结时才走 Agent 通道（可选开关）；**采纳不可追溯** ⇒ `audit_ops` 记 `before/after` |
+| **T5.8** | **多账号支持与合规留档（★口述 D1）**（§06.2.4 / §06.9）：`accounts[]` 配置、按账号隔离 `profile_dir`、**限频按账号独立计数**、幂等键含 `account_id`、来源登记留档（R2）、发布/账号应急剧本 | T5.3, T5.5 | **默认配置仅 1 个账号**（`acc_main`）；新增第 2 个账号 ⇒ **零迁移**（仅改 `config/publish.yaml` + 首次扫码）；`pytest tests/integration/test_multi_account.py -q`：①两账号限频互不影响；②同一任务分发到两账号 ⇒ 生成 2 条 `publications`（幂等键含 `account_id`，**不**互相阻塞）；③账号 A 登录态失效**不影响**账号 B 发布；④`reports.data_json` 可按 `account_id` 拆分；`data/voice_src/*/profile.json` 与素材 `proof_path` 合规留档齐备 | **多账号误配** ⇒ 未配置即不参与发布（安全默认）；**账号风控关联** ⇒ 每账号独立限频 + 独立 profile + 错峰发布（T5.6 定时）；**R2 IP 音色合规** ⇒ 音色 ID 与展现名解耦 + 一键替换自录音色 + WebUI 显著提示；**范围蔓延** ⇒ 一期只跑通单账号，多账号仅"结构可用 + 测试覆盖" |
+
+```text
+# ── 阶段 T1 · 基座 + 智能体脚手架 + 选题池（12）── 门禁 M1
+[x] T1.1  仓库骨架 + 双 venv + doctor 全绿（环境变量全量重定向 D 盘）
+[x] T1.2  配置系统（persona/llm/app/pools/outputs/randomization/publish + env 覆盖 + 防越界）
+[x] T1.3  数据库与迁移（29 表 + 幂等 + checksum + db check）
+[x] T1.4  领域模型与 16 态状态机（16×16 矩阵 + 单入口 + 乐观锁）
+[x] T1.5  队列内核（四池 + 单语句原子认领 + 租约 + 退避 + 死信 + 限频守卫）
+[x] T1.6  Worker 框架与心跳（四池 + draining + 崩溃恢复）
+[x] T1.7  日志与 WS 骨架（8 通道 + 先落库后广播 + since_id 补发 + 背压 + 慢客户端判死）
+[x] T1.8  LLM 双通道网关（云端+本地 + Schema 守卫 + 熔断 + 成本闸门 + 提示词注册表）
+[x] T1.9  输入源解析 + Planner + Ideator + 选题池（★两级去重）· ✅ 已完成（2026-09-13）
+[x] T1.10 Director + Writer（★Director 新增，600–800 字 / ≤180s / 逐句落库）· ✅ 已完成（2026-09-13）
+[x] T1.11 双通道评分 + Editor + 确认闸（0.3/0.7 + A/B/C 分级放行 + ≤2 轮）· ✅ 已完成（2026-09-13）
+[x] T1.12 一键启动/停止（启动.bat → 5 进程 + 自动开浏览器）· ✅ 已完成（2026-09-13）
+       >>> M1：网页端输入定位+热点 → 产出合格稿件（含评分）→ 确认闸可见
+       >>> **M1 口径（T1.12 裁定 108）**：一键启动**已可用**（`api` ready + 其余如实报 `degraded`）；
+           「5 进程全 ready」要等 T2.2 / T2.6 / T3.x / T4.11 ⇒ 顺延 M4
+
+# ── 阶段 T2 · CosyVoice3 配音（9）── 门禁 M2
+[ ] T2.1  tts venv + 权重就位（py3.11 + torch2.4cu121 + revision 留痕 · Q7 核验）
+[ ] T2.2  常驻推理服务 + 并发实测标定（★裁决 C8：默认 1）
+[ ] T2.3  引擎适配层与路由（决策表逐条 + 熔断 + 字幕模式降级）
+[ ] T2.4  原声入库与音色注册（bigbear/littlebear + 质量校验 + R2 合规留档）
+[ ] T2.5  文本归一化与切分（幂等 + ≥40 用例 + glossary + 不引入 pynini）
+[ ] T2.6  按句合成 + 句级缓存（引擎调用次数为 0 的续传断言）
+[ ] T2.7  时长时间轴（ffprobe 实测 + timeline.json + 全量重算）
+[ ] T2.8  配音编排与降级演练（TTS 全挂 ⇒ 字幕模式仍推进）
+[ ] T2.9  配音服务化接口（单句重配/试听/换音色 + audit_ops）
+       >>> M2：一句话用熊大音色读出；能断点续传；网页看逐句进度
+
+# ── 阶段 T3 · 渲染引擎（一期单遍合成 + 固定水印 · 7）── 门禁 M3
+[ ] T3.1  素材入库（跑酷通配 + 指纹 + 可用区间 + license 强制 + BGM 库）
+[ ] T3.2  水印资产与合成 profile（水印缺失 ⇒ 拒绝渲染；1080×1920 + 720P 保底档）
+[ ] T3.3  CompositePlan + 单遍编译器（total_ms=ffprobe + 循环裁长 + 水印 overlay + ff_path + 节点守卫）
+[ ] T3.4  单遍合成执行器（argv 数组 + 进度 + 超时杀树 + .partial 原子改名 + composite_hash 缓存）
+[ ] T3.5  字幕生成（可选默认开启：ASS + 自动换行/限字/描边/居中 + 字体校验）
+[ ] T3.6  混音与响度（normalize=0 + 侧链 ducking + 两遍 loudnorm + 限幅；BGM 缺失静音降级）
+[ ] T3.7  成片交付与降级链（manifest + quality_json + 黑屏/分块/720P 三级降级）
+       >>> M3：换稿不重剪（同素材同水印换稿件直接出片）；网页一键出新片并在线预览
+       （二期 P1 预留：T3-P1..T3-P4 三层模板场景编排 —— 不阻塞 M3）
+
+# ── 阶段 T4 · 网页操作台 + 四池并行 + 无人值守（13）── 门禁 M4
+[x] T4.1  前端脚手架与设计系统（OpenAPI 生成类型 + WS 重连）· ✅ 已完成（2026-09-14）
+[x] T4.2  ① 总览台（四池 + 资源 + 一键全自动 + 暂停）· ✅ 已完成（2026-09-14）
+[x] T4.3  ② 选题面板（方向卡片 + 瀑布流 + 勾选入队）· ✅ 已完成（2026-09-14）
+[x] T4.4  ③ 稿件面板 + 确认闸（双通道明细 + 版本对比 + 批量）· ✅ 已完成（2026-09-14）
+[ ] T4.5  ④ 配音面板（逐句进度 + 换音色 + 重配 + 试听）
+[ ] T4.6  ⑤ 渲染面板（单遍合成进度 + ffmpeg 日志 + 在线播放）
+[x] T4.7  ⑥ 合成配置面板（profile/水印/字幕表单编辑；三层模板树延后二期 · R17）· ✅ 已完成（2026-09-14）
+[x] T4.8  ⑦ 素材库（导入/预览/标记/授权/统计 + R2 提示）· ✅ 已完成（2026-09-15）
+[x] T4.9  ⑧ 实时日志（过滤/搜索/告警高亮/导出/断线不丢）· ✅ 已完成（2026-09-14）
+[x] T4.10 四池调度控制台（并发旋钮 + 暂停恢复 + 死信重投 + 自动降级）· ✅ 已完成（2026-09-14）
+[x] T4.11 无人值守编排与自愈（supervisor + 水位门禁 + 人工池 + 24h 无人干预）· ✅ 已完成（2026-09-14，24h 长跑待 T4.12）
+[x] T4.12 观测/备份/GC/审计页/应急剧本（含恢复演练）· ✅ 已完成（2026-09-14）
+[x] T4.13 人物库面板（persona 编辑 / 切换 / 回滚 + `system.persona_changed`）· ✅ 已完成（2026-09-14）
+       >>> M4：≥3 篇同时推进；中断后恢复；全程网页操作
+
+# ── 阶段 T5 · 发布 + 定时 + 报告 + 数据回流（8）── 门禁 M5（★第六部分重建 + 口述 D7/D9）
+[ ] T5.1  快速封面 + 发布前二次校验（水印/响度/相似度门禁 + 禁区扫描；av_sync 仅诊断）
+[ ] T5.2  发布适配层与 profile（一线三平台 + dry-run + 选择器集中化 + 标题回读比对）
+[ ] T5.3  发布池 + 限频 + 失败转人工（幂等键含 account_id + 不回退任务）
+[ ] T5.4  数据回收 + 记忆沉淀闭环（T+1h/6h/24h/72h + auto 回流可消费）
+[ ] T5.5  发布面板（七区块）+ 合规留档 + HandoffAdapter + 发布应急剧本
+[ ] T5.6  定时发布调度（★D7：三模式 + 窗口随机 + next_run_at 持久化 + 到点才建 job）
+[ ] T5.7  数据报告与决策闭环（★D9：七维归因 + insights 置信度 + 人工采纳写回）
+[ ] T5.8  多账号支持与合规留档（★D1：结构支持/默认单账号 + 限频按账号独立）
+       >>> M5：定时/即时自动发布（≥1 平台）+ 数据回流 + 报告与决策采纳 + 记忆沉淀闭环
+
+# ── 全程（横切）──
+[ ] 每个任务有引用条款编号的契约测试
+[ ] 每个外部依赖有显式失败分支 + 测试覆盖
+[ ] 无裸 except / 无静默失败（静态检查）
+[ ] pytest -m "not gpu and not slow and not net" 全绿
+```
+
+---
+
+## 5.7 高频陷阱对照表（93 条 · 实现期直接查阅）
+
+| # | 现象 | 根因 | 正确做法 | 任务 |
+| --- | --- | --- | --- | --- |
+| 1 | `database is locked` | 长事务 / 事务内做 I/O | 短事务（<20ms）+ WAL + `busy_timeout=5000` | T1.3 |
+| 2 | 任务被重复执行 | 无租约或租约过长 | 单语句原子认领 + 租约 + sweeper | T1.5 |
+| 3 | **视频流先结束 ⇒ 画面冻结 / 提前截断**（v3.1 按 C12 已**不再要求**句子级音画同步） | 未显式指定总时长 / VFR / 用了 `-shortest` | **音频为时长基准** + CFR + 显式 `-t` + **禁用 `-shortest`** + 循环补齐 | T2.7 / T3.3 |
+| 4 | 人声偏小 | `amix` 默认 `normalize=1` 衰减 | 显式 `normalize=0` + 两遍 `loudnorm` | T3.6 |
+| 5 | 字幕豆腐块 | libass 找不到字体 | 项目内置字体 + `fontsdir` + 启动校验 | T3.5 |
+| 6 | `ass` 滤镜路径报错 | Windows 冒号/反斜杠未转义 | 统一 `ff_path()`，驱动器冒号转 `\:` | T3.3 |
+| 7 | 滤镜图报 `Invalid argument` | 命令行超长 / 引号错配 | `-filter_complex_script` 文件 + 语法预检 | T3.3 |
+| 8 | 渲染缓存复用了旧产物 | 哈希未包含输入/配置 | `composite_hash` 含 canonical plan + 输入 sha256 + 水印/字幕参数 | T3.4 |
+| 9 | 崩溃后留下"假完成"产物 | 直接写目标文件 | 先写 `.partial` 再 `os.replace` | T3.4 |
+| 10 | TTS 首句延迟 20s+ | 模型未预热 / 每句重载 | 常驻服务 + `/warmup` + 空闲卸载 | T2.2 |
+| 11 | 显存 OOM（8 GB 卡） | fp32 / 并发过高 | fp16 + **默认单并发** + 空闲卸载 + **禁 bf16** | T2.2 |
+| 12 | 前端被进度刷爆 | 高频逐帧推送 | 合并窗口 100ms + 2Hz/任务限流 + 环形缓冲 | T1.7 / T4.9 |
+| 13 | 日志断线后丢失 | 先广播后落库 | **先落库再广播** + `since_id` 补发 | T1.7 |
+| 14 | 素材被平台判搬运 | 固定素材/固定入点/固定编码 | 随机化两档 + 相似度审计门禁 | T3.1 / T3.3 |
+| 15 | C 盘爆满 | 临时文件/模型缓存落在系统盘 | 环境变量重定向 + 磁盘门禁 | T1.1 / T4.11 |
+| 16 | **克隆场景导致画面重复** | `repeat_last` 扩展时复用了源场景的素材与入点 | 克隆场景**强制重新抽素材 + 变换差异化** | T3-P3（二期） |
+| 17 | **字幕与配音错位** | 克隆场景后用了绝对时间绑定 | 被克隆场景**不得含绝对时间**，一律用 `$sentence.start_ms/end_ms` | T3-P3（二期） |
+| 18 | **选题同质化（20+ 选题雷同）** | 批量生成无去重 | 归一化哈希 + 相似度 ≥0.85 降分 + 历史库比对 | T1.9 |
+| 19 | **LLM 成本失控** | 批量选题 × 6 Agent × 2 轮改稿 | token 预算上限 + 成本面板 + 超限切本地模型 | T1.8 / T4.2 |
+| 20 | **发布不可逆事故** | 自动发布无二次校验 | `publish.enabled=false` 默认关闭 + `require_confirm=true` + 发布前重跑三道门禁 | T5.1 |
+| 21 | **发布登录态失效被静默跳过** | 未探测登录态直接上传 | 发布前 `health()` 探测 ⇒ 失效即转 `manual_required` + 告警（**不自动登录**） | T5.2 |
+| 22 | **操作无法追责** | 人工操作只进了全量日志 | 人工/自动决策写 `audit_ops`（含 `before/after`），WebUI 可查 | T4.12 |
+| 23 | **平台页面改版导致选择器全失效** | 选择器散落在代码里 | 集中在 `publish/selectors/*.yaml` + `selectors_version` 留痕 + 失败截图 | T5.2 |
+| 24 | **发布文案被平台编辑器吞掉** | 富文本编辑器截断/丢 emoji | 发布后**回读标题与文案逐字比对**，不一致则重填 ≤2 次 | T5.2 |
+| 25 | **`repeat_last` 后总时长与时间轴不一致** | 场景时长求和未与 `total_ms` 校验 | 编译期断言 `Σ scene_duration = total_ms ± 1ms`，不一致直接报错 | T3.3 / T3-P3（二期） |
+| 26 | **单句编辑后其余句子音频被复用错位** | 增量拼接时间轴 | 任一句重合成 ⇒ **时间轴全量重算**（禁增量） | T2.7 |
+| 27 | **成片没水印** | 水印缺失被当成"可选"静默跳过 | **水印是必做项**（D5）⇒ 缺失即**拒绝渲染**（`RENDER_WATERMARK_MISSING`），发布前再校验一次 | T3.2 / T5.1 |
+| 28 | **跑酷素材比人声短 ⇒ 画面提前黑屏/冻结** | 未做循环补齐 | `loop` + `trim=duration=total_ms` 补齐；素材为空 ⇒ 纯黑底仍出片 | T3.3 |
+| 29 | **定时发布变成"每天准点"的机器特征** | 固定时刻发布 | `daily_window` 窗口内随机取时刻 + `jitter_min`（默认 15min） | T5.6 |
+| 30 | **定时任务重启后丢失 / 重复触发** | `next_run_at` 只在内存 | `next_run_at` **落库** + 取时刻用 HMAC(seed=id+日期) ⇒ 幂等；发布幂等键兜底防重复 | T5.6 |
+| 31 | **报告被当成"结论"直接改生产策略** | 数据噪声 / 样本不足 | `insights` **必须人工采纳**；`n<10` 强制标注"样本不足"；采纳写 `audit_ops` | T5.7 |
+| 32 | **报告生成烧钱** | 用 LLM 写总结 | 报告 = 纯 SQL 聚合 + 规则归因（**不调 LLM**）；需要自然语言时才走 Agent 通道（可选） | T5.7 |
+| 33 | **改了定时/报告周期却不生效（或立刻触发）** | 编辑计划只改了参数、没重算 `next_run_at` | 任何策略编辑 ⇒ **同事务重算 `next_run_at`** + 写 `audit_ops`；停用 ⇒ 置 NULL | T5.6 / T5.7 |
+| 34 | **从另一个控制台发 Ctrl-Break：API 返回 TRUE，目标却收不到**（进程照旧在跑，最后被硬杀 ⇒ 丢进度） | `GenerateConsoleCtrlEvent` 只作用于**同控制台**的进程组；`停止.bat` 是另起控制台 | 关停主通道 = **标志文件** `data/logs/<name>.stop`（池 worker 在 1s 脉冲 tick 里看到就 draining）；信号只作升级手段 | T1.12 |
+| 35 | **启动后 worker「什么都不干」** | 上一轮关停留下的 `.stop` 标志没清，worker 起来第一拍就自己关掉 | `start` 的第 ② 步 `clean_stale()`：**先清标志与陈旧台账再拉进程**；`stop` 结束后也必须清 | T1.12 |
+| 36 | **把「端口被占用」报成「已在运行」**（或反过来：重复拉起第二个实例） | 只探测端口、不看 PID 台账 | 两个判据分开：`already_running`（台账里有活进程）vs `port_busy`（端口被**别人**占） | T1.12 |
+| 37 | **对 uvicorn 等「优雅退出」白等 6 秒** | HTTP 面的进程没有 tick 循环，**永远**不会去读标志文件 | `ServiceSpec.polls_stop_flag` 区分：池 worker `True`（等标志），HTTP 进程 `False`（直接走信号） | T1.12 |
+| 38 | **子进程起来就死，却看不到原因**（日志全丢） | 没有重定向子进程 stdout/stderr，`Popen` 的管道没人读 | 追加写 `data/logs/<name>.log` + `PYTHONUNBUFFERED=1` + `stdin=DEVNULL` | T1.12 |
+| 39 | **`DraftReport.created_task` 在复用任务时说谎** | 幂等键命中时 `create()` 原样返回旧行 ⇒ 光看返回值分不出新旧 | 建任务前先 `find_by_idempotency_key()` 问一次；测试必须断言**第二次 `created_task=False`** | T1.10 |
+| 40 | **LLM 自报总分 ⇒ 定级不可信** | 把 `total` / `grade` 放进模型输出 schema | 模型**只给六维度 + `issues`**；`total` / `grade` / `decision` 一律服务端算 | T1.11 |
+| 41 | **`need_edit` 被当成"一定要改稿"** | DDL 的 `decision` 只有 5 值、没有"等人工"这一项 | `Decision`（落库事实）与 `GateAction`（动作）**拆成两个枚举**；`human_gate → need_edit` | T1.11 |
+| 42 | **并发退回丢更新** | `revision_round` 用"读到的旧值 + 1" | 用 SQL 增量 `revision_round = revision_round + 1`（`bump_revision=True`） | T1.11 |
+| 43 | **待审列表里有一条永远点不掉的记录** | 自动放行走 `request()` + `decide()` **两个事务** | `record_auto_approval()` **一次事务**写 `approvals(status='approved')` + `audit_ops` | T1.11 |
+| 44 | **改稿越界判失败 ⇒ 比"稿件稍越界"更贵** | 越界即 `EDIT_FAILED` | 重试 1 次后**照收 + `warnings`**；越界判定本身是启发式的 | T1.11 |
+| 45 | **重跑同一版撞 `UNIQUE (script_id, round_no)`** | 以为是 bug | **故意的**："这一版被审过几次"必须能从库里看出来 | T1.11 |
+| 46 | **确认闸规则写在 REST 控制器里** | 四条不变量每个入口抄一遍 | 规则住 `ReviewService.decide_approval`（**抛 `StudioError`**）；REST 只是薄壳（T4.4） | T1.11 |
+| 47 | **人工退回后重审被 `ValidationError` 炸掉** | `ReviewerInput.round_no` 设了 `le=REVISION_LIMIT+1` | 输入模型**只保下界**；轮次闸门由 `gate_action` 把守 | T1.11 |
+| 48 | **`import file mismatch` 中断整轮测试收集** | `tests/unit/domain/test_scoring.py` 与 `tests/integration/test_scoring.py` 重名且都不带 `__init__.py` | 同名测试目录补 `__init__.py`（与 mypy 的"两个模块名"同一条理由） | T1.11 |
+| 49 | **改稿越界检查永远"无越界"** | `_edit` 把**空句子列表**传给 Editor | 透传 `sentence_rows`；越界检查必须有非空输入 | T1.11 |
+| 50 | **人工退回后的任务被炸成 `failed`** | `review()` 不把 `EDITING` 归一为 `REVIEWING` ⇒ 走 `editing → queued_voice` 这条**不存在的边** | 审稿入口先归一状态；工人漏推状态不该让任务死 | T1.11 |
+| 51 | **告警互相抹掉** | 循环内 `warnings = [...]` **覆盖**上一轮 | **累积**：审稿与改稿的告警都该留下 | T1.11 |
+| 52 | **断言"唯一一条 reason"被自动改稿顶掉** | `task_events` 里同一 `to_status` 有多条（自动改稿 + 人工退回） | 断言**最后一条**（`ORDER BY id`）而不是"唯一一条" | T1.11 |
+| 53 | **测试里漏 `request_stop()` ⇒ worker 永不返回 + 脉冲线程泄漏** | 测试只 `join()` 不请求停止（`run()` 没收到停止就永不返回，这是生产语义） | 登记表 + autouse 守卫兜底停；断言 `not thread.is_alive()` | T1.6 |
+| 54 | **mypy「同一文件两个模块名」顺带掩盖真实类型错误** | 测试目录缺 `__init__.py` 却写 `from tests.x.y import z`（mypy 报一次重复模块名后**跳过该文件**，本次掩盖了 12 个错误） | 需要跨模块复用假件的测试链路补 `__init__.py`；修完重复名后**必须重跑** `mypy` | T1.7 |
+| 55 | **`llm_calls` 同毫秒内乱序**（「第几次尝试」随机错位，整仓跑才复现） | `created_at` 只到**毫秒**（`format_iso`），而 `new_ulid()` 同毫秒内是**随机**后缀 ⇒ `ORDER BY created_at DESC, id DESC` 不是全序 | 定序一律 `ORDER BY created_at DESC, rowid DESC`；测试断言正序 = 翻转 `recent()`（单跑必过、整仓随机失败最难查） | T1.8 |
+| 56 | **反复重试绕开预算闸门** | 只记成功调用 ⇒ 失败重试不烧账、`tokens_for_task` 永远不超 | **失败也写 `llm_calls`**（`schema_invalid`/`http_error`/`timeout` 都记 token 与成本）；`record()` 记账失败不得中断主链路 | T1.8 |
+| 57 | **提示词模板静默退化**（改了模板但输出没变 / 变量名写错却照跑） | 模板里写控制流、或变量缺失时渲染成空串继续跑 | 只支持 `{{变量}}`；遇 `{%`/`{#`/缺变量**直接报错**；`prompt_version` 由内容 sha256 决定（`manifest.yaml` 漂移即红灯） | T1.8 |
+| 58 | **`vite.config.ts` 报 TS2769（`test` 段不是已知属性）** | `vitest@2` 与 `vite@6` 并存 ⇒ node_modules 里**嵌套了第二份 vite**，`defineConfig` 的类型来自旧那份 | `defineConfig` 从 `vitest/config` 取；vitest 与 vite **必须同大版本**（升 vitest 3.x 消掉嵌套 vite）。判据：`node_modules/vitest/node_modules/vite` 不该存在 | T4.1 |
+| 59 | **前端某路日志字段静默 `undefined`**（面板少一截且不报错） | WS 事件用 `log_id`、快照行/REST 用 `id`；事件还缺 `trace_id`/`seq_in_task` | 两侧统一走**一个归一函数**进缓冲；契约测试断言 `LogRow` 字段集 == `SystemLog.to_dict()`；`fetch(` 全前端收敛到 `api/http.ts` | T4.1 |
+| 60 | **每重连一次白跑一轮 `resync`** | `seq` 是**每连接**单调（新连接从 1 重新开始），客户端却沿用旧基线 ⇒ 第一帧被判缺口 | `onopen` 重置 `lastSeq = 0`（只建基线不判缺口）；`since_id` 游标**只进不退** | T4.1 |
+| 61 | **搜 `50%` 把整张日志表捞回来** | 用户输入直接进 `LIKE`，`%` / `_` 被当通配符 | 统一 `like_pattern()` 转义（**先转义 `\` 再转义 `%` `_`**）+ SQL 里显式 `ESCAPE '\'`；`search` 同时匹配 `message` 与 `source` | T4.9 |
+| 62 | **「导出到这条为止」被静默忽略**（`until_id` 不生效，导出的比要的多） | `since_id` 为空时走「最近 N 条」分支，而那个分支**没有**窗口上界 | 窗口上界必须进 SQL（`recent(until_id=…)`），不能靠调用方事后截断 —— 截断与查询在分页边界上不等价 | T4.9 |
+| 63 | **`logger.info(msg, **payload)` 抛 `TypeError`**（日志发不出去） | 事件名用了 `event` 这个键，而 structlog 的第一个位置参数就叫 `event` | 载荷键固定 `event_kind`（`core/proto.py` 的 `EVENT_PAYLOAD_KEY`）；兜底分支再过滤 `_LOG_RESERVED` | T4.4 |
+| 64 | **`services/` 要声明事件名却 import 不到 `ws/`** | 分层方向是 `app → ws → services → db`，反向 import 会成环 | 事件枚举**下沉**到 `core/proto.py`；`ws/protocol.py` 原样 re-export（导入路径不变，调用方零改动） | T4.4 |
+| 65 | **改稿只加了一句，diff 却把后面全标成「改了」** | 逐 `seq` 对齐（插入一句 ⇒ 之后每一句的 `seq` 都变了） | 走 `difflib.SequenceMatcher` 的**块级**匹配；`replace` 块内按位置配对，多余一侧降级成 `insert` / `delete` | T4.4 |
+| 66 | **前端要写两套错误解析** | 业务错误（`StudioError`）与 `RequestValidationError` 各返回一种形状 | 应用级 handler 把两者都翻成 `StudioError.to_dict()`（映射表住 `app/errors.py`），**信封只有一种形状** | T4.4 |
+| 67 | **批量放行 10 条失败 1 条 ⇒ 人重按一次** | 把"部分失败"报成"整体失败" | 逐条如实返回 `approved` / `failed`（含 `code` / `remediation`），**不回滚**；重按只会撞 `APPROVAL_NOT_PENDING` 的噪音 | T4.4 |
+| 68 | **响应模型的集合字段在前端变成 `T[] \| undefined`**（处处 `?? []`） | `Field(default_factory=list)` 在 JSON Schema 里既不进 `required`、也不带 `default` | 响应模型写 `x: list[T]`（**必填**）；请求体才保留默认值 | T4.3 |
+| 69 | **请求体的"可选"字段在前端变成必填** | `openapi-typescript` 把**带 `default` 的属性**渲染成必填 | 前端显式传（`import_sources: true` / `per_direction: 4`）—— 顺带让"这一跑要不要先扫盘"在调用点看得见 | T4.3 |
+| 70 | **长任务单飞用 `asyncio.Lock` 会跨线程炸** | 同步路由跑在 Starlette 线程池（每次可能不同线程），`asyncio.Lock` 与事件循环绑定 | 入口一把**进程级 `threading.Lock`** 非阻塞地拿；拿不到 ⇒ 409（**不排队**：排队会让前端挂住，用户还不知道自己排第几） | T4.3 |
+| 71 | **动作刚报的错被紧随的成功刷新抹掉**（用户唯一能看到的解释没了） | 拉取与动作共用一条 `error`，刷新成功时顺手清空 | **两条信道**：`error`（动作级结论）vs `loadError`（拉取级失败）；视图 `error ?? loadError` | T4.3 |
+| 72 | **一个用例里换第二次假件却不生效**（仍在用旧传输） | `arm()` 把"原函数"取成 `deps.build_gateway` —— 它第一次之后已经是我们自己换上去的假件 | 原函数取**未被 patch** 的那份（`gateway_factory.build_gateway`） | T4.3 |
+| 73 | **假件方向数不够 ⇒ `LLM_SCHEMA_INVALID`（"is too short"）** | `planner_result.schema.json` 要 5–8 个方向、`ideator_result.schema.json` 每方向 3–5 条 | 脚本化回应按契约给足；`ScriptedTransport` 用尽后会**复用最后一条** ⇒ 逐方向各给一条，否则 5 个方向拿到同一批标题会被去重丢掉 4 份 | T4.3 |
+| 74 | **查事件查不到：`no such column: payload`** | `system_logs` 的列名是 `payload_json`（DDL），而 API / 文档口径叫 `payload` | 直接查库用 `payload_json`；读侧统一走 `SystemLog` / `LogRow` | T4.3 |
+| 75 | **"今日产量"在 UTC+8 的 08:00 前把今天新建的算进昨天** | `substr(created_at,1,10)` 是 **UTC 日**，而"今天"是本地日 | 窗口由 `local_day_window()` 算成**左闭右开**的一对 UTC 时间戳再进 SQL | T4.2 |
+| 76 | **在 API 进程里"停服务"等于自杀** | `ServiceManager.stop()` 的第一个目标就是 `api` 自己 | 只暴露"启动"（`open_browser=False` + `doctor_gate=True`）；停止的正门是 `停止.bat` | T4.2 |
+| 77 | **采样泵在工作线程里 `publish()` 抛 `RuntimeError: Non-thread-safe operation`** | `Hub.publish()` 末尾直接 `self._wake.set()`，而 `asyncio.Event.set()` 不是线程安全的 | 走 `Hub.wake()`（内部 `call_soon_threadsafe`）；`pool.*` / `metrics.*` 三个事件此前**从未真正发出去过** | T4.2 |
+| 78 | **每次启动凭空多一条"磁盘水位恢复"**（顶掉日志通道第一帧） | 磁盘状态机的初值 `None` 被当成"低水位"，`None → ok` 也走恢复分支 | `None` = "还没采过"：首拍**低位照常告警**，首拍**健康一个字都不写** | T4.2 |
+| 79 | **并发降到 0 = 沉默的暂停**（与 `paused=1` 在面板上根本分不出来） | DDL 的 `CHECK (concurrency BETWEEN 0 AND 8)` 允许 0，而 0 看着像个并发数 | 旋钮下限硬编码 **1**（`POOL_CONCURRENCY_MIN`）：要停就点「暂停」—— 那条路有留痕、有语义、有「在途跑完」的说明 | T4.10 |
+| 80 | **自动降并发连降 4 次，并发一路掉到下限**（阈值 2，连来 5 次 OOM） | 判据写成 `consecutive_oom >= threshold` ⇒ 之后每一次 OOM 都算「又越线了」 | 判据 `== threshold`；计数器由 `succeed()` 归零 ⇒ 下一次越线必然发生在「池又成功过一次」之后 | T4.10 |
+| 81 | **作业重排了，OOM 计数器却没加**（窗口期恰好是连续 OOM 正在发生的时候） | 自动降级与 job 状态变更分成两个事务写 | 降级逻辑放进 `fail()` / `succeed()` 的**同一个 `BEGIN IMMEDIATE`**；配置对象在 `JobStore.__init__` 注入（事务内禁止 I/O，§03.4.6 规则 3） | T4.10 |
+| 82 | **改一次 + 立刻回滚一次，回滚变成空转**（版本 +1、`sha256` 不变，从面板上看不出来） | 备份文件名只到秒（`<yyyymmdd-HHMMSS>_<id>.yaml`），同秒同名 ⇒ 后写覆盖先写 | 撞名退 `-2` / `-3`；`rollback()` **先把内容读进内存再备份当前** | T4.13 |
+| 83 | **id 打错了，面板报「服务器挂了」**（HTTP 500） | `activate('ghost')` 带着 `CONFIG_MISSING` 冒到应用级 handler，而映射表里没有这个码 | 服务层翻译成 `PERSONA_NOT_FOUND`(404) / `PERSONA_INVALID`(422) / `PERSONA_EXISTS`(409)；**store 的既有语义一个字不改**（T1.2 单测逐条断言它） | T4.13 |
+| 84 | **手改 `config/persona.yaml` 后面板没反应**；同一人连改两次只收到一条事件 | 广播若挂在 REST 写入口，CLI / 手改两条路径不经过它；且 `merge_field='persona_id'` 会把同人事件合并 | 广播挂在 `PersonaStore.subscribe()`（三条路径都经过 `_load_locked`）；面板收到事件只立 `draftStale` 旗子，**不覆盖脏草稿** | T4.13 |
+| 85 | **给「将来会消失的错误」加了 `# type: ignore`，错误消失那天门禁反而挂了**（T2.2 落地即触发） | mypy strict 含 `warn_unused_ignores`：`workers/run_tts.py` 的占位导入在 T2.2 落地后不再报 `import-untyped`，那条 ignore 就成了多余的 | 并列写 `# type: ignore[import-untyped, unused-ignore]`；变量声明要写全 `Callable[[], None] \| None`（否则 `if x is None` 会被 `warn_unreachable` 判成永远为假）；**`mypy.ini` 的 `ignore_missing_imports` 管不了 `import-untyped`**（它只管 `import-not-found`） | T2.2 |
+| 86 | **`workers/` 与 `scripts/` 从来没被类型检查过**（ruff 扫 4 个目录，mypy 只扫 2 个） | 两个工具的目标列表各写一份：`ruff.toml` 的 `src` 是 4 个，`tasks.ps1` / `Makefile` 的 `mypy` 是 2 个 | 对齐成 `src tests workers scripts`（`tasks.ps1` 两处 + `Makefile` 一处）；扩大范围后**立刻暴露出 1 个被漏掉的真实错误** | T1.1 |
+| 87 | **抽公共原语时局部变量遮蔽了导入名** ⇒ `UnboundLocalError`，80 个用例一夜全红 | `_stat_key()` 方法抽成 `core/files.py` 的函数后，`_load_locked` 里写成 `stat_key = stat_key(path)` —— 赋值语句让 `stat_key` 在**整个函数作用域**里变成局部名，导入进来的那个函数被遮蔽 | 局部名不要与被导入的名字同名（改叫 `key`）；`ruff` 的 `F823` 是唯一当场喊出来的工具 —— **改了导入就立刻跑 `ruff check`**，别等 pytest | T4.7 |
+| 88 | **`vue-tsc --noEmit` 全绿，`vite build` 却挂**（`Element is missing end tag`） | Vue 模板里的**裸文本** `templates/<id>/` 被当成 HTML 标签 | 模板文本里的尖括号写 `&lt;id&gt;`；验收必须跑完整 `web:verify`（typecheck 过 ≠ 能 build） | T4.7 |
+| 89 | **刚上过迁移 ⇒ 恢复演练必然报红**（活库 8 个迁移，盘上最新备份 6 个） | 演练拿「活库的 schema 基线」去比「备份还原出来的库」，两边本来就该差一个版本；而真被删掉索引的坏库是**同样的红** | 判据**双条件**：① 多出的失败项全落在 `db.indexes` / `db.tables` / `db.triggers` / `db.migrations`；② 还原库的迁移集是活库的**真前缀** ⇒ 记为「备份版本落后」而不是红（`RestoreReport.schema_lag`） | T4.12 |
+| 90 | **日备 03:00 刚跑完，面板上写着「11 小时前」** | 新鲜度按**文件名里那个日期的零点**算 ⇒ 一个刚成功的任务被报成快半天没动，人去查一个根本没坏的计划任务 | 按**文件写入时刻**算（`BackupFile.written_at` = `stat().st_mtime`）；`day` 只用于轮转（7 日 + 4 周）与「这是哪天的」 | T4.12 |
+| 91 | **「我清过垃圾了」但盘一点没还回来**；或 **VACUUM 跑到一半失败、库只剩半条命** | `DELETE` 只把页挂进 freelist，文件不会变小；`VACUUM` 要 2 倍空间 + 独占写，直接对活库跑是拿数据冒险 | 面板报 `db_freelist_bytes`（`footprint()` **一处算**，GC 报告 / `db vacuum` / 观测面板同一个数）；`studio db vacuum` 先钉一份 `prevacuum_*.db` 检查点，**失败即中止** | T4.12 |
+| 92 | **重扫一遍，人工标的启用/授权/可用区间全没了** | `upsert` 把模型里的字段全量回写，分不清「机器算出来的」与「人填的」 | 重扫**只刷机器事实**（`sha256` / 时长 / 宽高 / 帧率 / 指纹），`enabled` / `license` / `tags` / `usable_*` / `has_text` / `mood` / `bpm` 一律不动（裁定 182） | T4.8 |
+| 93 | **入库了一批“合格”跑酷，到渲染那一刻才报错抽不出入点** | usable 区间只判「长度 > 0」，而 §04.2.4 的入点规则要「头 1.5s + 尾 1.5s + 一个 1.5s 候选窗口」 | `BROLL_MIN_USABLE_MS = 4500`：低于它根本抽不出合法入点，入库时就拒收并说清原因（裁定 187） | T4.8 |
+
+
+---
+
+## 5.8 里程碑门禁与验收速查
+
+| 里程碑 | 门禁（可执行） | 关联任务 |
+| --- | --- | --- |
+| **M1** | 网页端输入定位 + 热点 ⇒ 产出合格稿件（含评分）⇒ 确认闸可见；`启动.bat` 一键拉起全部服务 | T1.1–T1.12 |
+
+> **M1 口径（裁定 108）**：一键启动**已可用**（`api` ready + 其余如实报 `degraded`），但「5 进程全部 ready」**在 M1 阶段不可能达成** —— `tts` 属 T2.2、`voice` 属 T2.6、`render` 属 T3.x、`draft` 属 T4.11。验收以「未就绪进程被**如实报告**且不阻塞其余进程」为准（P4：宁要真话，不要好看的假绿灯）；「5 进程全 ready」顺延到 M4。
+| **M2** | 一句话用熊大音色读出；杀进程重启后已完成句**引擎调用为 0**；网页可见逐句进度 | T2.1–T2.9 |
+| **M3** | 换稿不重剪（**同素材 + 同水印，换稿件直接出片**）；网页一键出新片并在线预览；水印/响度/相似度门禁通过 | T3.1–T3.7 |
+| **M4** | ≥3 篇同时推进；中断后恢复；连续 24h 无人干预；全程网页操作 | T4.1–T4.13 |
+| **M5** | 成片**定时/即时**自动发布（≥1 平台）+ 数据回流 + **报告生成与决策采纳** + 记忆沉淀闭环（`auto_*.md` 可被解析器消费） | T5.1–T5.8 |
+
+**全局验收命令（每个里程碑都要跑一遍）**
+
+```powershell
+uv run studio doctor --json                      # 环境与磁盘门禁
+uv run studio db check                           # 29 表 / WAL / 完整性 / 外键
+uv run pytest -m "not gpu and not slow and not net" -q    # 快速回归（CI 门槛）
+uv run pytest -m contract -q                     # 全部契约测试
+uv run pytest -m "e2e and slow" -q               # 端到端（里程碑前跑）
+python scripts/audio_qc.py --task <id>           # 响度/峰值（发布门禁）
+python scripts/dup_audit.py --task <id>          # 相似度（发布门禁）
+python scripts/av_sync_audit.py --task <id>      # 仅诊断（C12：不阻断发布）
+uv run pytest tests/integration/test_scheduler.py tests/integration/test_reports.py -q   # 定时调度 / 报告（M5 门槛）
+```
+
+**交付物清单（每阶段结束时必须齐备）**
+
+| 类别 | 内容 |
+| --- | --- |
+| 代码 | `src/studio/**`、`workers/**`、`web/**`、`scripts/**` |
+| 契约 | `schemas/*.schema.json`、`tests/contract/**`、`tests/golden/**` |
+| 配置 | `config/*.yaml`（含 `persona.yaml` 实例）、`prompts/**`、`templates/**` |
+| 文档 | `docs/spec/**`（本规格书）、`docs/adr/**`、`docs/runbook/**`（6+2 个剧本）、`docs/qc/**` |
+| 运维 | `启动.bat` / `停止.bat` / `ops/*.ps1` / `scripts/backup_db.ps1` / `scripts/restore_db.ps1` |

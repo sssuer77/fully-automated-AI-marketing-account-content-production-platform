@@ -1,0 +1,35 @@
+# ── 日志配置（§04.4.5 / §03.7.5）─────────────────────────────────────
+# 两级落盘：控制台/文件走 structlog；DB 留痕走 system_logs（**先落库再广播**）。
+schema_version: "1.0"
+
+console:
+  enabled: true
+  level: INFO              # DEBUG | INFO | WARNING | ERROR
+  json_output: false       # true ⇒ 结构化 JSON（CI / 排障）
+
+file:
+  enabled: true
+  level: DEBUG
+  path: data/logs/studio.log
+  rotate_mb: 32
+  keep_files: 10
+
+database:
+  enabled: true
+  min_level: INFO          # 低于此级别不落 system_logs（防日志表膨胀）
+  batch_size: 200          # 批量插入，避免长事务（§01.3.2 单写者原则）
+
+# 高频噪声源的单独降级（避免刷爆前端与日志表）
+source_levels:
+  http.access: WARNING
+  ws.heartbeat: WARNING
+  ffmpeg.progress: DEBUG
+
+# 敏感字段脱敏（落库与推送前统一处理）
+redact_keys:
+  - api_key
+  - authorization
+  - password
+  - cookie
+  - token
+  - secret

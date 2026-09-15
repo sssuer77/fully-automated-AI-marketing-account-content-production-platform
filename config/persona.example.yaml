@@ -1,0 +1,19 @@
+# ── persona.yaml 模板（缺字段报错时打印的路径就是这里）─────────────────
+# 用法：Copy-Item config\persona.example.yaml config\persona.yaml
+schema_version: "1.0"
+id: persona_default
+name: <频道名>
+is_active: true
+role_desc: <谁在说话、各自角色>
+tone: <语气 / 方言 / 节奏>
+audience: <年龄 / 性别 / 兴趣>
+catchphrases:
+  - <口癖 1>
+  - <口癖 2>
+forbidden:
+  - <禁区原子词 1>
+  - <禁区原子词 2>
+style_hint: <写作风格提示>
+target_chars_min: 600
+target_chars_max: 800
+max_duration_ms: 180000

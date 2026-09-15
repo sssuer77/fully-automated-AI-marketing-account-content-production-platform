@@ -1,0 +1,71 @@
+# 提示词注册表（§02.2）：name → 文件 + 版本 + 内容摘要
+#
+# ★ 本文件**必须入库**（§02.2 可复现性权衡）：换机后可判断缺失项，且历史产物的
+#   `scripts.prompt_version` 能被校验。
+# ★ `sha256` 覆盖该条目列出的**全部文件**：sha256_hex(*(f"{相对路径}\x1f{内容}", ...))。
+#   改任何一个字都会让摘要变化 ⇒ prompt_version 变化（P5「同输入同产物」）。
+# ★ 每个 Agent 在自己落地的任务里追加条目（T1.10 director/writer、T1.11 reviewer/editor、
+#   封面 cover）。未登记的提示词一律拒绝加载（LLM_PROMPT_MISSING）。
+schema_version: "1.0"
+
+prompts:
+  shared.persona_block:
+    user: shared/persona_block.md
+    version: "1"
+    sha256: 3010b3e5a50d31e2880f18220ef94fa4ac85fc76ab71e185a5b0d326465de576
+    description: 人物（频道定位）注入块 —— 所有 Agent 的 user 消息前缀
+
+  shared.json_contract:
+    system: shared/json_contract.md
+    version: "1"
+    sha256: 91362b105ce9960e19ac24de759585ed2c78a04650190ccc6b0b76fde2822e49
+    description: 通用输出纪律（只输出 JSON / 不编造 / 简体中文）
+
+  feedback_classifier:
+    system: feedback_classifier/system.md
+    user: feedback_classifier/user.jinja
+    version: "1"
+    sha256: 3cc9029bc4bf6c4cd9971477edeb03de69417dfdd381db0f619ba7cf4bacc748
+    description: 反馈分类（情感 + 想要 + 吐槽；ref 原样回抄）
+
+  planner:
+    system: planner/system.md
+    user: planner/user.jinja
+    version: "1"
+    sha256: ab79840180324d25f1099564f37f00b7fae8c3f48e19423c86431523356e52a6
+    description: 方向分析（5–8 方向 + 四条硬规则）
+
+  ideator:
+    system: ideator/system.md
+    user: ideator/user.jinja
+    version: "1"
+    sha256: 6d194e02666fd8fdc77193b98841ab6e70cadff019d4f2832044f47bdd1fb71a
+    description: 批量选题（单方向 3–5 个 + 禁重复）
+
+  director:
+    system: director/system.md
+    user: director/user.jinja
+    version: "1"
+    sha256: f07ac21fe34f8ce4b9f2a979a702eca8c165498371c852fe268708b423eb68dd
+    description: 内容导演（钩子 + 3–5 段大纲 + CTA + 时长预估）
+
+  writer:
+    system: writer/system.md
+    user: writer/user.jinja
+    version: "1"
+    sha256: a81047ed1ce5128a77d045df94b24f48b7b9144dae9597792706ce30f4641a7d
+    description: 口播编剧（600–800 字 + 逐句表 + 口癖/禁区自检）
+
+  reviewer:
+    system: reviewer/system.md
+    user: reviewer/user.jinja
+    version: "1"
+    sha256: fa4c86ae7584e5af38e378d28cd0a0ab62a0c2304506bfe02571484e62e1a895
+    description: 双通道评分（LLM 六维度 + 问题清单；总分与等级由服务端算）
+
+  editor:
+    system: editor/system.md
+    user: editor/user.jinja
+    version: "1"
+    sha256: 23957d069f38b35af363b63b77030e0917141e527d92855d9a96b1d45ea70abb
+    description: 改稿（只改被指出的问题；≤2 轮）

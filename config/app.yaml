@@ -1,0 +1,63 @@
+# ── 应用配置（§01.2.1 / §01.2.5 / §03.7.5 / §04.4.4）──────────────────
+# 路径 / 保留期 / 超时 / auto_approve_policy / 一键全自动。
+schema_version: "1.0"
+
+web:
+  host: 127.0.0.1          # ★ 默认只绑回环，不做公网暴露
+  port: 8787
+  allow_lan: false         # true 时必须设置 WebUI 密码，否则拒绝启动（§01.2.5）
+  cors_origins: []         # 开发期 Vite 代理用；生产留空（同源）
+  openapi_enabled: true
+
+# 可选路径覆盖。留空 ⇒ 用 StudioPaths 默认值（data/ 下）。
+# 硬约束：不得指向系统盘；不得逃出 STUDIO_HOME（除非目标在非系统盘）。
+paths:
+  work_dir: null
+  output_dir: null
+  cache_dir: null
+  logs_dir: null
+
+# 确认闸分级放行（§04.4.4）
+approval:
+  auto_approve_policy: grade_a   # off | grade_a | grade_ab
+  reject_requires_comment: true
+  approval_ttl_hours: 0          # 0 = 不过期（人工确认闸永不自动放弃）
+
+# 外部制片台对接（§04.6.3 · A2）；默认关闭，失败不影响主流程
+handoff:
+  enabled: false
+  adapter: local                 # local | <外部实现类路径>
+  output_dir: data/handoff
+
+# 数据保留与 GC（§03.7.5）
+retention:
+  sentence_audio_hours: 24
+  voice_master_hours: 24
+  scene_artifact_hours: 168
+  system_logs_days: 30
+  debug_logs_days: 7
+  llm_calls_days: 90
+  task_events_days: 90
+  hot_archive_days: 90
+  tts_cache_max_gb: 5.0
+
+# 硬超时（DoD 7）
+timeouts:
+  llm_sec: 120
+  tts_sentence_sec: 60
+  render_final_sec: 600
+  task_sec: 1800
+
+# 后台定时（APScheduler · 见 T4.11/T4.12）
+scheduler:
+  enabled: true
+  gc_cron: "0 4 * * *"           # 每日 04:00 媒资回收
+  backup_cron: "0 3 * * *"       # 每日 03:00 在线备份
+  backup_daily_keep: 7
+  backup_weekly_keep: 4
+
+# 磁盘水位门禁（§README.7）；低于阈值 ⇒ 暂停 render/publish 认领 + 告警
+disk_gate:
+  free_c_min_gb: 1.0
+  free_d_min_gb: 15.0
+  pause_pools_on_low: true

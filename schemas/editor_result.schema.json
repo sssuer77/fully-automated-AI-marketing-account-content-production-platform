@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://studio.local/schemas/editor_result.schema.json",
+  "title": "EditorOutput",
+  "description": "§04.1.6 Editor：只改 issues 指到的位置；改完仍是完整稿件（整份回写，不做 diff 合并）",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["script", "changes"],
+  "properties": {
+    "script": {
+      "type": "object",
+      "description": "改后的完整稿件（结构同 script_result，故此处内联而不是跨文件 $ref —— 网关按单文件加载 schema）",
+      "additionalProperties": false,
+      "required": ["title", "hook", "body_md", "cta", "sentences", "est_duration_ms"],
+      "properties": {
+        "title": {"type": "string", "minLength": 1, "maxLength": 60},
+        "hook": {"type": "string", "minLength": 1, "maxLength": 80},
+        "body_md": {"type": "string", "minLength": 1},
+        "cta": {"type": "string", "minLength": 1, "maxLength": 80},
+        "sentences": {
+          "type": "array",
+          "minItems": 15,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["seq", "text", "speaker"],
+            "properties": {
+              "seq": {"type": "integer", "minimum": 1},
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "description": "单句口播文本；>28 字由服务端强制切分（切分比重写省 token）"
+              },
+              "speaker": {"enum": ["bigbear", "littlebear", "narrator"]},
+              "emotion": {"type": "string", "minLength": 1, "maxLength": 40},
+              "pause_after_ms": {"type": "integer", "minimum": 0, "maximum": 2000}
+            }
+          }
+        },
+        "est_duration_ms": {"type": "integer", "minimum": 60000, "maximum": 180000},
+        "catchphrases_used": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "changes": {
+      "type": "array",
+      "description": "逐条说明改了什么（一条对应一个被指出的问题；没改的不要写）",
+      "items": {"type": "string", "minLength": 1, "maxLength": 200}
+    }
+  }
+}

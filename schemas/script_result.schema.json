@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://studio.local/schemas/script_result.schema.json",
+  "title": "WriterOutput",
+  "description": "§04.1.5 Writer（写稿）：600–800 字口播稿 + 逐句表。字数区间由服务端复核（重写 ≤2 次），不在此卡",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "title",
+    "hook",
+    "body_md",
+    "cta",
+    "sentences",
+    "est_duration_ms"
+  ],
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60
+    },
+    "hook": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "body_md": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cta": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "sentences": {
+      "type": "array",
+      "minItems": 15,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "seq",
+          "text",
+          "speaker"
+        ],
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "单句口播文本；>28 字由服务端强制切分（切分比重写省 token）"
+          },
+          "speaker": {
+            "enum": [
+              "bigbear",
+              "littlebear",
+              "narrator"
+            ]
+          },
+          "emotion": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "pause_after_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2000
+          }
+        }
+      }
+    },
+    "est_duration_ms": {
+      "type": "integer",
+      "minimum": 60000,
+      "maximum": 180000
+    },
+    "catchphrases_used": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

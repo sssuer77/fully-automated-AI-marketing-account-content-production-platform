@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://studio.local/schemas/feedback_classification.schema.json",
+  "title": "FeedbackClassification",
+  "description": "§04.1.7 反馈分类：情感 + 想要 + 吐槽（ref 必须原样回抄）",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "items"
+  ],
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref",
+          "sentiment",
+          "wants",
+          "complaints"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sentiment": {
+            "enum": [
+              "pos",
+              "neu",
+              "neg",
+              "unknown"
+            ]
+          },
+          "wants": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 20
+            }
+          },
+          "complaints": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 20
+            }
+          }
+        }
+      }
+    }
+  }
+}

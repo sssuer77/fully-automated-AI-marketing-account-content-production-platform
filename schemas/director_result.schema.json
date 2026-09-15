@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://studio.local/schemas/director_result.schema.json",
+  "title": "DirectorOutput",
+  "description": "§04.1.4 Director（内容导演）：黄金 3 秒钩子 + 3–5 段大纲 + CTA",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "hook_3s",
+    "segments",
+    "cta",
+    "est_duration_ms"
+  ],
+  "properties": {
+    "hook_3s": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "segments": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "seq",
+          "point",
+          "visual",
+          "mood",
+          "est_chars"
+        ],
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "point": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "visual": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "mood": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "est_chars": {
+            "type": "integer",
+            "minimum": 80,
+            "maximum": 350
+          }
+        }
+      }
+    },
+    "cta": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "est_duration_ms": {
+      "type": "integer",
+      "minimum": 60000,
+      "maximum": 180000
+    }
+  }
+}

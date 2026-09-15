@@ -1,0 +1,31 @@
+[project]
+name = "studio-tts"
+version = "0.1.0"
+description = "AI 营销号制片台 · TTS 推理子环境（CosyVoice · Python 3.11）"
+requires-python = ">=3.11,<3.12"
+
+# ── 与 app 环境物理隔离（§01.6.2）──────────────────────────────
+# 原因：torch 2.4.0+cu121 只有 cp311 wheel（D:\Torch 预置），
+#      且 numpy 必须锁 1.26.x 规避 numpy 2.x 生态不兼容。
+#      app 环境跑 3.12，两者共用 PYTHONPATH 会互相污染。
+dependencies = [
+  "torch==2.4.0+cu121",
+  "torchaudio==2.4.0+cu121",
+  "torchvision==0.19.0+cu121",
+  "numpy>=1.26,<2",
+  "modelscope>=1.20",
+  "onnxruntime>=1.18",
+  "soundfile>=0.12",
+  "librosa>=0.10",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.34",
+  "pydantic>=2.8",
+  "structlog>=24.1",
+]
+
+# 本子项目只用于承载 venv，自身不作为包被安装
+[tool.uv]
+package = false
+# torch cu121 轮子不走 PyPI（PyPI 无 +cu121 本地版本号），
+# 从本地 wheelhouse 解析；wheelhouse 缺失由 scripts/doctor.ps1 提前拦下。
+find-links = ["D:/Torch"]
