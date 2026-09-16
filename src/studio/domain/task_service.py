@@ -27,6 +27,7 @@ import json
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Final
 
 from studio.core.clock import now_iso
@@ -34,7 +35,7 @@ from studio.core.ids import new_ulid
 from studio.db.engine import transaction
 from studio.domain.enums import TaskKind, TaskPool, TaskStatus
 from studio.domain.errors import ConcurrentModification, TaskNotFound
-from studio.domain.models import TaskEventRead, TaskRead
+from studio.domain.models import QualityReport, TaskEventRead, TaskPayload, TaskRead
 from studio.domain.state_machine import RETRY_FROM_WHITELIST, RETRY_SOURCES, assert_allowed
 
 __all__ = ["TaskService", "TransitionResult"]
@@ -429,5 +430,93 @@ class TaskService:
             self._connection.execute(
                 "UPDATE tasks SET progress = ?, stage_detail = ? WHERE id = ?",
                 (progress, stage_detail, task_id),
+            )
+            return TaskRead.from_row(self._row(task_id))
+
+    def set_voice_map(self, task_id: str, voice_map: Mapping[str, str]) -> TaskRead:
+        """改 ``tasks.payload_json.voice_map``（T2.9 的任务级换音色）。
+
+        为什么这一列也归本模块
+        ----------------------
+        与 ``tasks.pool`` 同一条理由：``payload_json`` 是**建任务时的输入契约**
+        （§03.5.3），它的字段含义只有 ``TaskPayload`` 一处说了算。让调用方自己拼一段
+        JSON 写进去，``extra="forbid"`` 那道闸门就形同虚设 —— 而它的作用恰恰是
+        "把拼错的键在**写入时**就拦住"，而不是等某个读的人某天发现读不到。
+
+        **不动 ``version``**：``version`` 是状态迁移的乐观锁，换音色不是状态迁移。
+        与 ``update_progress`` / ``set_quality`` 同一条纪律。
+
+        写回时保留 ``payload_json`` 原本的**稀疏形状**（``exclude_unset``）：建任务时
+        只写了 ``{"seed": 7}`` 就还是只写那一个键，不会因为这一次改动突然铺开成
+        一份带一堆 ``null`` 的完整快照 —— 那些 ``null`` 会出现在审计的 ``before/after``
+        里，把"到底改了什么"淹掉。
+        """
+        with transaction(self._connection, immediate=True):
+            row = self._row(task_id)  # 不存在 ⇒ TaskNotFound
+            raw: dict[str, Any] = json.loads(row["payload_json"] or "{}")
+            raw["voice_map"] = dict(voice_map)
+            merged = TaskPayload.model_validate(raw)  # 顺手校验：拼错的键在这里就炸
+            self._connection.execute(
+                "UPDATE tasks SET payload_json = ? WHERE id = ?",
+                (merged.model_dump_json(exclude_unset=True), task_id),
+            )
+            return TaskRead.from_row(self._row(task_id))
+
+    def set_quality(self, task_id: str, report: QualityReport) -> TaskRead:
+        """回填 ``tasks.quality_json``（§03.5.3 · T3.7）。
+
+        与 `update_progress` 同一条纪律：**不动 ``version``**。理由是同一个 ——
+        ``version`` 是状态迁移的乐观锁，而 QC 结论是"迁移到 ``completed`` 之前顺手写下"
+        的附属数据。若这里也 bump，编排层在 `render` 阶段持有的 version 会立刻失效，
+        紧接着的 `completed` 迁移必然撞 `ConcurrentModification` 重试一轮。
+
+        **整体覆盖**而不是合并：一次出片就是一份结论，旧字段留在库里只会让"这条片子
+        到底合没合格"出现两个答案。要保留历史请查 ``manifest.json``（它逐条落盘、不覆盖）。
+        """
+        payload = report.model_dump_json()
+        with transaction(self._connection, immediate=True):
+            self._row(task_id)  # 不存在 ⇒ TaskNotFound
+            self._connection.execute(
+                "UPDATE tasks SET quality_json = ? WHERE id = ?",
+                (payload, task_id),
+            )
+            return TaskRead.from_row(self._row(task_id))
+
+    def set_cover_path(
+        self,
+        task_id: str,
+        *,
+        cover_path: Path | None,
+        plan: Mapping[str, Any] | None = None,
+    ) -> TaskRead:
+        """回填 ``tasks.context_json.cover_path``（T5.1 · §06.3）。
+
+        为什么进 ``context_json`` 而不是新开一列
+        ----------------------------------------
+        ``context_json`` 的定位就是"这条任务走到哪儿了、手上有什么"（§03.5.3），
+        成片路径 ``final_path`` 已经住在里面。给封面单独开一列会让"一条任务的产物在哪"
+        分裂成两处，而查它的人（发布面板、GC）永远会漏掉一处。
+
+        为什么**合并**而不是整体覆盖（与 :meth:`set_quality` 相反）
+        ----------------------------------------------------------
+        ``quality_json`` 是"一次出片一份结论"，旧字段留着会出现两个答案，所以整体覆盖。
+        而 ``context_json`` 里躺着的是**互不相干**的几件事（成片路径、这次封面）。
+        整体覆盖会把 ``final_path`` 抹掉 —— 那是静默的数据损坏，比留一个旧封面路径坏得多。
+
+        **不动 ``version``**：与 :meth:`update_progress` / :meth:`set_quality` 同一条纪律
+        （``version`` 是状态迁移的乐观锁）。
+
+        ``cover_path=None`` 是**合法值**：封面生成失败（§06.3：无封面发布）也要留痕，
+        否则下一个人看到 context 里没有这个键，分不清"没试过"与"试了没成"。
+        """
+        with transaction(self._connection, immediate=True):
+            row = self._row(task_id)  # 不存在 ⇒ TaskNotFound
+            payload: dict[str, Any] = json.loads(row["context_json"] or "{}")
+            payload["cover_path"] = None if cover_path is None else cover_path.as_posix()
+            if plan is not None:
+                payload["cover_plan"] = dict(plan)
+            self._connection.execute(
+                "UPDATE tasks SET context_json = ? WHERE id = ?",
+                (json.dumps(payload, ensure_ascii=False), task_id),
             )
             return TaskRead.from_row(self._row(task_id))

@@ -862,3 +862,133 @@ def test_list_jobs_rejects_nonpositive_limit(store: JobStore) -> None:
     """§03.4.6 规则 4：**永远带 LIMIT**，所以 limit 必须正数。"""
     with pytest.raises(ValueError):
         store.list_jobs(limit=0)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 进度落库与取消（T3.7 收口：渲染面板要把进度读出来、要把排队中的作业叫停）
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_report_progress_writes_result_but_not_status(
+    store: JobStore, connection: sqlite3.Connection
+) -> None:
+    """进度写 ``result_json``，**状态仍是 claimed**。
+
+    这条断言不是吹毛求疵：把 ``claimed`` 顺手改成别的什么，会让 sweeper 误判租约、
+    让 ``unlock_dependents`` 提前放行下游 —— 而"进度更新"与"状态迁移"是两件事。
+    """
+    job_id = _enqueue(store, "u1")
+    assert job_id is not None
+    assert store.claim(pool="draft", worker_id="w1") is not None
+
+    assert store.report_progress(
+        job_id=job_id, worker_id="w1", result={"stage": "voice", "done": 2, "total": 5}
+    )
+
+    job = store.get(job_id)
+    assert job.status == "claimed"
+    assert job.result == {"stage": "voice", "done": 2, "total": 5}
+    assert job.lease_owner == "w1"
+
+
+def test_report_progress_overwrites_wholesale(store: JobStore) -> None:
+    """整份覆写而不是合并：进度是"当前状态"，不是一串增量事件。
+
+    合并会让上一阶段的键永远留在里面（``done`` 从 2 变 0 时旧值还在），
+    而面板读的就是这份 dict —— 它会显示一个永远不归零的进度条。
+    """
+    job_id = _enqueue(store, "u1")
+    assert job_id is not None
+    store.claim(pool="draft", worker_id="w1")
+
+    store.report_progress(job_id=job_id, worker_id="w1", result={"stage": "voice", "done": 2})
+    store.report_progress(job_id=job_id, worker_id="w1", result={"stage": "render", "done": 0})
+
+    assert store.get(job_id).result == {"stage": "render", "done": 0}
+
+
+def test_report_progress_from_another_worker_is_refused(store: JobStore) -> None:
+    """租约不在自己手上 ⇒ **一个字节都不写**（产物可能已被别人重做）。"""
+    job_id = _enqueue(store, "u1")
+    assert job_id is not None
+    store.claim(pool="draft", worker_id="w1")
+    store.report_progress(job_id=job_id, worker_id="w1", result={"stage": "voice"})
+
+    assert store.report_progress(job_id=job_id, worker_id="w2", result={"stage": "hijack"}) is False
+    assert store.get(job_id).result == {"stage": "voice"}
+
+
+def test_report_progress_after_succeed_is_refused(store: JobStore) -> None:
+    """作业已经收尾 ⇒ 迟到的进度不许把结论盖掉。"""
+    job_id = _enqueue(store, "u1")
+    assert job_id is not None
+    store.claim(pool="draft", worker_id="w1")
+    assert store.succeed(job_id=job_id, worker_id="w1", result={"final": "ok"})
+
+    assert store.report_progress(job_id=job_id, worker_id="w1", result={"final": "stale"}) is False
+    assert store.get(job_id).result == {"final": "ok"}
+
+
+def test_cancel_pending_job_marks_it_canceled_and_audits(
+    store: JobStore, connection: sqlite3.Connection
+) -> None:
+    """排队中的作业可以立刻作废，并且**留痕**（§03.4 的必写清单里有同类人工干预）。"""
+    job_id = _enqueue(store, "u1")
+    assert job_id is not None
+
+    # `actor` 不是自由字符串：DDL 把它 CHECK 在 user/system/auto/worker 四个值里
+    # （留痕要能一眼分出"人干的"与"机器干的"）。
+    assert store.cancel(job_id=job_id, actor="user", reason="面板上按了取消")
+
+    job = store.get(job_id)
+    assert job.status == "canceled"
+    assert job.finished_at is not None
+    row = connection.execute(
+        "SELECT actor, action, target_id, before_json, after_json FROM audit_ops WHERE target_id = ?",
+        (job_id,),
+    ).fetchone()
+    assert row is not None
+    assert row["actor"] == "user"
+    assert row["action"] == "job.cancel"
+    assert json.loads(row["before_json"]) == {"status": "pending"}
+    assert json.loads(row["after_json"]) == {"status": "canceled"}
+
+
+def test_cancel_blocked_job_is_allowed(store: JobStore) -> None:
+    """依赖还没满足（``blocked``）也属于"还没被认领"，同样可以取消。"""
+    upstream = _enqueue(store, "up")
+    assert upstream is not None
+    blocked = _enqueue(store, "down", depends_on=[upstream])
+    assert blocked is not None
+    assert store.get(blocked).status == "blocked"
+
+    assert store.cancel(job_id=blocked)
+    assert store.get(blocked).status == "canceled"
+
+
+def test_cancel_claimed_job_is_refused(store: JobStore) -> None:
+    """在跑的作业**不**取消：抢租约 = 让正在写文件的 ffmpeg 被另一个 worker 重跑一遍。
+
+    取消在跑单元是**协作式**的（单元自己在检查点收工），队列不代办 ——
+    所以这里返回 ``False``，让调用方去说"已请求取消，等它自己收工"。
+    """
+    job_id = _enqueue(store, "u1")
+    assert job_id is not None
+    store.claim(pool="draft", worker_id="w1")
+
+    assert store.cancel(job_id=job_id) is False
+    assert store.get(job_id).status == "claimed"
+
+
+def test_cancel_twice_returns_false_the_second_time(store: JobStore) -> None:
+    """已经取消过的作业再取消 ⇒ ``False``（不是错误，也不能再写一条留痕）。"""
+    job_id = _enqueue(store, "u1")
+    assert job_id is not None
+    assert store.cancel(job_id=job_id) is True
+    assert store.cancel(job_id=job_id) is False
+
+
+def test_cancel_missing_job_raises(store: JobStore) -> None:
+    with pytest.raises(QueueError) as excinfo:
+        store.cancel(job_id="j_missing")
+    assert excinfo.value.code is ErrorCode.JOB_NOT_FOUND

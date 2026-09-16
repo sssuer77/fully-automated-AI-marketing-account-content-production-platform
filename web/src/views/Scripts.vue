@@ -32,9 +32,11 @@ import {
   useScriptsStore,
   type ApprovalStatus,
 } from "@/stores/scripts";
+import { useUiStore } from "@/stores/ui";
 import type { Envelope } from "@/ws/events";
 
 const scripts = useScriptsStore();
+const ui = useUiStore();
 
 const STATUSES: ApprovalStatus[] = ["pending", "approved", "rejected", "discarded"];
 
@@ -135,6 +137,13 @@ watch(
 
 onMounted(async () => {
   await scripts.refresh();
+  // 从别的面板跳过来（T4.14）就认领那个任务号：顺序不能反 ——
+  // `refresh()` 会把"不在当前状态列表里"的选中项清掉，先 select 就白选了。
+  const jump = ui.takeHandoff("scripts");
+  if (jump !== null) {
+    await scripts.select(jump);
+    return;
+  }
   const first = scripts.queue[0];
   if (first !== undefined && scripts.selectedTaskId === null) await scripts.select(first.task_id);
 });
@@ -252,6 +261,21 @@ useTaskStream(onTaskEvent);
               <span class="head__meta mono">
                 {{ detail.script.word_count }} 字 · 约 {{ durationText }} · v{{ detail.script.version }}
               </span>
+              <span class="head__spacer" />
+              <AppButton
+                size="sm"
+                :title="`去配音面板看 ${detail.task_id} 的逐句状态`"
+                @click="ui.goTo('voices', detail.task_id)"
+              >
+                去配音 →
+              </AppButton>
+              <AppButton
+                size="sm"
+                :title="`去渲染面板拿 ${detail.task_id} 出片`"
+                @click="ui.goTo('renders', detail.task_id)"
+              >
+                去渲染 →
+              </AppButton>
             </header>
 
             <div v-if="approval" class="gate">
@@ -595,6 +619,11 @@ useTaskStream(onTaskEvent);
 
 .head__meta {
   color: var(--text-muted);
+}
+
+/* 把两颗"去下一步"按钮推到行尾：它们是路径，不是这一行的读数。 */
+.head__spacer {
+  flex: 1;
 }
 
 .gate {

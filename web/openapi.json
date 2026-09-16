@@ -5091,6 +5091,455 @@
         "title": "RejectBody",
         "type": "object"
       },
+      "RenderConsoleResponse": {
+        "description": "面板首屏：一次拿全（可选参数 + 在跑的任务 + 最近任务 + 成片列表）。\n\n集合字段一律**必填**（``x: list[T]`` 而非 ``Field(default_factory=list)``）：\n后者在 JSON Schema 里既不进 ``required`` 也不带 ``default`` ⇒ 生成类型是\n``T[] | undefined``，前端被迫到处 ``?? []``（裁定 135）。",
+        "properties": {
+          "default_profile": {
+            "title": "Default Profile",
+            "type": "string"
+          },
+          "engine": {
+            "title": "Engine",
+            "type": "string"
+          },
+          "engine_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine Hint"
+          },
+          "engine_ready": {
+            "title": "Engine Ready",
+            "type": "boolean"
+          },
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/RenderJobModel"
+            },
+            "title": "Jobs",
+            "type": "array"
+          },
+          "max_speech_chars": {
+            "title": "Max Speech Chars",
+            "type": "integer"
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/RenderProfileOptionModel"
+            },
+            "title": "Profiles",
+            "type": "array"
+          },
+          "running": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RenderJobModel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subtitle_enabled": {
+            "title": "Subtitle Enabled",
+            "type": "boolean"
+          },
+          "subtitle_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle Hint"
+          },
+          "videos": {
+            "items": {
+              "$ref": "#/components/schemas/RenderVideoModel"
+            },
+            "title": "Videos",
+            "type": "array"
+          },
+          "voices": {
+            "items": {
+              "$ref": "#/components/schemas/RenderVoiceModel"
+            },
+            "title": "Voices",
+            "type": "array"
+          },
+          "watermark_enabled": {
+            "title": "Watermark Enabled",
+            "type": "boolean"
+          },
+          "watermark_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Watermark Hint"
+          }
+        },
+        "required": [
+          "engine",
+          "engine_ready",
+          "engine_hint",
+          "profiles",
+          "default_profile",
+          "voices",
+          "running",
+          "jobs",
+          "videos",
+          "max_speech_chars",
+          "watermark_enabled",
+          "watermark_hint",
+          "subtitle_enabled",
+          "subtitle_hint"
+        ],
+        "title": "RenderConsoleResponse",
+        "type": "object"
+      },
+      "RenderJobModel": {
+        "description": "一次出片任务的全部可见状态。",
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "done": {
+            "title": "Done",
+            "type": "integer"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "logs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Logs",
+            "type": "array"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "percent": {
+            "title": "Percent",
+            "type": "integer"
+          },
+          "remediation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remediation"
+          },
+          "request": {
+            "additionalProperties": true,
+            "title": "Request",
+            "type": "object"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "task_id",
+          "status",
+          "stage",
+          "done",
+          "total",
+          "percent",
+          "note",
+          "created_at",
+          "started_at",
+          "finished_at",
+          "error_code",
+          "error_message",
+          "remediation",
+          "result",
+          "logs",
+          "request"
+        ],
+        "title": "RenderJobModel",
+        "type": "object"
+      },
+      "RenderJobRequest": {
+        "additionalProperties": false,
+        "description": "开一条出片任务。",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile"
+          },
+          "reuse_voice": {
+            "default": false,
+            "title": "Reuse Voice",
+            "type": "boolean"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          },
+          "subtitle": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle"
+          },
+          "task_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "maxLength": 5000,
+            "title": "Text",
+            "type": "string"
+          },
+          "threads": {
+            "anyOf": [
+              {
+                "maximum": 64.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threads"
+          },
+          "voice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voice"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "title": "RenderJobRequest",
+        "type": "object"
+      },
+      "RenderProfileOptionModel": {
+        "description": "一档可选的合成 profile（下拉框的一行）。",
+        "properties": {
+          "fps": {
+            "title": "Fps",
+            "type": "integer"
+          },
+          "height": {
+            "title": "Height",
+            "type": "integer"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "platforms": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Platforms",
+            "type": "array"
+          },
+          "quality": {
+            "title": "Quality",
+            "type": "integer"
+          },
+          "quality_field": {
+            "title": "Quality Field",
+            "type": "string"
+          },
+          "vcodec": {
+            "title": "Vcodec",
+            "type": "string"
+          },
+          "width": {
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "width",
+          "height",
+          "fps",
+          "vcodec",
+          "quality_field",
+          "quality",
+          "platforms",
+          "is_default"
+        ],
+        "title": "RenderProfileOptionModel",
+        "type": "object"
+      },
+      "RenderVideoModel": {
+        "description": "盘上的一支成片。``url`` 直接喂 ``<video src>``（浏览器自己发范围请求）。",
+        "properties": {
+          "modified_at": {
+            "title": "Modified At",
+            "type": "number"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "url",
+          "size_bytes",
+          "modified_at"
+        ],
+        "title": "RenderVideoModel",
+        "type": "object"
+      },
+      "RenderVoiceModel": {
+        "description": "一个可选的音色（下拉框的一行）。",
+        "properties": {
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "is_default"
+        ],
+        "title": "RenderVoiceModel",
+        "type": "object"
+      },
       "RequeueFailureModel": {
         "description": "重投失败的一条（带 ``code`` + ``remediation``，前端能照着重试）。",
         "properties": {
@@ -5379,6 +5828,76 @@
           "process_rss_mb"
         ],
         "title": "ResourcesModel",
+        "type": "object"
+      },
+      "ResynthResponse": {
+        "description": "单句重配的结果。",
+        "properties": {
+          "hint": {
+            "default": "重配完成后跑一次配音收口（studio pipeline run <task_id> --until queued_render）会让时间轴**全量重算**：成片时长以那一版为准",
+            "title": "Hint",
+            "type": "string"
+          },
+          "job_created": {
+            "default": false,
+            "title": "Job Created",
+            "type": "boolean"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/SentenceProgressModel"
+          },
+          "sentence_id": {
+            "title": "Sentence Id",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "timeline_stale": {
+            "default": false,
+            "title": "Timeline Stale",
+            "type": "boolean"
+          },
+          "timeline_total_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeline Total Ms"
+          }
+        },
+        "required": [
+          "sentence_id",
+          "task_id",
+          "seq",
+          "status",
+          "progress"
+        ],
+        "title": "ResynthResponse",
         "type": "object"
       },
       "ScanCountsModel": {
@@ -6347,6 +6866,252 @@
         "title": "SentenceDiffRow",
         "type": "object"
       },
+      "SentenceProgressModel": {
+        "description": "逐句进度（``SentenceProgress.to_dict()`` 的展示模型）。",
+        "properties": {
+          "done": {
+            "title": "Done",
+            "type": "integer"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "integer"
+          },
+          "ratio": {
+            "title": "Ratio",
+            "type": "number"
+          },
+          "settled": {
+            "title": "Settled",
+            "type": "integer"
+          },
+          "skipped": {
+            "title": "Skipped",
+            "type": "integer"
+          },
+          "synthesizing": {
+            "title": "Synthesizing",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "pending",
+          "synthesizing",
+          "done",
+          "skipped",
+          "failed",
+          "settled",
+          "ratio"
+        ],
+        "title": "SentenceProgressModel",
+        "type": "object"
+      },
+      "SentenceVoice": {
+        "description": "一句的配音状态（面板上那一行）。",
+        "properties": {
+          "audio_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audio Source"
+          },
+          "audio_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audio Url"
+          },
+          "can_resynth": {
+            "default": true,
+            "title": "Can Resynth",
+            "type": "boolean"
+          },
+          "degraded": {
+            "default": false,
+            "title": "Degraded",
+            "type": "boolean"
+          },
+          "end_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Ms"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "speaker": {
+            "title": "Speaker",
+            "type": "string"
+          },
+          "start_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Ms"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "tts_attempts": {
+            "default": 0,
+            "title": "Tts Attempts",
+            "type": "integer"
+          },
+          "tts_duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tts Duration Ms"
+          },
+          "tts_engine": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tts Engine"
+          },
+          "tts_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tts Error"
+          },
+          "tts_status": {
+            "title": "Tts Status",
+            "type": "string"
+          },
+          "tts_voice_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tts Voice Id"
+          },
+          "version": {
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "seq",
+          "speaker",
+          "text",
+          "tts_status"
+        ],
+        "title": "SentenceVoice",
+        "type": "object"
+      },
+      "SentenceVoiceList": {
+        "description": "一条任务的逐句配音状态（面板的主列表）。\n\n``timeline_stale`` 是**推断**而不是事实：盘上那份时间轴存在、而还有句子没定局\n⇒ 它说的不是现在这条片子。真正的判据要等下一轮收口重算出来\n（陷阱 #26：时间轴只有\"整条重算\"这一种更新方式）。",
+        "properties": {
+          "progress": {
+            "$ref": "#/components/schemas/SentenceProgressModel"
+          },
+          "sentences": {
+            "items": {
+              "$ref": "#/components/schemas/SentenceVoice"
+            },
+            "title": "Sentences",
+            "type": "array"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_status": {
+            "title": "Task Status",
+            "type": "string"
+          },
+          "timeline_stale": {
+            "default": false,
+            "title": "Timeline Stale",
+            "type": "boolean"
+          },
+          "timeline_total_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeline Total Ms"
+          },
+          "voice_map": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Voice Map",
+            "type": "object"
+          }
+        },
+        "required": [
+          "task_id",
+          "task_status",
+          "progress",
+          "sentences",
+          "voice_map"
+        ],
+        "title": "SentenceVoiceList",
+        "type": "object"
+      },
       "ServiceStatusModel": {
         "description": "一个进程的就绪结论（`ServiceReadiness.to_dict` · §04.8.1）。",
         "properties": {
@@ -6962,6 +7727,48 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "VoiceChangeModel": {
+        "description": "一个角色换成了什么。",
+        "properties": {
+          "affected": {
+            "default": 0,
+            "title": "Affected",
+            "type": "integer"
+          },
+          "after": {
+            "title": "After",
+            "type": "string"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before"
+          },
+          "sentences": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Sentences",
+            "type": "array"
+          },
+          "speaker": {
+            "title": "Speaker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "speaker",
+          "after"
+        ],
+        "title": "VoiceChangeModel",
+        "type": "object"
+      },
       "VoiceItemModel": {
         "additionalProperties": false,
         "description": "一个零样本音色（``path`` 是**目录**：``ref_NN`` + ``ref.txt`` + ``profile.json``）。",
@@ -7114,6 +7921,172 @@
           "created_at"
         ],
         "title": "VoiceItemModel",
+        "type": "object"
+      },
+      "VoiceMapRequest": {
+        "additionalProperties": false,
+        "description": "任务级换音色的请求体。\n\n``extra=\"forbid\"`` 与合成配置 / 渲染面板同一条：把 ``voice_map`` 拼成\n``voiceMap`` 被静默忽略，人会以为\"音色已经换了\"，而配音用的是旧的那一个。",
+        "properties": {
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
+          },
+          "voice_map": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "minProperties": 1,
+            "title": "Voice Map",
+            "type": "object"
+          }
+        },
+        "required": [
+          "voice_map"
+        ],
+        "title": "VoiceMapRequest",
+        "type": "object"
+      },
+      "VoiceMapResponse": {
+        "description": "任务级换音色的结果。\n\n``busy`` 是\"想失效但没动成\"的句子 id（正被某个 worker 念着）。面板必须显示它：\n不显示的话，用户看到\"换音色成功\"，而那几句的成片里还是旧嗓子。",
+        "properties": {
+          "affected": {
+            "default": 0,
+            "title": "Affected",
+            "type": "integer"
+          },
+          "busy": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Busy",
+            "type": "array"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/VoiceChangeModel"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "created_jobs": {
+            "default": 0,
+            "title": "Created Jobs",
+            "type": "integer"
+          },
+          "hint": {
+            "default": "重配完成后跑一次配音收口（studio pipeline run <task_id> --until queued_render）会让时间轴**全量重算**：成片时长以那一版为准",
+            "title": "Hint",
+            "type": "string"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/SentenceProgressModel"
+          },
+          "requeued": {
+            "default": 0,
+            "title": "Requeued",
+            "type": "integer"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "timeline_stale": {
+            "default": false,
+            "title": "Timeline Stale",
+            "type": "boolean"
+          },
+          "timeline_total_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeline Total Ms"
+          },
+          "voice_map": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Voice Map",
+            "type": "object"
+          }
+        },
+        "required": [
+          "task_id",
+          "voice_map",
+          "changes",
+          "progress"
+        ],
+        "title": "VoiceMapResponse",
+        "type": "object"
+      },
+      "VoiceOption": {
+        "description": "音色下拉框的一行。\n\n``source`` 说明它**从哪来**：``profile`` 是入库的参考音（``voice_profiles``），\n``sapi`` 是系统装的。面板据此分组显示 —— 两者的音质与用途不一样，混在一列里\n会让人以为\"这两个是同一档东西\"。",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source"
+        ],
+        "title": "VoiceOption",
+        "type": "object"
+      },
+      "VoiceOptions": {
+        "description": "可选的音色（下拉框）+ 这条任务现在的映射（``task_id`` 给了才有）。",
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "voice_map": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Voice Map",
+            "type": "object"
+          },
+          "voices": {
+            "items": {
+              "$ref": "#/components/schemas/VoiceOption"
+            },
+            "title": "Voices",
+            "type": "array"
+          }
+        },
+        "required": [
+          "voices"
+        ],
+        "title": "VoiceOptions",
         "type": "object"
       },
       "WatchdogServiceModel": {
@@ -7416,7 +8389,7 @@
       },
       "WatermarkModel": {
         "additionalProperties": false,
-        "description": "固定水印（D5 必做项）。``exists=false`` ⇒ 渲染会拒绝出片，面板必须显著提示。",
+        "description": "固定水印（**可选装饰**）。``exists=false`` ⇒ 这次出片不贴水印，**照样出片**。",
         "properties": {
           "exists": {
             "title": "Exists",
@@ -8648,6 +9621,47 @@
         ]
       }
     },
+    "/api/v1/media/{path}": {
+      "get": {
+        "description": "单句试听（``<audio>`` 直接取这个 url，Range 由 Starlette 处理）。\n\n**只发盘上已经有的那一份**，一次合成都不触发。",
+        "operationId": "get_media_api_v1_media__path__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Media",
+        "tags": [
+          "voice"
+        ]
+      }
+    },
     "/api/v1/metrics": {
       "get": {
         "description": "观测面板一次拿全（含备份新鲜度与存储体检）。",
@@ -9154,6 +10168,199 @@
         ]
       }
     },
+    "/api/v1/render/console": {
+      "get": {
+        "description": "面板首屏：一次拿全（可选参数 + 在跑的任务 + 最近任务 + 成片列表）。",
+        "operationId": "get_console_api_v1_render_console_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderConsoleResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Console",
+        "tags": [
+          "render"
+        ]
+      }
+    },
+    "/api/v1/render/jobs": {
+      "post": {
+        "description": "开一条出片任务（**立刻返回**，活在工作线程里跑）。\n\n文案规则与 CLI 同一条：``text`` 非空就用它，否则按 ``task_id`` 读库里那一版生效稿件。",
+        "operationId": "create_job_api_v1_render_jobs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenderJobRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderJobModel"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Job",
+        "tags": [
+          "render"
+        ]
+      }
+    },
+    "/api/v1/render/jobs/{job_id}": {
+      "get": {
+        "description": "查一条任务的进度 / 结果（面板轮询的就是它）。",
+        "operationId": "get_job_api_v1_render_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "pattern": "^r[0-9]{4,}$",
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderJobModel"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job",
+        "tags": [
+          "render"
+        ]
+      }
+    },
+    "/api/v1/render/jobs/{job_id}/cancel": {
+      "post": {
+        "description": "叫停一条任务。\n\n**协作式**：排队中的立刻作废；已经在跑的会在下一次进度回调处停下。\nffmpeg 一旦跑起来要等它自己结束 —— 面板上也是这么写的，不能让人以为按了立刻停。",
+        "operationId": "cancel_job_api_v1_render_jobs__job_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "pattern": "^r[0-9]{4,}$",
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderJobModel"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Job",
+        "tags": [
+          "render"
+        ]
+      }
+    },
+    "/api/v1/render/videos/{name}": {
+      "get": {
+        "description": "播放 / 下载一支成片（``<video>`` 直接取这个 url，Range 由 Starlette 处理）。",
+        "operationId": "get_video_api_v1_render_videos__name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Video",
+        "tags": [
+          "render"
+        ]
+      }
+    },
     "/api/v1/scripts/{task_id}": {
       "get": {
         "description": "稿件全文 + 逐句表 + 全部轮次评分 + 当前待审记录。\n\n任务不存在 ⇒ 404（``TASK_NOT_FOUND``）；任务在但还没有稿件 ⇒ 404\n（``REVIEW_SCRIPT_MISSING``）—— 两种\"没有\"分开报，面板才能给出不同的提示。",
@@ -9304,6 +10511,96 @@
         "summary": "List Script Versions",
         "tags": [
           "scripts"
+        ]
+      }
+    },
+    "/api/v1/sentences": {
+      "get": {
+        "description": "一条任务的逐句配音状态（面板的主列表）。\n\n逐句的 ``audio_url`` 只在**盘上真有那一份**时才给（``preview_audio`` 判的），\n否则给 ``null``：发一个注定 404 的 url，面板上就是一个点了没反应的播放键。",
+        "operationId": "list_sentences_api_v1_sentences_get",
+        "parameters": [
+          {
+            "description": "任务 id",
+            "in": "query",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "description": "任务 id",
+              "minLength": 1,
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SentenceVoiceList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Sentences",
+        "tags": [
+          "voice"
+        ]
+      }
+    },
+    "/api/v1/sentences/{sentence_id}/resynth": {
+      "post": {
+        "description": "单句重配：这一句退回待办 + 它的作业排回 voice 池（**立刻返回**）。\n\n真正念的是 voice 池 —— 这个端点只投递（与 T2.8 裁定 224 的\"投递 / 排空两步\"\n同一条）。面板随后轮询 ``GET /sentences`` 看它什么时候念完。",
+        "operationId": "resynth_sentence_endpoint_api_v1_sentences__sentence_id__resynth_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sentence_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9A-Za-z]{1,64}$",
+              "title": "Sentence Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResynthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resynth Sentence Endpoint",
+        "tags": [
+          "voice"
         ]
       }
     },
@@ -9537,6 +10834,60 @@
         "summary": "Rescue Task",
         "tags": [
           "approvals"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/voice_map": {
+      "patch": {
+        "description": "任务级换音色：写映射 + 受影响的句子全部失效并重排。\n\n不带 ``confirm`` 时**先算代价**：会重配 N 句 ⇒ 抛 ``VOICE_MAP_CONFIRM_REQUIRED``\n（409，``context.affected`` / ``context.sentences`` 给面板弹框）。带 ``confirm``\n才真写 —— 一次点击就重配几十句，这个代价要人点头。",
+        "operationId": "patch_voice_map_api_v1_tasks__task_id__voice_map_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9A-Za-z_-]{1,64}$",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceMapRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceMapResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Voice Map",
+        "tags": [
+          "voice"
         ]
       }
     },
@@ -9830,6 +11181,58 @@
         "summary": "Select Topics",
         "tags": [
           "topics"
+        ]
+      }
+    },
+    "/api/v1/voices": {
+      "get": {
+        "description": "音色下拉框（本机现在选得出来的那些）。\n\n``task_id`` 可给可不给：下拉框本身与任务无关，但面板一打开要同时画\"有哪些音色\"\n与\"这条任务现在用哪个\" —— 分两次请求会让第一帧显示成\"没选音色\"。",
+        "operationId": "list_voice_options_api_v1_voices_get",
+        "parameters": [
+          {
+            "description": "顺带带上这条任务的映射",
+            "in": "query",
+            "name": "task_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "顺带带上这条任务的映射",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceOptions"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Voice Options",
+        "tags": [
+          "voice"
         ]
       }
     },

@@ -1,6 +1,6 @@
 # ── 输出 profile 与合成参数（§01.8.2 / §04.2.8 / T3.2）───────────────
 # 一期 = 单遍合成：跑酷循环裁长 → 缩放铺满 → 固定水印 → 混音 → 一次编码。
-# ★ 水印是必做项（D5）：缺失 ⇒ 拒绝渲染 RENDER_WATERMARK_MISSING，不降级。
+# ★ 水印是可选装饰：有就贴、没有就跳过（缺失不阻塞出片）。
 schema_version: "1.0"
 
 default_profile: douyin_1080x1920_30fps_v1
@@ -74,7 +74,7 @@ profiles:
     audio_channels: 2
     platforms: []
 
-# 水印（T3.2）：路径相对 STUDIO_HOME，必须落在 templates/ 内
+# 水印（T3.2）：路径相对 STUDIO_HOME；文件在 ⇒ 贴，不在 ⇒ 跳过
 watermark:
   path: templates/douyin_9x16_default/assets/images/watermark.png
   position: bottom_right        # top_left | top_right | bottom_left | bottom_right
@@ -96,15 +96,24 @@ audio:
   tail_ms: 600                  # 成片时长 = ffprobe(voice_master) + tail_ms
 
 # 字幕（Q11：开启 · T3.5）
+# ★ 字幕同样是可选层：字体找不到 ⇒ 跳过字幕继续出片（与水印同一条口径）。
+# font_name 必须与真实字体家族名一致，否则 libass 画出来是一排豆腐块。
+# 想用自己的字体：把 .ttf/.otf 放进 templates/douyin_9x16_default/assets/fonts/
+# 再把这个名字改成该字体的家族名（该目录优先于系统字体目录）。
 subtitle:
   enabled: true
-  font_name: Source Han Sans SC
+  font_name: Microsoft YaHei
   font_size: 64
   outline: 4
   shadow: 2
-  margin_bottom: 260
-  max_chars_per_line: 16
+  margin_bottom: 420          # 实际 MarginV = max(这个值, safe_area.bottom)
+  max_chars_per_line: 13      # 1080 宽 / 64px 字 ≈ 15 字，留点余量
   max_lines: 2
+  safe_area:                  # 文字安全区（抖音底部交互区 ~420px）
+    top: 220
+    bottom: 420
+    left: 60
+    right: 60
 
 # BGM（Q12：开启 · 可导入素材库）
 bgm:

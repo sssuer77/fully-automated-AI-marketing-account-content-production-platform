@@ -332,6 +332,22 @@ class DiskGateConfig(_Base):
     pause_pools_on_low: bool = True
 
 
+class PipelineConfig(_Base):
+    """流水线编排开关（§04.3.4 · 冲突 C7）。
+
+    ``streaming_render`` 是"边配音边渲染"（原文 §3.3）的开关。**默认关，而且一期
+    只能关**：成片时长以人声实测总长为**唯一**基准（C12），而边渲染边改人声会让这个
+    基准在渲染途中漂移 —— 出来的是"某一句还没念完时"的时长。§04.3.4 把它留作可选
+    能力，等二期场景化之后再评估。
+
+    那为什么还要有这个键（而不是干脆不写）？因为"默认关闭"这件事本身要被**验**：
+    配置面板、``studio config dump``、集成测试都读同一个键；没有键，那个"默认"
+    就只是一句注释。
+    """
+
+    streaming_render: bool = False
+
+
 class AppConfig(_FileConfig):
     """应用配置（§01.2.5 / §03.7.5 / §04.4.4）。"""
 
@@ -343,6 +359,7 @@ class AppConfig(_FileConfig):
     timeouts: TimeoutConfig = Field(default_factory=TimeoutConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     disk_gate: DiskGateConfig = Field(default_factory=DiskGateConfig)
+    pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -554,7 +571,11 @@ def load_app_config(paths: StudioPaths) -> AppConfig:
 
 VideoCodec = Literal["libx264", "h264_nvenc", "hevc_nvenc"]
 ColorSpace = Literal["bt709", "bt601", "bt2020"]
-WatermarkPosition = Literal["top_left", "top_right", "bottom_left", "bottom_right"]
+#: 水印位置（§04.2.8.2）。`center` 忽略边距 —— 居中时边距没有意义。
+WatermarkPosition = Literal["top_left", "top_right", "bottom_left", "bottom_right", "center"]
+
+#: 水印宽度上限的除数（§04.2.8.2：禁止超过画布 1/4）
+CANVAS_WIDTH_DIVISOR: Final[int] = 4
 
 
 class EncodingProfileConfig(_Base):
@@ -590,7 +611,11 @@ class EncodingProfileConfig(_Base):
 
 
 class WatermarkConfig(_Base):
-    """固定水印（D5 必做；缺失 ⇒ 拒绝渲染，不降级）。"""
+    """固定水印（T3.2）。
+
+    **缺失 ⇒ 跳过水印层继续出片**，不是拒绝渲染 —— 装饰品不该成为整条链路的
+    单点阻塞（``render/watermark.py`` 的模块注释里有这段来龙去脉）。
+    """
 
     path: _ConfigPath
     position: WatermarkPosition = "bottom_right"
@@ -606,6 +631,31 @@ class WatermarkConfig(_Base):
             raise ValueError(f"水印边距必须为偶数（避免 overlay 1px 偏移）：{value}")
         return value
 
+    def width_px_raw(self, canvas_width: int) -> int:
+        """夹取前的像素宽。
+
+        面板显示"配置里这个比例对应多宽"、编译器判断"这一档有没有被夹过"，
+        用的都是这个数。
+        """
+        return round(self.width_ratio * canvas_width)
+
+    def width_px_for(self, canvas_width: int) -> int:
+        """最终像素宽 = **夹取到画布 1/4** + **取偶**（T3.2 · §04.2.8.2）。
+
+        两个动作各自的理由：
+
+        - **夹取**：规格写死"禁止超过画布 1/4"。``width_ratio`` 的上限已经是 0.25，
+          但 ``round()`` 在奇数画布宽下仍会越界 1px（画布 1078 ⇒ round(269.5)=270 > 1078//4=269）；
+        - **取偶**：``overlay`` 的 x/y 必须为偶数（yuv420p 色度对齐），而右下角的
+          x 是 ``W - w - margin_x``（W 与 margin 都已偶数）⇒ 只有 w 取偶才能保证 x 偶。
+
+        口径**只此一处**：面板（``services/outputs_service.py``）与编译器
+        （``render/watermark.py``）都调这个方法，不许各写一份 —— 否则会出现
+        "面板说 238、真正渲染时用 236"这种对不上的错。
+        """
+        width = min(self.width_px_raw(canvas_width), canvas_width // CANVAS_WIDTH_DIVISOR)
+        return max(width - width % 2, 2)
+
 
 class AudioConfig(_Base):
     voice_gain_db: float = Field(default=0.0, ge=-30.0, le=30.0)
@@ -619,15 +669,45 @@ class AudioConfig(_Base):
     tail_ms: int = Field(default=600, ge=0, le=10_000)
 
 
+class SafeAreaConfig(_Base):
+    """文字安全区（§03-data-model 模板 ``safe_area``，单位 = 画布像素）。
+
+    字幕、标题卡这类"文字类组件"必须落在安全区内：抖音底部的点赞/评论条会盖住
+    画面下方约 420px，标题区会盖住上方约 220px。写在配置里而不是代码常量里，
+    是因为换平台（视频号 / B 站）这几个数不一样。
+    """
+
+    top: int = Field(default=220, ge=0, le=2000)
+    bottom: int = Field(default=420, ge=0, le=2000)
+    left: int = Field(default=60, ge=0, le=2000)
+    right: int = Field(default=60, ge=0, le=2000)
+
+
 class SubtitleConfig(_Base):
+    """烧进画面的字幕（T3.5 · §04.2.6）。
+
+    两个字段的口径值得单独说：
+
+    - ``margin_bottom`` 是"字幕底边距画布底部的像素"。它与 ``safe_area.bottom``
+      取 **max** 之后才是 ASS 的 ``MarginV``（§04.2.6 的"MarginV ≥ safe_area.bottom"）。
+      配置里写小于安全区的值不会出事，只会被抬上来 —— 但默认值就直接写 420，
+      免得"配置说 260、实际渲 420"这种对不上的事发生。
+    - ``font_name`` 必须与**真实存在的字体家族名**一致，否则 libass 会画出一排
+      豆腐块。这里默认写 Windows 自带的「微软雅黑」：本项目的 TTS 走 SAPI、
+      进程管理走 taskkill，本来就是 Windows 专用，挑一个本机一定有的字体比
+      引用一个"应该存在"的开源字体名更稳。要换成自己的字体，把 .ttf/.otf 放进
+      ``templates/<模板>/assets/fonts/`` 再改这里。
+    """
+
     enabled: bool = True
-    font_name: str = "Source Han Sans SC"
+    font_name: str = "Microsoft YaHei"
     font_size: int = Field(default=64, ge=16, le=200)
     outline: int = Field(default=4, ge=0, le=20)
     shadow: int = Field(default=2, ge=0, le=20)
-    margin_bottom: int = Field(default=260, ge=0, le=2000)
-    max_chars_per_line: int = Field(default=16, ge=4, le=60)
+    margin_bottom: int = Field(default=420, ge=0, le=2000)
+    max_chars_per_line: int = Field(default=13, ge=4, le=60)
     max_lines: int = Field(default=2, ge=1, le=6)
+    safe_area: SafeAreaConfig = Field(default_factory=SafeAreaConfig)
 
 
 class BgmConfig(_Base):

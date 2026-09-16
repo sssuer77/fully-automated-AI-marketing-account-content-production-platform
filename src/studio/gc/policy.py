@@ -35,7 +35,7 @@ __all__ = [
 #: ``graphs`` 是目录，其余是单文件 —— 判据落在"任务目录下的第二段名字"上，
 #: 于是 ``graphs/**`` 与 ``script.json`` 走同一条规则，不必写两遍。
 PROTECTED_WORK_NAMES: Final[frozenset[str]] = frozenset(
-    {"graphs", "ir.json", "manifest.json", "script.json", "timeline.json"}
+    {"final", "graphs", "ir.json", "manifest.json", "script.json", "timeline.json"}
 )
 
 

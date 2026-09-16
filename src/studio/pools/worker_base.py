@@ -55,6 +55,7 @@ __all__ = [
     "PoolWorker",
     "UnitAborted",
     "UnitContext",
+    "UnitDeferred",
     "UnitHandler",
     "UnitTimeout",
     "WorkerRunReport",
@@ -67,6 +68,8 @@ logger = get_logger("studio.pools.worker")
 _SUCCEEDED: Final[str] = "succeeded"
 _FAILED: Final[str] = "failed"
 _ABORTED: Final[str] = "aborted"
+#: 顺延：既不是成功也不是失败（§06.10「限频触顶」）
+_DEFERRED: Final[str] = "deferred"
 
 #: 这些错误码**重试不会变好**（缺字体、缺水印、配置写错……）⇒ 直接死信 + 告警，
 #: 而不是耗完 ``max_attempts`` 再死信 —— 早一分钟报警就早一分钟能修。
@@ -85,6 +88,9 @@ NON_RETRYABLE_CODES: Final[frozenset[ErrorCode]] = frozenset(
         ErrorCode.RENDER_BROLL_MISSING,
         ErrorCode.DB_SCHEMA_DRIFT,
         ErrorCode.PUBLISH_DISABLED,
+        # T5.2：一期只实现一线三个平台，二线的空实现**重试多少次都还是空实现**
+        # （§06.2.1 · Q9）。让它耗完 ``max_attempts`` 只是把"没做"拖成"试过了"。
+        ErrorCode.PUBLISH_NOT_IMPLEMENTED,
     }
 )
 
@@ -102,6 +108,29 @@ class UnitTimeout(UnitAborted):
     """单元超过 ``pools.yaml: unit_timeout_sec``（协作式超时）。"""
 
     default_code = ErrorCode.UNIT_TIMEOUT
+
+
+class UnitDeferred(StudioError):
+    """单元**现在不能做**，但不是失败 —— 原样放回去，到点了再来。
+
+    为什么需要它（§06.10「限频触顶」）
+    ----------------------------------
+    ``publish`` 池有一条别人没有的守卫：``≤3 条/天/账号`` + 间隔 ``≥30min``
+    （R13 风控）。触顶时合格的动作是“顺延到下一个可用时刻”，而不是“记一次失败”。
+    把它当失败处理有两层代价：①``attempts`` 被消耗，三天后一条**从没试过**
+    的作业自己进死信并告警；②面板上一条“额度用完了”与一条“真的发不出去”
+    长得一样，而两者的排障动作完全不同。
+
+    ``not_before`` 由 handler 算（它手上有平台配置与账号），
+    :class:`PoolWorker` 只负责把它交给 :meth:`JobStore.defer`。
+    """
+
+    default_code = ErrorCode.PUBLISH_RATELIMIT
+
+    def __init__(self, message: str, *, not_before: str, reason: str = "") -> None:
+        super().__init__(message)
+        self.not_before = not_before
+        self.reason = reason or message
 
 
 # ── 产物：先 .partial 再原子改名 ────────────────────────────────────────
@@ -140,6 +169,7 @@ class UnitHandler(Protocol):
 
     - 正常返回 ``None`` / dict ⇒ ``succeed(result=...)``
     - :class:`UnitAborted` ⇒ **不收尾**（租约没了，让别人重做）
+    - :class:`UnitDeferred` ⇒ **顺延**（回 ``pending`` + ``not_before``，**不计 attempts**）
     - :class:`StudioError` ⇒ ``fail``；错误码在 :data:`NON_RETRYABLE_CODES` ⇒ 直接死信
     - 其它异常 ⇒ ``fail(INTERNAL)`` 且可重试（退避重排，绝不让异常穿出循环）
     """
@@ -550,6 +580,9 @@ class WorkerRunReport:
     units_done: int
     units_failed: int
     units_aborted: int
+    #: 被顺延的单元数（限频触顶）。**不算进 ``units_failed``** ——
+    #: 混进去会让“今天额度用完了”在运维看板上与“真的发不出去”一样。
+    units_deferred: int
     empty_rounds: int
     started_at: str
     finished_at: str
@@ -562,6 +595,7 @@ class WorkerRunReport:
             "units_done": self.units_done,
             "units_failed": self.units_failed,
             "units_aborted": self.units_aborted,
+            "units_deferred": self.units_deferred,
             "empty_rounds": self.empty_rounds,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -682,7 +716,7 @@ class PoolWorker:
         connection = self._connection if self._connection is not None else connect(self._paths.db_file)
         self._connection = connection
         store = JobStore(connection, auto_concurrency=self._auto_concurrency)
-        units_done = units_failed = units_aborted = 0
+        units_done = units_failed = units_aborted = units_deferred = 0
         stop_reason = "draining"
         self._pulse.start()
         logger.info("worker.started", worker_id=self.worker_id, pool=self.pool, pid=self._identity.pid)
@@ -714,6 +748,8 @@ class PoolWorker:
                     units_failed += 1
                 elif outcome == _ABORTED:
                     units_aborted += 1
+                elif outcome == _DEFERRED:
+                    units_deferred += 1
                 try:
                     store.unlock_dependents(pool=self.pool)
                 except StudioError as exc:
@@ -735,6 +771,7 @@ class PoolWorker:
             units_done=units_done,
             units_failed=units_failed,
             units_aborted=units_aborted,
+            units_deferred=units_deferred,
             empty_rounds=self._empty_rounds,
             started_at=started,
             finished_at=now_iso(),
@@ -761,6 +798,35 @@ class PoolWorker:
         if not ok:
             self._pulse.mark_lease_lost()
         return ok
+
+    def _defer(self, store: JobStore, job: Job, *, not_before: str, reason: str) -> str:
+        """顺延收尾：交回队列、**不碰 attempts**（§06.10「限频触顶不是失败」）。
+
+        租约丢了就当作 **abort** 而不是报错：说明这一轮已被别人接手，
+        顺延与否都轮不到我们。报错会把“正常竞争”演成一条中间态异常。
+        """
+        try:
+            outcome = store.defer(
+                job_id=job.id, worker_id=self.worker_id, not_before=not_before, reason=reason
+            )
+        except StudioError as exc:
+            logger.warning(
+                "worker.defer_skipped",
+                worker_id=self.worker_id,
+                job_id=job.id,
+                error=str(exc),
+            )
+            return _ABORTED
+        logger.info(
+            "worker.unit_deferred",
+            worker_id=self.worker_id,
+            pool=self.pool,
+            job_id=job.id,
+            task_id=job.task_id,
+            not_before=outcome.not_before,
+            reason=reason,
+        )
+        return _DEFERRED
 
     def _run_unit(self, store: JobStore, job: Job, runtime: PoolRuntime) -> str:
         pulse = self._pulse
@@ -796,6 +862,8 @@ class PoolWorker:
                 message=exc.message,
                 retryable=True,
             )
+        except UnitDeferred as exc:
+            return self._defer(store, job, not_before=exc.not_before, reason=exc.reason)
         except UnitAborted as exc:
             logger.warning(
                 "worker.unit_aborted",

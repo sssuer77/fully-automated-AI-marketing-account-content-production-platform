@@ -345,9 +345,9 @@ export function qualityLabel(profile: { quality_field: string }): string {
   return profile.quality_field === "cq" ? "CQ" : "CRF";
 }
 
-/** 水印那一行的灯：PNG 不在盘上 ⇒ 渲染会**拒绝出片**（D5 必做项）。 */
+/** 水印那一行的灯：PNG 不在盘上 ⇒ 这次不贴水印（**不是**错误，只是缺一层装饰）。 */
 export function watermarkTone(exists: boolean): StatusTone {
-  return exists ? "ok" : "error";
+  return exists ? "ok" : "warn";
 }
 
 /** 水印那一行的人话（`width_ratio` 换算成像素宽比小数直观得多）。 */
@@ -406,7 +406,7 @@ export const useOutputsStore = defineStore("outputs", () => {
   const sha256 = computed<string>(() => snapshot.value?.sha256 ?? "");
   const loadedAt = computed<string>(() => snapshot.value?.loaded_at ?? "");
   const defaultProfile = computed<string>(() => snapshot.value?.default_profile ?? "");
-  /** 水印 PNG 不在盘上 ⇒ 渲染会**拒绝出片**（面板必须显著提示，不是一句小字）。 */
+  /** 水印 PNG 不在盘上 ⇒ 这次出片不带水印（面板要说出来，免得人以为是 bug）。 */
   const watermarkMissing = computed<boolean>(
     () => watermark.value !== null && !watermark.value.exists,
   );

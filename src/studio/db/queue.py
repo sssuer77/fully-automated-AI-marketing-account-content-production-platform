@@ -73,6 +73,12 @@ CLAIMED_STATUS: Final[str] = "claimed"
 SUCCEEDED_STATUS: Final[str] = "succeeded"
 BLOCKED_STATUS: Final[str] = "blocked"
 DEAD_STATUS: Final[str] = "dead"
+CANCELED_STATUS: Final[str] = "canceled"
+
+#: **可以被取消**的状态。只有还没被任何 worker 认领的那两个 —— ``claimed`` 不在里面：
+#: 抢走一个在跑的单元的租约，等于让正在写文件的 ffmpeg 被另一个 worker 重跑一遍，
+#: 两份产物互相覆盖。取消在跑单元是**协作式**的（单元自己在检查点收工），队列不代办。
+CANCELABLE_STATUSES: Final[frozenset[str]] = frozenset({CLAIMABLE_STATUS, BLOCKED_STATUS})
 
 #: 租约过期回收时写入的 ``error_code``
 LEASE_EXPIRED_CODE: Final[str] = "LEASE_EXPIRED"
@@ -574,6 +580,38 @@ class JobStore:
             )
         return cursor.rowcount == 1
 
+    def report_progress(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        result: Mapping[str, Any],
+    ) -> bool:
+        """把**在跑单元**的进度写进 ``result_json``（渲染面板轮询读的就是它）。
+
+        为什么进度要落库，而不是留在 worker 进程的内存里：读它的是**另一个进程**
+        （API 进程里的面板）。留在内存里意味着"重启即丢、多开一个进程就各看各的"，
+        而 §03.4.6 规则 1 把"在 ``jobs`` 之外维护内存队列"直接列为架构回退。
+
+        为什么**不**像 :meth:`succeed` 那样连状态一起改：进度不是状态迁移。顺手把
+        ``claimed`` 改成别的什么，会让 sweeper 误判租约、让 ``unlock_dependents``
+        提前放行下游。
+
+        守卫与 :meth:`renew` 逐字同一条（``lease_owner = worker_id AND status = 'claimed'``）：
+        租约丢了就**一个字节都不写** —— 产物可能已经被别人重做了，这时再写进度
+        等于把"别人的进度"覆盖成"我的"。``False`` 只表示没写进去，**不是错误**。
+        """
+        with transaction(self._connection, immediate=True):
+            cursor = self._connection.execute(
+                """
+                UPDATE jobs
+                   SET result_json = ?
+                 WHERE id = ? AND lease_owner = ? AND status = 'claimed'
+                """,
+                (json.dumps(dict(result), ensure_ascii=False), job_id, worker_id),
+            )
+        return cursor.rowcount == 1
+
     def succeed(
         self,
         *,
@@ -730,6 +768,94 @@ class JobStore:
             status=outcome.status,
             attempts=outcome.attempts,
             error_code=error_code,
+        )
+        return outcome
+
+    def defer(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        not_before: str,
+        reason: str,
+    ) -> JobOutcome:
+        """**顺延**：把作业原样放回 ``pending``，``not_before`` 推到给定时刻。
+
+        与 :meth:`fail` 的区别（§06.10「限频触顶」一行）
+        ----------------------------------------------
+        限频**不是失败**。走 ``fail`` 会消耗一次 ``attempts``，于是"今天的额度用完了"
+        被算成三次失败之一 —— 到第三天，一条**从来没被真正试过**的作业就自己进死信了，
+        而死信是要报警的：运维半夜被叫起来看一条"从没跑过"的发布。
+
+        所以这条路要把 :meth:`claim` 刚加上的那一次**退回去**（``max(attempts-1, 0)``）。
+        ``max`` 那一下不是防御性编程：``defer`` 也会被别的路径调用（人工顺延），
+        那时作业可能根本没被认领过，减到负数会让"这是第几次尝试"从此失去意义。
+
+        为什么不做成"认领前先查限频"
+        --------------------------
+        认领是**单条 SQL 的原子操作**（§03.4.4），而限频要读 ``publications``。
+        在认领前查，等于把"查完到认领之间"开成一个窗口 —— 窗口里另一个 worker 恰好
+        发了一条，这条就**超发**了。先认领、后判、判不过就顺延，代价是浪费一次认领
+        （下次轮到它是 ``not_before`` 之后），而超发**不可逆**（R14）。
+
+        ``error_code`` 照样写：它不是"失败标记"，而是"这条现在为什么没在跑"的答案。
+        面板上一条 ``pending`` 的作业配着 ``PUBLISH_RATELIMIT`` + ``not_before``，
+        读起来是"顺延到几点"，而不是"失败了"。:meth:`succeed` 会把它清掉。
+        没有 ``now`` 参数：这条路**不写任何时刻** —— 时刻由调用方算好了传进来（``not_before``）。
+        多一个只能用来算时间的参数，会让人以为“传了它就会接着算”。
+        """
+        with transaction(self._connection, immediate=True):
+            row = self._connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if row is None:
+                raise QueueError(
+                    f"作业不存在：{job_id}",
+                    code=ErrorCode.JOB_NOT_FOUND,
+                    context={"job_id": job_id},
+                )
+            job = Job.from_row(row)
+            if job.status != CLAIMED_STATUS or job.lease_owner != worker_id:
+                raise QueueError(
+                    f"作业 {job_id} 的租约不在 {worker_id} 手上（当前：{job.lease_owner}）",
+                    code=ErrorCode.JOB_LEASE_LOST,
+                    context={
+                        "job_id": job_id,
+                        "worker_id": worker_id,
+                        "status": job.status,
+                        "lease_owner": job.lease_owner,
+                    },
+                    remediation="顺延也必须持有租约：租约丢了说明这一轮已被别人接手",
+                )
+
+            self._connection.execute(
+                """
+                UPDATE jobs
+                   SET status           = 'pending',
+                       not_before       = ?,
+                       attempts         = max(attempts - 1, 0),
+                       lease_owner      = NULL,
+                       lease_expires_at = NULL,
+                       heartbeat_at     = NULL,
+                       error_code       = ?,
+                       error_message    = ?
+                 WHERE id = ? AND status = 'claimed' AND lease_owner = ?
+                """,
+                (not_before, ErrorCode.PUBLISH_RATELIMIT.value, reason, job_id, worker_id),
+            )
+            outcome = JobOutcome(
+                job_id=job_id,
+                pool=job.pool,
+                status=CLAIMABLE_STATUS,
+                attempts=max(job.attempts - 1, 0),
+                max_attempts=job.max_attempts,
+                not_before=not_before,
+                error_code=ErrorCode.PUBLISH_RATELIMIT.value,
+            )
+        logger.info(
+            "queue.job_deferred",
+            job_id=job_id,
+            pool=job.pool,
+            reason=reason,
+            not_before=not_before,
         )
         return outcome
 
@@ -1018,6 +1144,171 @@ class JobStore:
                 reason=reason,
                 source=source,
             )
+
+    def requeue_unit(
+        self,
+        *,
+        task_id: str,
+        pool: str,
+        unit_type: str,
+        unit_ref: str,
+        payload: Mapping[str, Any] | None = None,
+    ) -> str | None:
+        """把一个**已经结束**的单元重新排进待办（T2.9 的单句重配 / 换音色）。
+
+        返回作业 id；**没有这条作业** ⇒ ``None``（调用方应当去 ``enqueue`` 一条）。
+
+        为什么需要它（而不是"改一下业务表的状态就够了"）
+        ------------------------------------------------
+        队列的幂等键是 ``(task_id, pool, unit_type, unit_ref)`` ⇒ 一条单元**一辈子只有
+        一条作业**。于是 ``succeeded`` 之后，业务侧无论把 ``script_sentences.tts_status``
+        改成什么，**都不会再有 worker 去看它** —— 面板上"重配"点下去，库里状态变成了
+        ``pending``，然后它就永远停在 ``pending``。而 ``settle_voice`` 的守卫是
+        "全部句都定局"，于是一条本来能出片的任务会卡在 ``voicing``。
+        这个失败**不报错**，只是"点了没反应"，是最难查的一类。
+
+        与 §03.4.6 规则 5 的关系（"禁止把 ``succeeded`` 的 job 重置为 ``pending``"）
+        ---------------------------------------------------------------------------
+        那条规则针对的是**渲染**：一次出片的产物由 ``render_hash`` 决定，重做应当
+        靠"输入变了 ⇒ 哈希变了 ⇒ 新建 job"，而不是把结论翻回去。
+        句子这一侧本来就有同一套东西：**输入哈希是 ``tts_hash``，失效判据是
+        ``script_sentences.tts_status``**。所以这里不是"绕过哈希强行重跑"，而是
+        "把调度令牌对齐到单元自己的结论上"—— 业务表说"这一句要做"，作业就得在待办里。
+        反过来说，本方法**不**判断"该不该重做"：那是调用方（``SentenceRepo.invalidate``）
+        的事，它已经握着版本守卫与状态判据。
+
+        ``attempts`` 归零、``not_before`` 清空：人工重配的意思是"给它一次完整的机会"，
+        不是"接着上一轮的第 3 次算"（接着算的话，下一次失败就直接降级了）。
+
+        ``payload`` 给定时**整体替换**（``None`` ⇒ 原样保留）。换音色走的就是这一条：
+        运行期选择（音色 / seed）记在 payload 里，音色变了而不更新它，重配出来的
+        还是旧音色 —— 而库里 ``voice_map`` 已经显示新音色了。**整体替换而不是合并**：
+        "这一条作业这次要用的运行期选择"是一份完整的东西，合并会让上一轮的键留下来。
+        """
+        with transaction(self._connection, immediate=True):
+            row = self._connection.execute(
+                "SELECT id, status FROM jobs "
+                "WHERE task_id = ? AND pool = ? AND unit_type = ? AND unit_ref = ?",
+                (task_id, pool, unit_type, unit_ref),
+            ).fetchone()
+            if row is None:
+                return None
+            job_id = str(row["id"])
+            status = str(row["status"])
+            if status == CLAIMED_STATUS:
+                raise QueueError(
+                    f"这一条正在被处理，不能重排：{unit_type} {unit_ref}",
+                    code=ErrorCode.STATE_TRANSITION_ILLEGAL,
+                    context={"job_id": job_id, "pool": pool, "status": status},
+                    remediation="等它跑完（面板上显示「进行中」），或先 `studio pool cancel` 再重配",
+                )
+            if status == BLOCKED_STATUS:
+                raise QueueError(
+                    f"这一条还在等上游：{unit_type} {unit_ref}",
+                    code=ErrorCode.STATE_TRANSITION_ILLEGAL,
+                    context={"job_id": job_id, "pool": pool, "status": status},
+                    remediation="依赖解锁由 sweeper 负责（`unlock_dependents`）；这里放行会绕开依赖",
+                )
+            if payload is None:
+                self._connection.execute(
+                    """
+                    UPDATE jobs
+                       SET status           = 'pending',
+                           attempts         = 0,
+                           not_before       = NULL,
+                           error_code       = NULL,
+                           error_message    = NULL,
+                           error_trace      = NULL,
+                           finished_at      = NULL,
+                           lease_owner      = NULL,
+                           lease_expires_at = NULL,
+                           heartbeat_at     = NULL
+                     WHERE id = ?
+                       AND status IN ('pending', 'succeeded', 'failed', 'dead', 'canceled')
+                    """,
+                    (job_id,),
+                )
+            else:
+                self._connection.execute(
+                    """
+                    UPDATE jobs
+                       SET status           = 'pending',
+                           attempts         = 0,
+                           not_before       = NULL,
+                           error_code       = NULL,
+                           error_message    = NULL,
+                           error_trace      = NULL,
+                           finished_at      = NULL,
+                           lease_owner      = NULL,
+                           lease_expires_at = NULL,
+                           heartbeat_at     = NULL,
+                           payload_json     = ?
+                     WHERE id = ?
+                       AND status IN ('pending', 'succeeded', 'failed', 'dead', 'canceled')
+                    """,
+                    (json.dumps(dict(payload), ensure_ascii=False), job_id),
+                )
+        return job_id
+
+    def cancel(
+        self,
+        *,
+        job_id: str,
+        actor: str = "user",
+        actor_ref: str | None = None,
+        source: str = "webui",
+        reason: str | None = None,
+        now: datetime | None = None,
+    ) -> bool:
+        """作废一个**还没被认领**的作业（``pending`` / ``blocked``），并写 ``audit_ops``。
+
+        ``False`` ⇒ 它已经在跑或已经结束。调用方据此把"排队中 ⇒ 已取消"与
+        "在跑 ⇒ 等它自己收工"分开说 —— 面板上这两句话差别很大，说混了用户会以为
+        按钮坏了然后反复按。
+
+        为什么取消也要写留痕：§03.4 的必写清单里有"重投死信"，取消与它是同一类
+        人工干预（都改变了队列里那条作业的命运）。没有留痕的话，"这条片子为什么
+        没出"在事后就只剩一句猜。
+        """
+        moment = now or utc_now()
+        with transaction(self._connection, immediate=True):
+            row = self._connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if row is None:
+                raise QueueError(
+                    f"作业不存在：{job_id}",
+                    code=ErrorCode.JOB_NOT_FOUND,
+                    context={"job_id": job_id},
+                )
+            job = Job.from_row(row)
+            if job.status not in CANCELABLE_STATUSES:
+                return False
+            self._connection.execute(
+                """
+                UPDATE jobs
+                   SET status           = 'canceled',
+                       finished_at      = ?,
+                       lease_owner      = NULL,
+                       lease_expires_at = NULL,
+                       heartbeat_at     = NULL,
+                       not_before       = NULL
+                 WHERE id = ? AND status IN ('pending', 'blocked')
+                """,
+                (format_iso(moment), job_id),
+            )
+            self._audit(
+                actor=actor,
+                actor_ref=actor_ref,
+                action="job.cancel",
+                target_type="job",
+                target_id=job_id,
+                task_id=job.task_id,
+                before={"status": job.status},
+                after={"status": CANCELED_STATUS},
+                reason=reason,
+                source=source,
+                at=moment,
+            )
+        return True
 
     # ── publish 池限频守卫 ──────────────────────────────────────────────
 

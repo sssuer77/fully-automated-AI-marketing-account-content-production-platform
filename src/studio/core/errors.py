@@ -113,19 +113,56 @@ class ErrorCode(StrEnum):
     TTS_OOM = "TTS_OOM"
     TTS_SENTENCE_FAILED = "TTS_SENTENCE_FAILED"
     TTS_AUDIO_QC_FAILED = "TTS_AUDIO_QC_FAILED"
+    #: 引擎进程本身挂了（§04.3.3 的决策表里它与"这一句念不出来"是两件事：
+    #: 前者要重载模型 / 重启服务，后者要换切分或降级）。T2.8 的
+    #: ``STUDIO_FAULT=tts_down`` 注入的就是它。
+    TTS_ENGINE_DOWN = "TTS_ENGINE_DOWN"
+    #: 要用的音色在这台机器上**不存在**（§04.3.3 决策表的"音色缺失"）。
+    #: 它必须在**写入** ``voice_map`` 的那一刻就报出来：音色名拼错了若放过去，
+    #: 三句失败之后整条片子会降级成静音模式 —— 用户看到的是"换音色成功"，
+    #: 拿到的是一支没有人声的成片。
+    TTS_VOICE_MISSING = "TTS_VOICE_MISSING"
+    #: 换音色会让 N 句重新合成，调用方**没有带上确认**（T2.9 · §05 的"二次确认"）。
+    #: 与 ``VALIDATION_FAILED`` 分开：请求本身一个字都没写错，缺的是"你确认过代价了"。
+    VOICE_MAP_CONFIRM_REQUIRED = "VOICE_MAP_CONFIRM_REQUIRED"
 
     # ── render（T3.x）───────────────────────────────────────
     RENDER_FILTER_SYNTAX = "RENDER_FILTER_SYNTAX"
     RENDER_WATERMARK_MISSING = "RENDER_WATERMARK_MISSING"
+    #: 水印文件在，但**不可用**（不是 PNG / 没有透明通道 / 尺寸为 0 / 摆放越界）。
+    #: 与 MISSING 分开：一个要「去拿图」，一个要「去修图或调边距」，修复动作不同。
+    RENDER_WATERMARK_INVALID = "RENDER_WATERMARK_INVALID"
     RENDER_BROLL_MISSING = "RENDER_BROLL_MISSING"
     RENDER_TIMEOUT = "RENDER_TIMEOUT"
     RENDER_FAILED = "RENDER_FAILED"
 
     # ── publish（T5.x）──────────────────────────────────────
     PUBLISH_DISABLED = "PUBLISH_DISABLED"
+    #: 二期平台的接口已定、实现为空（§06.2.1 · Q9）。与 DISABLED 分开：一个要「去开开关」，
+    #: 一个要「去写实现」—— 面板上给的下一步动作完全不同。
+    PUBLISH_NOT_IMPLEMENTED = "PUBLISH_NOT_IMPLEMENTED"
     PUBLISH_LOGIN_EXPIRED = "PUBLISH_LOGIN_EXPIRED"
-    PUBLISH_SELECTOR_STALE = "PUBLISH_SELECTOR_STALE"
+    #: 选择器没命中（页面改版）。**取规格书 §06.10 的名字**：早先草稿写作
+    #: ``PUBLISH_SELECTOR_STALE``，但"stale（过期）"说的是我们的认知，"miss（没命中）"
+    #: 说的是这一次的观测 —— 排障时后者能直接对上截图，前者不能。
+    PUBLISH_SELECTOR_MISS = "PUBLISH_SELECTOR_MISS"
+    #: 限频触顶（§06.10）。**不是失败**：job 回 pending 顺延，不写 manual_required。
+    PUBLISH_RATELIMIT = "PUBLISH_RATELIMIT"
+    PUBLISH_UPLOAD_FAILED = "PUBLISH_UPLOAD_FAILED"
+    PUBLISH_REVIEW_REJECTED = "PUBLISH_REVIEW_REJECTED"
+    PUBLISH_TIMEOUT = "PUBLISH_TIMEOUT"
+    #: 通用发布失败（``PublishError`` 的默认码）。
     PUBLISH_FAILED = "PUBLISH_FAILED"
+    #: **我们没分类出来**的那一类（§4.6.1 的错误码表里有它）。
+    #: 与 FAILED 分开：FAILED 是"知道哪一步坏了"，UNKNOWN 是"异常从没预期的地方冒出来"——
+    #: 排障时前者照着 ``evidence.stage`` 看，后者要去看 traceback。
+    PUBLISH_UNKNOWN = "PUBLISH_UNKNOWN"
+    # T5.1 发布前二次校验（§06.4 / §06.10）：每一个都对应一道阻断门禁
+    PRECHECK_WATERMARK = "PRECHECK_WATERMARK"
+    PRECHECK_LOUDNESS = "PRECHECK_LOUDNESS"
+    PRECHECK_SIMILARITY = "PRECHECK_SIMILARITY"
+    PRECHECK_BANNED = "PRECHECK_BANNED"
+    COVER_FAILED = "COVER_FAILED"
 
     # ── 输入源与选题池（T1.9 · §04.1.2 / §04.1.3 / §04.1.7）─────
     INPUT_SOURCE_EMPTY = "INPUT_SOURCE_EMPTY"

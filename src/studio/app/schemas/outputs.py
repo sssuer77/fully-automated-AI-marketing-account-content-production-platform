@@ -139,7 +139,7 @@ class ProfileModel(_Response):
 
 
 class WatermarkModel(_Response):
-    """固定水印（D5 必做项）。``exists=false`` ⇒ 渲染会拒绝出片，面板必须显著提示。"""
+    """固定水印（**可选装饰**）。``exists=false`` ⇒ 这次出片不贴水印，**照样出片**。"""
 
     path: str
     position: str

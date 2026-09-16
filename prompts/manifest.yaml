@@ -69,3 +69,11 @@ prompts:
     version: "1"
     sha256: 23957d069f38b35af363b63b77030e0917141e527d92855d9a96b1d45ea70abb
     description: 改稿（只改被指出的问题；≤2 轮）
+
+  cover:
+    system: cover/system.md
+    user: cover/user.jinja
+    version: "1"
+    sha256: 6f5d2094bdb1181eb407771a31daef0c170a980720673987cfa9469adc98bbb1
+    description: 封面文案（主/次文案 + 高亮词 + 抽帧时刻；禁区自检）
+

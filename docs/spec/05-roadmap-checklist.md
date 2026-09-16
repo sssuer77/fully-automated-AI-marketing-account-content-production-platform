@@ -13,9 +13,9 @@
 | **T1** | 基座 + 智能体脚手架 + 选题池 + WebUI 骨架 | 12 | 阶段一 | **M1** |
 | **T2** | CosyVoice3 配音（熊大熊二 + 按句续传） | 9 | 阶段二 | **M2** |
 | **T3** | 渲染引擎（**一期：单遍合成 + 固定水印**） | 7 | 阶段三 | **M3** |
-| **T4** | 四池并行 + 网页实时操作台 + 无人值守 | 13 | 阶段四 | **M4** |
+| **T4** | 四池并行 + 网页实时操作台 + 无人值守 | 14 | 阶段四 | **M4** |
 | **T5** | 发布 + **定时任务** + **数据报告** + 数据回流（第六部分重建 + 口述 D7/D9） | 8 | §8 / §9.3 | **M5** |
-| | **合计** | **49** | | |
+| | **合计** | **50** | | |
 
 **关键路径**
 
@@ -69,11 +69,11 @@
 | **T2.2** | **常驻推理服务 + 并发实测标定**（★裁决 C8）：`/health` `/warmup` `/unload` `/voices` `/synth`、GPU 串行信号量、fp16 常驻、空闲 20min 卸载、429 背压 | T2.1 | `curl 127.0.0.1:8811/health` → `{ready:true,device:"cuda",model_state:"ready"}`；`python scripts/bench_tts.py --concurrency 1,2,3` 输出**各并发下的峰值显存与 RTF**，写出建议值到 `docs/runbook/tts_concurrency.md`；fp16 常驻 < 4 GB | **R4/C8 显存**：8 GB 卡且桌面占 1.49 GB ⇒ **默认并发 1**；若实测 3 并发 OOM ⇒ **正式否决原文的 3 并**并记录依据；显存不足 ⇒ 自动 `unload` 重载；服务崩溃 ⇒ supervisor 重启（T4.11）；**禁 bf16**（Turing 无原生支持） |
 | **T2.3** | **引擎适配层与路由**：§04.3.2 的 `VoiceEngine` ABC 实现、多引擎路由、熔断、§04.3.3 降级决策表落地 | T2.2 | `pytest tests/unit/tts/test_router.py -q`（§04.3.3 决策表**逐条**：OOM / 超时 / 静音 / 爆音 / 引擎宕 / 连续失败熔断）；`pytest tests/contract/test_voice_engine_abc.py`（Mock / 服务 / CosyVoice 三实现均满足 ABC） | 引擎"假成功"（返回静音）⇒ `RMS < -50 dBFS` 判 `TTS_SILENT`；熔断阈值可配（默认连续 3 句）；熔断后任务**不失败**，转"字幕模式" |
 | **T2.4** | **原声入库与音色注册（`bigbear`/`littlebear`）**：目录契约、质量校验（段数/时长/无 BGM/无削波/有效语音占比）、零样本复刻注册、试听样本 | T2.2 | `python scripts/ingest_voice_src.py --voice bigbear` 校验通过并注册；`studio tts list` 可见 `bigbear`/`littlebear`；`pytest tests/integration/test_voice_profile.py -q`（段数<2 / 时长越界 / 削波 / 采样率不足 **四类拒绝**）；`-k quality`（含 BGM 被标 `warn`） | **R2 版权**：《熊出没》IP 音色复刻存在声音权/著作权风险 ⇒ ①音色 ID 与展现名**可配置解耦**；②支持一键替换为自录音色；③WebUI 显著合规提示；④`profile.json` 来源登记留档；参考音质量差 ⇒ 入库校验 + 试听确认 + 可重录替换 |
-| **T2.5** | **文本归一化与切分**：数字/英文/多音字归一化（**幂等**）、标点→停顿映射、单句 ≤28 字切分、glossary 热更新 | T1.10 | `pytest tests/unit/tts/test_normalize.py -q`（≥40 条黄金用例：日期/百分比/英文缩写/多音字/emoji/超长句）；`pytest tests/unit/tts/test_segmenter.py -q`（每片 4–28 字且不破坏语义边界）；幂等性属性测试 `normalize(normalize(x)) == normalize(x)` | **R7 长句漂移** ⇒ 单句硬上限 + 自动切分并回写 DB；误读 ⇒ `glossary.yaml` 热更新且变更即回归；**不引入 `pynini`**（R5） |
-| **T2.6** | **按句合成流水线 + 句级缓存**：sentence 单元 job、`tts_hash` 缓存命中、单句重试/降级、`version` 竞态保护 | T2.3–T2.5, T1.5 | `pytest tests/integration/test_sentence_resume.py -q`：①杀进程重启后已完成句**引擎调用次数为 0**（Mock 计数断言）；②第 3 句注入失败 ⇒ 仅该句重试成功；③编辑某句后仅该句失效重合成；④缓存命中率 ≥30%；⑤产物落 `data/output/voice/<task_id>/s001.wav` | 缓存污染 ⇒ 哈希含引擎版本/音色/文本/参数；**R4** 缓存占盘 ⇒ LRU 5 GB；句级写冲突 ⇒ `version` 校验失败即**丢弃音频重合成** |
-| **T2.7** | **时长时间轴**：`ffprobe` 实测时长、句间停顿 + 抖动（种子派生）、`timeline.json`（§04.2.7）、批量回写 `start_ms/end_ms` | T2.6 | `pytest tests/integration/test_timeline.py -q`（单调不重叠、总时长 = Σ句时长 + Σ停顿 + tail）；`python scripts/av_sync_audit.py --timeline … --wav … --tol 30ms` 通过；`voice_master.wav` 时长与 `timeline.total_ms` 偏差 ≤30ms | **R9 音画不同步**：统一 48kHz mono s16 + `concat` filter + 显式总时长；句子重合成后**必须全量重算时间轴**（禁止增量拼接）；**不信任引擎返回的时长**，一律 ffprobe 实测 |
-| **T2.8** | **配音阶段编排与降级演练**：voice stage 接入 orchestrator、`voicing → queued_render` 守卫（全部句 `done/skipped` + timeline 校验）、故障注入开关 | T2.7, T1.11 | `studio pipeline run <task_id> --until voicing` 跑通；`STUDIO_FAULT=tts_fail_sentence=3` ⇒ 单句重试成功；`STUDIO_FAULT=tts_down=1` ⇒ **全句 `skipped` + 等长静音 + 任务仍推进到 `queued_render`**，`quality.degrade_reason='tts_unavailable'`（原文 §3.4） | 全池失败 ⇒ 熔断 + 任务失败但保留 `retry_from`；`skipped` 句 >20% ⇒ `quality.warn` + WebUI 高亮；**不允许因 TTS 故障阻塞产线**（原文 §1.2 原则4） |
-| **T2.9** | **配音服务化操作接口**（原文 §7.2 配音面板的服务端支撑）：单句重配、单句试听、任务级换音色（重配受影响句） | T2.6, T1.7 | `POST /api/v1/sentences/{id}/resynth` ⇒ 该句 `done` 回 `pending` → 重合成 → **时间轴重算**（总时长变化可见）；`GET /api/v1/media/{path}` 可播放单句 wav；`PATCH /api/v1/tasks/{id}/voice_map` ⇒ 受影响句全部失效并重配；三者均写 `audit_ops` | 换音色触发全量重配 ⇒ 明确提示"将重配 N 句"并二次确认；重配期间禁止渲染（守卫：`voicing` 态不允许 render 认领） |
+| **T2.5** ✅ | **文本归一化与切分**：数字/英文/多音字归一化（**幂等**）、标点→停顿映射、单句 ≤28 字切分、glossary 热更新 | T1.10 | `pytest tests/unit/tts/test_normalize.py -q`（≥40 条黄金用例：日期/百分比/英文缩写/多音字/emoji/超长句）；`pytest tests/unit/tts/test_segmenter.py -q`（每片 4–28 字且不破坏语义边界）；幂等性属性测试 `normalize(normalize(x)) == normalize(x)` | **R7 长句漂移** ⇒ 单句硬上限 + 自动切分并回写 DB；误读 ⇒ `glossary.yaml` 热更新且变更即回归；**不引入 `pynini`**（R5） |
+| **T2.6** ✅ | **按句合成流水线 + 句级缓存**：sentence 单元 job、`tts_hash` 缓存命中、单句重试/降级、`version` 竞态保护 | T2.3–T2.5, T1.5 | `pytest tests/integration/test_sentence_resume.py -q`：①杀进程重启后已完成句**引擎调用次数为 0**（Mock 计数断言）；②第 3 句注入失败 ⇒ 仅该句重试成功；③编辑某句后仅该句失效重合成；④缓存命中率 ≥30%；⑤产物落 `data/output/voice/<task_id>/s001.wav` | 缓存污染 ⇒ 哈希含引擎版本/音色/文本/参数；**R4** 缓存占盘 ⇒ LRU 5 GB；句级写冲突 ⇒ `version` 校验失败即**丢弃音频重合成** |
+| **T2.7** ✅ | **时长时间轴**（**已完成 2026-09-16**）：`ffprobe` 实测时长、句间停顿 + 抖动（种子派生）、`timeline.json`（§04.2.7）、批量回写 `start_ms/end_ms`、拼 `voice_master.wav` | T2.6 | `pytest tests/integration/test_timeline.py -q` ⇒ **7 passed**（单调不重叠、`total_ms = Σ句实测 + Σ停顿 + tail`；`ffprobe(voice_master)` 与 **`total_ms − tail_ms`** 偏差 ≤30ms；改一句 ⇒ 后面每句 `start_ms` **全量重算**；降级句照样占时间）。`scripts/av_sync_audit.py` 按 C12 降为**可选诊断**（不阻断发布） | **R9 音画不同步**：统一 48kHz mono s16 + `concat` filter + 显式总时长；句子重合成后**必须全量重算时间轴**（禁止增量拼接）；**不信任引擎返回的时长**，一律 ffprobe 实测 |
+| **T2.8** ✅ | **配音阶段编排与降级演练**（**已完成 2026-09-16**）：voice stage 接入 orchestrator、`voicing → queued_render` 守卫（全部句 `done/skipped` + timeline 校验）、故障注入开关 | T2.7, T1.11 | **真机演练（真库 / 真 SAPI / 真 ffmpeg）**：`studio pipeline run <id> --until voicing` ⇒ 停在 `voicing`（4 句全 `pending`、作业全 `pending`、母带与 `timeline.json` **都不在盘上**）；`STUDIO_FAULT="tts_fail_sentence=3;tts_fail_times=2"` ⇒ 第 3 句 `tts_attempts=2`、其余 **0**、全 `done`、**无降级**；`STUDIO_FAULT=tts_down=1` ⇒ **全句 `skipped`（各挂满 3 次）+ 等长静音 + 任务仍推进到 `queued_render`**，`quality.degrade_reason='tts_unavailable'`（原文 §3.4）；续跑同一条 `--until completed` ⇒ `voicing → rendering → completed`，成片 1080×1920 h264 + aac 48k / 17.47s。`pytest tests/integration/test_voice_stage.py -q` ⇒ **7 passed**；`pytest tests/unit/core/test_faults.py tests/unit/tts/test_faults.py tests/unit/services/test_pipeline_service.py -q` ⇒ **56 passed**；`.\tasks.ps1 check` ⇒ **3071 passed / 32 skipped / 12 deselected** | 全池失败 ⇒ 熔断 + 任务失败但保留 `retry_from`；`skipped` 句 >20% ⇒ `quality.warn` + WebUI 高亮；**不允许因 TTS 故障阻塞产线**（原文 §1.2 原则4）。**已知取舍**：排空借的 worker 按**池**认领（不按任务过滤，裁定 233）⇒ 会顺手把别的卡在 `voicing` 的任务也念了（陷阱 #113） |
+| **T2.9** ✅ | **配音服务化操作接口**（**已完成 2026-09-16** · 契约 §4.3.7）：单句重配、单句试听（HTTP Range）、任务级换音色（受影响句全部失效）+ 面板首屏两个读端点 | T2.6, T1.7 | **真机演练（真 SAPI / 真 ffmpeg / 真 REST / 隔离家目录，3 句）**：`GET /sentences` ⇒ 3 句 `done`（3978 / 4823 / 4148 ms，真 SAPI 实测）+ `total_ms=14352` + 每句带 `audio_url`；`GET /media/voice/<task>/s001.wav` ⇒ **200**（175482 字节 · `audio/wav`）、`Range: bytes=0-31` ⇒ **206**；`POST /sentences/{id}/resynth` ⇒ 200 `pending`、`job_created=false`、作业回到 `pending/attempts=0`、真 SAPI 重念 1 句后 3 句重新 `done`；`PATCH /tasks/{id}/voice_map` 不带 confirm ⇒ **409** `VOICE_MAP_CONFIRM_REQUIRED`（`affected=3`，**一个字节都没写**）、带 `confirm=true` ⇒ 200 `affected=3 / requeued=3` 且 `littlebear` 映射原样保留（PATCH 是增量）、不存在的音色 ⇒ **422** `TTS_VOICE_MISSING`；`audit_ops` 两条留痕都在。`pytest tests/integration/test_voice_api.py -q` ⇒ **15 passed**；`pytest tests/unit/services/test_voice_service.py -q` ⇒ **13 passed**；`tasks.ps1 check` ⇒ **3099 passed / 32 skipped / 12 deselected** | 换音色触发全量重配 ⇒ 明确提示「将重配 N 句」并二次确认（409 + `context.affected`）；试听与合成抢 GPU ⇒ 试听**走缓存文件，不触发新合成**；重配期间禁止渲染（守卫：`voicing` 态不允许 render 认领）。**已知取舍**：重配 / 换音色**不**重算时间轴（`completed` 没有回 `voicing` 的边，裁定 241）—— 下一轮收口全量重算，响应里 `timeline_stale` 说清（陷阱 #121） |
 ---
 
 ## 5.3 阶段 T3 · 渲染引擎（**一期：单遍合成 + 固定水印** · 7 任务）
@@ -85,12 +85,12 @@
 | ID | 模块与目标 | 依赖 | 验收标准 / 验证命令 | 风险点与降级预案 |
 | --- | --- | --- | --- | --- |
 | **T3.1** | **素材入库（跑酷 + BGM）**：`data/assets/mc_parkour/parkour_*.mp4` 通配命名、缩略图、指纹（sha256 + pHash）、可用区间、**授权登记**；**BGM 库**（支持经 WebUI 素材库导入 · Q12）；`studio assets ingest` | T1.3（**素材由用户提供**，D3） | `studio assets ingest --dir <源> --license self_recorded` 成功；`studio assets stats` 显示 `clips`/总时长/`bgm` 数量；**缺 `license` 直接拒绝入库**；`pytest tests/integration/test_broll_ingest.py -q`（重复素材按 sha256/pHash 拒绝、黑帧段落自动排除、`usable_from/to_ms` 正确） | **R3 版权** ⇒ 只收自录/授权（`license` 枚举强制 + `proof_path`）；🔴 **素材未到位** ⇒ 走**黑屏降级**（§04.2.8.6）保证链路不断；建议 T1 期间即把素材放入目录 |
-| **T3.2** | **水印资产与合成 profile**：`watermark.png` 入库与校验、位置/边距/宽度/透明度参数、`config/outputs.yaml` 合成 profile（1080×1920/30fps/libx264 CRF21/faststart/bt709）+ **720P 保底档** | T1.2, T1.3 | `studio render profile --show` 打印合成 profile；水印 PNG 缺失 ⇒ **渲染直接报错** `RENDER_WATERMARK_MISSING`（D5 必做，不静默跳过）；`pytest tests/unit/render/test_watermark.py -q`（位置枚举/边距偶数校验/宽度上限 1/4 画布/透明度范围） | **水印是必做项**（口述 D5）⇒ 缺失时**拒绝渲染**而非降级；位置越界 ⇒ 编译期报错；宽度过大 ⇒ 夹取到画布 1/4 并 `warn` |
+| **T3.2** | **水印资产与合成 profile**：`watermark.png` 入库与校验、位置/边距/宽度/透明度参数、`config/outputs.yaml` 合成 profile（1080×1920/30fps/libx264 CRF21/faststart/bt709）+ **720P 保底档** | T1.2, T1.3 | `studio render profile --show` 打印合成 profile 并说明**这次贴不贴水印**；`pytest tests/unit/render/test_watermark.py -q`（位置枚举/边距偶数校验/宽度上限 1/4 画布/透明度范围） | **水印是可选装饰** ⇒ 缺失 / 不可用 / 放不下都只是**跳过**（`skipped_reason` 留痕），不阻塞出片；宽度过大 ⇒ 夹取到画布 1/4 并 `warn` |
 | **T3.3** | **`CompositePlan` 与单遍编译器**：§04.2.8.2 数据结构、`total_ms` 由 ffprobe 实测、`filter_complex` 生成（跑酷循环裁长 → 缩放铺满 → 水印 overlay → 混音）、`ff_path()` 转义、语法预检、节点守卫 | T3.1, T3.2, T2.7 | `studio render plan --task <id> --out plan.json` 产出合法 `CompositePlan`；`pytest tests/unit/render/test_composite.py -q`：①`total_ms = ffprobe(voice_master) + tail_ms`；②`fps=30` 在 `scale` 前；③`overlay` x/y 为偶数；④`amix` 含 `normalize=0`；⑤`estimated_nodes > 60` ⇒ 触发分块；`pytest tests/golden/test_filtergraph.py -q`（含中文/空格/冒号路径）；语法预检退出码 0 | **R8 复杂度爆炸** ⇒ 节点守卫 + 分块降级（§04.2.8.6）；`ass`/水印路径报错 ⇒ 统一 `ff_path()`（陷阱 #6）；命令行超长 ⇒ `-filter_complex_script` 文件（陷阱 #7） |
 | **T3.4** | **单遍合成执行器**：argv 数组（**不用 shell**）、`-progress pipe:1` 进度解析、超时/取消（杀进程树）、`.partial` 原子改名、stderr 截断留痕、`composite_hash` 整片缓存 | T3.3 | `pytest tests/integration/test_composite_runner.py -q`：①进度百分比可解析；②超时 ⇒ 杀进程树且不留子进程；③中断 ⇒ 目标文件不存在但 `.partial` 被清理；④`argv` 不含 shell 拼接（静态断言）；⑤同 `composite_hash` 二次运行**不调用 ffmpeg**（Mock 计数）；⑥人声或素材改动 ⇒ 哈希变化 ⇒ 重渲 | 崩溃留"假完成" ⇒ `.partial` + `os.replace`（陷阱 #9）；僵尸 ffmpeg ⇒ 杀进程树；**缓存复用旧产物** ⇒ 哈希含 canonical plan + 输入 sha256（陷阱 #8）；NVENC 失败 ⇒ 回退 `libx264` |
-| **T3.5** | **字幕生成（可选，默认开启 · Q11）**：ASS 生成（自动换行 / 每行限字 / 描边 / 居中）、说话人样式、中文断行、字体校验、安全区；开关 `render.burn_subtitle` | T3.3 | `pytest tests/golden/test_ass.py -q`（golden 比对 ASS 文本）；`pytest tests/unit/render/test_subtitle.py -q`：①每行 ≤13 字、≤2 行；②**不在数字/英文单词中间断行**；③`MarginV ≥ safe_area.bottom`；④字体缺失 ⇒ 报错而非豆腐块；⑤UTF-8 无 BOM + LF；开关关闭 ⇒ 产物无字幕层（断言） | 字幕豆腐块 ⇒ 内置字体 + `fontsdir` + 启动校验（陷阱 #5）；时间错位 ⇒ 时间**只**取自 `voice_master` 实测的句级时长；**关掉字幕必须仍能出片**（可选性验证） |
-| **T3.6** | **混音与响度**：人声直通 + BGM 侧链 ducking + 两遍 `loudnorm` + 限幅兜底；BGM 缺失 ⇒ 单轨静音降级 | T3.3 | `python scripts/audio_qc.py --in voice_master.wav --mix final.mp4` 输出 `lufs ∈ [-16.5,-15.5]`、`true_peak ≤ -1.0`；`pytest tests/integration/test_mixdown.py -q`：①`amix` 含 `normalize=0`（静态断言）；②`loudnorm` 两遍（第二遍带 `measured_*`）；③`alimiter` 存在；④BGM 缺失 ⇒ 单轨人声且不报错 | 人声偏小 ⇒ `normalize=0` + 两遍 loudnorm（陷阱 #4）；削波 ⇒ `alimiter=limit=0.95`；BGM 压住人声 ⇒ ducking 参数（threshold 0.05 / ratio 8 / attack 20 / release 420） |
-| **T3.7** | **成片交付、manifest 与降级链**：`final.mp4` 落盘 + `manifest.json`（含 `CompositePlan` + `composite_hash`）+ `quality_json` 回填；**720P 保底** + 黑屏降级 + 分块降级 | T3.4–T3.6 | `studio pipeline run <task_id> --until completed` 产出 `final/final.mp4`；`pytest tests/e2e/test_render_e2e.py -m "e2e and slow" -q`；`python scripts/audio_qc.py --task <id>` 通过；`python scripts/dup_audit.py --task <id>` 通过；**注入素材为空 ⇒ 黑屏出片**；**注入编码失败 ⇒ 720P 保底出片**；`manifest.json` 含水印标记与随机化留痕 | **R9 已按 C12 降级**：仅保留 CFR + 显式 `-t` + 禁 `-shortest`（陷阱 #3）；**水印缺失 ⇒ 拒绝出片**；渲染反复失败 ⇒ 720P → 仍失败 ⇒ `manual_pool` |
+| **T3.5** ✅ | **字幕生成（可选，默认开启 · Q11）**：ASS 生成（自动换行 / 每行限字 / 描边 / 居中）、说话人样式、中文断行、字体校验、安全区；开关 `render.burn_subtitle` | T3.3 | `pytest tests/golden/test_ass.py -q`（golden 比对 ASS 文本）；`pytest tests/unit/render/test_subtitle.py -q`：①每行 ≤13 字、≤2 行；②**不在数字/英文单词中间断行**；③`MarginV ≥ safe_area.bottom`；④字体缺失 ⇒ 报错而非豆腐块；⑤UTF-8 无 BOM + LF；开关关闭 ⇒ 产物无字幕层（断言） | 字幕豆腐块 ⇒ 内置字体 + `fontsdir` + 启动校验（陷阱 #5）；时间错位 ⇒ 时间**只**取自 `voice_master` 实测的句级时长；**关掉字幕必须仍能出片**（可选性验证） · ✅ **2026-09-15 实测**：`tests/golden/test_ass.py` + `tests/unit/render/test_subtitle.py`（23 例）全绿；端到端 12.0s / 1080×1920 真出片，字幕烧进画面（2 行、落在安全区内）；**字体缺失 ⇒ 跳过字幕层但仍出片** |
+| **T3.6** ✅ | **混音与响度**：人声直通 + BGM 侧链 ducking + 两遍 `loudnorm` + 限幅兜底；BGM 缺失 ⇒ 单轨静音降级 | T3.3 | `python scripts/audio_qc.py --in voice_master.wav --mix final.mp4` 输出 `lufs ∈ [-16.5,-15.5]`、`true_peak ≤ -1.0`；`pytest tests/integration/test_mixdown.py -q`：①`amix` 含 `normalize=0`（静态断言）；②`loudnorm` 两遍（第二遍带 `measured_*`）；③`alimiter` 存在；④BGM 缺失 ⇒ 单轨人声且不报错 | 人声偏小 ⇒ `normalize=0` + 两遍 loudnorm（陷阱 #4）；削波 ⇒ `alimiter`（`level=0` + `limit` 由 `true_peak_dbtp` 反推 —— 规格原值 `0.95` 比门禁还宽，等于没兜住，陷阱 #97）；BGM 压住人声 ⇒ ducking 参数（threshold 0.05 / ratio 8 / attack 20 / release 420） · ✅ **2026-09-15 实测**：`tests/integration/test_mixdown.py`（10 例）全绿；真跑 ffmpeg 量得 **−16.48 LUFS / −1.12 dBTP**（GUI 一键出片实测），**两侧门禁都在内**；离下界 `−16.5` 只剩 0.02 dB 是**素材动态决定**的：口播的峰值因数约 19 dB，而 `I=−16` 配 `TP=−1.3` 只允许 14.7 dB，`loudnorm` 为保证不越真峰值门禁主动少抬了 ~0.5 LU（实测：去掉限幅器后 `loudnorm` 自己就落在 −16.3 / −1.0） |
+| **T3.7** ✅ | **成片交付、manifest 与降级链**：`final.mp4` 落盘 + `manifest.json`（含 `CompositePlan` + `composite_hash`）+ `quality_json` 回填；**720P 保底** + 黑屏降级 | T3.4–T3.6 | `studio pipeline run <task_id> --until completed` 产出 `final/final.mp4`；`pytest tests/integration/test_render_pipeline.py -m "e2e and slow" -q`（7 例）；`python scripts/audio_qc.py --task <id>` 通过；**注入素材为空 ⇒ 黑屏出片**；**注入编码失败 ⇒ 720P 保底出片**；`manifest.json` 含水印标记与随机化留痕 · ✅ **2026-09-16 实测**：7 例 e2e 全绿（含新增的黑屏与 720P 注入两条），成片实测 **−16.48 LUFS / −1.12 dBTP**（两侧门禁都在内） | **R9 已按 C12 降级**：仅保留 CFR + 显式 `-t` + 禁 `-shortest`（陷阱 #3）；**水印缺失 ⇒ 跳过水印层**（不是拒绝出片，T3.7 改）；渲染反复失败 ⇒ 720P → 仍失败 ⇒ 原错误抛出，接重试链 / `manual_pool` |
 
 **一期交付判定（M3 门禁）**：换稿不重剪 —— **同素材、同水印、换稿件** ⇒ 直接出新片；网页一键触发并在线预览。
 
@@ -107,7 +107,7 @@
 
 > **二期启动条件**（三者同时满足）：①一期稳定出片 ≥100 条；②确有"片头/片尾/多段镜头编排"需求；③磁盘与时间预算允许（§README.7 二期占用约翻倍）。
 
-## 5.4 阶段 T4 · 网页实时操作台 + 四池并行 + 无人值守（13 任务 · 原文第七部分）
+## 5.4 阶段 T4 · 网页实时操作台 + 四池并行 + 无人值守（14 任务 · 原文第七部分）
 
 | ID | 模块与目标 | 依赖 | 验收标准 / 验证命令 | 风险点与降级预案 |
 | --- | --- | --- | --- | --- |
@@ -115,8 +115,8 @@
 | **T4.2** ✅ | **① 总览台**：四池状态、队列长度、今日产量、资源占用（CPU/内存/显存/磁盘）+ **启动/暂停/一键全自动** | T4.1, T1.5 | 页面显示四池 `pending/claimed/failed/dead` 与 worker 心跳；`free_D < 15GB` 时显示 `DISK_LOW` 告警；点"一键全自动"⇒ `auto_approve_policy=GRADE_AB` 且写 `audit_ops`；暂停某池 ⇒ 该池停止认领但**在途跑完** · ✅ **2026-09-14 实测**：`pytest tests/integration/test_overview_api.py` **34 例**（四池/心跳 stale/本地日窗口/资源快照/暂停语义/一键全自动/`DISK_LOW` 去重/三个 WS 事件/启动单飞）；前端 `vitest` **153 例**（新增 overview store **20**）；`tasks.ps1 check` **1924 passed**；`web:verify` 全绿 · dist **0.17 MB** | 误触全自动 ⇒ 二次确认 + `audit_ops` 留痕 + 可一键回退 `GRADE_A`；指标采样开销 ⇒ 0.2 Hz（5s）+ 整拍丢线程池；"今日"用 UTC 日会算错一天（陷阱 #75）；在 API 进程里停自己（陷阱 #76）；采样泵跨线程 `publish()`（陷阱 #77）；首拍健康被当成"恢复"（陷阱 #78） |
 | **T4.3** ✅ | **② 选题面板**（★新增）：方向卡片（含**历史批次**）、选题瀑布流、评分理由、勾选入队（**两步确认**）、导入热点（扫盘 / 网页粘贴）、触发分析 / 生成选题、人工加选题 | T1.9, T4.1 | 导入 `data/hot/*.md` ⇒ 方向卡片出现（WS `direction.batch_ready`）；触发分析 ⇒ 5–8 方向；瀑布流显示 `score` 与 `reason`；勾选 ⇒ 创建任务（`topic.selected`）；人工加选题 ⇒ 直接入库并写 `audit_ops` · ✅ **2026-09-14 实测**：`pytest tests/integration/test_topics_api.py` **15 例**（8 条路径 / 单飞 409 / 逐条部分失败 / 幂等复用 / `draft_now` 出稿 / 人工加选题留痕 / 两种热点入口 / WS 扇出）；前端 `vitest` **133 例**（新增 topics store **39**）；`tasks.ps1 check` **1890 passed**；`web:verify` 全绿 · dist **0.15 MB** | 选题过多导致勾选疲劳 ⇒ 按 `score` 降序 + 方向分组 + 默认折叠；重复勾选 ⇒ `idempotency_key` 防重复建任务；长任务被连点 / 双标签页重放 ⇒ **单飞守卫 409（不排队）**；动作刚报的错被紧随的刷新抹掉 ⇒ 动作级 / 拉取级**两条错误信道**（陷阱 #71） |
 | **T4.4** ✅ | **③ 稿件面板 + 确认闸**：稿件全文、审稿评分（**双通道明细**）、修改版本对比、确认/退回/放弃、批量操作 | T1.11, T4.1 | 展示 `rule_detail` + `llm_detail` 六维度 + `issues`；版本对比可看 `v1→v2` diff；**退回必填意见**；批量通过 ⇒ 逐条写 `audit_ops`；`revision_round` 可见（原文 §2.2⑦"呈现稿件+评分+修改次数"）· ✅ **2026-09-14 实测**：`pytest tests/integration/test_{approvals,scripts}_api.py` **35 例**（六条路径 / 批量部分失败 / 捞回恢复选题 / 版本 diff）；`pytest tests/unit/domain/test_diff.py` **11 例** + `tests/unit/ws/test_hub_events.py` **11 例**；前端 `vitest` **94 例**（新增 scripts store **37**）；`tasks.ps1 check` **1875 passed**；`web:verify` 全绿 · dist **0.13 MB** | 误点放弃 ⇒ 二次确认 + 可"捞回"（`discarded → pending`）；批量操作误伤 ⇒ 显示待处理清单再确认 |
-| **T4.5** | **④ 配音面板**：逐句进度条（已完成/进行中/失败/跳过）、换音色、重配某句、试听单句 | T2.9, T4.1 | 逐句状态实时刷新（WS `sentence.updated`）；重配某句 ⇒ 该句回 `pending` 并重合成；换音色 ⇒ 提示"将重配 N 句"并二次确认；试听 ⇒ 可播放单句 wav；`skipped` 句高亮 + 原因可见 | 重配期间渲染抢跑 ⇒ 守卫：`voicing` 态不允许 render 认领；试听与合成抢 GPU ⇒ 试听走缓存文件，**不触发新合成** |
-| **T4.6** | **⑤ 渲染面板**：**单遍合成进度**、**ffmpeg 日志**、成片列表、触发渲染、**在线播放**（"场景进度/换模板"随 C13 延后二期） | T3.4, T3.7, T4.1 | 合成进度按 `-progress` 推进（WS `render.progress`）；ffmpeg 日志按 `source=render.*` 过滤并高亮 `warn/error`；成片列表可在线播放（HTTP Range）；触发渲染 ⇒ 入队 render 池；**水印缺失 ⇒ 面板显示 `RENDER_WATERMARK_MISSING` 且不出片** | 日志量大 ⇒ 前端只订阅 `render.*` + 环形缓冲 200 条；在线播放占用带宽 ⇒ 本机回环，无风险；重复触发 ⇒ 幂等键 + `composite_hash` 缓存直接命中 |
+| **T4.5** ✅ | **④ 配音面板**（**已完成 2026-09-16**）：逐句进度条（已完成/进行中/失败/跳过）、换音色、重配某句、试听单句 | T2.9, T4.1 | 逐句状态实时刷新（**轮询 1s**，裁定 247/248）；重配某句 ⇒ 该句回 `pending` 并重合成；换音色 ⇒ 提示「将重配 N 句」并二次确认；试听 ⇒ 可播放单句 wav；`skipped` 句高亮 + 原因可见 · **真机演练（真 API 进程 / 真库 / 真 wav）**：`GET /sentences` 4 句全 `done` 且每句带 `audio_url`；`GET /media/.../s001.wav` ⇒ **200**（199940 字节 · `audio/wav`）、`Range` ⇒ **206**；`POST /resynth` ⇒ 200 `pending`，**真 worker 认领并念完**（作业 `succeeded` / `tts_attempts=1` / 句子回 `done`，1.5s 内）；`PATCH /voice_map` 只带改过的角色 ⇒ **409** `affected=4 / total=4`（一个字节都没写）；带连字符的任务号 ⇒ 形状过了 ⇒ 404（不再是 422）。`pytest tests/integration/test_voice_api.py -q` ⇒ **17 passed**；`web` 侧 `npm run verify` ⇒ **341 passed / 16 文件** + dist **0.30 MB**；`tasks.ps1 check` ⇒ **3100 passed / 32 skipped / 12 deselected** | 重配期间渲染抢跑 ⇒ 守卫：`voicing` 态不允许 render 认领；试听与合成抢 GPU ⇒ 试听走缓存文件，**不触发新合成**；换音色 ⇒ **先算代价再抛 409**（面板据此弹确认框）；「本机找不到」的音色要在下拉框里说出来（陷阱 #125）；提交只带改过的角色（陷阱 #123/#124） |
+| **T4.6** ✅ | **⑤ 渲染面板**：**合成进度**、**出片表单**、成片列表、触发渲染、**在线播放**、协作式取消（"场景进度/换模板"随 C13 延后二期） | T3.4, T3.7, T4.1 | 进度按**轮询**推进（1s，有活才轮）—— 进度是进程内状态，塞进 WS 要动 Hub 的协议与快照注册表；成片列表可在线播放（HTTP Range）；触发渲染 ⇒ **进程内登记表 + 单工作线程**（并发 1，与 render 池同口径）—— 面板默认的任务号（`ui-…`）在 `tasks` 里没有行、而 `jobs.task_id` 有外键 ⇒ **挂不上队列**（陷阱 #101）；**水印可选**：不贴就在面板上写出原因 · ✅ **2026-09-15/16 实测**：`pytest tests/integration/test_render_api.py` 全绿；GUI 一键出片实测 **−16.48 LUFS / −1.12 dBTP**；**`render/final` 的池处理器已随 T3.7 收口落地**（池不再报 `handler_missing`） | 轮询频率 ⇒ 只在有活时轮，空闲一次都不发；在线播放占用带宽 ⇒ 本机回环，无风险；重复触发 ⇒ 面板给「再来一条」（**同任务重渲走进程内**：队列幂等键 `(task_id,'render','final','final')` 决定"一条任务只渲一次"，见陷阱 #101） |
 | **T4.7** ✅ | **⑥ 合成配置面板**（**一期**：合成 profile / 水印 / 字幕样式表单编辑；**二期**：三层模板可视化编辑） | T3.2, T4.1 | **一期（必做）**：表单编辑合成 profile（分辨率/帧率/CRF/720P 保底档）、水印（位置/边距/宽度/透明度）、字幕（字号/描边/每行字数），保存前强制 `validate`（**不写 DB**：`config/outputs.yaml` 是唯一真相 · 裁定 165/166）；改动写 `audit_ops` 且 `version +1`；**二期**再启用层结构树 + 组件增删 + 实时预览 · ✅ **2026-09-14 实测**：后端 `test_yaml_lines.py` **17 例** + `test_outputs_store.py` **24 例** + `test_outputs_api.py` **24 例**（合计 **65 例**）；前端 `outputs.test.ts` **32 例**（前端合计 **230 例**）；`tasks.ps1 check` **2080 passed / 32 skipped / 1 deselected**；`web:verify` 全绿 · dist **0.22 MB** | **R17 工作量被低估** ⇒ 一期只做表单编辑，拖拽定位与三层模板树**随 C13 延后二期**；编辑破坏配置 ⇒ 保存前强制 `validate`，不通过拒绝保存；并发编辑 ⇒ `source_sha256` 比对 |
 | **T4.8** ✅ | **⑦ 素材库**：跑酷素材 / 原声 / **BGM** 的列表、**导入（Q12：BGM 必须可导入）**、预览、试听、标记（启用/禁用）、授权信息、统计 | T3.1, T4.1 | 列表显示 `license`/`use_count`/`last_used_at`/`has_text`；导入（跑酷 / 原声 / **BGM**）⇒ 自动入库（指纹/缩略图/可用区间/时长）；**BGM 入库后立即可被混音随机选中**（T3.6 无需改配置 · Q12）；禁用 ⇒ 随机化不再选中；统计满足 `clips ≥ 60 且 ≥ 30min`；**R2 合规提示常驻** · ✅ **2026-09-15 实测**：`pytest tests/integration/test_assets_api.py` **26 例**（六端点 / `dry_run` 预览一个字节都不写库 / 逐条部分失败 / 坏文件不中断整批 / 缺授权拒绝入库 / 重扫不覆盖人工字段 / 幂等不留痕 / `strays` 如实报）；素材库相关单测 **222 例**（`assets` 76 + `test_asset_service` 40 + `test_asset_repo` 21 + `test_media` 51 + `test_files` 8 + API 26）；迁移 `0009_assets`（`voice_profiles` + `idx_voice_enabled` ⇒ **30 表 / 61 索引 / 9 迁移**）；`scripts/seed_placeholder_assets.py` 真机跑通（60 跑酷 × 32s = **32 分钟** + 3 BGM + 2 音色，耗时 **74s**，占位标黄）；前端 `vitest` **284 例**（新增 assets store **18** + `http` PATCH **3**）；`tasks.ps1 check` **2468 passed / 32 skipped / 1 deselected**；`web:verify` 全绿 · dist **0.26 MB** | 素材不足 ⇒ 显著提示“当前为黑屏降级模式”；误删 ⇒ 只允许禁用（不物理删除）+ `audit_ops`；**重扫把人工标记抹掉** ⇒ 只刷机器事实（陷阱 #92）；**短片段当合格素材** ⇒ `BROLL_MIN_USABLE_MS=4500` 硬判据（陷阱 #93）；占位素材被当真 ⇒ `tags:["placeholder"]` 标黄 |
 | **T4.9** ✅ | **⑧ 实时日志**：分级/任务/来源过滤、搜索、告警高亮、导出 NDJSON、断线重连不丢 | T1.7, T4.1 | ✅ **2026-09-14 实测**：`pytest tests/integration/test_logs_api.py` **19 例**（过滤组合 / LIKE 转义 / NDJSON 导出 / `until_id` 窗口 / 上限 422）；前端 `vitest` **57 例**（含过滤、告警、补洞、导出）；`tasks.ps1 check` **1818 passed**；`web:verify` 全绿 · dist **0.10 MB** | 高频日志拖慢前端 ⇒ 合并 + 环形缓冲（陷阱 #12）；`debug` 默认丢弃（不落库）；导出超大 ⇒ 服务端**流式** + 每页 500 行；**WS 有损** ⇒ 跳号时用 REST `since_id` 补洞（陷阱 #61/#62） |
@@ -124,6 +124,7 @@
 | **T4.11** ✅ | **无人值守编排与故障自愈**：supervisor 守护 5 进程、崩溃重启（指数退避）、磁盘/显存水位门禁、自动重试与死信告警、**人工池** | T4.10, T2.8 | 杀任一 worker ⇒ 15s 内被重启并恢复认领；`free_D < 15GB` ⇒ 暂停 render/publish 认领 + `DISK_LOW`；任务 `attempt_count ≥ 3` ⇒ `manual_pool` 并在总览台可见；**连续运行 24h 无人工干预** · ✅ **2026-09-14 实测**：后端 `test_watchdog_service.py` **27 例** + `test_watchdog_api.py` **7 例**（合计 **34 例**：判死 / 指数退避 / 上限停手 / 未就绪不硬拉 / 水位门禁 / 人工覆盖 / 并发回升 / 人工池可见 / 停用照留痕）；前端 `overview.test.ts` **25 例**（前端合计 **235 例**）；`tasks.ps1 check` **2115 passed / 32 skipped / 1 deselected**；`web:verify` 全绿 · dist **0.22 MB**；契约 §04.5.10 · ⏳ **24h 长跑与真机杀进程演练未做**（守护侧能力已就位，随 T4.12 观测面单独验收） | 重启风暴 ⇒ 指数退避 + 重启次数上限（超限停止并告警）；水位门禁误判 ⇒ 阈值可配 + 手动覆盖（写 `audit_ops`）；**人工池必须可见**，否则违背 P4 |
 | **T4.12** ✅ | **观测、备份与交付**：指标面板、每日 DB 备份与**恢复演练**、媒资 GC（§03.7.5）、运维手册（6 个应急剧本 + 导航）、**操作审计页** | T4.11 | `scripts/backup_db.ps1` 产出日备；**恢复演练**：还原到临时库 → `db check` 通过 → 抽查 3 张表行数；`studio gc run` 按 TTL 清理且**不误删成片**；`docs/runbook/` 剧本齐备；审计页可按任务/操作人筛选 · ✅ **2026-09-14 实测**：`pytest tests/unit/db/test_backup.py tests/integration/test_backup_cli.py tests/unit/gc tests/integration/test_gc_cli.py tests/integration/test_audit_api.py tests/integration/test_metrics_api.py -q` ⇒ **130 例**（32+10+57+11+12+8）；`scripts/restore_db.ps1 -Force` ⇒ **exit 0**（活库基线失败项 0 / 备份版本落后 `db.indexes` / 备份自身问题 0）；`studio db check` ⇒ 8 项全 ok（29 表 / **60 索引** / 6 触发器 / 8 迁移）；前端 `vitest` **263 例**（新增 audit **15** + metrics **13**）；`tasks.ps1 check` ⇒ **2245 passed / 32 skipped / 1 deselected**；`web:verify` 全绿 · dist **0.24 MB** | **R11 媒资无限增长** ⇒ 保留策略 + GC + 水位门禁（陷阱 #15）；误删成片 ⇒ GC 白名单（`final/`、`output/`、`covers/` 永不清理）+ **唯一删除闸口** `guard_path()`；备份占盘 ⇒ 7 日备 + 4 周备，计入水位；**刚上过迁移 ⇒ 盘上最新备份必然落后**（陷阱 #89）；**新鲜度按日期零点算**会把刚跑完的日备报成「11 小时前」（陷阱 #90）；**VACUUM 要 2 倍空间 + 独占写** ⇒ 先钉检查点、失败即中止（陷阱 #91） |
 | **T4.13** ✅ | **人物库面板**（persona 编辑 / 切换 / 回滚）：展示激活人物（来源 / 版本 / `sha256` / `last_error`）、人物库列表（含无效条目原因）、表单编辑（人设 / 口吻 / 受众 / 口癖 / 禁区 / 篇幅）、**一键切换**（旧版自动备份到 `data/backups/persona/`）与**另存为**、切换即广播 `system.persona_changed` | T1.2+ | 面板可改 / 可切 / 可回滚；`validate` 不通过 ⇒ **拒绝保存**；改完后续任务立即生效且**在跑任务不中断**；`pytest tests/unit/core/test_persona_store.py -q` 全绿 · ✅ **2026-09-14 实测**：后端 `test_persona_store.py` **74 例** + `test_persona_api.py` **35 例**；前端 `persona.test.ts` **26 例**（前端合计 **198 例**）；`tasks.ps1 check` **2014 passed / 32 skipped**；`web:verify` 全绿 · dist **0.20 MB** | **E7 唯一人工必填** ⇒ 常驻提示"禁区词经规则通道全量扫描"；多进程无 IPC ⇒ 以"下次 `current()` 生效"为准；T5.7 报告写回 persona **必须走 `PersonaStore`**（禁止直接改文件） |
+| **T4.14** ✅ | **四屏端到端串联**（选题 → 稿件 → 配音 → 渲染）（**已完成 2026-09-16**）：选题卡「去稿件 →」、稿件详情「去配音 / 去渲染 →」、配音「去渲染 →」、渲染「去配音 →」（含最近任务每行的反向跳转） | T4.3, T4.4, T4.5, T4.6 | 一条选题走完四屏**不手抄任务号**；跳转语义在 `stores/ui.ts`（`goTo` / `takeHandoff`），目标面板**挂载时**认领；认领即清空，人自己点侧边栏走则顺手清掉 · **2026-09-16 实测**：`cd web; npm run verify` ⇒ `vue-tsc` + **355 passed / 17 文件**（新增 `ui.test.ts` **14 例**）+ 体积门禁 **0.30 MB / 3.00 MB**；`tasks.ps1 check` ⇒ **3101 passed / 32 skipped / 12 deselected** | 跳转**不带业务参数**、也不预判目标面板状态（否则四屏绑死，裁定 253）；**先拉列表、再认领跳转**（反了会被自己的首屏覆盖掉且不报错，陷阱 #128）；认领即清空（陷阱 #129）；跳到渲染面板**只填框、不自动出片** |
 ---
 
 ## 5.5 阶段 T5 · 发布、定时、报告与数据回流（8 任务 · 第六部分重建 + 口述 D7/D9）
@@ -135,8 +136,8 @@
 
 | ID | 模块与目标 | 依赖 | 验收标准 / 验证命令 | 风险点与降级预案 |
 | --- | --- | --- | --- | --- |
-| **T5.1** | **快速封面 + 发布前二次校验**（§06.3 / §06.4）：ffmpeg 抽帧 + `drawtext` 标题 → 封面；发布前重跑**门禁**（水印 / 响度 / 相似度）+ 标题/文案禁区词扫描 | T3.7 | `studio publish cover --task <id>` → `data/output/covers/{时间戳}_{task_id}_cover.jpg`（1080×1920，标题清晰可读）；`pytest tests/unit/publish/test_cover.py -q`（文字溢出自动缩放、抽帧失败降级纯色底）；**发布前校验**：**水印缺失 / 响度越界 / 命中禁区** ⇒ **拒绝发布并转 `manual_required`**（不静默放行） | **R14 不可逆** ⇒ 发布前二次校验 + `publish.require_confirm=true`；封面文字溢出 ⇒ 自动缩放（最小 60pt）+ 换行 + 边界校验；标题超长（小红书 ≤20 字）⇒ 按 profile 裁剪 + `warn`；**C12**：`av_sync` 仅诊断，**不**作为门禁 |
-| **T5.2** | **发布平台适配层与 profile**（§06.2 / §06.5 · **A1 多平台**）：`Publisher` ABC 实现（**一线**：抖音/快手/视频号；**二线**仅保留接口）、持久化登录态、登录态探测、上传+填标题/文案/话题+选封面、**选择器集中化** | T5.1 | `pytest tests/contract/test_publisher_abc.py -q`（Mock 实现可替换）；**`studio publish dry-run --task <id> --platform douyin`** 走完流程到"确认发布"前一步并截图，**不真正发布**；`health()` 正确报告"未登录"/"登录态已过期"；`pytest tests/integration/test_publish_dryrun.py -m "e2e and slow" -q`；**标题回读比对**（§06.5.3 第⑤步）通过 | **R13 风控** ⇒ 限频 + 登录态失效即转人工 + **不实现验证码绕过/不自动登录**（合规底线）；页面改版导致选择器失效 ⇒ `publish/selectors/<platform>.yaml` 集中配置便于热修 + 失败截图取证 + `selectors_version` 留痕；**R18 范围膨胀** ⇒ 一期只做一线三平台，二线仅留接口与 profile（Q9 默认） |
+| **T5.1** ✅ | **快速封面 + 发布前二次校验**（§06.3 / §06.4）：ffmpeg 抽帧 + `drawtext` 标题 → 封面；发布前重跑**门禁**（水印 / 响度 / 相似度）+ 标题/文案禁区词扫描 | T3.7 | `studio publish cover --task <id>` → `data/output/covers/{时间戳}_{task_id}_cover.jpg`（1080×1920，标题清晰可读）；`pytest tests/unit/publish/test_cover.py -q`（文字溢出自动缩放、抽帧失败降级纯色底）；**发布前校验**：**水印缺失 / 响度越界 / 命中禁区** ⇒ **拒绝发布并转 `manual_required`**（不静默放行） · ✅ **2026-09-16 实测**：封面真机产出（1080×1920，中文主/次文案 + 描边 + 压暗带，抽帧点 500ms）；`publish precheck` 退出码 **1**、`error_code=PRECHECK_WATERMARK`（本机无水印 PNG + 成片 −16.69 LUFS 超窗，**门禁真的拦住了**）；`pytest tests/unit/{domain,publish,agents,services} tests/contract -q` ⇒ **175 例新增**；`.\tasks.ps1 check` ⇒ **3276 passed / 32 skipped / 12 deselected**；分层收尾：`system_font_dirs` 下沉 `src/studio/core/fonts.py`（修掉 `publish → render` 违规，裁定 261） | **R14 不可逆** ⇒ 发布前二次校验 + `publish.require_confirm=true`；封面文字溢出 ⇒ 自动缩放（最小 60pt）+ 换行 + 边界校验；标题超长（小红书 ≤20 字）⇒ 按 profile 裁剪 + `warn`；**C12**：`av_sync` 仅诊断，**不**作为门禁。**本任务不发布**（`publish.enabled=false`） |
+| **T5.2** ✅ | **发布平台适配层与 profile**（§06.2 / §06.5 · **A1 多平台** · **已完成 2026-09-16**）：`Publisher` ABC 实现（**一线**：抖音/快手/视频号；**二线**仅保留接口）、持久化登录态、登录态探测、上传+填标题/文案/话题+选封面、**选择器集中化** | T5.1 | `pytest tests/contract/test_publisher_abc.py -q`（Mock 实现可替换）；**`studio publish dry-run --task <id> --platform douyin`** 走完流程到"确认发布"前一步并截图，**不真正发布**；`health()` 正确报告"未登录"/"登录态已过期"；`pytest tests/integration/test_publish_dryrun.py -m "e2e and slow" -q`；**标题回读比对**（§06.5.3 第⑤步）通过。**真机读数**：`--target fixture` 退出码 0 且靶页服务器**一次都没收到 POST /__published**；`--probe "?logged_out=1"` / `&expired=1` 分别报「尚未登录」/「登录态已过期」；`--platform douyin`（live）真打开创作页并如实报未登录。`pytest tests/integration/test_publish_dryrun.py -q` ⇒ **15 passed**；`.\tasks.ps1 check` ⇒ **3471 passed** | **R13 风控** ⇒ 限频 + 登录态失效即转人工 + **不实现验证码绕过/不自动登录**（合规底线）；页面改版导致选择器失效 ⇒ `publish/selectors/<platform>.yaml` 集中配置便于热修 + 失败截图取证 + `selectors_version` 留痕；**R18 范围膨胀** ⇒ 一期只做一线三平台，二线仅留接口与 profile（Q9 默认） |
 | **T5.3** | **发布池 worker + 限频 + 失败转人工**（§06.5.4 / §06.10）：`publish` 池、≤3 条/天/账号、间隔 ≥30min、重试 ≤3 指数退避、失败转"待人工发布" | T5.2, T1.5 | `pytest tests/integration/test_publish_pool.py -q`：①第 4 条当天被限频**自动顺延**（不是失败）；②连续失败 3 次 ⇒ `publications.status='manual_required'` 且**任务仍为 `completed`**（不回退）；③幂等键 `sha256(task_id\|platform\|account_id)` 防重复发布（**已真机验证唯一键生效**）；`GET /api/v1/publish/queue` 可查待人工列表 | 发布失败不应让成片不可用 ⇒ 任务停 `completed`，发布单独重试；**账号风险** ⇒ 限频 + 告警 + 可一键关闭发布（`publish.enabled=false` 立即生效）；多账号 ⇒ 限频**按账号独立计数** |
 | **T5.4** | **数据回收 + 记忆沉淀闭环**（§06.6 / §06.8）：T+1h/6h/24h/72h 采集播放/点赞/评论/分享；高互动评论入 `feedback_items`；低互动选题降权（≤20%）；汇总进 `data/feedback/auto_*.md` 供下轮 Planner 消费 | T5.3 | `pytest tests/integration/test_metrics_recycle.py -q`（定时触发、`metrics_json` 与 `metrics_history_json` 正确落库）；手工：发布后 T+1h 能在发布面板看到数据；`data/feedback/auto_YYYYMM.md` 生成且**能被 T1.9 的解析器直接消费**（闭环验证：下一轮 Planner 的 `grounded_on` 含 `{"type":"feedback","source":"auto"}`） | 平台数据接口变动 ⇒ 抓取失败记 `warn` **不阻塞**；字段缺失 ⇒ 允许 `None`（**禁止用 0 冒充**）；回流数据污染历史反馈 ⇒ `is_auto=1` 区分，Planner 可配置是否采纳；低互动降权导致选题收敛 ⇒ 降权幅度**上限 20%** |
 | **T5.5** | **发布面板 + 合规留档 + 外部对接**（§06.11 / §06.12）：面板**七区块**（待发布/发布中/已发布/数据回流/待人工/**定时计划**/**报告**）、`HandoffAdapter`、来源登记留档、发布应急剧本 | T5.4 | 发布面板七区块可用；`manual_required` 可重试/可标记已人工处理/可取消，且**三者均写 `audit_ops`**；`HandoffAdapter` 默认 `LocalHandoffAdapter` 可 push 自包含交付包（视频/封面/ASS/稿件/manifest/质检）；`docs/runbook/publish_selector.md` 与 `publish_account.md` 剧本齐备；**R2 合规提示常驻**于发布面板与素材库 | 外部对接未定义 ⇒ A2：**内置实现完整链路** + 预留 `HandoffAdapter`（外部实现 ABC 即可接入，不影响主流程）；`manual_required` 堆积 ⇒ 面板顶部计数 + 告警；剧本过时 ⇒ 每次页面改版热修后更新剧本版本号 |
@@ -167,21 +168,21 @@
 [ ] T2.2  常驻推理服务 + 并发实测标定（★裁决 C8：默认 1）
 [ ] T2.3  引擎适配层与路由（决策表逐条 + 熔断 + 字幕模式降级）
 [ ] T2.4  原声入库与音色注册（bigbear/littlebear + 质量校验 + R2 合规留档）
-[ ] T2.5  文本归一化与切分（幂等 + ≥40 用例 + glossary + 不引入 pynini）
-[ ] T2.6  按句合成 + 句级缓存（引擎调用次数为 0 的续传断言）
-[ ] T2.7  时长时间轴（ffprobe 实测 + timeline.json + 全量重算）
-[ ] T2.8  配音编排与降级演练（TTS 全挂 ⇒ 字幕模式仍推进）
-[ ] T2.9  配音服务化接口（单句重配/试听/换音色 + audit_ops）
+[x] T2.5  文本归一化与切分（幂等 + ≥40 用例 + glossary + 不引入 pynini）· ✅ 已完成（2026-09-15）
+[x] T2.6  按句合成 + 句级缓存（引擎调用次数为 0 的续传断言）· ✅ 已完成（2026-09-16）
+[x] T2.7  时长时间轴（ffprobe 实测 + timeline.json + 全量重算）· ✅ 已完成（2026-09-16）
+[x] T2.8  配音编排与降级演练（TTS 全挂 ⇒ 字幕模式仍推进）· ✅ 已完成（2026-09-16）
+[x] T2.9  配音服务化接口（单句重配/试听/换音色 + audit_ops）· ✅ 已完成（2026-09-16）
        >>> M2：一句话用熊大音色读出；能断点续传；网页看逐句进度
 
 # ── 阶段 T3 · 渲染引擎（一期单遍合成 + 固定水印 · 7）── 门禁 M3
 [ ] T3.1  素材入库（跑酷通配 + 指纹 + 可用区间 + license 强制 + BGM 库）
-[ ] T3.2  水印资产与合成 profile（水印缺失 ⇒ 拒绝渲染；1080×1920 + 720P 保底档）
+[x] T3.2  水印资产与合成 profile（水印可选：有就贴没有就跳过；1080×1920 + 720P 保底档）
 [ ] T3.3  CompositePlan + 单遍编译器（total_ms=ffprobe + 循环裁长 + 水印 overlay + ff_path + 节点守卫）
 [ ] T3.4  单遍合成执行器（argv 数组 + 进度 + 超时杀树 + .partial 原子改名 + composite_hash 缓存）
-[ ] T3.5  字幕生成（可选默认开启：ASS + 自动换行/限字/描边/居中 + 字体校验）
-[ ] T3.6  混音与响度（normalize=0 + 侧链 ducking + 两遍 loudnorm + 限幅；BGM 缺失静音降级）
-[ ] T3.7  成片交付与降级链（manifest + quality_json + 黑屏/分块/720P 三级降级）
+[x] T3.5  字幕生成（可选默认开启：ASS + 自动换行/限字/描边/居中 + 字体校验）· ✅ 已完成（2026-09-15）
+[x] T3.6  混音与响度（normalize=0 + 侧链 ducking + 两遍 loudnorm + 限幅；BGM 缺失静音降级）· ✅ 已完成（2026-09-15）
+[x] T3.7  成片交付与降级链（manifest + composite_hash + quality_json 回填 + 黑屏/720P 降级）· ✅ 已完成（2026-09-16）
        >>> M3：换稿不重剪（同素材同水印换稿件直接出片）；网页一键出新片并在线预览
        （二期 P1 预留：T3-P1..T3-P4 三层模板场景编排 —— 不阻塞 M3）
 
@@ -190,8 +191,8 @@
 [x] T4.2  ① 总览台（四池 + 资源 + 一键全自动 + 暂停）· ✅ 已完成（2026-09-14）
 [x] T4.3  ② 选题面板（方向卡片 + 瀑布流 + 勾选入队）· ✅ 已完成（2026-09-14）
 [x] T4.4  ③ 稿件面板 + 确认闸（双通道明细 + 版本对比 + 批量）· ✅ 已完成（2026-09-14）
-[ ] T4.5  ④ 配音面板（逐句进度 + 换音色 + 重配 + 试听）
-[ ] T4.6  ⑤ 渲染面板（单遍合成进度 + ffmpeg 日志 + 在线播放）
+[x] T4.5  ④ 配音面板（逐句进度 + 换音色 + 重配 + 试听）· ✅ 已完成（2026-09-16）
+[x] T4.6  ⑤ 渲染面板（合成进度 + 出片表单 + 成片在线播放 + 协作式取消 + UI 由 API 托管）· ✅ 已完成（2026-09-15）
 [x] T4.7  ⑥ 合成配置面板（profile/水印/字幕表单编辑；三层模板树延后二期 · R17）· ✅ 已完成（2026-09-14）
 [x] T4.8  ⑦ 素材库（导入/预览/标记/授权/统计 + R2 提示）· ✅ 已完成（2026-09-15）
 [x] T4.9  ⑧ 实时日志（过滤/搜索/告警高亮/导出/断线不丢）· ✅ 已完成（2026-09-14）
@@ -199,11 +200,12 @@
 [x] T4.11 无人值守编排与自愈（supervisor + 水位门禁 + 人工池 + 24h 无人干预）· ✅ 已完成（2026-09-14，24h 长跑待 T4.12）
 [x] T4.12 观测/备份/GC/审计页/应急剧本（含恢复演练）· ✅ 已完成（2026-09-14）
 [x] T4.13 人物库面板（persona 编辑 / 切换 / 回滚 + `system.persona_changed`）· ✅ 已完成（2026-09-14）
+[x] T4.14 四屏端到端串联（选题 → 稿件 → 配音 → 渲染，四屏不手抄任务号）· ✅ 已完成（2026-09-16）
        >>> M4：≥3 篇同时推进；中断后恢复；全程网页操作
 
 # ── 阶段 T5 · 发布 + 定时 + 报告 + 数据回流（8）── 门禁 M5（★第六部分重建 + 口述 D7/D9）
-[ ] T5.1  快速封面 + 发布前二次校验（水印/响度/相似度门禁 + 禁区扫描；av_sync 仅诊断）
-[ ] T5.2  发布适配层与 profile（一线三平台 + dry-run + 选择器集中化 + 标题回读比对）
+[x] T5.1  快速封面 + 发布前二次校验（水印/响度/相似度门禁 + 禁区扫描；av_sync 仅诊断）
+[x] T5.2  发布适配层与 profile（一线三平台 + dry-run + 选择器集中化 + 标题回读比对）
 [ ] T5.3  发布池 + 限频 + 失败转人工（幂等键含 account_id + 不回退任务）
 [ ] T5.4  数据回收 + 记忆沉淀闭环（T+1h/6h/24h/72h + auto 回流可消费）
 [ ] T5.5  发布面板（七区块）+ 合规留档 + HandoffAdapter + 发布应急剧本
@@ -221,7 +223,7 @@
 
 ---
 
-## 5.7 高频陷阱对照表（93 条 · 实现期直接查阅）
+## 5.7 高频陷阱对照表（139 条 · 实现期直接查阅）
 
 | # | 现象 | 根因 | 正确做法 | 任务 |
 | --- | --- | --- | --- | --- |
@@ -251,7 +253,7 @@
 | 24 | **发布文案被平台编辑器吞掉** | 富文本编辑器截断/丢 emoji | 发布后**回读标题与文案逐字比对**，不一致则重填 ≤2 次 | T5.2 |
 | 25 | **`repeat_last` 后总时长与时间轴不一致** | 场景时长求和未与 `total_ms` 校验 | 编译期断言 `Σ scene_duration = total_ms ± 1ms`，不一致直接报错 | T3.3 / T3-P3（二期） |
 | 26 | **单句编辑后其余句子音频被复用错位** | 增量拼接时间轴 | 任一句重合成 ⇒ **时间轴全量重算**（禁增量） | T2.7 |
-| 27 | **成片没水印** | 水印缺失被当成"可选"静默跳过 | **水印是必做项**（D5）⇒ 缺失即**拒绝渲染**（`RENDER_WATERMARK_MISSING`），发布前再校验一次 | T3.2 / T5.1 |
+| 27 | **成片没水印** | 水印缺失被当成"可选"静默跳过 | **已接受**：水印改为可选装饰 ⇒ 缺失即跳过并把 `skipped_reason` 写进 manifest（成片优先）。若某天要求"必须带水印"，那是发布前校验（T5.1）的事，不是渲染的阻塞 | T3.2 / T5.1 |
 | 28 | **跑酷素材比人声短 ⇒ 画面提前黑屏/冻结** | 未做循环补齐 | `loop` + `trim=duration=total_ms` 补齐；素材为空 ⇒ 纯黑底仍出片 | T3.3 |
 | 29 | **定时发布变成"每天准点"的机器特征** | 固定时刻发布 | `daily_window` 窗口内随机取时刻 + `jitter_min`（默认 15min） | T5.6 |
 | 30 | **定时任务重启后丢失 / 重复触发** | `next_run_at` 只在内存 | `next_run_at` **落库** + 取时刻用 HMAC(seed=id+日期) ⇒ 幂等；发布幂等键兜底防重复 | T5.6 |
@@ -318,6 +320,52 @@
 | 91 | **「我清过垃圾了」但盘一点没还回来**；或 **VACUUM 跑到一半失败、库只剩半条命** | `DELETE` 只把页挂进 freelist，文件不会变小；`VACUUM` 要 2 倍空间 + 独占写，直接对活库跑是拿数据冒险 | 面板报 `db_freelist_bytes`（`footprint()` **一处算**，GC 报告 / `db vacuum` / 观测面板同一个数）；`studio db vacuum` 先钉一份 `prevacuum_*.db` 检查点，**失败即中止** | T4.12 |
 | 92 | **重扫一遍，人工标的启用/授权/可用区间全没了** | `upsert` 把模型里的字段全量回写，分不清「机器算出来的」与「人填的」 | 重扫**只刷机器事实**（`sha256` / 时长 / 宽高 / 帧率 / 指纹），`enabled` / `license` / `tags` / `usable_*` / `has_text` / `mood` / `bpm` 一律不动（裁定 182） | T4.8 |
 | 93 | **入库了一批“合格”跑酷，到渲染那一刻才报错抽不出入点** | usable 区间只判「长度 > 0」，而 §04.2.4 的入点规则要「头 1.5s + 尾 1.5s + 一个 1.5s 候选窗口」 | `BROLL_MIN_USABLE_MS = 4500`：低于它根本抽不出合法入点，入库时就拒收并说清原因（裁定 187） | T4.8 |
+| 94 | **前端还没 `npm run build`，后端的 404 / 405 全变成 500** | `StaticFiles` 挂在 `/` 上兜住了所有没匹配上路由的请求，而它在**目录不存在**时抛 `RuntimeError` —— 于是`POST /api/v1/metrics`（本该 405）、打错的路径（本该 404）统统 500 | 产物不在就**干脆不挂载**（只留一条 `app.web_dist_missing` 日志指路），路由表与从前一模一样；另外**必须挂在所有 API 路由之后**，否则 `/api` 与 `/ws` 会被它一起吃下去 | T4.6 |
+| 95 | **`ass` 滤镜报 `Option not found`，或路径被截成两半** | `ass` / `subtitles` / `movie` 的参数**以 `:` 分列**，`D:\...` 的盘符冒号被当成了选项分隔符 | 路径整体加单引号 + 冒号转义：`ass='D\:/path/x.ass':fontsdir='C\:/WINDOWS/Fonts'` | T3.5 |
+| 96 | **同一个输出标签被用两遍 ⇒ `Stream specifier 'a_voice' ... matches no streams`** | 滤镜图里一个输出标签**只能被消费一次**；要分叉必须显式分叉 | 人声先分叉：`[a_voice]asplit=2[a_voice_sc][a_voice_mix]`（一路进侧链、一路进混音）。**规格原模板直接写了两遍 `[a_voice]`** | T3.6 |
+| 97 | **成品响度与真峰值双双越界**（实测 −15.49 LUFS / −0.85 dBTP，两边都在门禁外） | ① `alimiter` 的自动电平**默认开启**，把 `loudnorm` 刚归一好的响度又抬上去；② `limit=0.95` 比 `≤ −1.0 dBTP` 的门禁**宽**，等于没兜住 | ① 显式 `alimiter=...:level=0` 关掉自动电平；② `limit` 由门禁反推 `10**((true_peak_dbtp − 0.3)/20)` = `0.8610` ⇒ 实测 −1.21 dBTP | T3.6 |
+| 98 | **BGM 整条消失、人声被叠了一份**；混音真峰值实测 **+1.91 dBTP**，成品响度掉到 −16.48（离门禁下界 `−16.5` 只剩 0.02 dB） | `sidechaincompress` 的输入焊盘是 **`#0: main` / `#1: sidechain`**，而规格 §04.2.8.3 下半段的完整模板写的是 `[a_voice_sc][a_bgm]` —— 被压的是**人声**，`a_bgm_duck` 这个标签名是假的：BGM 没进 `amix`，人声进了两次 | 写成 `[a_bgm][a_voice_sc]sidechaincompress=…`（**主路在前**）。**同一份契约里 §04.2.8.3 上半段的简图写的是对的、下半段的模板写的是错的** —— 判据取 `ffmpeg -h filter=sidechaincompress`，不取哪一段写得更详细 | T3.6 |
+| 99 | **`studio pipeline run <id> --until completed` 打印成功、任务一步没动** | 判「已经越过 `--until`」用的是「状态在正向链上的位置」，而 `failed` / `editing` **不在正向链上** ⇒ 被算成「排在终点之后」⇒ 直接收工。**静默的空转比报错难查得多** | 先判「卡住 / 人工闸」（`failed` / `manual_pool` / `editing` / `discarded` / `canceled` / `awaiting_approval`），**再**判「越过 `--until`」 | T3.7 |
+| 100 | **一条听起来完全正常的片子，`quality_json.lufs` 显示 −22 LUFS**，发布门禁（§06.4 门禁 2）把它拦下 | `loudnorm` 报的 `input_i` / `input_tp` 是**归一化之前**的输入读数 —— 那是「打算抬到 −16」的**起点**，不是终点；而它偏偏是链路上唯一一份现成的响度数据，最容易被顺手拿来填 | QC 必须**重量一遍落盘的成片**（`mixdown.measure_file`，纯解码 `-f null`，不编码不落盘）。manifest 里两个响度**都要留**且名字要能分清：`loudness`（loudnorm 的输入读数）/ `output_loudness`（成片实测） | T3.7 |
+| 101 | **渲染面板上那条出片挂不进 `jobs` 队列** | `jobs.task_id` 有外键到 `tasks(id)`（`PRAGMA foreign_keys = ON`），而面板默认的任务号是 `ui-YYYYMMDD-HHMMSS` —— 库里根本没有那一行。这不是"顺手加个字段"能绕过去的：任务号是这条片子与稿件 / 审计留痕的挂钩 | 面板的"试片"入口**故意留在进程内**（`services/render_job_service.py` 的模块说明写了取舍）；`render/final` 单元的入队方是**有真实任务行**的那条链（§03.4.5：`voice/sentence` 全部完成 ⇒ `render/final`）。**别为了让面板走队列去自动建任务行** —— 那是产品决策，不是重构 | T3.7 |
+| 102 | **把 `PoolConfig.max_attempts` 改成 1，作业还是重试了两次** | 生效值取自 **`pool_settings`**（`JobStore.enqueue` 读 `self._runtime(pool).max_attempts` 写进 `jobs.max_attempts`）；`PoolConfig` 只喂 worker 自己的循环（退避 / 单元超时） | 改"重试几次"要改库（`UPDATE pool_settings SET max_attempts = …`，或改 `config/pools.yaml` + `0006_seed.sql` 的种子值）。测试里同理：只传 `PoolConfig` 不改库，断言会与实现对不上 | T3.7 |
+| 103 | **缓存"越跑命中率越低"**（反复跑同一批稿子，本该命中的套话全被淘汰） | `prune()` 把 `entries()`（已按"最该走的排最前"排好）又 `reversed()` 了一遍 ⇒ 先淘汰 `hits ≥ 2` 的高频条目，正好把降权的意义抹掉 | 顺着 `entries()` 的顺序删；单测直接断言"淘汰顺序 = `hits < 2` 在前、组内先旧后新" | T2.6 |
+| 104 | **`done` 的句子在成片里没声音，而且没有任何地方报错** | 短路只看库里的 `tts_status`：产物被 §03.7.5 的 24 小时 GC 删掉、缓存条目又被 LRU 淘汰之后，"已完成"这个结论已经不成立，交出去的 `tts_audio_path` 指向空气 | `done` 要顺着**两处盘上的东西**验：产物在 ⇒ 直接用；只在缓存里 ⇒ 拷回来；两处都没了 ⇒ `SentenceRepo.reopen` 退回 `pending` 重念（`begin` 会拒 `done`，所以必须显式退） | T2.6 |
+| 105 | **0 字节的音频被当成"已完成"** | 只 `exists()` 不 `stat().st_size`；空文件只可能来自"写到一半断电"，而它在下游的表现是"这一句没声音" | 空文件一律当**未命中**：`TtsCache.get` 与 `voice_worker._has_audio` 两处都要判（缓存与交付产物是两条独立的路径，一条判了不算） | T2.6 |
+| 106 | **故障注入"成功"了，用例却什么都没验**（测试全绿，引擎一次都没失败过） | 注入与断言按**原文**匹配，而送进引擎的是**归一化后**的文本（`第3句` ⇒ `第三句`） | 故障注入与调用计数一律按归一化后的文本（或它的子串）匹配；写死 ASCII 数字的标记永远认不到中文数字 | T2.6 |
+| 107 | **测试挂在 `worker.run()` 上永不返回** | `PoolWorker.run()` 默认**永不退出**（生产语义：常驻 worker 空池就等），空池 + 无可认领单元 ⇒ 无限退避 | 测试一律传 `max_empty_rounds`，并断言 `report.stop_reason == "max_units"` —— 让"池里没活"**响亮地失败**，而不是挂住整轮 | T2.6 |
+| 108 | **`timeline.json` 里读不到 `seed` / `tail_ms`，或它的形状隔一次运行就变一次** | 这个文件现在有**两个写入者**：T1.12 的 `render_service.write_timeline`（无 `seed`/`tail_ms`、`pause_after_ms` 恒 0、绝对路径）与 T2.7 的 `tts.timeline.write_timeline`（§04.2.7 的形状）。`studio pipeline run` 走的是前一条 ⇒ 它会把池刚写好的那份**盖成旧形状** | 读它的地方（`render_service._read_timeline`）只认两边都有的字段（`duration_ms` / `text`）；**T2.8 把编排改到"池 + `settle_voice`"之后写入者只剩一个**，那时才允许按 `seed` / `tail_ms` 硬读 | T2.7 |
+| 109 | **每一句后面都多出一小段静音**（时间轴上写的是"紧接下一句"） | 停顿抖动写成 `max(0, base + offset)`：`base = 0` 时它退化成"只加不减"（0…80ms）—— 用户要的 0 被抖成了正值，而**没有任何地方报错** | `base_ms <= 0` 直接短路成 0：抖动只负责让"**设了的**停顿"听起来不像节拍器，不许凭空造静音。夹取位置写错的表现是"节奏反而更整齐"，最难怀疑到抖动头上 | T2.7 |
+| 110 | **"母带与时间轴差 600ms"**，于是去改拼母带的代码 | 口径不同：`total_ms` 是**成片**时长基准（含 `tail_ms`，§04.2.7），而 `voice_master.wav` 只装"句子 + 句间停顿"—— 尾部那 `tail_ms` 由合成那一步补（§04.2.8.5）。把 tail 也拼进母带 ⇒ 成片比预期长出一个 tail（两处各加一次） | 验收拿 `total_ms − tail_ms` 与母带比；**别为了让"母带 vs `total_ms`"这条断言成立去动母带**。两个数都要在 `timeline.json` 里（`total_ms` + `tail_ms`），读的人自己减 | T2.7 |
+| 111 | **故障演练"全绿"，而注入的故障一次都没生效** | 缓存键吃的是**引擎名**，而故障引擎的后缀是**常量**：第一场演练（`tts_fail_sentence=3`）把念成功的音频按 `sapi+fault` 收进了缓存，第二场演练（`tts_down=1`）算出**同一个键** ⇒ 全句命中缓存 ⇒ 引擎一次都没被调到，而 `voice.fault_injected tts_down=True` 照打 | 演练用的引擎名必须**每场都不同**（进程号 + 随机段）。**别只看"命令返回成功"**：判据要落在句子状态上（`tts_down` ⇒ 全句 `skipped`），而"引擎被调了几次"在两条路径上都是 0，分辨不出来 | T2.8 |
+| 112 | **一次排空刷出几万对 `worker.started/stopped`，CPU 空转** | `PoolWorker.run(max_empty_rounds=1)` 在空池时**立刻返回**（认领的语义就是"没有就返回"），外层 `while` 不等 ⇒ 忙等；而句子退避最长要等 `backoff_max_ms`（voice 池 20s） | 空转那一支必须**等一拍**（池的 `poll_ms`）。`max_empty_rounds` 只用来"把一次认领切出来"，它**不提供**节奏；而 `_empty_rounds` 跨 `run()` 累计 ⇒ 想靠它退避也不行（第二次进来就已经到线了） | T2.8 |
+| 113 | **`--until voicing` 的任务，句子却被念完了** | 排空借的 worker 按**池**认领（`claim(pool=...)` 没有任务过滤），另一条卡在 `voicing` 的任务的作业一起被干掉了 | 这是**已知取舍**（裁定 233）：与常驻池语义一致（谁抢到谁干）。真要按任务隔离得给 `JobStore.claim` 加过滤 —— 那是四个池共用的契约。读日志时别把"别的任务的 `worker.unit_done`"当成"这条任务跑起来了" | T2.8 |
+| 114 | **`STUDIO_FAULT` 拼错一个键 ⇒ 演练"成功"了** | 解析器若静默忽略认不出的键，`STUDIO_FAULT=tts_downn=1` 会得到一份**空计划**（`enabled=False`）⇒ 一行故障都没注入，而命令照样跑完、门禁照样绿 | 认不出的键一律抛 `CONFIG_INVALID` 并列出合法键：演练的价值全在"它真的失败了"，静默降级成"没配故障"等于把演练变成走过场 | T2.8 |
+| 115 | **点了「重配」没反应、不报错，任务卡在 `voicing`** | 队列的幂等键是 `(task_id, pool, unit_type, unit_ref)` ⇒ 一条单元**一辈子只有一条作业**；`succeeded` 之后业务侧把 `tts_status` 改成 `pending`，**没有任何 worker 会再看它一眼**，而 `settle_voice` 的守卫是「全部句定局」 | 重配必须**同时**改两处：业务表（`SentenceRepo.invalidate`）+ 调度令牌（`JobStore.requeue_unit`）。**别只看 REST 返回 200** —— 判据要落在「那条作业回到了 `pending` 且真的能被 `claim` 到」 | T2.9 |
+| 116 | **点一次「重配」，降级句只给了一次机会就又降级**（看不见的错） | `invalidate` 没把 `tts_attempts` 归零，而上一轮已经撞过 `DEGRADE_AFTER_ATTEMPTS`（3 次） | 失效时 `tts_attempts = 0`：人工重配的意思是「给它一次**完整**的机会」，不是「接着上一轮的第 3 次算」 | T2.9 |
+| 117 | **换完音色，重配出来还是旧嗓子，而库里显示新音色** | 只改了 `payload_json.voice_map` 与 `tts_status`，没同步 `jobs.payload_json` —— 音色是**运行期选择**，worker 读的是作业 payload（或进程装配值） | 三处一起改：`tasks.payload_json.voice_map` + `script_sentences.tts_status` + `jobs.payload_json`（`requeue_unit(payload=...)` 是**整体替换**） | T2.9 |
+| 118 | **试听端点变成任意文件读取** | 路径若由请求拼出来（或直接信任库里的 `tts_audio_path`），`../../` 与绝对路径都能播出去 | 正则**整串**匹配 `voice/<task_id>/s00N.wav`（非法键在路由层就 422）；真正的文件路径只由 `StudioPaths.sentence_wav` / 缓存键拼出；库里的 `tts_audio_path` 还要再判「落在 `data_dir` 里」 | T2.9 |
+| 119 | **点一下试听就把配音重跑了一遍**（还覆盖了交付产物） | 试听顺手触发合成 —— 而它与 voice 池抢同一台机器（§05 明确要求「走缓存文件，不触发新合成」） | 试听只认**盘上已有**的三处候选（规范路径 / 库里的路径 / TTS 缓存），一处都没有 ⇒ 404 `PATH_MISSING`。面板上「播放」与「重配」是两颗按钮，不是一件事 | T2.9 |
+| 120 | **只改一个角色的音色，另一个角色的映射被悄悄抹掉** | `PATCH` 写成**整体替换** `voice_map`：面板只提交被改的那个角色 ⇒ 另一个角色退回进程音色，而用户以为自己只动了一个人 | `PATCH` 走**增量合并**（`{**before, **提交}`）；要一次改两个就一次给两个键。角色名写错（`bigBear`）同样静默无操作 ⇒ 未知角色一律 422 并列出已知的 | T2.9 |
+| 121 | **拿「总时长变了」当「时间轴重算了」的证据 ⇒ 假绿** | 真 SAPI 对同一句同一音色是**确定性的**：重念出来的时长逐毫秒一致，`total_ms` 一个字都不变（真机演练实测 14352 → 14352） | 客观证据是**文件被重写**（`timeline.json` / `voice_master.wav` 的 mtime 变了）；「时长变化可见」要用**可控引擎**的用例来钉（集成测试里 700ms → 1400ms）。两件事分开验 | T2.9 |
+| 122 | **面板默认任务号（`ui-20260916-120000`）一进配音面板就整屏 422**，而报的是「路径不合法」 | 配音路由的 `PathParam(pattern=...)` 只认 `[0-9A-Za-z]`，而任务号是**调用方起的名**（`RenderJobRequest.task_id` 只限长度、不限字符集）—— 渲染面板默认给的就是带连字符的那一种 | 放开成 `[0-9A-Za-z_-]{1,64}`（媒资键的整串形状一个字都没松）。**校验形状时先问「这个值是谁生成的」**：服务端生成的（句子 id / ULID）可以卡死，人填的只能卡「拼进 URL 会出事」的那些字符 | T4.5 |
+| 123 | **新建任务第一次换音色必然 422**：改的是熊大，被拒的理由是没碰过的熊二 | `set_voice_map` 校验的是**合并后的整张表**，而 `TaskPayload.voice_map` 的默认值是逻辑角色名占位 | 只判**这次提交的那几条**（§04.3.7「音色校验的两条线」本来就是这么写的：存量值交给 `resolve_voice` 退回进程音色并标 `fallback`）。**「人刚填的」与「库里早存着的」是两件事** | T4.5 |
+| 124 | **「我只想换熊大」，被一句「熊二的音色不存在」挡回来** | 面板把**整张映射**发上去 ⇒ 顺手替用户断言了他没碰过的那些行 | 只发改过的角色（`changedSpeakers`）；PATCH 的语义本来就是「只改我点到的这几个」 | T4.5 |
+| 125 | **音色下拉框空着**，而库里明明记着这个角色的音色 | `<select>` 的 `:value` 不在任何 `<option>` 里 ⇒ 显示成空白；空白被读成「这个角色没有音色」，真实原因是「参考音没入库 / 系统语音包没装」 | 把那个值**也渲染成一个 option**（`· 本机找不到（换一个）`）+ 行上挂红标 | T4.5 |
+| 126 | **空闲时面板上的数字一直在跳**，而它跳动的唯一原因是「我们在定时问」 | 轮询开着不放（1s 一次，什么新东西都没有），还顺手把音色清单也塞进轮询里重画下拉框 | 只在 `pending + synthesizing > 0` 时轮询（失败与跳过都是**定局**）；音色清单只在首屏与手动刷新时拉 | T4.5 |
+| 127 | **新端点整屏 404，而 `/api/v1/health` 是 200**（排查会去查前端） | 上一轮的 API 进程还占着端口（健康检查是**旧进程**在答），新路由没加载 | 改完后端**必须重启 API 进程**再验；看到「新端点 404 而健康检查正常」先查端口占用，别去翻前端 | T4.5 |
+| 128 | **跳过去那一屏还是上一个任务**（或者干脆空着），而**不报错** | 认领跳转放在首屏拉取**之前**：稿件面板的 `refresh()` 会把"不在当前状态列表里"的选中项清掉，配音面板的 `setTaskId()` 会把上一条任务的快照清掉 | **先拉列表、再认领跳转**（`await refresh()` ⇒ `takeHandoff()` ⇒ `select()`；配音面板是 `setTaskId()` ⇒ `start()`）。顺序错不会报错，只会静默显示别的任务 | T4.14 |
+| 129 | **人自己点侧边栏走，却被一个过期的任务号又跳一次** | 待认领的跳转**留着不清**（或只在"目标面板认领"时清），于是那一笔在内存里躺着等下一次 | 认领即清空 + `selectPanel()`（人自己点走）也清掉；"面板把人送过去的"与"人自己走过去的"是两件事 | T4.14 |
+| 130 | **封面只有最后一行字**（前面那几行不报错地消失） | 一条命令里写了多个 `-vf`，而 ffmpeg **只认最后一个** | 全部滤镜**逗号连成一条** `-vf`；`drawtext` 每段一条、顺序即绘制顺序 | T5.1 |
+| 131 | **`drawtext` 报 `No option name near /Windows/Fonts/…`** | `fontfile=` 的值要过两层解析，`C:/…` 的驱动器冒号在第一层就被当成分隔符 | 写成 **`fontfile=C\:/…` 外加单引号**（转义 + 引号）。⚠️ **shell 里手敲单反斜杠会成功** —— 别拿「命令行里试过」当 argv 的证据 | T5.1 |
+| 132 | **长标题溢出到屏幕外，而且不报错** | 量宽命令漏挂 `bbox` ⇒ 量出来恒为 0 ⇒ 既不缩字号、又按「宽 0」居中 | 量宽命令末尾挂 `bbox=min_val=…`（量**黑底白字**）；量不出来时**按字数估**，绝不返回 0 | T5.1 |
+| 133 | **相似度审计没过，却安安静静地过审了** | `GateResult.passed` 与 `blocking` 揉在一起 ⇒ 「审了没过」变成 `passed=True` ⇒ warn 循环一句都不出 | `passed` 报审计结论本身，`blocking` 只报要不要拦 | T5.1 |
+| 134 | **`publish/` 里冒出 `from studio.render…` 却没人发现**（§02.1 明令禁止） | 函数内导入 + `# noqa: PLC0415` 让违规**绕过了 ruff 的可见性**（写在模块顶一眼可见，塞进函数体只剩一行 noqa） | 分层依赖必须在**模块级**成立；函数内导入只允许在 §02.1 里**明列**（现仅 `precheck` 量响度一处）；`system_font_dirs` 这类平台事实下沉到 `core/fonts.py`（裁定 261） | T5.1 |
+| 135 | **dry-run 的「按钮没被点」靠截图自证 ⇒ 假绿** | “截图里没有结果块”是**看不见**的证据：按钮点不动（选择器写错）与没点，在像素上长得一样 | 靶页点下发布时 `POST /__published` 到**本地服务器**，断言改成“服务器一次都没收到”；反面对照（点得动）必须走**同一条 URL 组装路径**（真机踩过） | T5.2 |
+| 136 | **靶页的“未登录”提示读不到**（`health()` 只能报一句谁都看不懂的 hint） | 提示元素带着 `hidden` 属性时 `inner_text` 读到**空串** ⇒ 判不出“未登录 / 已过期” | 演练靶页在 `?logged_out=1` 时**显式** `hidden=false`；真机踩过 | T5.2 |
+| 137 | **回读把「吞 emoji」误判成 `mismatch`**，给操作员的建议方向全错 | 判据没抹平空白差异：真机上「吞 emoji + 尾部多一个换行」退化成 `mismatch`（该去查编辑器吃字，却叫人去查选择器） | 判据先 `_squash(_drop_emoji(x))` 再比；真机踩过 | T5.2 |
+| 138 | **注册表里的类“不接受参数”**（`Too many arguments for "Publisher"`） | `Publisher` ABC 只声明了三个抽象方法，没有 `__init__` —— 而 `PUBLISHERS` 里存的是**类**，服务层要 `get_publisher(code)(ctx)` | 构造签名写进基类（`_ctx` 由基类持有，子类 `super().__init__(ctx)`）。靠 `cast` 蒙混会让“漏传参数”拖到真机（裁定 262） | T5.2 |
+| 139 | **`health()` 的两条失败分支从来没人走过**（直到第一次真机 dry-run 报 `AttributeError`） | 假页面测试只能验“读得到”那一条；“未登录”与“已过期”需要**真的页面**才能造出来 | 靶页要能用 `?logged_out=1` / `?expired=1` **制造**这两种状态，否则它们是死代码 | T5.2 |
 
 
 ---
@@ -328,22 +376,22 @@
 | --- | --- | --- |
 | **M1** | 网页端输入定位 + 热点 ⇒ 产出合格稿件（含评分）⇒ 确认闸可见；`启动.bat` 一键拉起全部服务 | T1.1–T1.12 |
 
-> **M1 口径（裁定 108）**：一键启动**已可用**（`api` ready + 其余如实报 `degraded`），但「5 进程全部 ready」**在 M1 阶段不可能达成** —— `tts` 属 T2.2、`voice` 属 T2.6、`render` 属 T3.x、`draft` 属 T4.11。验收以「未就绪进程被**如实报告**且不阻塞其余进程」为准（P4：宁要真话，不要好看的假绿灯）；「5 进程全 ready」顺延到 M4。
+> **M1 口径（裁定 108）**：一键启动**已可用**（`api` ready + 其余如实报 `degraded`），但「5 进程全部 ready」**在 M1 阶段不可能达成** —— `tts` 属 T2.2、`voice` 属 T2.6、`draft` 属 T4.11、`render` 属 T3.7（**已落地**）。验收以「未就绪进程被**如实报告**且不阻塞其余进程」为准（P4：宁要真话，不要好看的假绿灯）；「5 进程全 ready」顺延到 M4。
 | **M2** | 一句话用熊大音色读出；杀进程重启后已完成句**引擎调用为 0**；网页可见逐句进度 | T2.1–T2.9 |
 | **M3** | 换稿不重剪（**同素材 + 同水印，换稿件直接出片**）；网页一键出新片并在线预览；水印/响度/相似度门禁通过 | T3.1–T3.7 |
-| **M4** | ≥3 篇同时推进；中断后恢复；连续 24h 无人干预；全程网页操作 | T4.1–T4.13 |
+| **M4** | ≥3 篇同时推进；中断后恢复；连续 24h 无人干预；全程网页操作 | T4.1–T4.14 |
 | **M5** | 成片**定时/即时**自动发布（≥1 平台）+ 数据回流 + **报告生成与决策采纳** + 记忆沉淀闭环（`auto_*.md` 可被解析器消费） | T5.1–T5.8 |
 
 **全局验收命令（每个里程碑都要跑一遍）**
 
 ```powershell
 uv run studio doctor --json                      # 环境与磁盘门禁
-uv run studio db check                           # 29 表 / WAL / 完整性 / 外键
+uv run studio db check                           # 30 表 / WAL / 完整性 / 外键
 uv run pytest -m "not gpu and not slow and not net" -q    # 快速回归（CI 门槛）
 uv run pytest -m contract -q                     # 全部契约测试
 uv run pytest -m "e2e and slow" -q               # 端到端（里程碑前跑）
-python scripts/audio_qc.py --task <id>           # 响度/峰值（发布门禁）
-python scripts/dup_audit.py --task <id>          # 相似度（发布门禁）
+python scripts/audio_qc.py --task <id>           # 响度/峰值（发布门禁 2）· ✅ 已落地
+python scripts/dup_audit.py --task <id>          # 相似度（发布门禁 3）· ⏸ 一期不做（见 T3.7）
 python scripts/av_sync_audit.py --task <id>      # 仅诊断（C12：不阻断发布）
 uv run pytest tests/integration/test_scheduler.py tests/integration/test_reports.py -q   # 定时调度 / 报告（M5 门槛）
 ```

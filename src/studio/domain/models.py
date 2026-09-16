@@ -76,6 +76,12 @@ class QualityReport(BaseModel):
     true_peak: float | None = None
     phash_distance_avg: float | None = None
     dup_audit_pass: bool | None = None
+    #: 成片是否叠加了水印（T5.1 · §06.4 门禁 1）。
+    #:
+    #: ``None`` 与 ``False`` 是两件事：前者是"没留判据"（旧任务的 quality_json
+    #: 里就没这个字段），后者是"确定没贴"。发布门禁对两者同样拒绝
+    #: —— 发出去就收不回来了。
+    watermark_applied: bool | None = None
     degraded: bool = False
     degrade_reason: str | None = None
 

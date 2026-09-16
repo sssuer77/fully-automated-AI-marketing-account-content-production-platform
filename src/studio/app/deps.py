@@ -65,6 +65,7 @@ from studio.services.outputs_service import OutputsService
 from studio.services.overview_service import OverviewService
 from studio.services.persona_service import PersonaService
 from studio.services.pool_service import PoolService
+from studio.services.render_job_service import RenderJobService
 from studio.services.review_service import ReviewService
 from studio.services.script_service import ScriptService
 from studio.services.service_manager import ServiceManager
@@ -146,6 +147,10 @@ class AppState:
     watchdog: WatchdogService
     #: 守护的周期循环（`lifespan` 起停；`runnable=False` ⇒ 不起跳）
     watchdog_pump: WatchdogPump
+    #: 出片任务登记表（T4.6）。**进程内单例**：任务表与工作线程都是内存状态，
+    #: 每次请求现造一份等于"刚提交的任务下一次请求就查不到了"。`lifespan` 起停它的
+    #: 工作线程。代价写在 `render_job_service` 的模块注释里（重启即丢，成片不受影响）。
+    render_jobs: RenderJobService
     snapshots: SnapshotRegistry = field(default_factory=SnapshotRegistry)
     #: 素材库的外部工具（T4.8）。**由 `build_state` 注入**：REST 面每次现造服务，
     #: 注入点只有这一处，测试换一次假件就够（不必去 patch 路由模块的内部名字）。
@@ -217,6 +222,11 @@ def build_state(
         pump=pump,
         watchdog=watchdog,
         watchdog_pump=WatchdogPump(watchdog=watchdog),
+        # `outputs=None` 是**故意的**：出片每次现读 `config/outputs.yaml`，于是
+        # "在合成配置面板改完档位、下一次出片就用新档"这句话是真的。在这里存一份
+        # 配置快照，长跑的 API 进程就会一直用启动那一刻的档位 —— 面板显示新值、
+        # 实际按旧值编码，这类漂移没有任何地方会报错。
+        render_jobs=RenderJobService(paths=paths, connection_factory=pool.get),
         snapshots=snapshots,
         asset_tools=asset_tools or AssetTools(),
     )

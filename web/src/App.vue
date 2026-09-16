@@ -14,8 +14,10 @@ import Outputs from "@/views/Outputs.vue";
 import Overview from "@/views/Overview.vue";
 import Personas from "@/views/Personas.vue";
 import Pools from "@/views/Pools.vue";
+import Renders from "@/views/Renders.vue";
 import Scripts from "@/views/Scripts.vue";
 import Topics from "@/views/Topics.vue";
+import Voices from "@/views/Voices.vue";
 
 const ui = useUiStore();
 const logs = useLogsStore();
@@ -26,8 +28,10 @@ const VIEWS: Partial<Record<PanelId, Component>> = {
   overview: Overview,
   topics: Topics,
   scripts: Scripts,
+  voices: Voices,
   logs: Logs,
   templates: Outputs,
+  renders: Renders,
   assets: Assets,
   pools: Pools,
   metrics: Metrics,

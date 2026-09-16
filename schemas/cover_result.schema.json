@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://studio.local/schemas/cover_result.schema.json",
+  "title": "CoverOutput",
+  "description": "§04.1.8 Cover Agent：封面主/次文案 + 高亮词 + 抽帧时刻",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "title_text",
+    "sub_text",
+    "highlight_words",
+    "frame_at_ms",
+    "banned_checked"
+  ],
+  "properties": {
+    "title_text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20
+    },
+    "sub_text": {
+      "type": ["string", "null"],
+      "maxLength": 24
+    },
+    "highlight_words": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 20
+      }
+    },
+    "frame_at_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "banned_checked": {
+      "type": "boolean"
+    }
+  }
+}

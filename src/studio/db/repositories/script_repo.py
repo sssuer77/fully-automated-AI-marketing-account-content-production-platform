@@ -13,11 +13,12 @@
 "同一任务只能有一版生效"。顺序是死的：**先**把旧版置 ``is_active=0``，**再**插入
 新版 —— 反过来的话部分唯一索引会当场拒绝。
 
-为什么 T2 的 ``SentenceRepo`` 还不存在
---------------------------------------
-句级**状态更新**（``tts_status`` / 音频路径 / 时间轴回填）到 T2.6 才出现；
-此刻先把它塞进来，只会得到一个没有调用方的类。落库这一侧的 INSERT 由本仓储
-统一持有（T1.10 裁定 79）。
+与 :class:`~studio.db.repositories.sentence_repo.SentenceRepo` 的分工
+------------------------------------------------------------
+本仓储管**稿件内容**（脚本 + 句子的 INSERT，一个事务），
+:class:`SentenceRepo` 管**句级状态**（``tts_status`` / 音频路径 / 时间轴回填，
+T2.6 起）。两者都写 ``script_sentences``，但守的是不同的不变式：这里是
+"有稿无句 = 半成品"（T1.10 裁定 79），那里是"一次合成只能改它自己那一句"。
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ from studio.core.ids import new_ulid
 from studio.db.engine import transaction
 from studio.db.models import ScriptRow, SentenceRow
 
-__all__ = ["SavedScript", "ScriptRepo"]
+__all__ = ["SENTENCE_COLUMNS", "SavedScript", "ScriptRepo"]
 
 _SCRIPT_COLUMNS: Final[str] = (
     "id, task_id, version, is_active, title, hook, body_md, cta, word_count, est_duration_ms, "
@@ -40,7 +41,9 @@ _SCRIPT_COLUMNS: Final[str] = (
     "editor_notes_json, target_chars, llm_model, prompt_version, review_json, created_at"
 )
 
-_SENTENCE_COLUMNS: Final[str] = (
+#: 句子表的列清单。**公开**：``sentence_repo`` 读同一批列，两处各抄一份迟早
+#: 会漂移（多一列就有人读不到），而列顺序是 ``SentenceRow.from_row`` 的隐含契约。
+SENTENCE_COLUMNS: Final[str] = (
     "id, task_id, script_id, seq, text_raw, text, tts_text, subtitle, speaker, emotion, speed, "
     "pause_after_ms, emphasis_json, tts_status, tts_engine, tts_voice_id, tts_audio_path, "
     "tts_duration_ms, tts_sample_rate, tts_hash, tts_attempts, tts_error, start_ms, end_ms, "
@@ -199,7 +202,7 @@ class ScriptRepo:
     def list_sentences(self, script_id: str) -> list[SentenceRow]:
         """按 ``seq`` 顺序读回全部句子（断点续传的读取口径）。"""
         rows = self._connection.execute(
-            f"SELECT {_SENTENCE_COLUMNS} FROM script_sentences WHERE script_id = ? ORDER BY seq",
+            f"SELECT {SENTENCE_COLUMNS} FROM script_sentences WHERE script_id = ? ORDER BY seq",
             (script_id,),
         ).fetchall()
         return [SentenceRow.from_row(row) for row in rows]

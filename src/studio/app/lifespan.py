@@ -7,6 +7,11 @@
 - 泵还在跑而 Hub 已经停了 ⇒ 每拍都往一个没人 drain 的合并器里塞事件（白占内存）；
 - Hub 还在跑而连接已经关了 ⇒ 在途的 tail 查询撞上已关闭的连接，日志里一串
   看不出所以然的 `ProgrammingError`。
+
+出片工作线程（T4.6）与 Hub 没有关系，它的位置只看一件事：**它碰数据库**。
+所以它排在任何"关连接"的动作之前 —— 收工信号发出后，在途的那一次 `read_active_script`
+仍然能拿到一条活着的连接。反过来把它放在 `close()` 之后，运气不好就是一条
+"数据库连接已关闭"的报错，而它看上去和用户按的那一下取消毫无关系。
 """
 
 from __future__ import annotations
@@ -36,6 +41,8 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         state.watchdog_pump.start()
     else:
         logger.info("app.watchdog_idle", reason="workers/ 目录不在或 watchdog.enabled=false")
+    # 出片工作线程（T4.6）：起在这里 ⇒ 提交的任务在请求返回后真的会跑起来。
+    state.render_jobs.start()
     logger.info("app.started", db=str(state.paths.db_file))
     try:
         yield
@@ -43,6 +50,9 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         await state.pump.stop()
         await state.watchdog_pump.stop()
         state.persona_events.stop()
+        # 不等当前这一条跑完：进程都要退了，等它没有意义（成片已在盘上，半成品
+        # 是 `.partial`，不会被当成成片列出来）。
+        state.render_jobs.stop()
         await state.hub.stop()
         state.close()
         logger.info("app.stopped")

@@ -16,6 +16,7 @@ from studio.core.clock import file_stamp
 __all__ = [
     "DEFAULT_DATA_DIRNAME",
     "StudioPaths",
+    "data_relative",
     "is_on_system_drive",
     "system_drive",
 ]
@@ -36,6 +37,24 @@ def is_on_system_drive(path: Path | str) -> bool:
     except OSError:
         return False
     return resolved.drive.upper() == system_drive().upper()
+
+
+def data_relative(path: Path | str, data_dir: Path) -> str:
+    """把绝对路径写成**相对 ``data/`` 的 posix 路径**（§04.2.7 / §03.3.11 的写法）。
+
+    为什么不留绝对路径：``timeline.json`` 与 ``artifacts.path`` 是**产物清单**，
+    它们的读者是"另一台机器上的面板 / 备份还原之后的下一次运行"。绝对路径会把
+    盘符那一截焊死在里面，``data/`` 一搬家（换盘符、换机器、从备份还原）
+    整份清单就指着一堆不存在的文件 —— 清单指错地方比没有清单更坏。
+
+    落在 ``data/`` 之外（调用方给错了）⇒ 退回绝对路径而不是抛：写一个"看得见但
+    搬不动"的路径，好过在收尾阶段把整条片子拦下来。
+    """
+    target = Path(path)
+    try:
+        return target.resolve().relative_to(Path(data_dir).resolve()).as_posix()
+    except ValueError:
+        return target.resolve().as_posix()
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +127,16 @@ class StudioPaths:
     @property
     def docs_dir(self) -> Path:
         return self.home / "docs"
+
+    @property
+    def web_dist_dir(self) -> Path:
+        """前端构建产物（``web/dist``）—— 生产里由 API 直接托管（T4.6）。
+
+        为什么由 API 托管、不另起一个静态服务器：这台子是**单机单进程**的，多一个
+        进程就多一份"它没起来 / 端口被占 / 忘了开"的失败面。`npm run build` 的产物
+        是纯静态文件，挂上去就完事。
+        """
+        return self.home / "web" / "dist"
 
     # ── data 子目录 ────────────────────────────────────────
     @property
@@ -259,9 +288,31 @@ class StudioPaths:
         """滤镜图 ``data/work/<task_id>/graphs/``（永久保留，便于复现）。"""
         return self.work_dir_for(task_id) / "graphs"
 
+    def final_dir_for(self, task_id: str) -> Path:
+        """交付级中间产物 ``data/work/<task_id>/final/``（永久保留）。
+
+        目前只有字幕。它**不在** ``data/output/videos/`` 里：那是"给人看的成片"，
+        而 ``subtitle.ass`` 是"二次剪辑时重新烧一遍字幕"要用的源文件（§04.2.6），
+        两者生命周期不同 —— 成片会被清理策略按天回收，这个不该。
+        """
+        return self.work_dir_for(task_id) / "final"
+
+    def subtitle_ass(self, task_id: str) -> Path:
+        """字幕 ``data/work/<task_id>/final/subtitle.ass``（§04.2.6 的落盘位）。"""
+        return self.final_dir_for(task_id) / "subtitle.ass"
+
     def scenes_dir_for(self, task_id: str) -> Path:
         """场景中间产物（**二期**；一期单遍合成不产出）。"""
         return self.work_dir_for(task_id) / "scenes"
+
+    def publish_evidence_dir(self, task_id: str, platform: str) -> Path:
+        """发布取证 ``data/work/<task_id>/publish/<platform>/``（T5.2）。
+
+        为什么按平台再分一层：同一条片子会分发到多个平台（§06.2.4），
+        而"抖音失败的那张截图"和"快手失败的那张截图"长得几乎一样 ——
+        混在一个目录里，排障时要靠文件名猜。
+        """
+        return self.work_dir_for(task_id) / "publish" / platform
 
     def voice_dir_for(self, task_id: str) -> Path:
         """交付级逐句配音 ``data/output/voice/<task_id>/``。"""

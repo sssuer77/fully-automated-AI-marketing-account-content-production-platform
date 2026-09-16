@@ -177,9 +177,9 @@ class RuleViolation(BaseModel):
 
 class RuleReport(BaseModel):
     violations: list[RuleViolation] = Field(default_factory=list)
-    dropped: list[str] = Field(default_factory=list)   # fit_score < 6 被丢弃的方向标题
-    demoted: list[str] = Field(default_factory=list)   # 命中"被吐槽" ⇒ priority += 500 的方向标题
-    low_grounding: bool = False                        # 无热点且无反馈 ⇒ 整批打 low_grounding
+    dropped: list[str] = Field(default_factory=list)  # fit_score < 6 被丢弃的方向标题
+    demoted: list[str] = Field(default_factory=list)  # 命中"被吐槽" ⇒ priority += 500 的方向标题
+    low_grounding: bool = False  # 无热点且无反馈 ⇒ 整批打 low_grounding
 
 
 class PlannerOutput(BaseModel):
@@ -190,10 +190,12 @@ class PlannerOutput(BaseModel):
 
 
 def plan_directions(
-    directions: Sequence[DirectionSpec], *,
-    hot_available: bool, feedback_available: bool,
-    min_fit: int = MIN_FIT_SCORE,          # 6
-    demotion: int = COMPLAINT_DEMOTION,    # 500
+    directions: Sequence[DirectionSpec],
+    *,
+    hot_available: bool,
+    feedback_available: bool,
+    min_fit: int = MIN_FIT_SCORE,  # 6
+    demotion: int = COMPLAINT_DEMOTION,  # 500
 ) -> tuple[list[DirectionSpec], RuleReport]: ...
 ```
 
@@ -246,9 +248,9 @@ class ExistingTopic(BaseModel):
 
 
 class DedupAction(StrEnum):
-    KEEP = "keep"      # 无冲突
+    KEEP = "keep"  # 无冲突
     DEMOTE = "demote"  # 相似度 ≥ 0.85 ⇒ 降分 + 写 similar_to_json
-    DROP = "drop"      # 归一化哈希完全命中 ⇒ 丢弃，不入库
+    DROP = "drop"  # 归一化哈希完全命中 ⇒ 丢弃，不入库
 
 
 class DedupMatch(BaseModel):
@@ -259,17 +261,19 @@ class DedupMatch(BaseModel):
 
 class DedupResult(BaseModel):
     action: DedupAction
-    dedup_hash: str                                  # 本条的归一化哈希（落库）
-    similarity: float = 0.0                          # 命中的最高相似度
-    score_delta: float = 0.0                         # DEMOTE 时为 -DEDUP_SIMILARITY_PENALTY(-2.0)
+    dedup_hash: str  # 本条的归一化哈希（落库）
+    similarity: float = 0.0  # 命中的最高相似度
+    score_delta: float = 0.0  # DEMOTE 时为 -DEDUP_SIMILARITY_PENALTY(-2.0)
     reason: str = ""
     similar_to: list[DedupMatch] = Field(default_factory=list)  # 最多 DEDUP_MATCH_LIMIT(3) 条
 
 
 def dedup_topic(
-    title: str, existing: Iterable[ExistingTopic], *,
-    threshold: float = DEDUP_SIMILARITY_THRESHOLD,   # 0.85
-    penalty: float = DEDUP_SIMILARITY_PENALTY,       # 2.0
+    title: str,
+    existing: Iterable[ExistingTopic],
+    *,
+    threshold: float = DEDUP_SIMILARITY_THRESHOLD,  # 0.85
+    penalty: float = DEDUP_SIMILARITY_PENALTY,  # 2.0
 ) -> DedupResult:
     """两级去重（R15）：
     ① 归一化哈希完全命中 ⇒ action='drop'（**写入前**拦下，不产生 topic_candidates 行）
@@ -551,22 +555,22 @@ class ReviewOutput(BaseModel):
 ```python
 class HotItemSpec(BaseModel):
     title: str
-    heat: float | None = None        # 归一化热度（可缺失 ⇒ None，排序时置底）
+    heat: float | None = None  # 归一化热度（可缺失 ⇒ None，排序时置底）
     platform: str | None = None
-    raw_line: str                    # ★ 原始行（前端要能说清"第 7 行错在哪"）
+    raw_line: str  # ★ 原始行（前端要能说清"第 7 行错在哪"）
     line_no: int = Field(ge=1)
-    heat_raw: str | None = None      # ★ 第 2 列原文（'9821' | '爆' | '高'）：落库即 hot_items.heat(TEXT)
-    parse_ok: bool = True            # ★ False ⇒ **照入库留痕**，不参与选题（裁定 65/67）
-    parse_error: str | None = None   # 坏在哪（WebUI 直接展示，不猜）
+    heat_raw: str | None = None  # ★ 第 2 列原文（'9821' | '爆' | '高'）：落库即 hot_items.heat(TEXT)
+    parse_ok: bool = True  # ★ False ⇒ **照入库留痕**，不参与选题（裁定 65/67）
+    parse_error: str | None = None  # 坏在哪（WebUI 直接展示，不猜）
 
 
 class FeedbackItemSpec(BaseModel):
     platform: str | None = None
-    date: str | None = None          # YYYY-MM-DD ⇒ 落库 feedback_items.occurred_on
-    sentiment: Literal["pos", "neu", "neg", "unknown"] = "unknown"   # 领域口径，见下方"情感双口径"
+    date: str | None = None  # YYYY-MM-DD ⇒ 落库 feedback_items.occurred_on
+    sentiment: Literal["pos", "neu", "neg", "unknown"] = "unknown"  # 领域口径，见下方"情感双口径"
     kind: Literal["want", "complaint", "trend", "other"] = "other"
     text: str
-    is_auto: bool = False            # ★ 由 §06 记忆沉淀回流的自动反馈（Q4 默认容错解析）
+    is_auto: bool = False  # ★ 由 §06 记忆沉淀回流的自动反馈（Q4 默认容错解析）
     raw_line: str
     line_no: int = Field(ge=1)
     warnings: list[str] = Field(default_factory=list)  # ★ 容错解析的留痕（如 "feedback_head_bad"）
@@ -574,10 +578,10 @@ class FeedbackItemSpec(BaseModel):
 
 class FeedbackDigest(BaseModel):
     total: int = 0
-    wants: list[FeedbackItemSpec] = Field(default_factory=list)       # 用户想要（Planner 优先采纳）
+    wants: list[FeedbackItemSpec] = Field(default_factory=list)  # 用户想要（Planner 优先采纳）
     complaints: list[FeedbackItemSpec] = Field(default_factory=list)  # 被吐槽（Planner 降权）
     trends: list[FeedbackItemSpec] = Field(default_factory=list)
-    top_topics: list[tuple[str, int]] = Field(default_factory=list)   # 词频 Top-N（供 Planner 提示）
+    top_topics: list[tuple[str, int]] = Field(default_factory=list)  # 词频 Top-N（供 Planner 提示）
 
 
 class FeedbackBatchItem(BaseModel):
@@ -587,7 +591,7 @@ class FeedbackBatchItem(BaseModel):
 
 
 class ClassifiedItem(BaseModel):
-    ref: str                          # ★ 回抄对齐：对不上 ⇒ **丢弃该条而不是猜**（猜错会把"想看的"写成"吐槽的"）
+    ref: str  # ★ 回抄对齐：对不上 ⇒ **丢弃该条而不是猜**（猜错会把"想看的"写成"吐槽的"）
     sentiment: Literal["pos", "neu", "neg", "unknown"] = "unknown"
     wants: list[str] = Field(default_factory=list)
     complaints: list[str] = Field(default_factory=list)
@@ -1071,17 +1075,30 @@ def render_hash(
 
 ### 4.2.6 字幕契约（`render/subtitle.py` → ASS）【一期可选，默认开启】
 
+> **实施状态（T3.5 · 2026-09-15）**：已落地。下表逐行标注了**与最初设计有出入**的三处，
+> 每一处都是照着原方案实现之后、在真机上被证明行不通才改的（理由写在行内）。
+
 | 契约项 | 规则 |
 | --- | --- |
 | 通道 | ASS（libass），**不用** `drawtext` |
-| 时间 | 从 `timeline.json` 取 `start_ms/end_ms`，禁止自行估算；句间不重叠 |
-| 样式 | `Main`（正文）、`SpeakerA`/`SpeakerB`（按说话人换强调色）、`Title`（标题卡） |
-| 断行 | `max_chars_per_line`（默认 13 字）+ `max_lines`（2 行）；优先标点处断行；**禁止断在数字/英文单词中间** |
-| 卡拉OK | `\k` 按**字均分**落在句时长内（中文等宽）；`word_pop` 模式用 `\t` 做缩放动画 |
-| 安全区 | `MarginV ≥ safe_area.bottom`；`MarginL/R ≥ safe_area.left/right` |
-| 字体 | 必须引用 `assets/fonts/` 内的字体文件；启动校验存在性（缺失直接报错，避免"豆腐块"） |
-| 编码 | UTF-8 **不带 BOM**；行尾 LF（统一便于 golden 比对） |
-| 落盘 | `data/media/<date>/<task_id>/final/subtitle.ass`（永久保留，可二次剪辑复用） |
+| 时间 | 从 `timeline.json` 取 `start_ms/end_ms`，禁止自行估算；句间不重叠。一期由 `synthesize_script` **逐句 ffprobe** 得到并写进 `timeline.json`；复用母带时优先读 `timeline.json`，读不到就**就地重量**盘上的 `sNNN.wav`，都拿不到 ⇒ **跳过字幕**（不按字数估） |
+| 样式 | `Main`（正文）、`SpeakerA`/`SpeakerB`（按说话人换强调色，按**首次出现顺序**分配）、`Title`（标题卡，二期） |
+| 断行 | `max_chars_per_line`（默认 13 字）+ `max_lines`（2 行）；优先标点处断行（标点**留在上一行**）；**禁止断在数字/英文单词中间**。★ **容量会放宽**：无标点长句按 13 字排会超过 `max_lines` ⇒ 容量抬到 `ceil(总字数 / max_lines)`，宁可某行多几个字，也不丢台词、不让画面溢出 |
+| 卡拉OK | `\k` 按**字均分**落在句时长内（中文等宽）；`word_pop` 模式用 `\t` 做缩放动画（**二期**，一期不实现） |
+| 安全区 | `MarginV = max(subtitle.margin_bottom, safe_area.bottom)`；`MarginL/R = safe_area.left/right`（`safe_area` 在 `config/outputs.yaml → subtitle.safe_area`） |
+| 字体 | **优先** `templates/<模板>/assets/fonts/`，找不到则退到**系统字体目录**（`%WINDIR%\Fonts`）并记一条 `note` 如实说明"这次不算合规"。★ 两边都没有 ⇒ 抛 `FONT_MISSING`，由 `plan_subtitle` 转成**跳过字幕层** —— 与水印同一条口径：装饰品不该成为整条链路的单点阻塞。原方案是"缺失直接报错拒绝出片"，真机上一试就发现它把"没有字体"升级成了"没有片子" |
+| 编码 | UTF-8 **不带 BOM**（BOM 会让某些 libass 判定"这不是 ASS 文件"而静默不显示）；行尾 LF（统一便于 golden 比对） |
+| 落盘 | `data/work/<task_id>/final/subtitle.ass`（永久保留，可二次剪辑复用）。原方案写的是 `data/media/<date>/<task_id>/final/`，那是**二期**三层模板的目录；一期没有 `data/media/`，成片在 `data/output/videos/`、可复用资产在 `data/work/` |
+
+**为什么默认字体是「微软雅黑」而不是「Source Han Sans SC」**
+
+原方案要求"字体必须来自 `assets/fonts/`"，而仓库里那个目录**只有一个 `.gitkeep`** ——
+真按字面实现，默认配置下每一支片子都出不来。默认值改成 Windows 自带的
+`Microsoft YaHei`：本项目本来就是 Windows 专用（TTS 走 SAPI、杀进程走 `taskkill`、
+路径按盘符写），挑一个本机一定有的字体比引用一个"应该存在"的开源字体名更稳。
+要把字体换成自己的：把 `.ttf/.otf` 放进 `templates/<模板>/assets/fonts/`，
+再把 `subtitle.font_name` 改成该字体的**家族名**（不是文件名 —— `msyh.ttc` 的家族名
+是 `Microsoft YaHei`，文件名里一个字母都对不上）。
 
 ### 4.2.7 时间轴契约 `timeline.json`（**二期：成片时长基准** · 一期：句级时间轴）
 
@@ -1136,6 +1153,23 @@ def render_hash(
 - `amix` **必须** `normalize=0`（默认会把人声衰减到 −6dB，是"人声偏小"的常见根因）。
 - `loudnorm` 第一遍仅测量（`print_format=json`，不入图），第二遍带 `measured_*`（线性模式，避免动态压缩失真）。
 - 触发 `aresample=async=1` 兜底 ⇒ 记 `warn`（说明上游时间戳有问题，需排查）。
+
+**落地说明（T2.7 · 2026-09-16）**
+
+| # | 规格写法 | 落地写法 | 为什么 |
+| --- | --- | --- | --- |
+| 1 | 逐句 `ffprobe` 取**实测**毫秒 | 量的对象是**盘上那一份** WAV，不是 `script_sentences.tts_duration_ms` | 那一列记的是"合成那一刻量到的"；文件可能被换过、被 §03.7.5 的 GC 删过。两者不一致时以盘为准 —— 不一致本身就是该被看见的信号 |
+| 2 | `pause = base + jitter(seed)`，±80ms | `blake2s(f"{seed}:pause:{seq}") % 161 − 80`；**`base = 0` 时短路成 0** | 抖动必须可复现（重跑得到逐毫秒一致的时间轴，手法同 `db/lease.py::jitter_ms`）；而"紧接下一句"不许被抖出静音（陷阱 #109） |
+| 3 | jitter 由随机化计划给出 | 种子取 `tasks.payload_json.seed`，缺省用 `task_id` | `RandomizationPlan`（§4.2.4.3）是二期。一期没给种子时拿 ULID 顶上 —— 至少保证"这一类任务不共享同一条节奏" |
+| 4 | 累加 `start_ms/end_ms`，末尾追加 `tail_ms` | `total_ms` **含** tail；`voice_master.wav` **不含**（只装句子 + 停顿） | §4.2.8.5 的成片时长 = `ffprobe(voice_master) + tail_ms`。tail 塞进母带就会两处各加一次 ⇒ 成片长出一个 tail（陷阱 #110 / 裁定 217） |
+| 5 | ① 句子拼接用 `concat` filter | 每句先 `aformat=s16:48k:mono,asetpts=PTS-STARTPTS,apad=pad_dur=<停顿>`，再 `concat=n=N:v=0:a=1` | 停顿必须**真的进音频**（只记在时间轴上 ⇒ 第 N 句比字幕早到 `pause_after_ms`）。`apad` 一个参数顶掉"每个停顿塞一个 `anullsrc` 输入"；单句脚本不走 `concat`（`n=1` 无意义） |
+| 6 | 回写 `start_ms/end_ms`（事务内批量更新） | `SentenceRepo.set_timeline(spans)`：一个事务、**逐行带 `version` 守卫**，返回**真正写进去的行数** | 回写成立的前提是"这一句的音频没换过"。跳过被改的那一行会留下**自相矛盾**的时间轴（第 3 句新时长、第 4 句起按旧时长）⇒ 调用方拿"行数差"判"整条作废"（裁定 220） |
+| 7 | 写 `timeline.json` + `artifacts(kind='timeline')` | 相对 `data/` 的 posix 路径（`core.paths.data_relative`）+ `.partial` 原子替换；顺手登记 `kind='voice_master'` | 清单要能跟着 `data/` 搬家；母带是这条片子的另一件产物，`kind` 词表里本来就有 |
+| 8 | （规格示例里有）`scenes[]` / `loudness` | **不写** | 场景是二期；响度要到混音（T3.6）之后才有实测值。凭空写一个空数组只会让下游以为"场景算出来是空的" |
+
+- `sentences[].text` 取 `subtitle or text`：字幕那一层要的是"可含手工断行"的文本（§03.3.7）。
+- 母带实测时长与 `total_ms − tail_ms` 的偏差 **≤30ms**（§04.2.7 验收线）；超线只 `warn` 不阻断 —— 逐句 ffprobe 各自四舍五入，60 句最坏叠 30ms（与 C12"诊断不阻断"同一条口径）。
+- **任一句重合成 ⇒ 时间轴全量重算**（陷阱 #26）：验收由"改一句 ⇒ 后面每句 `start_ms` 都跟着挪"钉住。
 ---
 
 ### 4.2.8【一期 P0 · 核心】单遍合成契约（口述 D5 · 裁决 C13）
@@ -1228,22 +1262,33 @@ class CompositePlan(BaseModel):
          setpts=PTS-STARTPTS[vbg];                       # 循环补齐到 total_ms
 
 # ② 字幕（可选，Q11）
-[vbg]ass='data/media/20260913/<task_id>/final/subtitle.ass':fontsdir='assets/fonts'[vsub];
-# 无字幕时： [vbg]null[vsub];
+#    落盘位是 data/work/<task_id>/final/subtitle.ass（见 §4.2.6 的落盘一行）
+#    路径必须整体加单引号 + 盘符冒号转义：滤镜参数解析器会把 D: 的冒号当选项分隔符，
+#    报出来的错是 "Option not found"，指不回"路径写错了"。
+[vbg]ass='D\:/repo/data/work/<task_id>/final/subtitle.ass':fontsdir='D\:/repo/templates/douyin_9x16_default/assets/fonts'[vsub];
+# 无字幕时：这一层整个不拼，视频标签直接沿用 [vbg]
 
 # ③ 固定水印（D5 必做）—— overlay x/y 必须为偶数
 [k+2:v]scale=220:-2,format=rgba,colorchannelmixer=aa=0.85[wm];
 [vsub][wm]overlay=x=W-w-40:y=H-h-40:shortest=0:eval=init[vout];
 
 # ④ 音频：人声（+BGM 侧链避让）→ 混音 → 两遍 loudnorm → 限幅
-[k:a]aformat=sample_fmts=s16:sample_rates=48000:channel_layouts=mono[a_voice];
-[k+1:a]aloop=loop=-1:size=2000000000,volume=-21dB,
-       aformat=sample_fmts=s16:sample_rates=48000:channel_layouts=stereo[a_bgm];
-[a_bgm][a_voice]sidechaincompress=threshold=0.05:ratio=8:attack=20:release=420[a_bgm_duck];
-[a_voice][a_bgm_duck]amix=inputs=2:duration=first:normalize=0[a_mix];
-[a_mix]loudnorm=I=-16:TP=-1.5:LRA=11:linear=true:
-       measured_I=…:measured_TP=…:measured_LRA=…:measured_thresh=…[aout];
-[aout]aresample=48000,alimiter=limit=0.95[aout_final]
+#    ★ 实测修正（T3.6）：原模板有五处照抄会出问题，逐条见下方"音频链的五个坑"
+[k:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,
+     volume=<voice_gain_db>dB[a_voice];
+[a_voice]asplit=2[a_voice_sc][a_voice_mix];   # ★ 人声必须分两路（见坑 2）
+#    BGM 的循环放在**输入侧**（-stream_loop -1 -i bgm），不用 aloop（见坑 3）
+[k+1:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,
+       volume=-21dB[a_bgm];
+[a_bgm][a_voice_sc]sidechaincompress=threshold=0.05:ratio=8:attack=20:release=420:makeup=1[a_bgm_duck];
+[a_voice_mix][a_bgm_duck]amix=inputs=2:duration=first:normalize=0[a_mix];
+[a_mix]loudnorm=I=-16:TP=-1:LRA=11:linear=true:
+       measured_I=…:measured_TP=…:measured_LRA=…:measured_thresh=…:offset=…[a_norm];
+#    limit 由 true_peak_dbtp − 0.3dB 推出（见坑 4），level=0 关掉自动电平（见坑 1）
+[a_norm]aresample=48000,alimiter=limit=0.8610:level=0[aout]
+
+# 无 BGM 时（可选输入缺失 ⇒ 单轨人声，**不报错**）：
+# [k:a]aformat=…,volume=…dB,anull[a_mix];  （后面照常 loudnorm + alimiter）
 
 # 输出参数（§01.5.5 profile）
 -map "[vout]" -map "[aout_final]"
@@ -1253,6 +1298,21 @@ class CompositePlan(BaseModel):
 -t 180.500                    # ★ 显式总时长（禁 -shortest，见军规）
 -movflags +faststart
 ```
+
+**音频链的五个坑**（T3.6 实测；每一条都是"写错了 ffmpeg 也不报错，只有耳朵听得出来"）
+
+| # | 症状 | 根因 | 正确写法 |
+| --- | --- | --- | --- |
+| 1 | 响度比目标高 ~0.4 LU，发布门禁（`[-16.5,-15.5]`）顶出去 | `alimiter` 的 `level` **默认开启**，语义是"把输出抬到 0dBFS"，等于在限幅器后又加了一级补偿增益，把 loudnorm 的归一化抵消掉 | `alimiter=limit=…:level=0` |
+| 2 | `Stream specifier 'a_voice' in filtergraph ... matches no streams` | 人声要同时喂给侧链与 `amix`，而 ffmpeg 的滤镜图里**一个标签只能被消费一次** | 先 `[a_voice]asplit=2[a_voice_sc][a_voice_mix]`，两处各取一支 |
+| 3 | 短 BGM 配长口播时 ffmpeg 申请几 GB 内存甚至 OOM | `aloop` 的 `size` 是**采样缓冲的样本数**，模板里的 `2000000000` 就是几 GB | 循环放在输入侧：`-stream_loop -1 -i bgm`，由 demuxer 做，零缓冲 |
+| 4 | 解码后的真峰值超 `true_peak_max_dbtp`（实测 −0.85 dBTP > −1.0） | 限幅器压的是**编码前**的样本峰值，而门禁量的是**解码后**的真峰值 —— AAC 重建会过冲零点几 dB；模板里那个 `0.95`（−0.45 dBFS）本身也比门禁宽半 dB | `limit = 10 ** ((true_peak_dbtp − 0.3) / 20)`，即默认 `0.8610` |
+| 5 | **BGM 整条消失、人声被叠了一份**（混音真峰值实测 **+1.91 dBTP**，成品响度掉到 −16.48，离门禁下界 `−16.5` 只剩 0.02 dB） | `sidechaincompress` 的输入焊盘是 **`#0: main` / `#1: sidechain`**（`ffmpeg -h filter=sidechaincompress`），而模板写的是 `[a_voice_sc][a_bgm]` —— 被压的是**人声**，`a_bgm_duck` 这个标签名是假的。BGM 没进 `amix`，人声进了两次 | `[a_bgm][a_voice_sc]sidechaincompress=…`（**主路在前**）。ffmpeg 对此**一个字都不说**，只有量电平才看得出来 |
+
+第 5 条值得单独记一笔，因为**本文档的两处模板互相矛盾**：§4.2.8.3 上半段的简图（② 那一段）
+写的是正确的 `[a_bgm][a_voice]`，下半段的完整模板却写成了 `[a_voice_sc][a_bgm]`，而实现抄的是
+后者。教训不是"抄错了"，是**同一份契约里同一个滤镜出现两种写法时，必须先确定哪一份是真相**
+—— 判据是 `ffmpeg -h filter=<名字>` 的输入焊盘顺序，不是哪一段写得更详细。
 
 #### 4.2.8.4 与二期共用的规则（一期同样适用，不得省略）
 
@@ -1289,7 +1349,7 @@ audio_duration = total_ms                                          ← 由 -t �
 | --- | --- | --- |
 | 跑酷素材为空 / 全部 `enabled=0` | `bg_fill='black'`（纯黑底）+ 水印照常 | `quality.degrade_reason='no_broll_assets'` |
 | BGM 为空 | 静音 BGM 轨（不报错，直接单轨人声） | `warn`（不标记 degraded） |
-| 水印 PNG 缺失 | **拒绝渲染**（D5 是必做项，不能静默跳过） | `error_code='RENDER_WATERMARK_MISSING'` |
+| 水印 PNG 缺失 / 不可用 / 放不下 | **跳过水印层，照常出片**（装饰缺失不阻塞成片） | `watermark.skipped_reason` 写进 `manifest.json` |
 | 素材片段过多（`estimated_nodes > 60`）或单遍超时 | **分块合成**：每块 ≤90s 出一段 `part_00N.mp4`，再用 `concat` demuxer 拼接 | `warn` + `quality.degrade_reason='composite_chunked'` |
 | 编码失败（NVENC 不支持） | 回退 `libx264` | `warn` |
 | 分块后仍失败 | 720P 保底档（`fallback_720p` profile） | `quality.degrade_reason='render_720p'` |
@@ -1488,6 +1548,16 @@ class FallbackPolicy(Protocol):
 | 前置条件 | 开启该开关必须同时满足：①`pipeline.finalize_after_voice=true` ②`av_sync_audit` 诊断数值不恶化 ③WebUI 明示"可能产生重渲开销" |
 | 原文兼容 | 原文 §3.3 要求"渲染可逐句消费" ⇒ 该能力**保留但非默认**，不视为需求缺失 |
 
+**落地说明（T2.8 · 2026-09-16）**
+
+| 项 | 落地 | 备注 |
+| --- | --- | --- |
+| `pipeline.streaming_render` | `config/app.yaml` 里**真有这个键**（默认 `false`，`core/config.py::PipelineConfig`）；`true` ⇒ `studio pipeline run` **立刻抛 `CONFIG_INVALID`**（fail fast，任务状态一步不动） | 上面那条"保留能力"在一期**没有实现**：与其静默按关闭处理（用户以为开了），不如响亮地拒绝。"按已完成句子切分 + 最后一句完成后重渲封口"要等三个前置条件一起落地 |
+| 配音阶段的状态边 | `queued_voice --①投递--> voicing --②排空+收口--> queued_render`（§03.4.5）。`voicing` 是**真的停得住的落点**（作业派出去了、等池干完），`rendering` 不是 | 拆分理由见 `services/pipeline_service.py` 的模块说明：一步做完的话"作业派出去了"就无处可停，`--until voicing` 只能是摆设 |
+| §4.3.3 熔断后行为 | 全句降级 ⇒ `quality_json.degrade_reason='tts_unavailable'`；**部分**降级**不写**这个字段（实情留在逐句 `tts_status` 与 `jobs.result_json` 里） | `degrade_reason` 只有一个槽位：部分降级塞进去会把"整条片子进了字幕模式"这句更重的话挤掉 |
+| 降级演练开关 | 环境变量 **`STUDIO_FAULT`**（本契约原文没有这个键，T2.8 新增）：`tts_down=1` / `tts_fail_sentence=<seq>` / `tts_fail_times=<n>`，分隔符 `;` 与 `,` 等价；**认不出的键一律抛 `CONFIG_INVALID`** | 只在**引擎缝**上注入 ⇒ 池那侧走的是"失败 ⇒ 记账 ⇒ 退避重试 ⇒ 到线降级"那条**真**路径。包装后的引擎名**每场演练都不同**：固定后缀会让第二场命中第一场的缓存、引擎一次都不被调到（陷阱 #111） |
+| 排空认领的范围 | 就地借的 worker 按**池**认领（`JobStore.claim` 没有任务过滤）⇒ 会顺手把别的卡在 `voicing` 的任务也念了 | 已知取舍（`todolist.md` 裁定 233）：与常驻池语义一致（谁抢到谁干）。按任务隔离要给 `JobStore.claim` 加过滤，那是四个池共用的契约 |
+
 ### 4.3.5 常驻推理服务 HTTP 契约（`tts/server.py`）
 
 | 方法 | 路径 | 请求 | 响应 | 说明 |
@@ -1556,6 +1626,66 @@ def tts_cache_key(
 - 命中路径：`data/cache/tts/<key>.wav`；命中即 `TTSResult(cache_hit=True)`，**不调用引擎**（P2 的性能前提）。
 - 失效：引擎版本、音色、文本、语速、情感、seed、采样率任一变化即 miss。
 - LRU 上限 5 GB；`use_count ≥ 2` 的条目在淘汰时降权（营销号文案复用率高，缓存是主要提速手段）。
+
+**落地说明（T2.6 · 2026-09-16）**
+
+| # | 规格写法 | 落地写法 | 为什么 |
+| --- | --- | --- | --- |
+| 1 | `sha256(engine\|engine_revision\|voice_id\|text\|speed\|emotion\|seed\|sr)` | 字段之间用 **`\x1f`**（Unit Separator）而不是 `\|` | 口播文本里出现竖线完全可能（"3\|5 的比例"）：分隔符与内容撞车会让两组不同字段拼出同一个字符串 ⇒ **假命中**（复用了别人的台词）。控制字符进不了归一化后的文本（T2.5 步骤 1 专门删这类字符） |
+| 2 | `text` | **归一化后**的文本（`script_sentences.tts_text`） | 合成读的就是它。用原文做键会得到"键变了、念出来的字没变"的假 miss（改个 emoji 就重念一遍），以及反过来的假命中（词表热改后该念法变了、键却没变） |
+| 3 | `speed` | `f"{speed:g}"` | `1` 与 `1.0` 必须是同一个键 —— 否则"调用方怎么写这个数"会决定缓存命不命中 |
+| 4 | `seed` | `None` 编成 `"none"` | `None` = "引擎自己挑"、`0` = "就用 0"，两者编出来的音频不同，键必须区分 |
+| 5 | 元数据（`use_count`） | **旁挂 `<key>.json`**，不进 DB | 缓存是**可丢弃**的东西（删掉只损失速度、不损失正确性），而 DB 里每一行都要有迁移 / 备份 / GC 的账。读坏写坏一律当"hits=0 的新条目" |
+| 6 | "命中即跳过" | 命中后**必须把音频拷回交付路径**（`data/output/voice/<task_id>/sNNN.wav`） | §03.7.5 会在任务完成后 24 小时删句子 WAV：命中只说明"缓存里有"，交付路径上那份得补回来，否则渲染拿到的是不存在的文件 |
+| 7 | `TTSResult(cache_hit=True)` | `jobs.result_json.cache_hit` + `tts.sentence_cache_hit` 日志 | 面板与报告读的是库里的那一份；"这一轮重念了几句"必须**有账可查**（验收硬断言"引擎调用为 0"） |
+
+- 0 字节的缓存文件**不算命中**（只可能来自"写到一半断电"，当成命中会让下游拿到 0 秒音频）。
+- 交付产物同理：`voice_worker._has_audio()` 判的是"非空"，不是"存在"。
+
+---
+
+### 4.3.7 配音操作面 REST 契约（T2.9 · 已落地）
+
+配音面板（T4.5）要能在网页上做四件事：看逐句进度、试听某一句、重配某一句、换音色。原文 §7.2 只说"面板要能重配与试听"，这一节把**服务端形状**钉下来。
+
+| 方法 | 路径 | 作用 | 关键语义 |
+| --- | --- | --- | --- |
+| GET | `/api/v1/sentences?task_id=` | 逐句状态 + 进度 | `audio_url` **只在盘上真有那一份**时才给（否则 `null`）；`can_resynth` 由服务端判（`synthesizing` 不给点）；`timeline_stale` = "盘上那份时间轴不再描述这条片子" |
+| GET | `/api/v1/voices?task_id=` | 音色下拉框 | `voice_profiles`（已启用）∪ SAPI 已装；`source` 区分 `profile` / `sapi`；一个都没有 ⇒ `note` 说清怎么装 |
+| POST | `/api/v1/sentences/{id}/resynth` | 单句重配 | **立刻返回**（只投递）；`done` / `skipped` / `pending` / `failed` ⇒ `pending` + 作业排回池；`synthesizing` ⇒ 409 |
+| GET | `/api/v1/media/{path}` | 单句试听 | `{path}` 必须**整串**匹配 `voice/<task_id>/s00N.wav`（任务号那一段是 `[0-9A-Za-z_-]{1,64}`：**人起的任务号带连字符**，卡成 `[0-9A-Za-z]` 会让面板自己创建的任务号整屏 422，陷阱 #122）；**只发盘上已有的那一份，不触发合成**；`FileResponse` 自带 Range |
+| PATCH | `/api/v1/tasks/{id}/voice_map` | 任务级换音色 | **增量**（只改给出的角色）；会重配 N 句且缺 `confirm` ⇒ 409；音色不在本机 ⇒ 422 |
+
+**三条不变式**
+
+1. **重配 = 业务表 + 作业表一起改**（`SentenceRepo.invalidate` + `JobStore.requeue_unit`）。队列的幂等键 `(task_id, pool, unit_type, unit_ref)` 让一条单元**一辈子只有一条作业**，`succeeded` 之后只改业务表 ⇒ **没有任何 worker 会再看它一眼**，而 `settle_voice` 的守卫是"全部句定局" ⇒ 任务卡在 `voicing` 且不报错（陷阱 #115）。`invalidate` 同时把 `tts_attempts` 归零（陷阱 #116）。
+2. **换音色 = 三处一起改**：`tasks.payload_json.voice_map` / `script_sentences.tts_status` / `jobs.payload_json`（音色是**运行期选择**，worker 读的是作业 payload 或进程装配值）。少第三处 ⇒ 重配出来还是旧嗓子，而库里显示新音色（陷阱 #117）。
+3. **试听不触发合成**（§05 T2.9 的硬要求）：三处候选（规范路径 / 库里的 `tts_audio_path` / TTS 缓存）只认"盘上已有"，一处都没有 ⇒ 404 `PATH_MISSING`。试听与合成抢同一台机器，而"看一眼"不该变成"重跑一遍"（还会覆盖交付产物）。库里的 `tts_audio_path` 另需判"落在 `data_dir` 里"（陷阱 #118）。
+
+**音色校验的两条线**（别把它们合并）
+
+| 场景 | 行为 | 为什么 |
+| --- | --- | --- |
+| 人**刚提交**的音色不在本机 | `TTS_VOICE_MISSING`（422）+ `context.available` | 写进去之后配音会连失败 3 次 ⇒ 全句降级成静音 ⇒ 用户看到"换音色成功"、拿到一支**没人声**的成片 |
+| `voice_map` 里**存量**的音色不在本机（默认值就是逻辑角色名 `bigbear`） | 不报错；`resolve_voice` 退回进程音色并标 `fallback` | 那是"库里早就存着的默认值"，报错等于"每个新建任务都配不出音" |
+
+**"刚提交的" = 请求体 `voice_map` 里出现的那几个键**，不是合并后的整张表。判整张表的话，新建任务第一次换音色必然 422：用户改的是熊大，被拒的理由却是他根本没碰过的熊二（默认值是逻辑角色名占位，陷阱 #123）。面板因此也**只提交真正改过的角色**（陷阱 #124）。
+
+**状态与时间轴**
+
+- `resynth` 之后该句回到 `pending`，**时间轴立刻过期**（它描述的是重配前那份音频）⇒ 响应里 `timeline_stale=true`。
+- **不在这里重算**：任务在 `completed` 时没有 `completed → voicing` 这条边（§03.4.5），为了一个端点顺手重算去改松状态机不值得。下一轮收口（`settle_voice`）**全量重算**（陷阱 #26）。
+- ⚠️ **别拿"总时长变了"当"重算过了"的证据**：真 SAPI 对同一句同一音色是**确定性的**，重念出来逐毫秒一致（真机演练实测 `total_ms` 14352 → 14352）。客观证据是 `timeline.json` / `voice_master.wav` 被重写（陷阱 #121）。
+
+**留痕（`audit_ops`）**
+
+| action | target_type | before | after |
+| --- | --- | --- | --- |
+| `sentence.resynth` | `sentence` | `tts_status` / `tts_attempts` / `tts_voice_id` / `tts_duration_ms` | `tts_status=pending` / `tts_attempts=0` / `job_id` / `job_created` / `voice` / `timeline_stale` |
+| `task.voice_map` | `task` | `voice_map` | `voice_map` / `affected` / `requeued` / `created_jobs` / `busy` / `timeline_stale` |
+
+`actor="user"`、`source="webui"`。`busy` 是"想失效但没动成"的句子（正被某个 worker 念着）—— **必须报出来**：静默跳过就是"换音色成功、成片里那一句还是旧嗓子"。
+
 ---
 
 ## 4.4 WebSocket 实时推送协议（`ws/protocol.py`）
@@ -1714,7 +1844,7 @@ class ApprovalDecision(StrEnum):
 | 2 | **选题面板** | `topics` | `GET /topics`、`GET /topics/directions`、`POST /hot/{import,submit}`、`POST /topics/{analyze,ideate,select,manual}` | 导入热点（扫盘 / 粘贴）/ 触发分析 / 生成选题 / 人工加选题 / 勾选入队 | T4.3 |
 | 3 | **稿件面板** | `tasks` | `GET /scripts/{task_id}`、`GET /scripts/{task_id}/versions`、`GET /scripts/{task_id}/diff`、`POST /tasks/{id}/approve\|reject\|discard\|rescue`、`POST /approvals/approve_batch` | 确认 / 退回 / 放弃（**确认闸**）/ 批量通过 / 捞回 | T4.4 |
 | 4 | **配音面板** | `tasks`（`sentence.updated`） | `GET /sentences?task_id=`、`POST /sentences/{id}/resynth`、`PATCH /tasks/{id}/voice_map` | 换音色 / 重配某句 / 试听单句 | T4.5 |
-| 5 | **渲染面板** | `tasks` `logs`（`source=render.*`） | `GET /renders/{task_id}`、`POST /tasks/{id}/render`、`GET /media/{path}` | 换模板 / 触发渲染 / **在线播放** | T4.6 |
+| 5 | **渲染面板** ✅ | **不订阅**（进度走 REST 轮询，1s · 有活才轮） | `GET /api/v1/render/console`、`POST /api/v1/render/jobs`、`GET /api/v1/render/jobs/{id}`、`POST /api/v1/render/jobs/{id}/cancel`、`GET /api/v1/render/videos/{name}` | 填表单触发出片 / 看进度与日志尾巴 / **协作式取消** / 成片**在线播放**与下载 | T4.6 |
 | 6 | **模板面板**（一期落地为「合成配置」） | `logs`（`source=outputs`） | `GET /api/v1/outputs`、`POST /api/v1/outputs`；`GET/POST /templates`、`POST /templates/{id}/{validate,assets}`（**二期 · C13**） | 表单编辑合成 profile / 水印 / 字幕（**保存前强校验** + 并发指纹）；拖拽定位与三层模板树**延后二期**（R17） | T4.7 |
 | 7 | **素材库** | — | `POST /assets/ingest`、`GET /assets/stats`、`PATCH /assets/{id}` | 上传 / 预览 / 标记（跑酷·原声·BGM） | T4.8 |
 | 8 | **实时日志** | `logs` | `GET /logs?level=&task_id=&cursor=` | 过滤级别 / 搜索 / 导出 | T4.9 |
@@ -2440,6 +2570,130 @@ structlog 的第一个位置参数就叫 `event`，`logger.info(msg, **payload)`
 
 ---
 
+### 4.5.13 配音面板 REST 面契约（T4.5 · 已落地）
+
+> 配音面板回答的是「这条任务配到哪一步了、哪一句出了岔子、想换一个人的嗓子怎么办」。
+> 它**不新增**任何后端能力 —— 五个端点全部来自 §4.3.7；这一节写的是**面板怎么用它们**，
+> 以及前端必须守住的四条（每一条都对应一个已经踩过的坑）。
+
+| 面板上的动作 | 端点 | 什么时候发 |
+| --- | --- | --- |
+| 看逐句状态 | `GET /api/v1/sentences?task_id=` | 首屏 + 轮询 1s（**只在有活时**） |
+| 看有哪些音色 | `GET /api/v1/voices?task_id=` | 首屏 + 手动刷新（音色清单不会因为某一句念完而变） |
+| 试听某一句 | `<audio src=audio_url>` ⇒ `GET /api/v1/media/{path}` | 用户点播放键，浏览器自己发 Range 请求 |
+| 重配某一句 | `POST /api/v1/sentences/{id}/resynth` | 动作一次 + 随后轮询看它什么时候念完 |
+| 换音色 | `PATCH /api/v1/tasks/{id}/voice_map`（**同一个端点调两次**：先不带 `confirm` 探代价，再带 `confirm=true` 真写） | 用户点「提交」+ 在确认框上点头 |
+
+**前端必须守住的四条**
+
+1. **`audio_url` 由服务端给，没有音频时是 `null`**（裁定 244）。`null` ⇒ 那一行**不画播放键**。
+   面板**不自己拼** url：它指的是盘上那份文件，而"文件落在哪"是后端的事（§2.3 一改目录就是
+   "点了播放没反应"，且不报错）；发一个注定 404 的 url 同样如此。
+2. **换音色先问代价再动手**（裁定 245）。不带 `confirm` 的那一次是**探测**：服务端要么直接
+   写完（`affected=0`，没有句子要重配），要么抛 409 `VOICE_MAP_CONFIRM_REQUIRED`。面板拿
+   `context.affected / total / sentences / speakers` 弹确认框，用户点头才带 `confirm=true` 重发。
+   **不要在本地自己算"会重配几句"** —— 那是服务端的规则（`REINVALIDATABLE_STATUSES`）。
+3. **只提交真正改过的角色**（裁定 249）。服务端校验的是"提交里出现的每一个音色"（§4.3.7 的
+   两条线），把整张表发上去等于顺手替用户断言了他没碰过的那些行 —— 而其中可能正躺着一条
+   本机找不到的存量值（陷阱 #124）。
+4. **`busy` 与 `timeline_stale` 都要显示**（裁定 246）。`busy` 是"想失效但没动成"的那几句
+   （正被某个 worker 念着），不显示就是"换音色成功、成片里那几句还是旧嗓子"；
+   `timeline_stale=true` 说的是"盘上那份时间轴不是现在这条片子"（重配不重算，裁定 241）。
+
+**为什么是轮询而不是 WS**（裁定 247 / 248）
+
+§04.4.3 有 `sentence.updated` 这条事件，但后端**目前没有生产者**（只有 `metrics` 与
+`persona` 两路会 `publish`）。面板用 1s 轮询（与渲染面板同口径，`VOICE_POLL_MS`），并且
+**只在 `pending + synthesizing > 0` 时开**：失败与跳过都是**定局**，不会自己变，不该让定时器
+空转（陷阱 #126）。真要做推送，落点是"给配音收口加一路 publish"，而不是把轮询周期调小。
+
+**`skipped` 句要整行染色 + 原因写在行上**（陷阱 #125 的同族）。跳过是**降级**：这一句没声音，
+片子照样出 —— 只给一个计数，用户永远不知道是哪几句、为什么，而原因（`tts_error`）就躺在库里。
+
+### 4.5.14 四屏端到端串联契约（T4.14 · 已落地）
+
+> 「选题 → 稿件 → 配音 → 渲染」四屏各自都能单独用，而**串起来的那一步**（把任务号带过去）
+> 既不属于任何一屏，也不该由后端出接口 —— 它是一次**纯前端跳转**。这一节写的就是它的语义，
+> 以及它**刻意不做**的两件事。
+
+| 从哪一屏 | 按钮 | 带到哪一屏 | 任务号从哪来 |
+| --- | --- | --- | --- |
+| 选题 | 「去稿件 →」（只在入队过的卡片上） | 稿件 | `TopicItem.task_id`（**入队时后端生成**，前端不猜） |
+| 稿件 | 「去配音 →」/ 「去渲染 →」（详情行尾） | 配音 / 渲染 | `ScriptDetail.task_id` |
+| 配音 | 「去渲染 →」（任务卡） | 渲染 | 面板上填的那个（空 ⇒ 按钮是**灰的**） |
+| 渲染 | 「去配音 →」（表单旁 + 最近任务每行） | 配音 | `RenderJob.task_id`（**反向跳转**） |
+
+**跳转只携带两个字段**：`panel`（去哪一屏）+ `taskId`（带哪个号）。落在 `stores/ui.ts`：
+
+- `goTo(panel, taskId)`：规范化任务号（空 / 全空白 ⇒ **不跳**，返回 `false`）⇒ 记一笔 ⇒ 切面板。
+- `takeHandoff(panel)`：**目标面板挂载时**认领属于自己的一笔；认领即清空。
+- 人自己点侧边栏（`selectPanel`）⇒ 顺手清掉待认领的那一笔。
+
+**契约要求（三条，每一条都对应一个坑）**
+
+1. **外壳不许知道业务**（裁定 253）。跳转不带任何业务参数、也不预判目标面板的状态。
+   面板是 `v-if` 挂的，切过去必然重新挂载，所以“用上这个任务号”写在**目标面板的 `onMounted`**。
+   外壳一旦开始知道“配音面板要拉逐句”，四屏就绑死了。
+2. **先拉列表、再认领跳转**（裁定 254 / 陷阱 #128）。稿件面板的 `refresh()` 会把“不在当前
+   状态列表里”的选中项清掉，配音面板的 `setTaskId()` 会清掉上一条任务的快照 —— 顺序反了，
+   跳转会被自己的首屏覆盖掉，**而且不报错**。
+3. **认领即清空**（陷阱 #129）。留着的话，用户从配音点回选题、再点回配音，会被同一个
+   任务号再跳一次 —— 那时他多半是想看别的。
+
+**刻意不做的两件事**
+
+- **不自动出片**：跳到渲染面板只**填框**。“出片”是花钱花时间的那一步，必须由人按下去。
+- **不改 URL**：一期是本地单页控制台，跳转不写路由（`?task_id=`）—— 多标签页 / 刷新恢复
+  属于后续版本的事，现在写进去只会多一个“URL 与面板状态谁是权威”的问题。
+
+### 4.5.15 发布前准备契约（T5.1 · 已落地）
+
+> 这一节写的是**发布之前**那两步：把封面画出来、判"能不能发"。
+> 它**不发布** —— `publish.enabled=false` 是出厂状态（R14 不可逆防护）。
+
+#### 命令面
+
+```text
+studio publish cover    --task <id> [--no-agent] [--json]
+studio publish precheck --task <id> [--json]
+```
+
+| 命令 | 退出码 | 做什么 |
+| --- | --- | --- |
+| `cover` | `0` = 封面出来了；`1` = 没出来 | 读 `timeline.json` 算抽帧点 ⇒ Cover Agent 写文案（可 `--no-agent` 跳过）⇒ 合成 1080×1920 JPEG ⇒ 落 `data/output/covers/{yyyymmdd-HHMMSS}_{task_id}_cover.jpg` |
+| `precheck` | `0` = 可以发；`1` = **拒绝发布** | 三道门禁 + 禁区扫描 ⇒ 不通过时打出 `manual_required` 与 `error_code`（`PRECHECK_*`） |
+
+⚠️ **`cover` 失败不阻塞发布**（§06.3：无封面就用平台首帧）—— 退出码 1 只表示"这张封面没出成"。
+
+#### 封面（§06.3）
+
+| 项 | 值 |
+| --- | --- |
+| 画布 | 1080×1920，JPEG `q=3` |
+| 抽帧点 | `timeline.json` 第一句 `start_ms + 500`；**模型可覆盖**，但一律钳在 `[0, duration_ms-1]` |
+| 排版 | 主文案 ≤2 行 × ≤10 字（字号 96，超安全宽按实测宽度线性收缩，**下限 60**）；次文案 1 行 × ≤12 字（52）；文字块底部对齐、强制落在安全区 `[230, 1632]` 内 |
+| 高亮 | `drawtext` 没有富文本 ⇒ 整行先画一遍，高亮段**重叠**在同一个 x 上（`0xFFD400`） |
+| 可读性 | 文字区背后一条 `drawbox=black@0.45` 压暗带（按文字块高度，不铺满全屏） |
+| 降级 | 抽帧失败 ⇒ 纯色底 + 文字（`warn`）；连纯色底都出不来 ⇒ **无封面发布**（`path=None`，**不抛**） |
+| 留痕 | `tasks.context_json.cover_path`（失败写 `null`）+ `context_json.cover_plan` + `artifacts(kind='cover')` |
+
+#### 发布前二次校验（§06.4）
+
+| # | 门禁 | 判据 | 不过 |
+| --- | --- | --- | --- |
+| 1 | 水印 | `quality_json.watermark_applied == true`（`None` ⇒ 读 `manifest.json.watermark.enabled`；两边都没有 ⇒ **不过**） | **拒发** ⇒ `PRECHECK_WATERMARK` |
+| 2 | 响度 | **重量盘上那个成片**：`lufs ∈ [-16.5,-15.5]` 且 `true_peak ≤ -1.0`；量不出来 ⇒ **不过** | **拒发** ⇒ `PRECHECK_LOUDNESS` |
+| 3 | 相似度 | `quality_json.dup_audit_pass` | 只 `warn`（`precheck.block_on_similarity=false`）⇒ `PRECHECK_SIMILARITY` |
+| 4 | 禁区 | `persona.forbidden` + `prompts/shared/banned_words.yaml` | `title`/`caption` 命中 ⇒ **拒发**（`PRECHECK_BANNED`）；`tags` 命中 ⇒ **剔掉该 tag + warn** |
+
+- `av_sync_offset_ms` **只进 `diagnostics`**（C12 取消了硬门禁）。
+- `GateResult` 的两个字段分工固定：`passed` 报**审计结论本身**，`blocking` 报**要不要拦**。
+- 门禁顺序固定（水印 → 响度 → 相似度 → 禁区）；`error_code` 取**第一道**没过的阻断门禁。
+
+#### 成片路径的取法
+
+`manifest.json` 的 `final` 字段**优先**（同一个任务可以有多个 `*_{task_id}_final*.mp4`，重合成一次多一个）；
+manifest 缺失或它指的那条不在盘上 ⇒ 退回目录里按名字找**最新**的一条。两个来源都没有 ⇒ 没有成片。
 ## 4.6 发布与数据回流契约（第六部分重建 · 原文 §1.1⑤ / §8 / §9.3）
 
 > 本节定义**接口与签名**；子系统的行为、平台矩阵、风控与合规策略见 **§06 成片与发布**。
@@ -2779,6 +3033,101 @@ class Report(BaseModel):
 > **报告与记忆沉淀的分工**：§6.7 记忆沉淀 = **自动**、无人工、粒度到"单条反馈"（回流 `feedback_items`）；报告 = **定期**、**有决策建议**、粒度到"聚合结论"。两者都读 `publications.metrics_json`，但用途不同。
 
 ---
+
+### 4.6.6 发布适配层落地契约（T5.2 · 已落地）
+
+§4.6.1 定的是**抽象**（三个方法、七个平台、七个错误码）；这一节定的是**落地件**：
+八步流程怎么切、选择器住哪、``dry_run`` 到底停在哪一步、证据落哪。
+
+**① 八步与代码的对应（§06.5.3）**
+
+| 步 | 动作 | 实现 |
+| --- | --- | --- |
+| ① | 打开创作页 | ``PlaywrightPublisher._step_open``（读 ``selectors/<p>.yaml`` 的 ``urls.upload``） |
+| ② | 上传成片 | ``_step_upload``（``set_input_files`` + 等上传完成） |
+| ③ | 填标题 / 文案 / 话题 | ``_step_fill``（``domain/publish.py`` 的 ``fit_text`` / ``build_caption`` / ``render_tags``） |
+| ④ | 选封面 | ``_step_cover``（``cover_path`` 为空则整步跳过） |
+| ⑤ | **回读逐字比对** | ``_step_readback``（``compare_readback``；不一致重填 ≤2 次） |
+| ⑥ | **点发布** | ``_step_publish`` —— **``dry_run=True`` 时流程到此为止** |
+| ⑦ | 留证（截图 + DOM + 平台提示原文） | ``_step_result`` / ``PublishEvidence`` |
+| ⑧ | 落库 + 回填 | T5.3（发布池） |
+
+**② 选择器：一个平台一份 yaml，装配期就校验**
+
+```yaml
+platform: douyin
+version: "2026-09-16.1"      # ★ 写进 evidence_json；页面改版后靠它定位
+urls:
+  upload: https://creator.douyin.com/creator-micro/content/upload
+  manage: https://creator.douyin.com/creator-micro/content/manage
+selectors:
+  video_input: 'input[type="file"]'
+  title_input: "..."
+  caption_editor: "..."
+  cover_trigger: "..."
+  publish_button: "..."
+markers:
+  login_expired_text: ["登录已过期", "请重新登录"]
+  review_rejected_text: ["审核不通过"]
+readback:
+  title: value
+  caption: text
+```
+
+- **装配期**（``load_selector_pack``）就校验：文件名与 ``platform`` 一致 / ``version`` 非空 /
+  ``urls.upload`` 在 / 5 个必需选择器齐 / 2 个必需 marker 齐 / ``readback`` 取值合法。
+  任何一条不满足 ⇒ 当场 ``PUBLISH_SELECTOR_MISS``，不推迟到真机（裁定 263）。
+- ``selector_version`` 是**实例属性**（读 yaml），不是 ``ClassVar``：写成类属性之后，
+  "改了 yaml 但忘了改类属性"会得到一个**永远不变的版本号**，而它存在的全部意义就是
+  事后能回答"这条是哪个版本的选择器发的"。
+
+**③ ``dry_run`` 的语义（R14 的落地）**
+
+- ``dry_run=True`` ⇒ 走完 ①–⑤ 与 ⑦，**第 ⑥ 步一次都不执行**，返回
+  ``PublishResult.stopped_before_publish()``（``ok=true`` / ``status='queued'``）。
+  写成 ``ok=false`` 会让"演练成功"在面板上与"演练失败"长得一样。
+- ``dry_run`` **不看** ``publish.enabled``：演练的全部意义就是"在开关还关着的时候验证链路是通的"；
+  要求先打开才能演练，等于让人拿**真发布**当验证手段（裁定 264）。
+- ``--target fixture`` 那个发布器**自己就拒绝** ``dry_run=False``（纵深防御）。
+
+**④ 证据落哪**
+
+``data/work/<task_id>/publish/<platform>/<stage>_<时刻>.png``
+（``StudioPaths.publish_evidence_dir``）。``stage`` 取 ``01-open`` … ``99-failure``；
+失败时另存 DOM 快照与平台提示原文。
+
+**⑤ 发布失败不回退任务状态（§06.5.4）**
+
+``publish/`` 里**没有任何一处**把 ``PublishStatus`` 映射成 ``TaskStatus``。
+``tests/contract/test_publisher_abc.py::test_publish_failure_does_not_touch_the_task_status``
+把这个"缺席"钉住 —— 一旦有人加了映射，``publish/`` 就再也不能独立重试了。
+
+**⑥ ``health()`` 的四态**
+
+| 页面现象 | ``ready`` | ``hint`` |
+| --- | --- | --- |
+| 创作页正常 | ``true`` | — |
+| 出现"尚未登录" | ``false`` | ``尚未登录，需人工扫码登录`` |
+| 出现"登录态已过期" | ``false`` | ``登录态已过期，需人工重新扫码登录`` |
+| 探测本身抛异常 | ``false`` | ``探测失败：…`` |
+
+**探测失败一律 ``ready=false``**（``PublishHealth.unknown``）：把"没探到"当成"是好的"，
+会让一个问题从"登录态过期"（一眼可修）推迟成"上传失败"（要去翻截图）。
+
+**⑦ 演练命令**
+
+```
+studio publish dry-run --task <id> --platform <p> [--account <a>] [--target fixture]
+                       [--probe "?logged_out=1"] [--show-browser]
+                       [--title T] [--caption C] [--tag TAG]... [--json]
+```
+
+``--target fixture`` 打 ``publish/fixtures/upload_form.html``（真浏览器、真导航、真选文件、
+真填字、真回读、真截图）；不带 ``--target`` 则打平台真实创作页 —— 需要**已登录**的账号，
+R13 不自动登录，探测不过就如实报"需人工扫码登录"。
+
+---
+
 ## 4.7 端到端时序（一次完整任务）
 
 ```

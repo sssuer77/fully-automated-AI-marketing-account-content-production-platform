@@ -817,11 +817,16 @@ def test_restart_then_lease_reclaimed_and_reclaimed(rig: Rig) -> None:
 
 
 def test_handler_for_reports_unregistered_pool() -> None:
-    """没注册就启动 ⇒ 明确报错，而不是"起来了但什么都不干"。"""
+    """没注册就启动 ⇒ 明确报错，而不是"起来了但什么都不干"。
+
+    remediation 是四个池**共用**的一句，所以这里认"该池自己的落地任务"（render→T3.7），
+    不认 ``T3.x`` 这类占位符 —— 任务真落地后占位符就不在文案里了（T3.7 收口时撞上过）。
+    """
     with pytest.raises(StudioError) as excinfo:
         handler_for("render")
     assert excinfo.value.code is ErrorCode.INTERNAL
-    assert "T3.x" in (excinfo.value.remediation or "")
+    assert excinfo.value.context["pool"] == "render"
+    assert "render→T3.7（已落地）" in (excinfo.value.remediation or "")
 
 
 def test_register_handler_round_trip() -> None:

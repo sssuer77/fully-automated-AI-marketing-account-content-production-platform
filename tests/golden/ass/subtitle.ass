@@ -1,0 +1,21 @@
+[Script Info]
+; 由 studio 生成（T3.5 · §04.2.6）—— 时间取自 voice_master.wav 的逐句实测时长
+Title: golden-task
+ScriptType: v4.00+
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+YCbCr Matrix: TV.709
+PlayResX: 1080
+PlayResY: 1920
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Main,Microsoft YaHei,64,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,4,2,2,60,60,420,1
+Style: SpeakerA,Microsoft YaHei,64,&H0000D7FF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,4,2,2,60,60,420,1
+Style: SpeakerB,Microsoft YaHei,64,&H00FFFF00,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,4,2,2,60,60,420,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:03.20,Main,,0,0,0,,今天我们来看一张特别离谱的\N跑酷地图。
+Dialogue: 0,0:00:03.20,0:00:06.10,SpeakerA,,0,0,0,,iPhone15 Pro Max\N售价 8999 元，贵得离谱。
+Dialogue: 0,0:00:06.10,0:00:09.00,SpeakerB,,0,0,0,,开局只有一格方块脚下就是虚\N空我试了三次全都掉下去了

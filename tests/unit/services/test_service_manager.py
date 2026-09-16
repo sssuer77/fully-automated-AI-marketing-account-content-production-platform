@@ -288,12 +288,16 @@ class TestReadiness:
         assert item.readiness is Readiness.SERVER_MISSING
         assert item.remediation is not None and "T2.2" in item.remediation
 
-    def test_pool_without_a_handler_is_not_ready(self, worker_home: StudioPaths) -> None:
+    def test_pool_without_a_handler_is_not_ready(
+        self, worker_home: StudioPaths, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """**不静默起一个空转 worker**：handler 未注册 ⇒ 不拉起。
 
-        ``voice`` / ``render`` 的单元处理器还没落地，它们就是当前的反例；
-        ``draft`` 的真实 handler 已随 T4.11 落地（见下一个用例）。
+        四个池里只剩 ``publish``（T5.3）没落地，而它不是 ``SERVICE_NAMES`` 里的
+        服务 —— 所以这里**模拟**"某个池还没落地"：把 ``voice`` 从声明表里摘掉，
+        判据必须立刻翻回 ``handler_missing``（这也让这条护栏不依赖任务进度）。
         """
+        monkeypatch.delitem(pool_runner.HANDLER_MODULES, "voice")
         manager = make_manager(worker_home)
         item = manager.readiness(manager.spec("voice"))
         assert item.readiness is Readiness.HANDLER_MISSING
@@ -307,6 +311,29 @@ class TestReadiness:
         """
         manager = make_manager(worker_home)
         item = manager.readiness(manager.spec("draft"))
+        assert item.readiness is Readiness.READY
+        assert item.remediation is None
+
+    def test_the_voice_pool_is_ready_without_any_monkeypatching(self, worker_home: StudioPaths) -> None:
+        """配音池的 handler 落在 :data:`HANDLER_MODULES` 声明的模块里 ⇒ 真就绪。
+
+        同 ``draft`` / ``render`` 那两条护栏：把 ``voice_worker`` 删掉或改名，
+        启动器会重新把它判成 ``handler_missing``。
+        """
+        manager = make_manager(worker_home)
+        item = manager.readiness(manager.spec("voice"))
+        assert item.readiness is Readiness.READY
+        assert item.remediation is None
+
+    def test_the_render_pool_is_ready_without_any_monkeypatching(self, worker_home: StudioPaths) -> None:
+        """渲染池的 handler 落在 :data:`HANDLER_MODULES` 声明的模块里 ⇒ 真就绪。
+
+        同 ``draft`` 那条护栏：把 ``render_worker`` 删掉或改名，启动器会重新把它
+        判成 ``handler_missing`` —— 而它现在的失败模式是"看着在跑、队列永远不消化"，
+        正是这条判据要防的事。
+        """
+        manager = make_manager(worker_home)
+        item = manager.readiness(manager.spec("render"))
         assert item.readiness is Readiness.READY
         assert item.remediation is None
 
@@ -361,16 +388,16 @@ class TestStart:
         table, rec = ready_pair()
         manager = make_manager(worker_home, table=table, rec=rec, doctor=blocked_doctor())
         report = manager.start(open_browser=False, doctor_gate=False)
-        assert report.ok and rec.spawned == ["api", "draft"]
+        assert report.ok and rec.spawned == ["api", "draft", "voice", "render"]
 
     def test_only_the_ready_processes_are_spawned(self, worker_home: StudioPaths) -> None:
-        """现状：api 与 draft 就绪，tts/voice/render 报降级 —— **降级不算失败**。"""
+        """现状：api / draft / voice / render 就绪，tts 报降级 —— **降级不算失败**。"""
         table, rec = ready_pair()
         manager = make_manager(worker_home, table=table, rec=rec, doctor=ok_doctor())
         report = manager.start(open_browser=False)
-        assert rec.spawned == ["api", "draft"]
-        assert report.ready == ("api", "draft")
-        assert set(report.degraded) == {"tts", "voice", "render"}
+        assert rec.spawned == ["api", "draft", "voice", "render"]
+        assert report.ready == ("api", "draft", "voice", "render")
+        assert set(report.degraded) == {"tts"}
         assert report.failed == ()
         assert report.ok
 
@@ -399,8 +426,8 @@ class TestStart:
         rec.ports["8787"] = True
         manager = make_manager(worker_home, rec=rec, doctor=ok_doctor())
         report = manager.start(open_browser=False)
-        # 端口冲突只挡 api；写稿池照起（本用例的 Recorder 自带空表 ⇒ 它随即被判"起完就死"）
-        assert rec.spawned == ["draft"]
+        # 端口冲突只挡 api；三个池照起（本用例的 Recorder 自带空表 ⇒ 它们随即被判"起完就死"）
+        assert rec.spawned == ["draft", "voice", "render"]
         assert report.port_busy == ("api",)
         assert report.ready == ()
 
@@ -410,7 +437,7 @@ class TestStart:
         manager = make_manager(worker_home, table=table, rec=rec, doctor=ok_doctor())
         worker_home.pid_file("api").write_text("4242", encoding="utf-8")
         report = manager.start(open_browser=False)
-        assert rec.spawned == ["draft"]  # api 已在跑 ⇒ 只补拉没跑的那个池
+        assert rec.spawned == ["draft", "voice", "render"]  # api 已在跑 ⇒ 只补拉没跑的池
         assert report.already_running == ("api",)
         assert report.ready == ("api",)
 
@@ -439,7 +466,7 @@ class TestStart:
         table = FakeProcessTable()  # 管理器看的是这张空表
         manager = make_manager(worker_home, table=table, rec=rec, doctor=ok_doctor())
         report = manager.start(open_browser=False)
-        assert report.failed == ("api", "draft")  # 两个就绪进程都没挺过就绪探测
+        assert report.failed == ("api", "draft", "voice", "render")  # 四个就绪进程都没挺过就绪探测
         assert not report.ok
 
     def test_the_browser_opens_only_when_the_api_is_ready(self, worker_home: StudioPaths) -> None:

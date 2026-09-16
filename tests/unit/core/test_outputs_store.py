@@ -143,7 +143,7 @@ def test_update_changes_exactly_one_line_and_keeps_the_comments(
     assert after[changed[0]].strip() == "font_size: 72"
     assert snapshot.config.subtitle.font_size == 72
     assert snapshot.version == 2
-    assert "# ★ 水印是必做项（D5）" in _read(paths)
+    assert "# ★ 水印是可选装饰" in _read(paths)
     assert "# 相对画布宽度；上限 0.25（T3.2 夹取）" in _read(paths)
 
 

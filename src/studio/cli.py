@@ -25,6 +25,7 @@ from rich.table import Table
 from studio import __spec_version__, __version__
 from studio.agents.budget import TokenBudget
 from studio.agents.cost import LlmCallStore
+from studio.agents.cover import CoverAgent
 from studio.agents.director import DirectorAgent
 from studio.agents.feedback_classifier import FeedbackClassifierAgent
 from studio.agents.gateway import LogSink
@@ -35,7 +36,15 @@ from studio.agents.prompts import PromptLibrary
 from studio.agents.writer import WriterAgent
 from studio.app.main import run_server
 from studio.core.clock import utc_now
-from studio.core.config import CONFIG_FILE_NAMES, LlmProfileConfig, LoadedConfig, PersonaConfig, load_config
+from studio.core.config import (
+    CONFIG_FILE_NAMES,
+    LlmProfileConfig,
+    LoadedConfig,
+    PersonaConfig,
+    load_app_config,
+    load_config,
+    load_outputs_config,
+)
 from studio.core.doctor import Doctor, dumps, render_text
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.paths import StudioPaths
@@ -54,9 +63,16 @@ from studio.db.backup import (
     restore_backup,
     snapshot_age_hours,
 )
+from studio.domain.enums import TaskStatus
 from studio.domain.task_service import TaskService
 from studio.gc import GcReport, RetentionPolicy, resolve_policy, run_gc
 from studio.pools import HeartbeatStore, run_pool
+from studio.publish.precheck import PrecheckReport
+from studio.render.profiles import (
+    FALLBACK_PROFILE_NAME,
+    RenderProfileReport,
+    build_render_profile_report,
+)
 from studio.services import (
     DraftReport,
     LogService,
@@ -66,6 +82,19 @@ from studio.services import (
     TopicService,
     default_manager,
     read_active_script,
+)
+from studio.services.pipeline_service import SUPPORTED_UNTIL, PipelineReport, run_task
+from studio.services.publish_service import (
+    CoverReport,
+    CoverRequest,
+    DryRunReport,
+    DryRunRequest,
+    PublishService,
+)
+from studio.services.render_service import (
+    ProduceRequest,
+    ProduceResult,
+    produce_video,
 )
 from studio.services.topic_service import TOPICS_PER_DIRECTION
 
@@ -99,6 +128,21 @@ gc_app = typer.Typer(
     help="媒资回收：DB 行 + 句子音频 + 缓存 + 热点归档（T4.12）",
     no_args_is_help=True,
 )
+render_app = typer.Typer(
+    name="render",
+    help="渲染：合成 profile 与单遍合成（T3.x）",
+    no_args_is_help=True,
+)
+pipeline_app = typer.Typer(
+    name="pipeline",
+    help="流水线：把一个任务从当前状态推到 --until（T3.7）",
+    no_args_is_help=True,
+)
+publish_app = typer.Typer(
+    name="publish",
+    help="发布前准备：封面合成 + 二次校验 + 发布演练（T5.1 / T5.2；**不发布**）",
+    no_args_is_help=True,
+)
 
 app = typer.Typer(
     name="studio",
@@ -119,6 +163,9 @@ app.add_typer(topics_app, name="topics")
 app.add_typer(script_app, name="script")
 app.add_typer(service_app, name="service")
 app.add_typer(gc_app, name="gc")
+app.add_typer(render_app, name="render")
+app.add_typer(pipeline_app, name="pipeline")
+app.add_typer(publish_app, name="publish")
 
 
 @app.callback(invoke_without_command=True)
@@ -1611,6 +1658,398 @@ def _grounding_text(items: list[dict[str, Any]]) -> str:
     return "；".join(parts) or "—"
 
 
+@render_app.command("profile")
+def render_profile(
+    show: Annotated[
+        bool,
+        typer.Option("--show/--no-show", help="打印完整合成 profile（输出参数 + 水印实测 + 硬门禁）"),
+    ] = True,
+    name: Annotated[
+        str | None, typer.Option("--name", help="指定 profile 名（默认取 default_profile）")
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="输出机读 JSON")] = False,
+) -> None:
+    """打印合成 profile：画布 / 编码参数 / 水印（T3.2 · §04.2.8.3）。
+
+    退出码恒为 0 —— 这是**诊断**命令。水印缺失不是阻塞项（有就贴、没有就跳过），
+    所以这里只如实说明"这次会不会贴"，不判"能不能出片"。
+    """
+    paths = StudioPaths.from_env()
+    source = paths.config_dir / "outputs.yaml"
+    try:
+        outputs = load_outputs_config(source)
+        report = build_render_profile_report(outputs, source=source, home=paths.home, name=name)
+    except StudioError as exc:
+        _fail(exc, json_output)
+        raise typer.Exit(code=1) from exc
+
+    if json_output:
+        console.print_json(data=report.to_dict())
+        return
+    _render_profile_report(report, show=show)
+
+
+def _render_profile_report(report: RenderProfileReport, *, show: bool) -> None:
+    """把报告画成人看的表（``--no-show`` 只打印一行摘要）。"""
+    profile = report.profile
+    headline = (
+        f"{profile.name} · {profile.width}x{profile.height} · {profile.fps}fps · "
+        f"{profile.vcodec} {profile.quality_field.upper()}{profile.quality}"
+    )
+    if not show:
+        console.print(f"{headline} · 水印={'贴' if report.watermark_enabled else '跳过'}")
+        return
+
+    canvas = Table(title=f"合成 profile · {profile.name}", show_lines=False)
+    canvas.add_column("项", style="cyan", no_wrap=True)
+    canvas.add_column("取值", overflow="fold")
+    canvas.add_row("来源", f"{report.source}（default_profile={report.default_profile}）")
+    canvas.add_row("画布", f"{profile.width}x{profile.height} @ {profile.fps}fps")
+    canvas.add_row("色彩", f"{profile.colorspace} · {profile.pix_fmt} · gop={profile.gop}")
+    canvas.add_row(
+        "编码",
+        f"{profile.vcodec} · {profile.quality_field}={profile.quality} · preset={profile.preset}",
+    )
+    canvas.add_row(
+        "音频",
+        f"{profile.acodec} {profile.audio_bitrate} @ {profile.audio_sample_rate}Hz "
+        f"{profile.audio_channels}ch",
+    )
+    canvas.add_row("faststart", "✅" if profile.faststart else "❌")
+    canvas.add_row("平台", "、".join(profile.platforms) or "—（保底档，不参与按平台选档）")
+    canvas.add_row("降级保底档", FALLBACK_PROFILE_NAME)
+    canvas.add_row("输出参数", " ".join(profile.output_args()))
+    console.print(canvas)
+
+    table = Table(title="全部 profile", show_lines=False)
+    table.add_column("name", style="cyan", no_wrap=True)
+    table.add_column("画布", no_wrap=True)
+    table.add_column("编码", no_wrap=True)
+    table.add_column("备注", overflow="fold")
+    for item in report.profiles:
+        marks: list[str] = []
+        if item.name == report.default_profile:
+            marks.append("默认")
+        if item.is_fallback:
+            marks.append("降级保底")
+        table.add_row(
+            item.name,
+            f"{item.width}x{item.height}",
+            f"{item.vcodec} {item.quality_field}={item.quality}",
+            "、".join(marks) or "—",
+        )
+    console.print(table)
+
+    plan = report.watermark
+    wm = Table(title="固定水印（有就贴，没有就跳过）", show_lines=False)
+    wm.add_column("项", style="cyan", no_wrap=True)
+    wm.add_column("取值", overflow="fold")
+    wm.add_row("路径", plan.spec.image_path.as_posix())
+    wm.add_row("位置", plan.spec.position)
+    wm.add_row("边距", f"{plan.spec.margin_px[0]}, {plan.spec.margin_px[1]}")
+    wm.add_row("宽度", f"{plan.spec.width_px}px")
+    wm.add_row("透明度", f"{plan.spec.opacity}")
+    wm.add_row("文件", _watermark_file_cell(report))
+    if plan.placement is not None:
+        wm.add_row(
+            "摆放",
+            f"x={plan.placement.x} y={plan.placement.y} "
+            f"（{plan.placement.width_px}x{plan.placement.height_px}）",
+        )
+    wm.add_row("结论", "[green]贴[/green]" if plan.enabled else "[yellow]跳过[/yellow]")
+    console.print(wm)
+
+    for note in plan.warnings:
+        console.print(f"[yellow]warn[/yellow] {note}")
+    if plan.enabled:
+        console.print("[green]水印[/green]：这一档会贴到成片上")
+    else:
+        console.print(f"[yellow]水印[/yellow]：跳过（{plan.skipped_reason}）—— **不影响出片**")
+
+
+def _watermark_file_cell(report: RenderProfileReport) -> str:
+    """水印文件那一格的文案（缺文件 / 坏文件 / 正常，三种状态一眼分清）。
+
+    三种状态都**不阻塞出片** —— 缺了就是"这一版没有水印"，不是"这一版出不来"。
+    """
+    asset = report.watermark.asset
+    if not asset.exists:
+        return "[yellow]缺失[/yellow]（跳过水印，照常出片）"
+    if not asset.usable:
+        return f"[yellow]不可用[/yellow]：{asset.problem}（跳过水印，照常出片）"
+    return f"[green]OK[/green] {asset.width_px}x{asset.height_px}（含透明通道，{asset.sha256[:12]}）"
+
+
+def _script_text_for(
+    task_id: str,
+    *,
+    text: str | None,
+    text_file: Path | None,
+    paths: StudioPaths,
+) -> str:
+    """文案从哪来：``--text`` > ``--text-file`` > 库里的生效稿件（优先级从高到低）。"""
+    if text is not None and text.strip():
+        return text
+    if text_file is not None:
+        if not text_file.is_file():
+            raise StudioError(
+                f"文案文件不存在：{text_file}",
+                code=ErrorCode.PATH_MISSING,
+                context={"path": text_file.as_posix()},
+                remediation="确认路径拼写，或改用 --text 直接给文案",
+            )
+        return text_file.read_text(encoding="utf-8")
+    if not paths.db_file.is_file():
+        raise StudioError(
+            f"数据库尚未初始化：{paths.db_file}",
+            code=ErrorCode.PATH_MISSING,
+            context={"db": paths.db_file.as_posix()},
+            remediation="先跑 `studio db migrate`，或改用 --text / --text-file 直接给文案",
+        )
+
+    connection = connect(paths.db_file, read_only=True)
+    try:
+        payload = read_active_script(connection, task_id)
+    finally:
+        connection.close()
+    if payload is None:
+        raise StudioError(
+            f"任务 {task_id} 没有生效稿件，也没有给 --text",
+            code=ErrorCode.SCRIPT_NOT_FOUND,
+            context={"task_id": task_id},
+            remediation="先用 `studio script draft` 出稿，或直接 `--text '口播文案'`",
+        )
+    _script, sentences = payload
+    return "".join(row.text for row in sentences)
+
+
+def _render_produce_result(result: ProduceResult) -> None:
+    """出片结果表（成片路径放第一行 —— 跑完最想看的就是它在哪）。"""
+    table = Table(title="出片结果", show_lines=False)
+    table.add_column("项", style="cyan", no_wrap=True)
+    table.add_column("取值", overflow="fold")
+    table.add_row("成片", f"[green]{result.final.as_posix()}[/green]")
+    table.add_row(
+        "时长",
+        f"{result.duration_ms / 1000:.2f}s（人声 {result.voice_duration_ms / 1000:.2f}s）",
+    )
+    table.add_row("体积", f"{result.size_bytes / 1024 / 1024:.1f} MB")
+    table.add_row("profile", result.profile_name)
+    table.add_row("底片", result.clip.name if result.clip else "[yellow]（无 ⇒ 纯黑底降级）[/yellow]")
+    table.add_row("BGM", result.bgm.name if result.bgm else "—（跳过：没有 BGM 素材）")
+    table.add_row(
+        "水印",
+        "[green]已贴[/green]" if result.watermark_enabled else "[yellow]跳过[/yellow]",
+    )
+    if not result.watermark_enabled and result.watermark_skipped_reason:
+        table.add_row("水印跳过原因", result.watermark_skipped_reason)
+    table.add_row(
+        "字幕",
+        f"[green]已烧 {len(result.subtitle.cues)} 句[/green]"
+        if result.subtitle.enabled
+        else "[yellow]跳过[/yellow]",
+    )
+    if not result.subtitle.enabled and result.subtitle.skipped_reason:
+        table.add_row("字幕跳过原因", result.subtitle.skipped_reason)
+    if result.output_loudness is not None:
+        table.add_row(
+            "响度（成片实测）",
+            f"{result.output_loudness.input_i:.1f} LUFS / {result.output_loudness.input_tp:.1f} dBTP",
+        )
+    if result.degraded:
+        table.add_row("降级", f"[yellow]{result.degrade_reason}[/yellow]")
+    table.add_row("时间轴", result.timeline.as_posix())
+    for warning in result.warnings:
+        table.add_row("[yellow]降级说明[/yellow]", warning)
+    table.add_row("manifest", result.manifest.as_posix())
+    console.print(table)
+
+
+@render_app.command("make")
+def render_make(
+    task_id: Annotated[str, typer.Option("--task-id", help="任务 id（产物按它归档）")],
+    text: Annotated[str | None, typer.Option("--text", help="直接给口播文案")] = None,
+    text_file: Annotated[Path | None, typer.Option("--text-file", help="从 UTF-8 文件读文案")] = None,
+    profile_name: Annotated[
+        str | None, typer.Option("--profile", help="合成 profile 名（默认取 default_profile）")
+    ] = None,
+    voice: Annotated[str | None, typer.Option("--voice", help="音色名（默认自动挑一个中文音色）")] = None,
+    reuse_voice: Annotated[
+        bool,
+        typer.Option("--reuse-voice", help="复用已有 voice_master.wav（反复调渲染参数时用）"),
+    ] = False,
+    threads: Annotated[int | None, typer.Option("--threads", help="ffmpeg -threads")] = None,
+    seed: Annotated[int | None, typer.Option("--seed", help="固定挑素材的随机种子（复现同一条片子）")] = None,
+    subtitle: Annotated[
+        bool | None,
+        typer.Option("--subtitle/--no-subtitle", help="烧字幕（默认听 outputs.yaml → subtitle.enabled）"),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="输出机读 JSON")] = False,
+) -> None:
+    """**文案 → 配音 → 字幕 → 混音 → 渲染**：出一条 MP4（T3.x 主线）。
+
+    文案来源三选一（优先级从高到低）：``--text`` / ``--text-file`` / 库里的生效稿件。
+
+    水印 / BGM / 字幕都是**可选**：有就贴、没有就跳过 —— 缺它们不影响出片。
+    底片从 ``data/assets/mc_parkour/`` 里随机挑一条 mp4。
+
+    字幕时间取自**逐句实测**的配音时长（不是按字数估的），所以它与人声是对齐的；
+    字体优先用 ``templates/<模板>/assets/fonts/``，没有则退到系统字体目录。
+    """
+    paths = StudioPaths.from_env()
+    try:
+        script_text = _script_text_for(task_id, text=text, text_file=text_file, paths=paths)
+        outputs_source = paths.config_dir / "outputs.yaml"
+        outputs = load_outputs_config(outputs_source)
+
+        def progress(stage: str, done: int, total: int, note: str) -> None:
+            if not json_output:
+                console.print(f"[dim]{stage}[/dim] {done}/{total} {note}")
+
+        result = produce_video(
+            ProduceRequest(
+                task_id=task_id,
+                text=script_text,
+                profile_name=profile_name,
+                voice=voice,
+                reuse_voice=reuse_voice,
+                threads=threads,
+                seed=seed,
+                subtitle=subtitle,
+            ),
+            paths=paths,
+            outputs=outputs,
+            outputs_source=outputs_source,
+            on_progress=progress,
+        )
+    except StudioError as exc:
+        _fail(exc, json_output)
+        raise typer.Exit(code=1) from exc
+
+    if json_output:
+        console.print_json(data=result.to_dict())
+        return
+    _render_produce_result(result)
+
+
+def _render_pipeline_report(report: PipelineReport) -> None:
+    """流水线结果表（最终状态与成片放最上面 —— 跑完最想看的就是这两行）。"""
+    table = Table(title="流水线", show_lines=False)
+    table.add_column("项", style="cyan", no_wrap=True)
+    table.add_column("取值", overflow="fold")
+    table.add_row("任务", report.task_id)
+    table.add_row(
+        "状态",
+        f"{report.status_before} → [green]{report.status}[/green]（--until {report.until}）",
+    )
+    if report.final is not None:
+        table.add_row("成片", f"[green]{report.final.as_posix()}[/green]")
+    if report.quality is not None:
+        loudness = (
+            f"{report.quality.lufs:.1f} LUFS / {report.quality.true_peak:.1f} dBTP"
+            if report.quality.lufs is not None and report.quality.true_peak is not None
+            else "—（没量出来）"
+        )
+        table.add_row("QC（成片实测）", loudness)
+        if report.quality.degraded:
+            table.add_row("降级", f"[yellow]{report.quality.degrade_reason}[/yellow]")
+    console.print(table)
+
+    if report.steps:
+        steps = Table(title="走过哪几步", show_lines=False)
+        steps.add_column("阶段", style="cyan", no_wrap=True)
+        steps.add_column("状态", no_wrap=True)
+        steps.add_column("说明", overflow="fold")
+        for step in report.steps:
+            steps.add_row(step.stage, f"{step.status_before} → {step.status}", step.note)
+        console.print(steps)
+
+
+@pipeline_app.command("run")
+def pipeline_run(
+    task_id: Annotated[str, typer.Argument(help="任务 id（`studio db status` / 面板可查）")],
+    until: Annotated[
+        str,
+        typer.Option(
+            "--until",
+            help="跑到哪个状态就停：" + " / ".join(item.value for item in SUPPORTED_UNTIL),
+        ),
+    ] = TaskStatus.COMPLETED.value,
+    profile_name: Annotated[
+        str | None, typer.Option("--profile", help="合成 profile 名（默认取 default_profile）")
+    ] = None,
+    voice: Annotated[str | None, typer.Option("--voice", help="音色名（默认自动挑一个中文音色）")] = None,
+    seed: Annotated[int | None, typer.Option("--seed", help="固定挑素材的随机种子")] = None,
+    subtitle: Annotated[
+        bool | None,
+        typer.Option("--subtitle/--no-subtitle", help="烧字幕（默认听 outputs.yaml → subtitle.enabled）"),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="输出机读 JSON")] = False,
+) -> None:
+    """**把一条任务跑到成片**：配音 ⇒ 渲染 ⇒ 回填 QC（T3.7 的验收命令）。
+
+    按任务**当前状态**决定从哪一步接手，所以"断点续跑"与"只跑到配音为止"是同一条命令，
+    跑第二遍不会重渲已经出好的片子（幂等）。
+
+    四件事它**故意不做**（每一条都有理由，见 `services/pipeline_service.py`）：
+    **不写稿**（没有生效稿件就直接报错，不去偷偷调 LLM）、**不审稿**、**不代按确认闸**、
+    **不发布**。
+
+    底片从 ``data/assets/mc_parkour/`` 随机挑；挑不到 ⇒ 纯黑底照出（黑屏降级）。
+    """
+    paths = StudioPaths.from_env()
+    if not paths.db_file.is_file():
+        console.print(f"[yellow]数据库尚未初始化[/yellow]：{paths.db_file}\n先跑 `studio db migrate`")
+        raise typer.Exit(code=1)
+
+    try:
+        target = TaskStatus(until)
+    except ValueError as exc:
+        console.print(
+            f"[red]--until 不认识 {until!r}[/red]；只能是 "
+            + " / ".join(item.value for item in SUPPORTED_UNTIL)
+        )
+        raise typer.Exit(code=2) from exc
+
+    outputs_source = paths.config_dir / "outputs.yaml"
+    outputs = load_outputs_config(outputs_source)
+    # 边配音边渲染（C7）默认关。这里**如实**读配置再传下去，不写死 False ——
+    # 写死的话，改了 YAML 的人只会看到"改了没生效"，而那种故障最难查。
+    streaming_render = load_app_config(paths).pipeline.streaming_render
+    connection = connect(paths.db_file)
+    try:
+
+        def progress(stage: str, done: int, total: int, note: str) -> None:
+            if not json_output:
+                console.print(f"[dim]{stage}[/dim] {done}/{total} {note}")
+
+        try:
+            report = run_task(
+                task_id=task_id,
+                paths=paths,
+                outputs=outputs,
+                outputs_source=outputs_source,
+                connection=connection,
+                until=target,
+                profile_name=profile_name,
+                voice=voice,
+                seed=seed,
+                subtitle=subtitle,
+                streaming_render=streaming_render,
+                on_progress=progress,
+            )
+        except StudioError as exc:
+            _fail(exc, json_output)
+            raise typer.Exit(code=1) from exc
+    finally:
+        connection.close()
+
+    if json_output:
+        console.print_json(data=report.to_dict())
+        return
+    _render_pipeline_report(report)
+
+
 @service_app.command("start")
 def service_start(
     only: Annotated[str | None, typer.Option("--only", help="只拉起这些服务（逗号分隔，排障用）")] = None,
@@ -1772,6 +2211,288 @@ def serve(
         return
     console.print(f"[green]WebUI[/green] http://{bind_host}:{bind_port}/ （WS: /ws/ui）")
     run_server(paths=paths, host=bind_host, port=bind_port, tail_interval_sec=tail_interval_sec)
+
+
+# ── publish：发布前准备（T5.1 · §06.3 / §06.4）────────────────────────
+
+
+def _build_publish_service(
+    paths: StudioPaths, connection: sqlite3.Connection, *, with_agent: bool
+) -> PublishService:
+    """装配发布前准备服务。
+
+    ``with_agent=False`` 时**连网关都不建**：二次校验（§06.4）一个字节都不调 LLM，
+    为它去读提示词、探通道，只会让"能不能发"这件本该确定的事多几个可能失败的点。
+    """
+    loaded = load_config(paths)
+    if not with_agent:
+        return PublishService(connection, paths=paths, publish=loaded.bundle.publish)
+    prompts = PromptLibrary.load(paths.prompts_dir)
+    gateway = build_gateway(
+        connection=connection,
+        llm=loaded.bundle.llm,
+        paths=paths,
+        log=_gateway_log_sink(LogService(connection)),
+    )
+    return PublishService(
+        connection,
+        paths=paths,
+        publish=loaded.bundle.publish,
+        persona=_active_persona(),
+        cover_agent=CoverAgent(gateway, prompts),
+    )
+
+
+@publish_app.command("cover")
+def publish_cover(
+    task_id: Annotated[str, typer.Option("--task", "--task-id", help="任务 id")],
+    no_agent: Annotated[
+        bool, typer.Option("--no-agent", help="不走 Cover Agent，直接用规则兜底文案")
+    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="输出机读 JSON")] = False,
+) -> None:
+    """生成发布封面（§06.3）：抽帧 + 主/次文案 + 高亮，落 ``data/output/covers/``。
+
+    抽帧点取 ``timeline.json`` 第一句的 ``start_ms + 500``（开口那一瞬）；
+    文案走 Cover Agent，通道不可用 / 命中禁区 ⇒ **自动退到规则兜底**（标题当主文案）。
+
+    封面**没有出来**时退出码 1，但那**不影响发布**：§06.3 写明没有封面就用平台首帧。
+    这条命令的职责是"出一张封面"，它没做到就是没做到 —— 而发布链路不因此中断。
+    """
+    paths = StudioPaths.from_env()
+    if not paths.db_file.is_file():
+        console.print(f"[yellow]数据库尚未初始化[/yellow]：{paths.db_file}\n先跑 `studio db migrate`")
+        raise typer.Exit(code=1)
+
+    connection = connect(paths.db_file)
+    try:
+        try:
+            service = _build_publish_service(paths, connection, with_agent=not no_agent)
+            report = asyncio.run(service.make_cover(CoverRequest(task_id=task_id, use_agent=not no_agent)))
+        except StudioError as exc:
+            _fail(exc, json_output)
+            raise typer.Exit(code=1) from exc
+    finally:
+        connection.close()
+
+    if json_output:
+        console.print_json(data=report.to_dict())
+    else:
+        _render_cover(report)
+    if not report.ok:
+        raise typer.Exit(code=1)
+
+
+def _render_cover(report: CoverReport) -> None:
+    """封面结论（人读）。"""
+    if report.cover_path is not None:
+        console.print(f"[green]封面已出[/green] {report.cover_path}")
+    else:
+        console.print("[yellow]封面没出来[/yellow] —— §06.3 允许无封面发布（平台会用成片首帧）")
+    console.print(
+        f"[dim]抽帧 {report.frame_at_ms} ms / 成片 {report.duration_ms} ms · 文案来源 {report.source}[/dim]"
+    )
+    plan = report.plan
+    lines = plan.get("title_lines") or []
+    console.print(
+        f"[dim]主文案：{plan.get('title_text')}（{plan.get('title_font_size')}pt · {len(lines)} 行）[/dim]"
+    )
+    if plan.get("sub_text"):
+        console.print(f"[dim]次文案：{plan.get('sub_text')}[/dim]")
+    if report.fallback_background:
+        console.print("[yellow]底图是纯色[/yellow]：抽帧失败，封面仍可用（§06.3 第一级降级）")
+    for item in report.warnings:
+        console.print(f"[yellow]提示[/yellow] {item}")
+
+
+@publish_app.command("precheck")
+def publish_precheck(
+    task_id: Annotated[str, typer.Option("--task", "--task-id", help="任务 id")],
+    json_output: Annotated[bool, typer.Option("--json", help="输出机读 JSON")] = False,
+) -> None:
+    """发布前二次校验（§06.4）：三道门禁 + 禁区扫描。不过 ⇒ 退出码 1。
+
+    **不静默放行**：任何一道阻断门禁没过，都会打出 ``manual_required`` 与对应的
+    ``error_code``（``PRECHECK_*``）。响度那一项是**重量盘上那个成片**得出的
+    （不是读当初的结论）—— 发布不可逆（R14），读数过期就等于没量。
+
+    这条命令**不发布**：``publish.enabled=false`` 是出厂状态（R14 不可逆防护）。
+    """
+    paths = StudioPaths.from_env()
+    if not paths.db_file.is_file():
+        console.print(f"[yellow]数据库尚未初始化[/yellow]：{paths.db_file}\n先跑 `studio db migrate`")
+        raise typer.Exit(code=1)
+
+    connection = connect(paths.db_file)
+    try:
+        try:
+            service = _build_publish_service(paths, connection, with_agent=False)
+            report = service.precheck(task_id)
+        except StudioError as exc:
+            _fail(exc, json_output)
+            raise typer.Exit(code=1) from exc
+    finally:
+        connection.close()
+
+    if json_output:
+        console.print_json(data=report.model_dump(mode="json"))
+    else:
+        _render_precheck(report)
+    if not report.passed:
+        raise typer.Exit(code=1)
+
+
+def _render_precheck(report: PrecheckReport) -> None:
+    """二次校验结论（人读）。"""
+    table = Table(title=f"发布前二次校验 · {report.task_id}", show_lines=False)
+    table.add_column("门禁", style="cyan", no_wrap=True)
+    table.add_column("结论")
+    table.add_column("阻断")
+    table.add_column("说明", overflow="fold")
+    for gate in report.gates:
+        if gate.passed:
+            mark = "[green]通过[/green]"
+        elif gate.blocking:
+            mark = "[red]不过[/red]"
+        else:
+            mark = "[yellow]建议复核[/yellow]"
+        table.add_row(gate.name, mark, "是" if gate.blocking else "否", gate.detail)
+    console.print(table)
+
+    for item in report.warnings:
+        console.print(f"[yellow]提示[/yellow] {item}")
+    for key, value in report.diagnostics.items():
+        console.print(f"[dim]诊断 {key} = {value}[/dim]")
+
+    if report.passed:
+        console.print("[green]可以发布[/green]（本次**没有真的发**：publish.enabled=false · R14）")
+        return
+    console.print(f"[red]拒绝发布[/red] ⇒ manual_required（error_code={report.error_code}）")
+    console.print(
+        "[dim]这不是“没检查”，是“检查了不合格”：修完再跑一次本命令，别绕过它 —— 发出去就收不回来了。[/dim]"
+    )
+
+
+@publish_app.command("dry-run")
+def publish_dry_run(
+    task_id: Annotated[str, typer.Option("--task", "--task-id", help="任务 id")],
+    platform: Annotated[
+        str, typer.Option("--platform", help="平台代号：douyin / kuaishou / shipinhao / …")
+    ] = "douyin",
+    account: Annotated[
+        str | None, typer.Option("--account", help="账号 id（默认取该平台第一个启用的账号）")
+    ] = None,
+    target: Annotated[
+        str, typer.Option("--target", help="live = 真平台（要登录态）/ fixture = 本地靶页（不需要）")
+    ] = "live",
+    probe: Annotated[
+        str,
+        typer.Option("--probe", help="靶页故障注入：?logged_out=1 / ?eat=emoji / ?eat=newlines / ?reject=1"),
+    ] = "",
+    show_browser: Annotated[
+        bool, typer.Option("--show-browser", help="显示浏览器窗口（首次扫码登录 / 排障）")
+    ] = False,
+    title: Annotated[str | None, typer.Option("--title", help="覆盖标题（默认取稿件标题）")] = None,
+    caption: Annotated[str | None, typer.Option("--caption", help="覆盖文案（默认取稿件 CTA）")] = None,
+    tag: Annotated[list[str] | None, typer.Option("--tag", help="话题，可重复传")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="输出机读 JSON")] = False,
+) -> None:
+    """发布演练（§06.5.3）：走完前七步，**停在第 ⑥ 步之前**，一个字节都不发出去。
+
+    八步里前七步都会真的走一遍：打开创作页 → 选视频 → 填标题/文案 → 选封面 →
+    **回读比对** → 截图 → 停。只有第 ⑥ 步那个"点发布"的动作被跳过。
+
+    ``--target fixture`` 打本地靶页（``publish/fixtures/upload_form.html``）：
+    **不需要账号、不需要网络**，用真浏览器把同一份流程代码跑一遍。这是在没有
+    登录态时唯一能验到"第 ⑤ 步回读比对真的在比"的办法。
+
+    这条命令**不看** ``publish.enabled``：演练的意义就是在开关还关着的时候验证链路。
+    真正的保护是发布器收到 ``dry_run=True`` 后不点那个按钮（§06.5.3 第 ⑥ 步）。
+
+    登录态没过 ⇒ 退出码 1 并打出 ``health.hint``（"需人工扫码登录" / "登录态已过期"）；
+    演练本身失败 ⇒ 退出码 1 并打出 ``error_code`` 与截图路径。
+    """
+    paths = StudioPaths.from_env()
+    if not paths.db_file.is_file():
+        console.print(f"[yellow]数据库尚未初始化[/yellow]：{paths.db_file}\n先跑 `studio db migrate`")
+        raise typer.Exit(code=1)
+
+    connection = connect(paths.db_file)
+    try:
+        try:
+            service = _build_publish_service(paths, connection, with_agent=False)
+            report = asyncio.run(
+                service.dry_run(
+                    DryRunRequest(
+                        task_id=task_id,
+                        platform=platform,
+                        account_id=account,
+                        target=target,
+                        headless=not show_browser,
+                        probe=probe,
+                        title=title,
+                        caption=caption,
+                        tags=tuple(tag or ()),
+                    )
+                )
+            )
+        except StudioError as exc:
+            _fail(exc, json_output)
+            raise typer.Exit(code=1) from exc
+    finally:
+        connection.close()
+
+    if json_output:
+        console.print_json(data=report.to_dict())
+    else:
+        _render_dry_run(report)
+    if not report.ok:
+        raise typer.Exit(code=1)
+
+
+def _render_dry_run(report: DryRunReport) -> None:
+    """演练结论（人读）。"""
+    where = "本地靶页" if report.target == "fixture" else f"真平台 {report.platform}"
+    console.print(
+        f"[cyan]发布演练[/cyan] {where} · 账号 {report.account_id} · 选择器 {report.selectors_version}"
+    )
+
+    if not report.health.ready:
+        console.print(f"[red]登录态没过[/red] {report.health.hint or '未登录'}")
+        console.print("[dim]登录只发生在人扫码那一下（R13：不自动登录、不绕验证码）。[/dim]")
+        for item in report.warnings:
+            console.print(f"[yellow]提示[/yellow] {item}")
+        return
+
+    console.print(f"[green]登录态正常[/green] {report.health.account_name or report.account_id}")
+
+    table = Table(title="这次要发的内容", show_lines=False)
+    table.add_column("项", style="cyan", no_wrap=True)
+    table.add_column("值", overflow="fold")
+    table.add_row("标题", report.title)
+    table.add_row("文案", report.caption or "[dim]（空）[/dim]")
+    table.add_row("话题", " ".join(report.tags) or "[dim]（无）[/dim]")
+    table.add_row("成片", "[dim]—[/dim]" if report.video_path is None else report.video_path.as_posix())
+    cover = "（无，平台用首帧）" if report.cover_path is None else report.cover_path.as_posix()
+    table.add_row("封面", cover)
+    console.print(table)
+
+    result = report.result
+    if result is None:  # 只有 health 不过时才会走到这，上面已经 return 了
+        return
+    if result.ok:
+        console.print("[green]演练通过[/green]：前七步都走通了，停在第 ⑥ 步**之前**（没点发布）")
+    else:
+        console.print(f"[red]演练失败[/red] {result.error_code}：{result.error_message}")
+    if result.evidence is not None:
+        if result.evidence.screenshot_path is not None:
+            console.print(f"[dim]截图 {result.evidence.screenshot_path}[/dim]")
+        if result.evidence.dom_snapshot_path is not None:
+            console.print(f"[dim]DOM 快照 {result.evidence.dom_snapshot_path}[/dim]")
+    console.print(f"[dim]耗时 {result.elapsed_ms} ms[/dim]")
+    for item in report.warnings:
+        console.print(f"[yellow]提示[/yellow] {item}")
+    console.print("[dim]本次**没有真的发**：publish.enabled=false 是出厂状态（R14）。[/dim]")
 
 
 def _fail(error: StudioError, json_output: bool) -> None:

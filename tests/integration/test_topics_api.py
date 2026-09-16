@@ -36,6 +36,7 @@ from studio.app import deps
 from studio.app.deps import AppState, build_state
 from studio.app.main import create_app
 from studio.app.routers import topics as topics_router
+from studio.app.watchdog import WatchdogPump
 from studio.core.paths import StudioPaths
 from studio.core.persona_store import reset_persona_store
 from studio.db import migrate
@@ -84,6 +85,14 @@ def state(paths: StudioPaths, monkeypatch: pytest.MonkeyPatch) -> Iterator[AppSt
     paths.ensure_runtime_dirs()
     migrate(paths.db_file)
     built = build_state(paths=paths, hub_settings=HubSettings(tail_interval_sec=0.05))
+    # `home` 指向仓库根 ⇒ `workers/` 真的存在 ⇒ `WatchdogPump.runnable` 为真，
+    # `lifespan` 会起跳守护；守护一旦发现 `draft` 没就绪，就**真的 Popen 一个
+    # `workers/run_draft.py`**，而且以 3.5s 的节奏反复重启（每轮两个进程：venv
+    # 转发器 + 真解释器）。每个孤儿都攥着本用例 tmp 里那份 `data/logs/draft.log`，
+    # pytest 收尾删临时目录时就是 `WinError 32`，而报错挂在**后面几百个用例**的
+    # setup 上 —— 看上去像是它们坏了。本文件测的是选题 REST 面，守护起不起跳与
+    # 它无关，所以把「能不能起跳」钉死为否。
+    monkeypatch.setattr(WatchdogPump, "runnable", property(lambda self: False))
     try:
         yield built
     finally:

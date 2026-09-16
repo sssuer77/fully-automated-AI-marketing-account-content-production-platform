@@ -110,7 +110,12 @@ class OutputsProfileCard:
 
 @dataclass(frozen=True, slots=True)
 class OutputsWatermarkCard:
-    """固定水印（D5 必做项）。``exists=False`` ⇒ 渲染会**拒绝出片**，面板必须显著提示。"""
+    """固定水印（**可选装饰**）。``exists=False`` ⇒ 这次出片不贴水印，**照样出片**。
+
+    面板仍然要显著提示 —— 但理由变了：以前是"不修好就出不了片"，现在是
+    "这次出来的片子上没有水印，你要是想要就补一张"。两者的措辞必须分开写，
+    把后者说成前者会让人以为链路坏了。
+    """
 
     path: str
     position: str
@@ -401,7 +406,7 @@ class OutputsService:
             margin_x=spec.margin_x,
             margin_y=spec.margin_y,
             width_ratio=spec.width_ratio,
-            width_px=round(spec.width_ratio * canvas_width),
+            width_px=spec.width_px_for(canvas_width),
             opacity=spec.opacity,
             exists=self._watermark_exists(spec),
         )
@@ -410,9 +415,9 @@ class OutputsService:
         """水印文件在不在。
 
         相对路径按 **STUDIO_HOME** 解析（`config/outputs.yaml` 的注释就是这么写的：
-        "路径相对 STUDIO_HOME"）。文件不在 ⇒ 渲染会以 `RENDER_WATERMARK_MISSING`
-        拒绝出片（D5 必做，不降级）—— 面板必须**提前**说出来，而不是等人点了
-        "开始"才报错。
+        "路径相对 STUDIO_HOME"）。文件不在 ⇒ 渲染**跳过水印继续出片**，并把原因写进
+        `RenderJob.result.watermark_skipped_reason`（判断只在 `render.watermark.plan_watermark`
+        一处）—— 面板**提前**说出来，省得人出了片才发现没水印、又去查是不是坏了。
         """
         if self._home is None:
             return False

@@ -84,6 +84,12 @@ HTTP_STATUS_BY_CODE: Final[Mapping[ErrorCode, int]] = {
     # 探不出来是**环境**问题（ffprobe 不在 PATH / 超时）⇒ 409：与 doctor 门禁
     # 「现在这台机器不能干这件事」同一条，而不是"我们崩了"。
     ErrorCode.MEDIA_PROBE_FAILED: 409,
+    # 配音操作面（T2.9）：音色名是**入参**，写错了改一个字符串重提交就好 ⇒ 422，
+    # 面板据此把红字标在音色下拉框上，并在 `context.available` 里给出能用的那些。
+    ErrorCode.TTS_VOICE_MISSING: 422,
+    # 「会重配 N 句」是**状态**问题而不是入参问题：请求一个字都没写错，缺的是
+    # "你确认过这个代价了" ⇒ 409，与 `PERSONA_EXISTS` 的「覆盖 / 换个 id」同一条。
+    ErrorCode.VOICE_MAP_CONFIRM_REQUIRED: 409,
 }
 
 

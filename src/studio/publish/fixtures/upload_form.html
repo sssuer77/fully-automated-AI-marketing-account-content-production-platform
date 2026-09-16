@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>本地靶页 · 发布表单（T5.2 演练用）</title>
+<!--
+  这不是任何平台的页面，也不是它的仿制品。
+
+  它只做一件事：把 §06.5.3 那八步需要的**那几种控件**摆出来（文件输入框、标题框、
+  可编辑文案区、发布按钮、成功标志），好让 PlaywrightPublisher 的**真代码**在没有
+  账号、没有网络的情况下被完整跑一遍 —— 真浏览器、真 file://、真截图。
+
+  三条刻意的设计，都是为了让演练**验得动**：
+
+  ① "已登录"与"未登录"两个标志**只留一个在 DOM 里**（不是 hidden）。
+     真实平台的登录页里根本没有那个用户头像元素 —— 留着它、只把它藏起来，
+     会让"元素在不在"这条判据变成"元素可不可见"，而那是另一条判据。
+  ② 结果标志（发布成功 / 审核不通过）**点下按钮才被创建**。
+     同理：静态存在的 `#result` 会让"发布成功了没"这个判断永远为真。
+  ③ `?eat=emoji` / `?eat=newlines` 让文案区**静默**吞字，复现平台编辑器的两种常见吞法。
+     静默是重点 —— 演练要验的是"我们自己能不能发现"，不是"页面会不会提醒我们"。
+
+  查询参数：
+    ?logged_out=1   走 health() / 第 ① 步的"未登录"分支（提示"尚未登录"）
+    ?expired=1      与上一条一起用：提示语改成"登录已过期"（§06.10 要能区分这两件事）
+    ?eat=emoji      走回读比对的 emoji_stripped 分支
+    ?eat=newlines   走回读比对的 whitespace_only 分支
+    ?reject=1       点下发布后走 PUBLISH_REVIEW_REJECTED 分支
+
+  被 http 打开时，点下"发布"会 POST 一次 /__published（见脚本末尾的注释）。
+
+  ★ 演练**成功**的判据之一是 window.__published 仍为 false —— 见页面底部的按钮处理。
+-->
+<style>
+  :root { color-scheme: light; }
+  body { font: 14px/1.6 system-ui, "Microsoft YaHei", sans-serif; margin: 0; padding: 24px 32px; background: #f5f6f8; color: #1c1f23; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .muted { color: #6b7280; margin: 0 0 20px; }
+  .card { background: #fff; border: 1px solid #e3e6ea; border-radius: 8px; padding: 16px 20px; max-width: 640px; }
+  .row { margin-bottom: 14px; }
+  label { display: block; font-weight: 600; margin-bottom: 6px; }
+  input[type=text], #caption { width: 100%; box-sizing: border-box; border: 1px solid #cfd4da; border-radius: 6px; padding: 8px 10px; font: inherit; }
+  #caption { min-height: 72px; background: #fff; }
+  #who { display: inline-block; background: #e7f5ec; color: #17663a; border-radius: 999px; padding: 2px 10px; font-size: 12px; }
+  #login-box { display: inline-block; background: #fdecec; color: #8a1c1c; border-radius: 999px; padding: 2px 10px; font-size: 12px; }
+  #publish { background: #1677ff; color: #fff; border: 0; border-radius: 6px; padding: 9px 22px; font: inherit; cursor: pointer; }
+  #result, #reject { margin-top: 14px; font-weight: 600; }
+  #result { color: #17663a; }
+  #reject { color: #8a1c1c; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+  <h1>本地靶页 · 发布表单</h1>
+  <p class="muted">T5.2 演练用。这里点下的"发布"不会发到任何地方。</p>
+
+  <p><span id="who">已登录（本地靶页）</span><span id="login-box" hidden>请登录</span></p>
+
+  <div class="card">
+    <div class="row">
+      <label for="video">视频文件</label>
+      <input type="file" id="video" accept="video/mp4,video/*">
+      <div class="muted" id="video-name">（未选择）</div>
+    </div>
+
+    <div class="row">
+      <label for="title">标题</label>
+      <input type="text" id="title" placeholder="填写标题">
+    </div>
+
+    <div class="row">
+      <label for="caption">文案</label>
+      <div id="caption" contenteditable="true"></div>
+    </div>
+
+    <div class="row">
+      <button type="button" id="cover-trigger">设置封面</button>
+      <input type="file" id="cover" accept="image/*" hidden>
+      <div class="muted" id="cover-name">（未选择封面）</div>
+    </div>
+
+    <div class="muted" id="progress" hidden>上传中 100%</div>
+    <button type="button" id="publish">发布</button>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+  var params = new URLSearchParams(location.search);
+
+  // 演练判据：dry-run 走完八步的前七步，这个标志必须**仍然是 false**。
+  window.__published = false;
+
+  // ① 两个登录标志只留一个在 DOM 里（真实平台的登录页里没有用户头像元素）。
+  var who = document.getElementById("who");
+  var loginBox = document.getElementById("login-box");
+  if (params.get("logged_out") === "1") {
+    if (who) { who.remove(); }
+    // 登录提示要**可见**：真实平台的登录页上那句话就是给人看的，而
+    // `inner_text` 只读可见文本 —— 藏着它，"认提示语"那一步会永远读不到东西。
+    if (loginBox) { loginBox.hidden = false; }
+    // §06.10 要区分"尚未登录"与"登录态已过期"：两者都要人工扫码，但操作员的
+    // 下一步动作不同（第一次用 vs 昨天还好好的）。靶页把两种文案都造得出来。
+    if (loginBox && params.get("expired") === "1") {
+      loginBox.textContent = "登录已过期，请重新登录";
+    }
+  } else if (loginBox) {
+    loginBox.remove();
+  }
+
+  var video = document.getElementById("video");
+  video.addEventListener("change", function () {
+    var name = video.files && video.files.length ? video.files[0].name : "（未选择）";
+    document.getElementById("video-name").textContent = name;
+  });
+
+  var cover = document.getElementById("cover");
+  document.getElementById("cover-trigger").addEventListener("click", function () {
+    cover.hidden = false;
+  });
+  cover.addEventListener("change", function () {
+    var name = cover.files && cover.files.length ? cover.files[0].name : "（未选择封面）";
+    document.getElementById("cover-name").textContent = name;
+  });
+
+  // ③ 制造"平台编辑器吞字"的两种常见吞法。真实平台是**静默**吞的 ——
+  //    这里也不弹任何提示，否则演练验不出"我们能不能自己发现"。
+  var EMOJI = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu;
+  var caption = document.getElementById("caption");
+  caption.addEventListener("input", function () {
+    var mode = params.get("eat");
+    if (mode !== "emoji" && mode !== "newlines") { return; }
+    var text = caption.innerText;
+    var cleaned = mode === "emoji" ? text.replace(EMOJI, "") : text.replace(/\s*\n\s*/g, " ");
+    if (cleaned !== text) { caption.innerText = cleaned; }
+  });
+
+  // ② 结果标志点下按钮才被创建（静态存在会让"发布成功了没"永远为真）。
+  document.getElementById("publish").addEventListener("click", function () {
+    window.__published = true;
+    // ③ "点过发布"这件事**离开这个页面也要留下痕迹**：本地靶页被 http 方式打开时
+    //    （集成测试就是这么开的），往服务器报一下；测试据此断言"dry-run 一次都没点"。
+    //    file:// 下 fetch 会失败 —— 那没关系，手验时看 window.__published 就够了。
+    try { fetch("/__published", { method: "POST" }); } catch (err) { /* file:// 下正常 */ }
+    var box = document.createElement("div");
+    if (params.get("reject") === "1") {
+      box.id = "reject";
+      box.textContent = "审核不通过";
+    } else {
+      box.id = "result";
+      box.textContent = "发布成功";
+    }
+    document.querySelector(".card").appendChild(box);
+  });
+})();
+</script>
+</body>
+</html>

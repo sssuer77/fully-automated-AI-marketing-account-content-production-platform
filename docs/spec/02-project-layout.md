@@ -19,6 +19,12 @@ ws ──▶ services（只读查询）        pools ──▶ db.queue（唯一
 - `domain/` 零外部依赖（纯数据结构 + 状态机 + 时间轴 + 评分算法）；
 - `render/`、`tts/`、`agents/`、`publish/` 不 import FastAPI；
 - `publish/` 不得 import `render/`（通过产物路径 + `artifacts` 表解耦）；
+  **唯一例外**：`publish/precheck.py` 量成片响度时，在**函数内**取
+  `render.mixdown` 的 `MixSettings` / `measure_file`。发布门禁与 `quality_json`
+  必须量**同一个东西** —— 另写一份 ffmpeg argv 会让「当初写的」与「发布前量的」
+  变成两套口径；而把 `MixSettings` 下沉到 `core/` 又会把渲染策略（ducking / 限幅）
+  搬进平台层。两边都不划算，故保留函数内导入 + `noqa: PLC0415`；
+  **新增 `publish → render` 依赖一律按违规处理**（T5.1）；
 - `agents/` 不得 import `tts/`、`render/`、`services/`、`app/`、`ws/`；
   日志出口用 `LogSink` 回调注入（`services.log_service.append`），否则 Agent 会在 Worker 里
   反向拉起整条 API 依赖链（T1.8 裁定 54，契约测试静态拦截）；
@@ -42,7 +48,7 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 ├─ docs\
 │  ├─ spec\                              # ★ 本规格书（唯一有效版本）
 │  ├─ adr\                               # ADR-001..011 全文
-│  ├─ runbook\                           # 应急剧本（6 个）+ tts_concurrency.md（实测标定）
+│  ├─ runbook\                           # 应急剧本（7 个，含 publish_selector.md）+ tts_concurrency.md（实测标定）
 │  └─ qc\                                # 质检阈值（音画同步/响度/相似度）
 │
 ├─ config\
@@ -133,13 +139,14 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │  │  ├─ script.json  timeline.json  manifest.json  ir.json
 │  │  ├─ tts\voice_master.wav            #   拼接人声（24h TTL）
 │  │  ├─ graphs\scene_001.txt ...        #   filter_complex（永久保留）
-│  │  └─ scenes\scene_001.mp4 ...        #   场景中间产物（7d TTL）
+│  │  ├─ scenes\scene_001.mp4 ...        #   场景中间产物（7d TTL）
+│  │  └─ publish\<platform>\             #  发布证据截图（T5.2：<stage>_时刻.png）
 │  ├─ cache\{tts\<hash>.wav, phash\, broll_index\}
 │  └─ tmp\{graphs\, parts\, ffmpeg_*}    #   指向 D 盘（§README.6）
 │
 ├─ src\studio\
 │  ├─ __init__.py  cli.py
-│  ├─ core\{config.py, persona_store.py, settings.py, paths.py, logging.py, ids.py, clock.py, errors.py, proto.py, doctor.py}
+│  ├─ core\{config.py, persona_store.py, settings.py, paths.py, logging.py, ids.py, clock.py, errors.py, proto.py, doctor.py, ✅ faults.py, ✅ fonts.py}
 │  ├─ db\                                   # ✅ T1.3 / T1.5 已落地（engine + migrate + lease + queue）
 │  │  ├─ engine.py  migrate.py               #   ✅ 连接工厂/PRAGMA 唯一真相 · 迁移器/库自检
 │  │  ├─ session.py                           #   ✅ T1.7 每线程一条连接（sqlite3 线程亲和 vs 线程池）
@@ -147,9 +154,9 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │  │  ├─ models.py                           #   ✅ T1.9 行映射 dataclass（JSON 列就地解析；坏 JSON 返回 [] 不抛）
 │  │  ├─ queue.py  lease.py                  #   ✅ T1.5 四池队列内核（DB-as-Queue + 租约 + 死信 + 限频）
 │  │  ├─ migrations\0000_pragmas.sql  0001_init.sql ... 0006_seed.sql
-│  │  │                                      #   29 表 / 58 索引 / 6 触发器（§03.7.1）
+│  │  │                                      #   30 表 / 61 索引 / 6 触发器（§03.7.1）
 │  │  └─ repositories\{✅hot, ✅feedback, ✅direction, ✅topic, ✅script, ✅review, ✅approval,
-│  │                   ✅audit, task, job, sentence, template, log, artifact, broll,
+│  │                   ✅audit, task, job, ✅sentence, ✅artifact, template, log, broll,
 │  │                   persona, publication, event, voice}_repo.py
 │  │                                     #   ★ 唯一允许出现 SQL 的地方；id 由仓储自派 ULID
 │  ├─ domain\                            # ✅ T1.4 已落地（枚举 / 状态机 / 契约 / 唯一写入口）
@@ -159,11 +166,17 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │  │  ├─ task_service.py                 # ✅ ★ tasks 表的唯一写入口（乐观锁 + task_events）
 │  │  ├─ events.py  policies.py
 │  │  ├─ scoring.py                      # ✅ T1.11 双通道评分 + A/B/C 分级 + GateAction/Decision（唯一实现）
-│  │  ├─ timeline.py                     # 音频时间轴（唯一真相）
+│  │  ├─ timeline.py                     # 音频时间轴（唯一真相）—— **一期落在 `tts/timeline.py`**（理由见该处）
 │  │  ├─ topics.py                       # ✅ T1.9 选题领域：归一化/哈希/相似度/词频/四规则/两级去重/分类契约
 │  │  ├─ script.py                       # ✅ T1.10 写稿领域：ScriptRules（persona 可覆盖）/大纲与成稿契约/
 │  │  │                                  #   check_outline·check_script·build_draft·rewrite_hint·时长估算
-│  │  └─ text.py                         # ✅ T1.10 分句/切分/字数（CJK 逐字计 1、拉丁词计 1、标点不计）
+│  │  ├─ text.py                         # ✅ T1.10 分句/切分/字数（CJK 逐字计 1、拉丁词计 1、标点不计）
+│  │  ├─ ✅ cover.py                      # ✅ T5.1 封面领域（§06.3）：换行 / 高亮分段 / 字号收放 /
+│  │                                     #      描边与压暗带参数 / 落位 —— 全是纯函数；
+│  │                                     #      真正碰 ffmpeg 的那半边在 `publish/cover.py`
+│  │  └─ ✅ publish.py                      # ✅ T5.2 发布领域（§06.2.2 · §06.5.3）—— 纯函数，零 I/O：
+│  │                                        #      幂等键（task|platform|account 的 sha256）/ 文案裁剪
+│  │                                        #      **只报不改** / 话题按语法拼 / 回读比对**说清吞法**
 │  ├─ agents\                            # ✅ T1.8 / T1.9 已落地（网关 + 记账 + 预算 + 熔断 + 提示词库 + 3 Agent）
 │  │  ├─ base.py  llm_client.py  json_guard.py  prompts.py  cost.py  budget.py
 │  │  ├─ circuit.py                      # ✅ 熔断（连续失败 ≥3 ⇒ OPEN 60s；半开放一个探针）
@@ -171,35 +184,87 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │  │  ├─ gateway_factory.py              # ✅ T1.9 composition root：build_gateway(connection/llm/paths/transport/settings/log/env)
 │  │  ├─ planner.py  ideator.py  feedback_classifier.py   # ✅ T1.9（persona 变量 + 公共块自动注入）
 │  │  ├─ director.py  writer.py          # ✅ T1.10（规则闸 + 重写 ≤2 + 降级不抛裸异常）
-│  │  ├─ reviewer.py  editor.py  cover.py   # ✅ T1.11 / ✅ T1.11 / T1.8
+│  │  ├─ reviewer.py  editor.py  cover.py   # ✅ T1.11 / ✅ T1.11 / ✅ T5.1
 │  │  └─ tools\                          # 计划中的 dedup/trend_source/feedback_digest/topic_history
 │  │                                     #   ★ T1.9 落地时收敛为 domain/topics.py + db/repositories/（不再单列）
 │  ├─ tts\
 │  │  ├─ base.py  client.py  cosyvoice_engine.py  engine_router.py  fallback.py
-│  │  ├─ text_normalize.py  segmenter.py  cache.py  server.py
-│  ├─ render\
-│  │  ├─ ir.py  randomizer.py  builder.py  compiler.py  graph.py  filters.py
-│  │  ├─ probe.py  runner.py  progress.py  subtitle.py  audio.py
-│  │  ├─ scene_builder.py  final_builder.py  profiles.py  manifest.py  fill.py
-│  ├─ publish\                           # ★ 第六部分重建
-│  │  ├─ base.py                         #   Publisher ABC（§4.5.1）
-│  │  ├─ playwright_publisher.py         #   通用浏览器自动化实现
-│  │  ├─ platforms\{douyin,kuaishou,shipinhao,xiaohongshu,bilibili,xigua,weibo}.py
-│  │  ├─ selectors\{douyin,kuaishou,...}.yaml    # 页面选择器（可热修，R13）
+│  │  │                                 #   T2.2/T2.3/T2.4 待落地（E5 权重）
+│  │  ├─ ✅ text_normalize.py  ✅ segmenter.py  ✅ cache.py
+│  │  │                                 #   T2.5 归一化与切分 / T2.6 句级缓存（内容寻址 + 旁挂元数据 + 降权淘汰）
+│  │  ├─ ✅ sapi.py  ✅ sentence.py  ✅ synth.py
+│  │  │                                 #   T2.6 `SentenceEngine` 最小缝（Windows SAPI 引擎 / 一句合成 /
+│  │  │                                 #       缓存键 / 占位静音）；`synth.py` 是 T1.12 那条一次性配音
+│  │  │                                 #       （逐句合成 → concat 母带），T2.8 起由池 + `timeline.py` 接手
+│  │  ├─ ✅ faults.py                    #   ★ T2.8 把 `STUDIO_FAULT` 的计划套在**引擎缝**上（降级演练）：
+│  │  │                                 #      注入点必须落在引擎层 —— 池那侧一行不改，走的才是
+│  │  │                                 #      "失败 ⇒ 记账 ⇒ 退避重试 ⇒ 到线降级"那条真路径；包装后的
+│  │  │                                 #      引擎名**每场演练都不同**（否则第二场命中第一场的缓存，
+│  │  │                                 #      引擎一次都不被调到 ⇒ 演练全绿但什么都没发生，陷阱 #111）
+│  │  ├─ ✅ timeline.py                  #   ★ T2.7 时长时间轴（§04.2.7）：逐句实测 → 停顿抖动 → start/end →
+│  │  │                                 #      `timeline.json`；并负责把逐句 WAV 拼成 `voice_master.wav`
+│  │  │                                 #      （**规格树里写的是 `domain/timeline.py`**：那份"真相"有一半是
+│  │  │                                 #       I/O（ffmpeg + 落盘），而 `domain/` 是纯函数；纯累加那部分与
+│  │  │                                 #       拼接永远一起用，拆开只会多一层没人受益的间接。T3.3 若需要
+│  │  │                                 #       强类型模型，再把 dataclass 搬去 `domain/timeline.py`）
+│  │  └─ server.py                      #   T2.2 常驻推理服务（待落地）
+│  ├─ render\                          # ✅ 一期已落地（单遍合成；ir/randomizer/builder/compiler
+│  │  │                                 #    /graph/filters/scene_builder/final_builder 是二期三层模板的，
+│  │  │                                 #    见 T3-P1..T3-P4 —— 一期不建空壳）
+│  │  ├─ profiles.py                     #   ✅ T3.2 profile → 编码 argv（抽象 quality 落 crf/cq）
+│  │  ├─ watermark.py                    #   ✅ T3.2 水印规划（**可选装饰**：缺失跳过，不阻塞出片）
+│  │  ├─ assets.py                       #   ✅ T3.3 挑底片 / BGM（挑不到 ⇒ None ⇒ 黑屏降级）
+│  │  ├─ subtitle.py                     #   ✅ T3.5 句级时长 → ASS（字体缺失就跳过）
+│  │  ├─ mixdown.py                      #   ✅ T3.6 侧链 ducking + 两遍 loudnorm + alimiter
+│  │  │                                  #      + `measure_file`（T3.7：量**落盘的成片**，QC 用）
+│  │  ├─ composite.py                    #   ✅ T3.4 单遍合成：argv + 滤镜图 + .partial 原子改名
+│  │  ├─ hashing.py                      #   ✅ T3.7 `composite_hash`（§04.2.8.7，排除输出路径/线程数）
+│  │  └─ degrade.py                      #   ✅ T3.7 降级链：正常档 → 720P 保底档（只换一次）
+│  ├─ publish\                           # ★ 第六部分（✅ T5.1 封面/预检 · ✅ T5.2 发布适配层）
+│  │  ├─ ✅ base.py                       #   ✅ T5.2 `Publisher` ABC（§4.6.1）：三个抽象方法
+│  │  │                                  #      `health`/`publish`/`fetch_metrics` + `PublisherContext`
+│  │  │                                  #      / `PublishRequest` / `PublishResult` / `PublishEvidence`
+│  │  │                                  #      / `PublishHealth` + `PUBLISHERS` 注册表（存**类**，
+│  │  │                                  #      实例化按账号做 —— 两个账号两份登录态，§06.2.4）
+│  │  ├─ ✅ playwright_publisher.py       #   ✅ T5.2 §06.5.3 八步的通用实现（`dry_run=True`
+│  │  │                                  #      停在第 ⑥ 步之前）；平台子类只给选择器与代号
+│  │  ├─ ✅ browser.py                    #   ✅ T5.2 `PageLike` Protocol（发布器对浏览器的全部要求）
+│  │  │                                  #      + 持久化 profile 会话；playwright 只在函数内 import
+│  │  ├─ ✅ selectors.py                  #   ✅ T5.2 选择器集中化：**装配期**就校验（缺项/版本/readback
+│  │  │                                  #      取值错 ⇒ 当场 `PUBLISH_SELECTOR_MISS`，不推迟到真机）
+│  │  ├─ ✅ selectors\{douyin,kuaishou,shipinhao,fixture}.yaml   # 页面选择器（可热修，R13）
+│  │  ├─ ✅ platforms\{douyin,kuaishou,shipinhao}.py    # 一线真实现（只声明 `platform`）
+│  │  ├─ ✅ platforms\{xiaohongshu,bilibili,xigua,weibo}.py     # 二线：接口在、实现空（Q9）
+│  │  ├─ ✅ platforms\fixture.py          #   本地靶页发布器（**自己就拒绝 `dry_run=False`**）
+│  │  ├─ ✅ fixtures\upload_form.html     #   靶页本体：真浏览器演练的靶子，点发布会回打本地服务器
 │  │  ├─ manual_queue.py                 #   待人工发布兜底
-│  │  ├─ cover.py                        #   封面生成（ffmpeg 抽帧+drawtext）
-│  │  ├─ ratelimit.py                    #   发布限频（≤3/天/账号）
+│  │  ├─ ✅ cover.py                      #   ✅ T5.1 封面生成（§06.3）：抽帧 → 缩放 → 量字 → drawtext
+│  │  │                                  #      三层拆分：`domain/cover.py` 算怎么摆（纯函数）、
+│  │  │                                  #      本文件碰 ffmpeg、`agents/cover.py` 出文案
+│  │  ├─ ✅ precheck.py                   #   ✅ T5.1 发布前二次校验（§06.4）：字幕/水印/响度/禁区四道门禁
+│  │  │                                  #      —— **只判定不发布**；判据读 `config/publish.yaml`
+│  │  ├─ ratelimit.py                    #   发布限频（≤3/天/账号）—— T5.3
 │  │  ├─ metrics.py                      #   数据回收（播放/点赞/评论/分享）
 │  │  ├─ memory.py                       #   记忆沉淀（回流 feedback + 选题降权）
 │  │  └─ handoff.py                      #   ★ HandoffAdapter（对接外部制片台，A2）
-│  ├─ pipeline\
-│  │  ├─ orchestrator.py
+│  ├─ pipeline\                          # ⏸ **一期为空**（只有 stages\.gitkeep）：
+│  │  │                                  #   按 §02.1 的箭头 services → pipeline → {…}，
+│  │  │                                  #   pipeline **不得 import services**，而一期那条主线的编排
+│  │  │                                  #   主体就是调服务 ⇒ 落在 `services/pipeline_service.py`。
+│  │  │                                  #   二期三层模板的场景级编排（编排的是 render 内部的东西）
+│  │  │                                  #   才该住在这里 —— 现在建空壳只会长出一层没人受益的间接
+│  │  ├─ orchestrator.py                 #   T3-P4（二期）
 │  │  ├─ stages\{plan, topic, draft, review, gate, voice, render, finalize,
 │  │  │          publish, recycle}.py
 │  │  └─ gates.py  retry.py  hooks.py
 │  ├─ pools\
 │  │  ├─ heartbeat.py  worker_base.py  supervisor.py  runner.py   # ✅ T1.6 已落地
-│  │  └─ {draft,voice,render,publish}_worker.py                   # T4.11 / T2.x / T3.x / T5.x
+│  │  ├─ ✅ draft_worker.py  ✅ render_worker.py  ✅ voice_worker.py
+│  │  │                                       # 单元处理器：T4.11 写稿 / T3.7 `render/final` / T2.6 `voice/sentence`
+│  │  │                                       #   （文案 ⇒ 逐句配音 ⇒ 合成 ⇒ QC 回填；进度落 `jobs.result_json`）
+│  │  │                                       #   `voice_worker` 的三条纪律与渲染池逐条对应：不自己收尾 /
+│  │  │                                       #   可重入 / 不在单元里开池（缓存·引擎·音色装配期一次装好）
+│  │  └─ {publish}_worker.py                                      # T5.3 待落地
 │  ├─ services\
 │  │  ├─ service_manager.py                   #   ✅ T1.12 五进程编排：readiness / start / stop / status
 │  │  │                                       #      规格表 + PID 台账 + 三级关停时序（裁定 102/104/107）
@@ -208,8 +273,34 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │  │  ├─ log_service.py                       #   ✅ T1.7 `system_logs` 唯一应用层写入口（先落库再唤醒 Hub）
 │  │  ├─ script_service.py                    #   ✅ T1.10 写稿编排：选题 ⇒ 建任务 ⇒ Director ⇒ Writer ⇒ 逐句落库
 │  │  ├─ review_service.py                    #   ✅ T1.11 审稿编排 + Editor 循环 + **确认闸决断 decide_approval**
-│  │  ├─ task_service.py  voice_service.py  render_service.py
+│  │  ├─ ✅ voice_service.py              #   T2.7 配音收口 `settle_voice`：全部句定局 → 逐句实测 →
+│  │  │                                  #      拼母带 → 写 `timeline.json` → 回写 start/end → 登记 artifacts
+│  │  │                                  #      （**不改任务状态**：`voicing → queued_render` 归 T2.8 的编排）
+│  │  │                                  #   ✅ T2.8 `enqueue_sentences`：待办 = `pending`/`failed` 的句子，
+│  │  │                                  #      走 `JobStore.enqueue` 幂等投递（`synthesizing` 不算待办 —— 那是
+│  │  │                                  #      sweeper 的活）
+│  │  │                                  #   ✅ T2.9 操作面：`resynth_sentence`（业务表 + 作业表一起改）、
+│  │  │                                  #      `set_voice_map`（映射 + 失效 + 作业 payload 三处一起改，
+│  │  │                                  #      缺 confirm 先抛"将重配 N 句"）、`preview_audio`（试听**不触发合成**）、
+│  │  │                                  #      `voice_payloads` / `resolve_voice` / `usable_voices`（音色解析）
+│  │  ├─ task_service.py  render_service.py
+│  │  │                                  #   ✅ T3.x `render_service`：文案 → 配音 → 合成 → manifest
+│  │  │                                  #      + `quality_report`（T3.7，成片实测 → quality_json）
+│  │  ├─ render_job_service.py           #   ✅ T4.6 出片任务登记表（进程内串行；T3.7 起回填 quality_json）
+│  │  ├─ pipeline_service.py             #   ✅ T3.7 编排：把**一个任务**从当前状态推到 `--until`
+│  │  │                                  #      （**为什么不在 `pipeline/` 里**：§02.1 的箭头是
+│  │  │                                  #       `services → pipeline`，pipeline 不得 import services，
+│  │  │                                  #       而这段编排的主体就是调服务）
+│  │  │                                  #   ✅ T2.8 配音阶段拆两步：`queued_voice --投递--> voicing
+│  │  │                                  #      --排空+收口--> queued_render`。`voicing` 因此是真的停得住的
+│  │  │                                  #      落点（`rendering` 不收进 `SUPPORTED_UNTIL`）。排空**就地借一条
+│  │  │                                  #      worker**（不要求先把常驻池起起来），空转等一拍、收工判据是
+│  │  │                                  #      `SentenceProgress.is_settled`
 │  │  ├─ publish_service.py  asset_service.py  template_service.py
+│  │  │                                       #   ✅ T5.1 `publish_service`：封面（`make_cover`）与
+│  │  │                                       #      发布前校验（`precheck`）两条只读/半只读链路
+│  │  │                                       #   ✅ T5.2 `dry_run`：真 Playwright 走完 §06.5.3 前七步、
+│  │  │                                       #      停在第 ⑥ 步之前（`--target fixture` 打本地靶页）
 │  │  ├─ approval_service.py                  #   T4.4 REST 薄壳（规则已在 review_service.decide_approval）
 │  │  └─ metrics_service.py  gc_service.py  audit_service.py
 │  ├─ ws\                                    # ✅ T1.7 已落地（只依赖 core / services，不碰 db）
@@ -219,10 +310,14 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │  └─ app\                                   # ✅ T1.7 骨架已落地（create_app + lifespan + AppState）
 │     ├─ main.py  lifespan.py  deps.py       #   ✅ 建应用 / 起停 Hub / 组装连接池 + LogService + 快照 provider
 │     │                                       #   ✅ T1.12：`run_server()` 被 `studio serve` 与 `workers/run_api.py` **共用一份**
-│     ├─ routers\{✅ health, ✅ logs, ✅ ws, overview, topics, hot, feedback, tasks, scripts,
-│     │            sentences, voices, templates, assets, renders, publish, metrics, pools,
-│     │            audit}.py
-│     ├─ schemas\*.py
+│     ├─ routers\{✅ health, ✅ logs, ✅ ws, ✅ voice, overview, topics, hot, feedback, tasks,
+│     │            scripts, sentences, voices, templates, assets, renders, publish, metrics,
+│     │            pools, audit}.py
+│     │                                       #   ✅ T2.9 `voice.py`：配音操作面五个端点。**名字与计划里的
+│     │                                       #      `sentences.py` / `voices.py` 合并成一个** —— 它们服务的是
+│     │                                       #      同一块面板（逐句状态 / 试听 / 重配 / 换音色），拆开会让
+│     │                                       #      "这一句现在能不能重配"这条判据出现两处
+│     ├─ schemas\*.py                          #   ✅ T2.9 `schemas/voice.py`（逐句视图 / 音色选项 / 换音色请求与报告）
 │     └─ middleware\{request_id.py, access_log.py, errors.py, auth.py, audit.py}
 │
 ├─ tts\                                  # ★ TTS 运行时子项目（独立 3.11 venv，uv 托管）
@@ -238,34 +333,47 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │  ├─ ✅ openapi.json                    #   ★ 生成物（后端 OpenAPI 快照）—— 禁止手改
 │  ├─ ✅ scripts\check-dist-size.mjs    #   产物体积门禁（< 3 MB）
 │  └─ src\
-│     ├─ ✅ api\{http.ts, types.gen.ts, endpoints\{health,logs}.ts}
+│     ├─ ✅ api\{http.ts, types.gen.ts, http.test.ts}
 │     │                                 #   http.ts 是**全前端唯一允许出现 `fetch(` 的地方**（陷阱 #59 / 契约测试拦截）
+│     ├─ ✅ api\endpoints\{health, logs, overview, topics, scripts, approvals, outputs, assets,
+│     │                    pools, persona, metrics, audit, watchdog, render, voice}.ts
+│     │                                 #   一个面板一份出口；请求/响应类型一律从 types.gen.ts 取，不手写形状
+│     │                                 #   voice.ts（T4.5）：sentences / voices / resynth / voice_map 四个端点
 │     ├─ ✅ ws\{client.ts, reconnect.ts, events.ts}
 │     │                                 #   events.ts 为生成物；reconnect.ts 放纯策略（退避/缺口/URL）供单测
-│     ├─ ✅ stores\{ui, overview, logs}.ts
+│     ├─ ✅ stores\{ui, overview, logs, topics, scripts, outputs, assets, pools, persona,
+│     │             metrics, audit, render, voice}.ts
 │     │                                 #   logs.ts（T4.9）：过滤/搜索/告警/补洞/导出
+│     │                                 #   render.ts（T4.6）/ voice.ts（T4.5）：注入点 + 纯函数 + 轮询
+│     │                                 #   voice.ts 另有二次确认流（409 ⇒ 确认框 ⇒ 带 confirm 重发）
+│     │                                 #   ui.ts（T4.14）：四屏跳转（goTo / takeHandoff）+ 纯函数（配套 ui.test.ts 14 例）
 │     ├─ ✅ composables\{useWsConnection, useTaskStream}.ts
-│     ├─ ✅ components\{AppButton, StatusDot, PanelCard, LogStream, EmptyState}.vue
+│     ├─ ✅ components\{AppButton, StatusDot, PanelCard, LogStream, EmptyState, GradeBadge,
+│     │                  SentenceDiffList}.vue  ✅ components\tone.ts
 │     ├─ ✅ utils\{download, highlight}.ts
 │     │                                 #   隔离 DOM（下载）与不可信文本渲染（高亮）
 │     ├─ ✅ styles\{tokens.css, base.css}   #   tokens.css 是**唯一**颜色/间距/字号来源
-│     ├─ ✅ views\Overview.vue          #   T4.1
-│     ├─ ✅ views\Logs.vue              #   T4.9（过滤栏 + 告警高亮 + 导出 NDJSON + 更早）
+│     ├─ ✅ views\{Overview, Topics, Scripts, Voices, Renders, Outputs, Assets, Logs, Pools,
+│     │              Metrics, Audit, Personas}.vue
+│     │                                 #   Voices.vue（T4.5）：逐句进度条 + 逐句表（试听/重配）+ 音色映射 + 确认框
+│     │                                 #   T4.14：Topics / Scripts / Voices / Renders 四屏各带「去下一屏 →」，跳转语义在 stores/ui.ts
 │     ├─ ✅ App.vue  ✅ main.ts  ✅ env.d.ts
-│     └─ （待 T4.x）views\{Topics, Scripts, Voices, Renders, Templates, Assets, Pools, Personas, Publish}.vue
-│        （待 T4.x）stores\{topics, tasks, script, pools, publish}.ts
-│        （待 T4.x）components\{TaskCard, SentenceRow, DirectionCard, TopicCard, ScoreBadge,
-│                    PoolGauge, VideoPreview, IRInspector, ProgressRing}.vue
+│     └─ （待 T5.x）views\Publish.vue  stores\publish.ts
 │
 ├─ workers\{✅ run_api.py, ✅ run_tts.py, ✅ run_draft.py, ✅ run_voice.py, ✅ run_render.py,
 │           run_publish.py, supervisor.py}
 │                                        #   ✅ T1.12：五个入口全部在位（`run_*` = `run_entry()` 薄壳）
+│                                        #      `run_draft.py`（T4.11）、`run_voice.py`（T2.6）与 `run_render.py`（T3.7）
+│                                        #      已注册真实 handler；其余池未注册 ⇒ **报错退出**，不静默起空转 worker（裁定 103）
+│                                        #      `run_voice.py` 在装配期解析音色（列音色要起 PowerShell，1–2 秒）：
+│                                        #      解析不到 ⇒ 启动即报 `TTS_ENGINE_UNAVAILABLE`（裁定 214）
 │                                        #      `run_tts.py` 在 `studio.tts.server` 落地（T2.2）前抛
 │                                        #      `TTS_ENGINE_UNAVAILABLE` ⇒ 管理器报 degraded、**不拉起**（裁定 103）
 │
 ├─ scripts\
 │  ├─ env.ps1  doctor.ps1  smoke_cosyvoice.py  bench_tts.py  bench_render.py
-│  ├─ av_sync_audit.py  audio_qc.py  dup_audit.py
+│  ├─ ✅ audio_qc.py                     #   ✅ T3.7 响度/真峰值 QC（判据读 publish.yaml → precheck）
+│  ├─ av_sync_audit.py  dup_audit.py     #   ⏸ 一期不做（C12 诊断 / §04.2.4.5 相似度，见 T3.7）
 │  ├─ ingest_mc_parkour.py  ingest_voice_src.py
 │  ├─ parse_hot.py  parse_feedback.py
 │  ├─ gen_fixture_media.py  gc_media.py
@@ -281,17 +389,17 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 └─ tests\
    ├─ __init__.py                            # ★ 测试包树（跨模块复用假件 ⇒ 见 §2.4）
    ├─ conftest.py
-   ├─ unit\{core,domain,db,pools,✅ ws,tts,render,agents,✅ services,pipeline,publish}\
+   ├─ unit\{core,domain,db,pools,✅ ws,tts,render,agents,✅ services,pipeline,✅ publish}\
    │                                          # unit/ws · unit/domain · unit/services 带 __init__.py
    │                                          # ✅ T1.12：unit/services/test_service_manager.py（54 例，全假进程表）
    ├─ integration\{✅ test_queue_lease, ✅ test_worker_lifecycle, ✅ test_ws_replay,
    │                test_sentence_resume, test_timeline, test_runner, test_mixdown,
    │                test_pool_control, test_voice_profile, test_broll_ingest,
-   │                test_topic_pool, ✅ test_script_pipeline, ✅ test_scoring, test_publish_dryrun,
+   │                test_topic_pool, ✅ test_script_pipeline, ✅ test_scoring, ✅ test_publish_dryrun,
    │                test_publish_pool, test_metrics_recycle}.py
    ├─ contract\{✅ test_planner_schema, ✅ test_ideator_schema, ✅ test_director_schema,
    │             ✅ test_script_schema, ✅ test_review_schema, ✅ test_editor_schema, test_ir_schema,
-   │             test_manifest_schema, ✅ test_ws_protocol, test_publisher_abc,
+   │             test_manifest_schema, ✅ test_ws_protocol, ✅ test_publisher_abc,
    │             ✅ test_no_direct_job_write, ✅ test_no_direct_task_write,
    │             ✅ test_no_direct_heartbeat_write}.py
    ├─ e2e\{test_gate_to_voicing, ✅ test_approval_flow, test_sentence_edit,

@@ -34,9 +34,11 @@ import {
   type HotKind,
   type TopicStatus,
 } from "@/stores/topics";
+import { useUiStore } from "@/stores/ui";
 import type { Envelope } from "@/ws/events";
 
 const topics = useTopicsStore();
+const ui = useUiStore();
 
 const STATUSES: TopicStatus[] = ["candidate", "selected", "queued", "rejected", "expired"];
 
@@ -80,6 +82,16 @@ function similarText(item: Record<string, unknown>): string {
   const title = item.title ?? item.id ?? "-";
   const score = typeof item.score === "number" ? ` ${item.score.toFixed(1)}` : "";
   return `${String(title)}${score}`;
+}
+
+/**
+ * 从一条已入队的选题跳到它的稿件（T4.14）。
+ *
+ * 任务号是**入队时后端生成的**（`item.task_id`），所以选题面板这一端
+ * 不用猜也不用拼 —— 没入队的选题就没有这颗按钮。
+ */
+function goScripts(taskId: string | null): void {
+  if (taskId !== null) ui.goTo("scripts", taskId);
 }
 
 async function onStatusChange(event: Event): Promise<void> {
@@ -240,7 +252,16 @@ useChannelStream("topics", onTopicEvent);
                     <p v-if="item.similar_to.length > 0" class="card__similar">
                       库里已有很像的：{{ item.similar_to.map(similarText).join("；") }}
                     </p>
-                    <p v-if="item.task_id" class="card__task mono">→ {{ item.task_id }}</p>
+                    <div v-if="item.task_id" class="card__task">
+                      <span class="mono">→ {{ item.task_id }}</span>
+                      <AppButton
+                        size="sm"
+                        :title="`去稿件面板看 ${item.task_id} 这一版稿`"
+                        @click="goScripts(item.task_id)"
+                      >
+                        去稿件 →
+                      </AppButton>
+                    </div>
                   </div>
                 </li>
               </ul>
@@ -539,6 +560,9 @@ useChannelStream("topics", onTopicEvent);
 }
 
 .card__task {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
   color: var(--text-muted);
 }
 

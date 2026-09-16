@@ -59,7 +59,7 @@ from studio.core.doctor import Doctor, DoctorReport
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.logging import get_logger
 from studio.core.paths import StudioPaths
-from studio.pools.runner import HANDLER_MODULES, STOP_FLAG_ENV, handler_for
+from studio.pools.runner import HANDLER_MODULES, HANDLER_REMEDIATION, STOP_FLAG_ENV, handler_for
 
 __all__ = [
     "DEFAULT_READY_TIMEOUT_SEC",
@@ -93,9 +93,6 @@ DEFAULT_STOP_TIMEOUT_SEC: Final[float] = 10.0
 
 #: 池进程的"活着"观察窗：起完立刻死掉的 worker 不算 started
 POOL_GRACE_SEC: Final[float] = 3.0
-
-#: 池进程在 ``T1.12`` 时尚未落地的 handler ⇒ 报 degraded 的修复提示
-_HANDLER_REMEDIATION: Final[str] = "该池的单元处理器随业务任务落地：voice→T2.6 / render→T3.x / publish→T5.3"
 
 
 class ServiceKind(StrEnum):
@@ -501,7 +498,7 @@ class ServiceManager:
                     name=spec.name,
                     readiness=Readiness.HANDLER_MISSING,
                     detail=f"{spec.pool} 池的单元处理器尚未落地",
-                    remediation=_HANDLER_REMEDIATION,
+                    remediation=HANDLER_REMEDIATION,
                 )
         if spec.name == "tts" and importlib.util.find_spec("studio.tts.server") is None:
             return ServiceReadiness(

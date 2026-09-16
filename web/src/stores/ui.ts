@@ -1,4 +1,4 @@
-// 控制台外壳状态（T4.1）：当前面板 + 面板清单。
+// 控制台外壳状态（T4.1 / T4.14）：当前面板 + 面板清单 + 四屏之间的一次跳转。
 
 import { defineStore } from "pinia";
 import { ref } from "vue";
@@ -32,8 +32,8 @@ export const PANELS: readonly PanelDef[] = [
   { id: "overview", label: "总览台", task: "T4.1/T4.2", ready: true },
   { id: "topics", label: "选题", task: "T4.3", ready: true },
   { id: "scripts", label: "稿件", task: "T4.4", ready: true },
-  { id: "voices", label: "配音", task: "T4.5", ready: false },
-  { id: "renders", label: "渲染", task: "T4.6", ready: false },
+  { id: "voices", label: "配音", task: "T4.5", ready: true },
+  { id: "renders", label: "渲染", task: "T4.6", ready: true },
   { id: "templates", label: "合成配置", task: "T4.7", ready: true },
   { id: "assets", label: "素材库", task: "T4.8", ready: true },
   { id: "logs", label: "实时日志", task: "T4.1/T4.9", ready: true },
@@ -44,12 +44,77 @@ export const PANELS: readonly PanelDef[] = [
   { id: "publish", label: "发布", task: "T5", ready: false },
 ];
 
+/** 端到端流程里能互相跳过去的四屏（T4.14：选题 → 稿件 → 配音 → 渲染）。 */
+export type FlowPanelId = "topics" | "scripts" | "voices" | "renders";
+
+/** 一次待认领的跳转：去哪一屏 + 带上哪个任务号。 */
+export interface FlowHandoff {
+  panel: FlowPanelId;
+  taskId: string;
+}
+
+/**
+ * 跳转前的规范化：空 / 只有空白 ⇒ `null`。
+ *
+ * 任务号是**调用方起的名**（后端只限长度），而"没填"与"填了个空串"在 URL 和后端的
+ * path pattern 眼里是两件事 —— 后者换来一个 422。所以按钮该是禁用态，
+ * 而不是把一个空任务号跳过去。
+ */
+export function handoffTaskId(raw: string): string | null {
+  const trimmed = raw.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+/**
+ * 认领规则（纯函数）：这一跳是给我的就取走，不是就原样留着。
+ *
+ * **取走即清空**：留着的话，用户从配音点回选题、再点回配音，会被同一个任务号再跳一次
+ * —— 那时他多半是想看别的。
+ */
+export function claimHandoff(
+  pending: FlowHandoff | null,
+  panel: FlowPanelId,
+): { taskId: string | null; rest: FlowHandoff | null } {
+  if (pending === null || pending.panel !== panel) return { taskId: null, rest: pending };
+  return { taskId: pending.taskId, rest: null };
+}
+
 export const useUiStore = defineStore("ui", () => {
   const activePanel = ref<PanelId>("overview");
+  const pendingHandoff = ref<FlowHandoff | null>(null);
 
+  /**
+   * 侧边栏点过去。
+   *
+   * 顺手清掉待认领的跳转："人自己点走的"与"面板把人送过去的"是两件事
+   * —— 否则下一次点进去时，会被一个早就过期的任务号再跳一次。
+   */
   function selectPanel(id: PanelId): void {
+    pendingHandoff.value = null;
     activePanel.value = id;
   }
 
-  return { activePanel, selectPanel };
+  /**
+   * 跳到另一屏并带上任务号（T4.14）。任务号空着 ⇒ **不跳**（返回 `false`）。
+   *
+   * 这里只做两件事：记下"给谁的、带什么"，再把面板切过去。真正的"用上这个任务号"
+   * 由目标面板**挂载时**认领 —— 面板是 `v-if` 挂的，切过去必然重新挂载，所以外壳
+   * 不需要知道对方怎么用（稿件要拉详情、配音要拉逐句、渲染只是填个框）。
+   */
+  function goTo(panel: FlowPanelId, taskId: string): boolean {
+    const wanted = handoffTaskId(taskId);
+    if (wanted === null) return false;
+    pendingHandoff.value = { panel, taskId: wanted };
+    activePanel.value = panel;
+    return true;
+  }
+
+  /** 目标面板挂载时认领属于自己的一跳；没有就返回 `null`。 */
+  function takeHandoff(panel: FlowPanelId): string | null {
+    const { taskId, rest } = claimHandoff(pendingHandoff.value, panel);
+    pendingHandoff.value = rest;
+    return taskId;
+  }
+
+  return { activePanel, selectPanel, pendingHandoff, goTo, takeHandoff };
 });

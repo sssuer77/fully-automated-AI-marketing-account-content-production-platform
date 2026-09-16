@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from studio.db.repositories.approval_repo import ApprovalRepo
+from studio.db.repositories.artifact_repo import ARTIFACT_COLUMNS, ArtifactRepo, ArtifactRow
 from studio.db.repositories.asset_repo import (
     AssetStats,
     BgmTrackRepo,
@@ -28,12 +29,17 @@ from studio.db.repositories.direction_repo import DirectionRepo
 from studio.db.repositories.feedback_repo import FeedbackItemRepo
 from studio.db.repositories.hot_repo import HotItemRepo
 from studio.db.repositories.review_repo import ReviewRepo
-from studio.db.repositories.script_repo import SavedScript, ScriptRepo
+from studio.db.repositories.script_repo import SENTENCE_COLUMNS, SavedScript, ScriptRepo
+from studio.db.repositories.sentence_repo import SentenceProgress, SentenceRepo, TimelineSpan
 from studio.db.repositories.stats_repo import StatsRepo, TodayOutput, local_day_window
 from studio.db.repositories.topic_repo import TopicRepo
 
 __all__ = [
+    "ARTIFACT_COLUMNS",
+    "SENTENCE_COLUMNS",
     "ApprovalRepo",
+    "ArtifactRepo",
+    "ArtifactRow",
     "AssetStats",
     "AuditRepo",
     "BgmTrackRepo",
@@ -45,7 +51,10 @@ __all__ = [
     "ReviewRepo",
     "SavedScript",
     "ScriptRepo",
+    "SentenceProgress",
+    "SentenceRepo",
     "StatsRepo",
+    "TimelineSpan",
     "TodayOutput",
     "TopicRepo",
     "UpsertResult",

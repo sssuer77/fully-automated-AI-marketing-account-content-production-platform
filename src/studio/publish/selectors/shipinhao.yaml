@@ -1,0 +1,33 @@
+# ── 微信视频号助手 · 选择器（T5.2 · §06.5.2「选择器集中化」· R13 可热修）─────────────
+# ⚠️ **未实测初稿**：结构（要哪些键）可信，具体 CSS 值待**真机校准**（§06.2.2 把
+#    "实测校准"写成了 T5.2 的现场动作，而它需要一个已登录的真实账号）。
+#    改法见 docs/runbook/publish_selector.md —— 只改本文件，**不改代码**。
+#    改完顺手把 version 改掉：它会被写进 publications.evidence_json，
+#    事后靠它回答"这条是哪个版本的选择器发的"。
+platform: shipinhao
+version: "2026-09-13"
+
+urls:
+  upload: "https://channels.weixin.qq.com/platform/post/create"
+  manage: "https://channels.weixin.qq.com/platform/post/list"
+
+selectors:
+  login_ok: "div.account-info, span.account-name"
+  login_required: "div.login-box, div.qrcode"
+  upload_input: "input[type=file][accept*='video']"
+  title_input: "input[placeholder*='标题'], input[placeholder*='描述']"
+  caption_input: "div[contenteditable=true], textarea[placeholder*='描述']"
+  upload_progress: "div.progress-bar, span.percent"
+  cover_trigger: "div.cover-edit, span:has-text('编辑封面')"
+  cover_input: "input[type=file][accept*='image']"
+  publish_button: "button:has-text('发表')"
+  success_marker: "div.post-success, text=发表成功"
+  reject_marker: "div.audit-reject, text=审核不通过"
+
+readback:
+  title: value
+  caption: text
+
+markers:
+  login_expired_text: ["登录已过期", "请重新登录", "扫码登录"]
+  review_rejected_text: ["审核不通过", "内容违规", "未通过审核"]

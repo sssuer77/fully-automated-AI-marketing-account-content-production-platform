@@ -222,7 +222,11 @@ def test_read_returns_the_subtitle_style(client: TestClient) -> None:
     assert subtitle["enabled"] is True
     assert subtitle["font_size"] == 64
     assert subtitle["outline"] == 4
-    assert subtitle["max_chars_per_line"] == 16
+    assert subtitle["max_chars_per_line"] == 13
+    # margin_bottom 与 safe_area.bottom 取 max 之后才是 ASS 的 MarginV（§04.2.6）。
+    # 这一屏只下发**可编辑**的那几个字段；safe_area 的契约由
+    # `tests/unit/render/test_subtitle.py` 盯着（它直接断言 ASS 里的 MarginV）。
+    assert subtitle["margin_bottom"] == 420
 
 
 def test_read_ships_form_limits_and_the_position_enum(client: TestClient) -> None:
@@ -245,6 +249,7 @@ def test_read_ships_form_limits_and_the_position_enum(client: TestClient) -> Non
         "top_right",
         "bottom_left",
         "bottom_right",
+        "center",
     ]
     assert limits["subtitle"]["font_size"]["max"] == 200.0
     assert limits["subtitle_fields"] == ["font_size", "outline", "max_chars_per_line"]
@@ -293,7 +298,7 @@ def test_save_changes_one_line_and_leaves_a_trace(
     changed = _changed_lines(before, after)
     assert len(changed) == 1
     assert after[changed[0]].strip() == "font_size: 72"
-    assert "# ★ 水印是必做项（D5）" in _read(paths), "注释必须还在"
+    assert "# ★ 水印是可选装饰" in _read(paths), "注释必须还在"
 
     rows = _audit(connection)
     assert len(rows) == 1

@@ -154,10 +154,18 @@ def test_guard_refuses_protected_roots(tmp_paths: StudioPaths, relative: str) ->
 
 
 @pytest.mark.parametrize(
-    "relative", ["graphs/filter_complex.txt", "ir.json", "manifest.json", "script.json", "timeline.json"]
+    "relative",
+    [
+        "final/subtitle.ass",
+        "graphs/filter_complex.txt",
+        "ir.json",
+        "manifest.json",
+        "script.json",
+        "timeline.json",
+    ],
 )
 def test_guard_refuses_task_deliverables(tmp_paths: StudioPaths, relative: str) -> None:
-    """任务交付物（滤镜图 / IR / manifest / 稿件 / 时间轴）永久保留。"""
+    """任务交付物（字幕 / 滤镜图 / IR / manifest / 稿件 / 时间轴）永久保留。"""
     path = tmp_paths.work_dir_for("t1") / relative
 
     with pytest.raises(StudioError) as caught:
@@ -183,4 +191,11 @@ def test_protected_roots_are_inside_data(tmp_paths: StudioPaths) -> None:
 
 
 def test_protected_work_names_are_the_deliverables() -> None:
-    assert {"graphs", "ir.json", "manifest.json", "script.json", "timeline.json"} == PROTECTED_WORK_NAMES
+    assert {
+        "final",
+        "graphs",
+        "ir.json",
+        "manifest.json",
+        "script.json",
+        "timeline.json",
+    } == PROTECTED_WORK_NAMES

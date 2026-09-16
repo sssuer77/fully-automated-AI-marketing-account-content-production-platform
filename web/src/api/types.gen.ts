@@ -326,6 +326,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/media/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Media
+         * @description 单句试听（``<audio>`` 直接取这个 url，Range 由 Starlette 处理）。
+         *
+         *     **只发盘上已经有的那一份**，一次合成都不触发。
+         */
+        get: operations["get_media_api_v1_media__path__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/metrics": {
         parameters: {
             query?: never;
@@ -606,6 +628,111 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/render/console": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Console
+         * @description 面板首屏：一次拿全（可选参数 + 在跑的任务 + 最近任务 + 成片列表）。
+         */
+        get: operations["get_console_api_v1_render_console_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/render/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Job
+         * @description 开一条出片任务（**立刻返回**，活在工作线程里跑）。
+         *
+         *     文案规则与 CLI 同一条：``text`` 非空就用它，否则按 ``task_id`` 读库里那一版生效稿件。
+         */
+        post: operations["create_job_api_v1_render_jobs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/render/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Job
+         * @description 查一条任务的进度 / 结果（面板轮询的就是它）。
+         */
+        get: operations["get_job_api_v1_render_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/render/jobs/{job_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Job
+         * @description 叫停一条任务。
+         *
+         *     **协作式**：排队中的立刻作废；已经在跑的会在下一次进度回调处停下。
+         *     ffmpeg 一旦跑起来要等它自己结束 —— 面板上也是这么写的，不能让人以为按了立刻停。
+         */
+        post: operations["cancel_job_api_v1_render_jobs__job_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/render/videos/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Video
+         * @description 播放 / 下载一支成片（``<video>`` 直接取这个 url，Range 由 Starlette 处理）。
+         */
+        get: operations["get_video_api_v1_render_videos__name__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/scripts/{task_id}": {
         parameters: {
             query?: never;
@@ -666,6 +793,52 @@ export interface paths {
         get: operations["list_script_versions_api_v1_scripts__task_id__versions_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sentences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Sentences
+         * @description 一条任务的逐句配音状态（面板的主列表）。
+         *
+         *     逐句的 ``audio_url`` 只在**盘上真有那一份**时才给（``preview_audio`` 判的），
+         *     否则给 ``null``：发一个注定 404 的 url，面板上就是一个点了没反应的播放键。
+         */
+        get: operations["list_sentences_api_v1_sentences_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sentences/{sentence_id}/resynth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resynth Sentence Endpoint
+         * @description 单句重配：这一句退回待办 + 它的作业排回 voice 池（**立刻返回**）。
+         *
+         *     真正念的是 voice 池 —— 这个端点只投递（与 T2.8 裁定 224 的"投递 / 排空两步"
+         *     同一条）。面板随后轮询 ``GET /sentences`` 看它什么时候念完。
+         */
+        post: operations["resynth_sentence_endpoint_api_v1_sentences__sentence_id__resynth_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -750,6 +923,30 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tasks/{task_id}/voice_map": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Patch Voice Map
+         * @description 任务级换音色：写映射 + 受影响的句子全部失效并重排。
+         *
+         *     不带 ``confirm`` 时**先算代价**：会重配 N 句 ⇒ 抛 ``VOICE_MAP_CONFIRM_REQUIRED``
+         *     （409，``context.affected`` / ``context.sentences`` 给面板弹框）。带 ``confirm``
+         *     才真写 —— 一次点击就重配几十句，这个代价要人点头。
+         */
+        patch: operations["patch_voice_map_api_v1_tasks__task_id__voice_map_patch"];
         trace?: never;
     };
     "/api/v1/topics": {
@@ -870,6 +1067,29 @@ export interface paths {
          *     另一件事（draft 池认领 ⇒ T4.11）。
          */
         post: operations["select_topics_api_v1_topics_select_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/voices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Voice Options
+         * @description 音色下拉框（本机现在选得出来的那些）。
+         *
+         *     ``task_id`` 可给可不给：下拉框本身与任务无关，但面板一打开要同时画"有哪些音色"
+         *     与"这条任务现在用哪个" —— 分两次请求会让第一帧显示成"没选音色"。
+         */
+        get: operations["list_voice_options_api_v1_voices_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2828,6 +3048,163 @@ export interface components {
             comment: string;
         };
         /**
+         * RenderConsoleResponse
+         * @description 面板首屏：一次拿全（可选参数 + 在跑的任务 + 最近任务 + 成片列表）。
+         *
+         *     集合字段一律**必填**（``x: list[T]`` 而非 ``Field(default_factory=list)``）：
+         *     后者在 JSON Schema 里既不进 ``required`` 也不带 ``default`` ⇒ 生成类型是
+         *     ``T[] | undefined``，前端被迫到处 ``?? []``（裁定 135）。
+         */
+        RenderConsoleResponse: {
+            /** Default Profile */
+            default_profile: string;
+            /** Engine */
+            engine: string;
+            /** Engine Hint */
+            engine_hint: string | null;
+            /** Engine Ready */
+            engine_ready: boolean;
+            /** Jobs */
+            jobs: components["schemas"]["RenderJobModel"][];
+            /** Max Speech Chars */
+            max_speech_chars: number;
+            /** Profiles */
+            profiles: components["schemas"]["RenderProfileOptionModel"][];
+            running: components["schemas"]["RenderJobModel"] | null;
+            /** Subtitle Enabled */
+            subtitle_enabled: boolean;
+            /** Subtitle Hint */
+            subtitle_hint: string | null;
+            /** Videos */
+            videos: components["schemas"]["RenderVideoModel"][];
+            /** Voices */
+            voices: components["schemas"]["RenderVoiceModel"][];
+            /** Watermark Enabled */
+            watermark_enabled: boolean;
+            /** Watermark Hint */
+            watermark_hint: string | null;
+        };
+        /**
+         * RenderJobModel
+         * @description 一次出片任务的全部可见状态。
+         */
+        RenderJobModel: {
+            /** Created At */
+            created_at: string;
+            /** Done */
+            done: number;
+            /** Error Code */
+            error_code: string | null;
+            /** Error Message */
+            error_message: string | null;
+            /** Finished At */
+            finished_at: string | null;
+            /** Id */
+            id: string;
+            /** Logs */
+            logs: string[];
+            /** Note */
+            note: string;
+            /** Percent */
+            percent: number;
+            /** Remediation */
+            remediation: string | null;
+            /** Request */
+            request: {
+                [key: string]: unknown;
+            };
+            /** Result */
+            result: {
+                [key: string]: unknown;
+            } | null;
+            /** Stage */
+            stage: string;
+            /** Started At */
+            started_at: string | null;
+            /** Status */
+            status: string;
+            /** Task Id */
+            task_id: string;
+            /** Total */
+            total: number;
+        };
+        /**
+         * RenderJobRequest
+         * @description 开一条出片任务。
+         */
+        RenderJobRequest: {
+            /** Profile */
+            profile?: string | null;
+            /**
+             * Reuse Voice
+             * @default false
+             */
+            reuse_voice: boolean;
+            /** Seed */
+            seed?: number | null;
+            /** Subtitle */
+            subtitle?: boolean | null;
+            /** Task Id */
+            task_id: string;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /** Threads */
+            threads?: number | null;
+            /** Voice */
+            voice?: string | null;
+        };
+        /**
+         * RenderProfileOptionModel
+         * @description 一档可选的合成 profile（下拉框的一行）。
+         */
+        RenderProfileOptionModel: {
+            /** Fps */
+            fps: number;
+            /** Height */
+            height: number;
+            /** Is Default */
+            is_default: boolean;
+            /** Name */
+            name: string;
+            /** Platforms */
+            platforms: string[];
+            /** Quality */
+            quality: number;
+            /** Quality Field */
+            quality_field: string;
+            /** Vcodec */
+            vcodec: string;
+            /** Width */
+            width: number;
+        };
+        /**
+         * RenderVideoModel
+         * @description 盘上的一支成片。``url`` 直接喂 ``<video src>``（浏览器自己发范围请求）。
+         */
+        RenderVideoModel: {
+            /** Modified At */
+            modified_at: number;
+            /** Name */
+            name: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Url */
+            url: string;
+        };
+        /**
+         * RenderVoiceModel
+         * @description 一个可选的音色（下拉框的一行）。
+         */
+        RenderVoiceModel: {
+            /** Is Default */
+            is_default: boolean;
+            /** Name */
+            name: string;
+        };
+        /**
          * RequeueFailureModel
          * @description 重投失败的一条（带 ``code`` + ``remediation``，前端能照着重试）。
          */
@@ -2934,6 +3311,40 @@ export interface components {
             sampled_at: string;
             /** Tts Rtf Avg */
             tts_rtf_avg?: number | null;
+        };
+        /**
+         * ResynthResponse
+         * @description 单句重配的结果。
+         */
+        ResynthResponse: {
+            /**
+             * Hint
+             * @default 重配完成后跑一次配音收口（studio pipeline run <task_id> --until queued_render）会让时间轴**全量重算**：成片时长以那一版为准
+             */
+            hint: string;
+            /**
+             * Job Created
+             * @default false
+             */
+            job_created: boolean;
+            /** Job Id */
+            job_id?: string | null;
+            progress: components["schemas"]["SentenceProgressModel"];
+            /** Sentence Id */
+            sentence_id: string;
+            /** Seq */
+            seq: number;
+            /** Status */
+            status: string;
+            /** Task Id */
+            task_id: string;
+            /**
+             * Timeline Stale
+             * @default false
+             */
+            timeline_stale: boolean;
+            /** Timeline Total Ms */
+            timeline_total_ms?: number | null;
         };
         /**
          * ScanCountsModel
@@ -3329,6 +3740,108 @@ export interface components {
             op: string;
         };
         /**
+         * SentenceProgressModel
+         * @description 逐句进度（``SentenceProgress.to_dict()`` 的展示模型）。
+         */
+        SentenceProgressModel: {
+            /** Done */
+            done: number;
+            /** Failed */
+            failed: number;
+            /** Pending */
+            pending: number;
+            /** Ratio */
+            ratio: number;
+            /** Settled */
+            settled: number;
+            /** Skipped */
+            skipped: number;
+            /** Synthesizing */
+            synthesizing: number;
+            /** Total */
+            total: number;
+        };
+        /**
+         * SentenceVoice
+         * @description 一句的配音状态（面板上那一行）。
+         */
+        SentenceVoice: {
+            /** Audio Source */
+            audio_source?: string | null;
+            /** Audio Url */
+            audio_url?: string | null;
+            /**
+             * Can Resynth
+             * @default true
+             */
+            can_resynth: boolean;
+            /**
+             * Degraded
+             * @default false
+             */
+            degraded: boolean;
+            /** End Ms */
+            end_ms?: number | null;
+            /** Id */
+            id: string;
+            /** Seq */
+            seq: number;
+            /** Speaker */
+            speaker: string;
+            /** Start Ms */
+            start_ms?: number | null;
+            /** Text */
+            text: string;
+            /**
+             * Tts Attempts
+             * @default 0
+             */
+            tts_attempts: number;
+            /** Tts Duration Ms */
+            tts_duration_ms?: number | null;
+            /** Tts Engine */
+            tts_engine?: string | null;
+            /** Tts Error */
+            tts_error?: string | null;
+            /** Tts Status */
+            tts_status: string;
+            /** Tts Voice Id */
+            tts_voice_id?: string | null;
+            /**
+             * Version
+             * @default 1
+             */
+            version: number;
+        };
+        /**
+         * SentenceVoiceList
+         * @description 一条任务的逐句配音状态（面板的主列表）。
+         *
+         *     ``timeline_stale`` 是**推断**而不是事实：盘上那份时间轴存在、而还有句子没定局
+         *     ⇒ 它说的不是现在这条片子。真正的判据要等下一轮收口重算出来
+         *     （陷阱 #26：时间轴只有"整条重算"这一种更新方式）。
+         */
+        SentenceVoiceList: {
+            progress: components["schemas"]["SentenceProgressModel"];
+            /** Sentences */
+            sentences: components["schemas"]["SentenceVoice"][];
+            /** Task Id */
+            task_id: string;
+            /** Task Status */
+            task_status: string;
+            /**
+             * Timeline Stale
+             * @default false
+             */
+            timeline_stale: boolean;
+            /** Timeline Total Ms */
+            timeline_total_ms?: number | null;
+            /** Voice Map */
+            voice_map: {
+                [key: string]: string;
+            };
+        };
+        /**
          * ServiceStatusModel
          * @description 一个进程的就绪结论（`ServiceReadiness.to_dict` · §04.8.1）。
          */
@@ -3566,6 +4079,25 @@ export interface components {
             type: string;
         };
         /**
+         * VoiceChangeModel
+         * @description 一个角色换成了什么。
+         */
+        VoiceChangeModel: {
+            /**
+             * Affected
+             * @default 0
+             */
+            affected: number;
+            /** After */
+            after: string;
+            /** Before */
+            before?: string | null;
+            /** Sentences */
+            sentences?: number[];
+            /** Speaker */
+            speaker: string;
+        };
+        /**
          * VoiceItemModel
          * @description 一个零样本音色（``path`` 是**目录**：``ref_NN`` + ``ref.txt`` + ``profile.json``）。
          */
@@ -3605,6 +4137,101 @@ export interface components {
             total_duration_ms: number;
             /** Use Count */
             use_count: number;
+        };
+        /**
+         * VoiceMapRequest
+         * @description 任务级换音色的请求体。
+         *
+         *     ``extra="forbid"`` 与合成配置 / 渲染面板同一条：把 ``voice_map`` 拼成
+         *     ``voiceMap`` 被静默忽略，人会以为"音色已经换了"，而配音用的是旧的那一个。
+         */
+        VoiceMapRequest: {
+            /**
+             * Confirm
+             * @default false
+             */
+            confirm: boolean;
+            /** Voice Map */
+            voice_map: {
+                [key: string]: string;
+            };
+        };
+        /**
+         * VoiceMapResponse
+         * @description 任务级换音色的结果。
+         *
+         *     ``busy`` 是"想失效但没动成"的句子 id（正被某个 worker 念着）。面板必须显示它：
+         *     不显示的话，用户看到"换音色成功"，而那几句的成片里还是旧嗓子。
+         */
+        VoiceMapResponse: {
+            /**
+             * Affected
+             * @default 0
+             */
+            affected: number;
+            /** Busy */
+            busy?: string[];
+            /** Changes */
+            changes: components["schemas"]["VoiceChangeModel"][];
+            /**
+             * Created Jobs
+             * @default 0
+             */
+            created_jobs: number;
+            /**
+             * Hint
+             * @default 重配完成后跑一次配音收口（studio pipeline run <task_id> --until queued_render）会让时间轴**全量重算**：成片时长以那一版为准
+             */
+            hint: string;
+            progress: components["schemas"]["SentenceProgressModel"];
+            /**
+             * Requeued
+             * @default 0
+             */
+            requeued: number;
+            /** Task Id */
+            task_id: string;
+            /**
+             * Timeline Stale
+             * @default false
+             */
+            timeline_stale: boolean;
+            /** Timeline Total Ms */
+            timeline_total_ms?: number | null;
+            /** Voice Map */
+            voice_map: {
+                [key: string]: string;
+            };
+        };
+        /**
+         * VoiceOption
+         * @description 音色下拉框的一行。
+         *
+         *     ``source`` 说明它**从哪来**：``profile`` 是入库的参考音（``voice_profiles``），
+         *     ``sapi`` 是系统装的。面板据此分组显示 —— 两者的音质与用途不一样，混在一列里
+         *     会让人以为"这两个是同一档东西"。
+         */
+        VoiceOption: {
+            /** Id */
+            id: string;
+            /** Source */
+            source: string;
+        };
+        /**
+         * VoiceOptions
+         * @description 可选的音色（下拉框）+ 这条任务现在的映射（``task_id`` 给了才有）。
+         */
+        VoiceOptions: {
+            /** Note */
+            note?: string | null;
+            /** Task Id */
+            task_id?: string | null;
+            /** Voice Map */
+            voice_map?: {
+                [key: string]: string;
+            };
+            /** Voices */
+            voices: components["schemas"]["VoiceOption"][];
         };
         /**
          * WatchdogServiceModel
@@ -3715,7 +4342,7 @@ export interface components {
         };
         /**
          * WatermarkModel
-         * @description 固定水印（D5 必做项）。``exists=false`` ⇒ 渲染会拒绝出片，面板必须显著提示。
+         * @description 固定水印（**可选装饰**）。``exists=false`` ⇒ 这次出片不贴水印，**照样出片**。
          */
         WatermarkModel: {
             /** Exists */
@@ -4292,6 +4919,37 @@ export interface operations {
             };
         };
     };
+    get_media_api_v1_media__path__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_metrics_api_v1_metrics_get: {
         parameters: {
             query?: never;
@@ -4709,6 +5367,152 @@ export interface operations {
             };
         };
     };
+    get_console_api_v1_render_console_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderConsoleResponse"];
+                };
+            };
+        };
+    };
+    create_job_api_v1_render_jobs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenderJobRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderJobModel"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_job_api_v1_render_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderJobModel"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_job_api_v1_render_jobs__job_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderJobModel"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_video_api_v1_render_videos__name__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_script_api_v1_scripts__task_id__get: {
         parameters: {
             query?: never;
@@ -4794,6 +5598,69 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScriptVersionList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_sentences_api_v1_sentences_get: {
+        parameters: {
+            query: {
+                /** @description 任务 id */
+                task_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SentenceVoiceList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resynth_sentence_endpoint_api_v1_sentences__sentence_id__resynth_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sentence_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResynthResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4934,6 +5801,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RescueResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_voice_map_api_v1_tasks__task_id__voice_map_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VoiceMapRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VoiceMapResponse"];
                 };
             };
             /** @description Validation Error */
@@ -5131,6 +6033,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SelectResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_voice_options_api_v1_voices_get: {
+        parameters: {
+            query?: {
+                /** @description 顺带带上这条任务的映射 */
+                task_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VoiceOptions"];
                 };
             };
             /** @description Validation Error */

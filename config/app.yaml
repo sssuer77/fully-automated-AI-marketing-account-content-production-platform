@@ -56,6 +56,12 @@ scheduler:
   backup_daily_keep: 7
   backup_weekly_keep: 4
 
+# 流水线编排（§04.3.4 · C7）
+# streaming_render = "边配音边渲染"（原文 §3.3）。默认关，一期也只能关：
+# 成片时长以人声实测总长为唯一基准（C12），边渲染边改人声会让基准漂移。
+pipeline:
+  streaming_render: false
+
 # 磁盘水位门禁（§README.7）；低于阈值 ⇒ 暂停 render/publish 认领 + 告警
 disk_gate:
   free_c_min_gb: 1.0

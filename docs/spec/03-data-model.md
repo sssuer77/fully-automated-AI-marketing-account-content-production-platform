@@ -395,10 +395,16 @@ END;
 **续传语义（必须由代码遵守）**
 
 1. `tts_status ∈ {pending, failed}` 是唯一"待办"判据。
-2. `done` 的句子在**文本未改且 `tts_hash` 命中缓存**时直接复用音频，不调用引擎。
+2. `done` 的句子在**文本未改且产物可用**时直接复用音频，不调用引擎：产物（句子 WAV）在盘上 ⇒ 直接用；
+   不在但 `tts_hash` 命中缓存 ⇒ 从缓存**拷回交付路径**（0 次引擎调用）；两处都没了 ⇒ 见第 6 条。
 3. 编辑句子 ⇒ `text` 变更 ⇒ `version+1`、`tts_status='pending'`、`tts_hash=NULL`（仅该句失效）。
 4. 合成完成后回填前校验 `version` 未变，否则丢弃音频（说明用户又改了）。
 5. 单句 `tts_attempts ≥ 3` ⇒ 触发降级链（§04.3.3），最终可落 `skipped`（占位静音 + 字幕保留）。
+6. `done` 是**可撤销**的（T2.6 落地补充 · 裁定 215）：产物（句子 WAV）与缓存副本**两处都被清理**之后
+   （§03.7.5 的 24 小时 GC + 缓存 LRU 淘汰），`done` 的承诺（"这一句的音频已经存在"）不再成立 ⇒
+   处理器把它**如实退回** `pending`（`SentenceRepo.reopen`）重念，而不是交出一个指向空气的 `tts_audio_path`。
+   `reopen` **不动 `version`** —— 那道闸门守的是"文本有没有被改过"，而这里一个字没改
+   （跟着 +1 会把在飞的合成结果一并作废，那是编辑该做的事，不是清理该做的事）。
 
 ### 3.3.8 `review_scores`（双通道评分 · 原文 §2.2⑤）
 
@@ -591,6 +597,16 @@ CREATE INDEX idx_art_task ON artifacts(task_id, kind);
 CREATE INDEX idx_art_hash ON artifacts(render_hash) WHERE render_hash IS NOT NULL;
 CREATE INDEX idx_art_gc   ON artifacts(expires_at)   WHERE expires_at IS NOT NULL;
 ```
+
+**落地说明（T2.7 · 2026-09-16）**
+
+| # | 规格写法 | 落地写法 | 为什么 |
+| --- | --- | --- | --- |
+| 1 | `path` 相对 `STUDIO_DATA_DIR` | `ArtifactRepo(connection, data_dir=…)`，`record()` 用 `core.paths.data_relative` 换算 | 让"相对"这条规则只有一处实现；绝对路径会在换机器 / 搬目录 / 从备份还原之后指着一堆不存在的文件 —— 清单指错地方比没有清单更坏 |
+| 2 | `UNIQUE (task_id, kind, path)` | `record()` 是 **upsert**：已存在就刷新 `bytes` / `sha256` / `meta_json` / `ttl_hint` | 同一份产物会被重复产出（重合成 / 重渲染 / 重算时间轴）。报错或插第二行都会让清单"越跑越乱" |
+| 3 | `bytes` / `sha256` | 在**事务之外**算（`core.files.file_sha256`）；文件不在 ⇒ 两列留 `NULL`，**不抛** | R10：事务内禁止任何 I/O。而"文件刚被 GC 删掉的那一瞬间"是如实回答，不是错误（与 `file_sha256` 同一条口径） |
+| 4 | `ttl_hint` / `expires_at` | 只写 `ttl_hint`（`timeline` ⇒ `forever`、`voice_master` ⇒ `24h`），`expires_at` 留空 | 真正决定删文件的判据是 `config/retention.yaml`（`gc/media.py`），这张表不假装自己管回收 |
+| 5 | （规格未写） | 一期这张表**只写不读**（面板与 GC 都还没接） | 先写后读不是问题：清单的价值在于"出事之后还查得到当时产出了什么"。第一个写入者是 T2.7 的 `settle_voice`（`timeline` + `voice_master` 两条） |
 
 ### 3.3.12 `system_logs`（实时推送与留痕）
 

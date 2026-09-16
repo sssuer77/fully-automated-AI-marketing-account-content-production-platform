@@ -10,8 +10,8 @@
 // ----------------------
 // 1. **只影响后续渲染**：已入队 / 在跑的任务不中断、不重跑。不写这一句，用户会以为改完
 //    分辨率"当前那条片子也跟着变了"，然后盯着一部永远不会变的片子等。
-// 2. **水印是必做项（D5）**：PNG 不在盘上 ⇒ 渲染**拒绝出片**，不是"少一个水印继续出"。
-//    所以它是一条醒目的横幅，而不是一行小字。
+// 2. **水印是可选装饰**：PNG 不在盘上 ⇒ 这次出片**不贴水印、照样出片**（BGM 空着同理）。
+//    所以它是一条横幅，把"少了什么"说在明处 —— 但**不能**说成"出不了片"。
 // 3. **一期只有表单**：拖拽定位水印与三层模板树（Video -> Scene -> Component）随 C13 延后二期
 //    （R17）。说清楚，用户才不会在面板上找一个不存在的拖拽框。
 //
@@ -125,9 +125,9 @@ function onSubtitleInt(key: "font_size" | "outline" | "max_chars_per_line", even
       就是把它修回来，所以读取失败**不**返回错误页）
     </p>
 
-    <p v-if="outputs.watermarkMissing" class="alert alert--error">
-      **水印 PNG 不在盘上**：{{ outputs.watermark?.path }} —— 渲染会**拒绝出片**（D5 必做项，
-      缺失不降级）。把图放到这个路径，或改成盘上已有的那张。
+    <p v-if="outputs.watermarkMissing" class="alert alert--warn">
+      **水印 PNG 不在盘上**：{{ outputs.watermark?.path }} —— 出片**照常**，只是这一版不带水印
+      （水印是可选装饰，不阻塞渲染）。想要水印就把图放到这个路径，或改成盘上已有的那张。
     </p>
 
     <p v-if="outputs.conflict" class="alert alert--warn">
@@ -309,7 +309,7 @@ function onSubtitleInt(key: "font_size" | "outline" | "max_chars_per_line", even
       <EmptyState
         v-if="form === null || form.watermark === null"
         title="没有可编辑的水印"
-        hint="水印是 D5 的**必做项**：`config/outputs.yaml` 的 `watermark:` 段不能少。"
+        hint="水印是**可选装饰**：`config/outputs.yaml` 的 `watermark:` 段不在也能出片（只是不贴水印）。"
       />
 
       <div v-else class="form">

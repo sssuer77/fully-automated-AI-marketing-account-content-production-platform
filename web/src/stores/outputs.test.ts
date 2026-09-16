@@ -100,7 +100,7 @@ function limits(overrides: Partial<OutputsLimits> = {}): OutputsLimits {
       cq: bounds(0, 51),
     },
     watermark: {
-      positions: ["top_left", "top_right", "bottom_left", "bottom_right"],
+      positions: ["top_left", "top_right", "bottom_left", "bottom_right", "center"],
       margin_x: bounds(0, 2000),
       margin_y: bounds(0, 2000),
       width_ratio: bounds(0, 0.25, true, false),
@@ -334,9 +334,9 @@ describe("纯函数", () => {
     expect(describeBound(bounds(null, null))).toBe("不限");
   });
 
-  it("watermarkTone：PNG 不在盘上 ⇒ 红灯（渲染会拒绝出片）", () => {
+  it("watermarkTone：PNG 不在盘上是**黄灯**不是红灯（不贴水印也照样出片）", () => {
     expect(watermarkTone(true)).toBe("ok");
-    expect(watermarkTone(false)).toBe("error");
+    expect(watermarkTone(false)).toBe("warn");
   });
 
   it("只有 source === outputs 的日志才触发重拉（这条通道还有全站日志）", () => {
@@ -513,7 +513,7 @@ describe("useOutputsStore", () => {
     expect(store.visibleFieldErrors["subtitle.font_size"]).toBeUndefined();
   });
 
-  it("watermarkMissing：PNG 不在盘上 ⇒ 面板要显著提示（D5 必做项）", async () => {
+  it("watermarkMissing：PNG 不在盘上 ⇒ 面板要说出来（免得人以为是 bug）", async () => {
     configureOutputsApi({
       fetchOutputs: vi.fn(async () => response({ watermark: watermark({ exists: false }) })),
     });

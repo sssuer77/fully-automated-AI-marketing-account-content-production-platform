@@ -1,0 +1,34 @@
+# ── 本地靶页（T5.2 · **不是平台**）────────────────────────────────────────
+# 它存在的唯一理由：让 §06.5.3 那八步能在**没有账号、没有网络**的情况下被真跑一遍
+# （真 Playwright、真 file://、真截图）。选择器热修时也可以拿它当靶子。
+#
+# ⚠️ 代号 ``fixture`` 不在 §06.2.1 的平台矩阵里，也**不在** publications.platform 的
+#    CHECK 约束里 ⇒ 它永远不可能被落库成一条真实发布记录（见 platforms/fixture.py）。
+platform: fixture
+version: "2026-09-16"
+
+urls:
+  # 占位：真地址由 FixturePublisher 在装配期替换成 fixtures/upload_form.html 的 file:// URL。
+  upload: "about:blank"
+  manage: "about:blank"
+
+selectors:
+  login_ok: "#who"
+  login_required: "#login-box"
+  upload_input: "#video"
+  title_input: "#title"
+  caption_input: "#caption"
+  upload_progress: "#progress"
+  cover_trigger: "#cover-trigger"
+  cover_input: "#cover"
+  publish_button: "#publish"
+  success_marker: "#result"
+  reject_marker: "#reject"
+
+readback:
+  title: value
+  caption: text
+
+markers:
+  login_expired_text: ["登录已过期", "请重新登录", "扫码登录"]
+  review_rejected_text: ["审核不通过", "内容违规", "未通过审核"]
