@@ -45,7 +45,7 @@
 | E1 | 🔴 **MC 跑酷素材包**（≥60 条 / ≥30 分钟） | `data/assets/mc_parkour/` | **T3.1 开工前** | 缺失（`D:\MC` 空） |
 | E2 | 🔴 **水印 PNG**（1080×1920 适配，带透明通道） | `templates/<tid>/assets/images/watermark.png` | **T3.2 开工前** | 缺失 |
 | E3 | 🔴 **BGM 音乐库**（≥20 首授权曲） | `data/assets/bgm/` 或 WebUI 上传 | T3.6 开工前 | 缺失（`D:\MUSIC` 空） |
-| E4 | 🔴 **熊大熊二原声**（各 2–3 段，10–30s，**无 BGM**） | `data/voice_src/{bigbear,littlebear}/` | **T2.4 开工前** | 缺失 |
+| E4 | 🔴 **熊大熊二原声**（各 2–3 段，10–30s，**无 BGM**） | `data/voice_src/{bigbear,littlebear}/` | **T2.4 开工前** | 占位已就位（2026-09-17 · `scripts/seed_placeholder_assets.py`，**开箱即用**）· **正式原声仍缺** |
 | E5 | 🔴 **CosyVoice 权重**（2–4 GB） | `models/` 或 `D:\ai_models` | **T2.1 开工前** | 缺失（版本基线见 Q7） |
 | E6 | 🟡 **LLM API Key**（[OI] 兼容） | 环境变量 `STUDIO_LLM_API_KEY` | **T1.9 真机联调前** | 未提供（T1.8 代码已用脚本化传输全覆盖，**不阻塞**；`studio llm probe` 会报 `no_key`） |
 | E7 | 🟡 **`config/persona.yaml`**（人设/口吻/受众/口癖/禁区） | `config/persona.yaml` | **随时**（不阻塞） | 缺失（**唯一人工必填**）· T1.9 / T1.10 均已用 `personas/persona_default.yaml` 现值开工；改人物文件即生效（阈值经 `ScriptRules.from_persona`），历史批次可按 `prompt_version` 追溯 |
@@ -590,16 +590,28 @@
 - ✅ `pytest tests/unit/tts/test_router.py -q`（决策表**逐条**覆盖）；`pytest tests/contract/test_voice_engine_abc.py`（三实现同一契约）
 - ⚠️ 引擎替换成本 ⇒ ABC 隔离，换引擎不动业务代码
 
-### T2.4 原声入库与音色注册 · **P0** 🔴 需 E4
+### T2.4 原声入库与音色注册 · **P0** 🔶 **部分完成（2026-09-17）** · 正式音色仍需 E4
 - 依赖：T2.2 ｜ 里程碑：M2 ｜ 契约：§04.3.1 / R2
-- [ ] 目录契约：`data/voice_src/{bigbear,littlebear}/` + `profile.json`
-- [ ] 质量校验：段数 2–3 / 时长 10–30s / **无 BGM** / 无削波 / 有效语音占比
-- [ ] 零样本复刻注册 + 试听样本生成
-- [ ] **R2 合规**：音色 ID 与展现名**解耦**（默认按原文用 `bigbear`/`littlebear`，但可一键替换为自录音色）
-- [ ] 来源登记留档（`proof_path`）
-- ✅ `python scripts/ingest_voice_src.py --voice bigbear` 校验通过并注册；`studio tts list` 可见两个音色；`pytest tests/integration/test_voice_profile.py -q`
+- [x] 目录契约：`data/voice_src/{bigbear,littlebear}/` + `profile.json`
+- [x] 质量校验的**四条硬拒**：段数 2–3 / 单段 10–30s / 无削波（峰值 ≤ −1.0 dBFS）/ 采样率 ≥ 16 kHz
+- [ ] 质量校验的三条 `warn`：无 BGM / 有效语音占比 ≥ 70% / 单发言人 —— **本轮刻意不做**（裁定 287）
+- [x] 入库命令 `scripts/ingest_voice_src.py`：扫目录 → 体检 → 写 `voice_profiles`（判定不重写，见裁定 289）
+- [ ] 零样本复刻注册 + **试听样本生成** —— 注册已通（库里有行 ⇒ `usable_voices` 选得到）；试听样本卡 E5（要引擎）
+- [x] **R2 合规**：音色 ID 与展现名**解耦**（`voice_map` 可换，配音面板可操作，**不用改代码**）
+- [x] 来源登记留档（`proof_path` ← 目录里的 `profile.json`）
+- ✅ **验收命令**（规格里的 `studio tts list` **不存在**，口径改如下 —— 裁定 288）：
+  - `.venv\Scripts\python.exe -m pytest tests/integration/test_voice_profile.py -q` ⇒ **13 passed**（四类拒绝逐条 + 旁车只 `warn` + 坏的不拖垮好的 + 默认映射真的接得上）
+  - `.venv\Scripts\python.exe scripts\ingest_voice_src.py --dry-run` ⇒ 逐条体检、**一个字节不写库**；全通过退出码 **0**、有任何一个被拒 ⇒ **1**（可挂批处理）
+- **真机（2026-09-17）**：`--dry-run` 4 个目录全过；`--voice bigbear --voice littlebear` ⇒ `新增 2 / 未入库 0`；
+  `usable_voices` ⇒ `('bigbear','littlebear','Microsoft David Desktop',…)`；默认 `voice_map` 两个角色都 `source = voice_map`
+  （**修前两个都是 `fallback`** —— 占位音色白造，见裁定 286 / 陷阱 #153）
 - ⚠️ **R2 法律风险**（熊大熊二是《熊出没》IP）⇒ 解耦 + 可替换 + WebUI 显著提示 + 留档
 - ⚠️ 原声缺失 ⇒ T2.3 熔断走降级，链路不断
+- **施工裁定（本轮新增 286–289）**：
+  - **286** 占位音色的目录名**必须**与 `TaskPayload.voice_map` 的默认值一致（`bigbear` / `littlebear`）：不一致的后果**不是报错**，而是每个角色都悄悄退回 `fallback`（进程音色）—— 盘上明明躺着两个能用的，系统一个都没用，而这件事**只有翻 manifest 才看得见**。占位脚本原先叫 `bear_da` / `bear_xiong`，就是这么坏的。**开箱即用是占位件的唯一价值**：要用户先去面板改一次映射才用得上，它就一件事都没省下。连带两条：`ref.txt` 要**一段一行**（写 1 行、2 段 ⇒ 一条**恒真**的 `ref_text_mismatch`，等哪天真的对不上就没人当回事了）；音高按**位次**分而不是按名字里的字（名字是自由起的，拿它当判据，改个名字两个音色就一模一样）
+  - **287** 「无 BGM / 有效语音占比 / 单发言人」三条**留在 `warn` 且本轮不做**：它们要谱平坦度 + 静音占比 + 说话人嵌入，是**三个新的音频分析子系统**，而一期它们**一条都不拦**（§4.3.1 表里就是 `warn`）。本轮用户的优先级是"先把 MP4 打通"（明确要求不写复杂资产校验）。**不假装**：`check_voice` 里没有这三条，规格里的 `-k quality`（含 BGM 被标 `warn`）**因此跑不出来** —— 缺就写缺，比填一个恒 `pass` 的假检查诚实
+  - **288** 规格的验收命令 `studio tts list` **不存在**（`cli.py` 里没有 `tts_app` / `voice_app`），**口径改为**脚本退出码 + `tests/integration/test_voice_profile.py`。**不为一句验收命令补一个 CLI**：它能说的（"这台机器现在有哪些音色"）配音面板已经说了，而且是**同一条** `usable_voices` —— 再开一个面只会多一处会过时的显示（与裁定 281 同一条理由）
+  - **289** `scripts/ingest_voice_src.py` **只打印、不判定**：阈值与旁车检查全在 `studio.assets.validate.check_voice`，入库走 `AssetService.ingest` —— 与素材库面板点「扫描并入库」是**同一条代码路径**。理由：「命令行说能进、面板说不能」这种**两个真相源**的 bug 极难查（陷阱 #150 / #151 是同一族）。脚本每多写一遍阈值，就多一个漂移点
 
 ### T2.5 文本归一化与切分 · **P0** ✅ **已完成（2026-09-15）**
 - 依赖：T1.10 ｜ 里程碑：M2 ｜ 契约：§04.3.6
@@ -1645,6 +1657,7 @@ uv run pytest -m "e2e and slow" -q               # 端到端（里程碑前跑�
 python scripts/audio_qc.py --task <id>           # 响度/峰值（发布门禁 2）· ✅ 已落地
 python scripts/dup_audit.py --task <id>          # 相似度（发布门禁 3）· ⏸ 一期不做（见 T3.7）
 python scripts/av_sync_audit.py --task <id>      # 仅诊断（C12：不阻断发布）
+python scripts/ingest_voice_src.py --dry-run      # 参考音入库体检（T2.4；有被拒 ⇒ 退出码 1）
 uv run pytest tests/integration/test_scheduler.py tests/integration/test_reports.py -q   # 定时调度 / 报告（M5 门槛）
 ```
 
@@ -1701,11 +1714,11 @@ T1.12 ✅             （一键启动）
 | 阶段 | 任务数 | 已完成 | 里程碑 | 门禁状态 |
 | --- | --- | --- | --- | --- |
 | **T1** 基座 + 脚手架 + 选题池 | 12 | **12**（T1.1–T1.12 全部 ✅） | M1 | [ ] |
-| **T2** CosyVoice 配音 | 9 | **5**（T2.5 ✅ T2.6 ✅ T2.7 ✅ T2.8 ✅ T2.9 ✅） | M2 | [ ] |
+| **T2** CosyVoice 配音 | 9 | **5**（T2.5 ✅ T2.6 ✅ T2.7 ✅ T2.8 ✅ T2.9 ✅）+ **1 部分**（T2.4 🔶） | M2 | [ ] |
 | **T3** 渲染（一期单遍合成） | 7 | **4**（T3.2 ✅ T3.5 ✅ T3.6 ✅ T3.7 ✅）+ **3 部分**（T3.1 🔶 T3.3 🔶 T3.4 🔶） | M3 | [ ] |
 | **T4** 操作台 + 四池 + 无人值守 | 14 | **14**（T4.1 ✅ T4.2 ✅ T4.3 ✅ T4.4 ✅ **T4.5 ✅** T4.6 ✅ T4.7 ✅ T4.8 ✅ T4.9 ✅ T4.10 ✅ T4.11 ✅ T4.12 ✅ T4.13 ✅ **T4.14 ✅** —— **T4 齐了**） | M4 | [ ] |
 | **T5** 发布 + 定时 + 报告 | 8 | **3**（T5.1 ✅ T5.2 ✅ **T5.3 ✅**） | M5 | [ ] |
-| **合计（一期）** | **50** | **38**（另有 **3** 项部分完成） | — | — |
+| **合计（一期）** | **50** | **38**（另有 **4** 项部分完成） | — | — |
 | *T3-P1…T3-P4* | *4（二期）* | *0* | — | *不占一期工期* |
 
 **外部阻塞项**：E1 跑酷素材 🔴 / E2 水印 PNG 🔴 / E3 BGM 🔴 / E4 原声 🔴 / E5 CosyVoice 权重 🔴 / E6 LLM Key 🟡（T1.9 真机联调前，不阻塞编码）/ E7 persona 🟡 / E8 字体 🟡
@@ -1717,6 +1730,7 @@ T1.12 ✅             （一键启动）
 > ② `T3.3` 单遍编译器 —— 缺语法预检、节点守卫 / 分块降级（**刻意不做**，见 `src/studio/render/degrade.py`）、`studio render plan`；规格里的 `CompositePlan` 实际名为 `CompositeRequest`；
 > ③ `T3.4` 单遍合成执行器 —— `composite_hash` 整片缓存与**超时杀进程树**均已接上（2026-09-17），仍缺 ffmpeg 进度解析与 2Hz 限流、`BELOW_NORMAL_PRIORITY_CLASS`。
 
+> 另 `T2.4` 音色注册亦为 **🔶 部分完成**：目录契约 / 四条硬拒 / 入库命令 / 解耦 / 来源登记已就位（真机跑通），未做的是三条 `warn` 级检查（裁定 287）与试听样本生成（卡 E5）。
 > 注 1：`T1.2` 含 **T1.2+ persona 可编辑改造**（人物库 / 热重载 / 一键切换 / 自动备份）。E7 现有 2 套可跑人物（`persona_default` 熊大熊二 · `solo_commentary` 快嘴单人），**口吻 / 受众 / 禁区仍待你定稿内容**（**可编辑性已就位**，见注 4）。
 >
 > 注 2：**M1 仍未算过**（T1.12 裁定 108）：一键启动已可用，但「5 进程全 ready」只差 `tts`（T2.2）——
@@ -1913,7 +1927,7 @@ T1.12 ✅             （一键启动）
 | 147 | **新端点的响应里少了一个字段，只有 `vue-tsc` 会告诉你** | 用 `**plan.to_dict()` 拼 payload，而响应模型里没声明那个字段 ⇒ FastAPI 按 `response_model` **静默过滤**（多出来的键不报错、少声明的字段也不报错） | `**dict` 拼 payload 时，字段清单是**响应模型**说了算：加字段要同时改模型；别指望运行时告诉你 | T4.14+ |
 | 148 | **模板里写的 `**加粗**` 在界面上是字面星号** | 前端没有 markdown 渲染器（`PanelCard` 直接 `{{ }}`），而提示语沿用了写文档的习惯 | 模板里用 `<b>` 或拆句，别写 markdown 语法 | T4.14+ |
 | 149 | **命令「超时」之后调用方永远不返回**（渲染 worker 卡死，日志里只有一句超时） | `subprocess.run(timeout=)` 超时后只杀**直接子进程**，随后（Windows 上）又调了一次**不带超时**的 `communicate()` 去读管道 —— 只要有一个继承了我们管道的孙进程还活着，它就永远等不到 EOF。实测：`timeout=2` 的命令 12s 后仍挂着 | 超时改走 `_kill_tree()`（Windows `taskkill /PID <pid> /T /F`、POSIX `killpg`），收尸那一步自己也带超时（`REAP_TIMEOUT_SEC`），收不干净就关掉我们这一端的管道 | T3.4 |
-> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 149 条见该处；跨文档引用按编号即可）。
+> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 153 条见该处；跨文档引用按编号即可）。
 
 ---
 

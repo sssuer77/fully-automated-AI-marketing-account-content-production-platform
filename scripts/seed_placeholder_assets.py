@@ -15,8 +15,9 @@
 - 跑酷：``data/assets/mc_parkour/parkour_%03d.mp4`` —— ``testsrc2`` 720x1280@30
   （带时间码的彩条：能播、能看出是占位、还能用来核对音画不同步）；
 - BGM：``data/assets/bgm/bgm_placeholder_%02d.mp3`` —— 正弦音，3 分钟一条；
-- 音色：``data/voice_src/<id>/ref_0N.wav`` + ``ref.txt`` + ``profile.json`` ——
-  15 秒正弦音（峰值 −6 dBFS ⇒ 不削波，符合 §4.3.1 的 ≤ −1.0 dBFS）。
+- 音色：``data/voice_src/{bigbear,littlebear}/ref_0N.wav`` + ``ref.txt`` + ``profile.json``
+  —— 15 秒正弦音（峰值 −6 dBFS ⇒ 不削波，符合 §4.3.1 的 ≤ −1.0 dBFS）。名字与
+  ``voice_map`` 的默认值一致，所以造完**开箱即用**（不会退到进程音色）。
 
 用法（必须在**已 dot-source `scripts/env.ps1`** 的会话里跑）::
 
@@ -60,8 +61,17 @@ DEFAULT_CLIP_SECONDS = 32
 DEFAULT_TRACKS = 3
 DEFAULT_TRACK_SECONDS = 180
 
-#: 默认音色：两个（熊大 / 熊二的原型位），每个 2 段 × 15 秒
-DEFAULT_VOICES = ("bear_da", "bear_xiong")
+#: 默认音色：两个（熊大 / 熊二的原型位），每个 2 段 × 15 秒。
+#:
+#: ⚠️ 名字**必须**与 ``TaskPayload.voice_map`` 的默认值一致
+#: （``{"bigbear": "bigbear", "littlebear": "littlebear"}``）。不一致的后果是
+#: **造出来的占位音色一个都接不上**：出片时每个角色都走 ``fallback``（退回进程音色），
+#: 而盘上明明躺着两个能用的 —— 症状是"占位音色白造了"，且只有翻 manifest 才看得见。
+#: 这里曾经叫 ``bear_da`` / ``bear_xiong``，就是这个毛病（2026-09-17 修正）。
+#:
+#: 名字只是**默认**：音色 ID 与展现名是解耦的（R2 合规要求）。换成自己录的
+#: ``my_voice`` 只需把目录改名，再在配音面板把映射指过去 —— 不用改任何代码。
+DEFAULT_VOICES = ("bigbear", "littlebear")
 VOICE_SEGMENTS = 2
 VOICE_SEGMENT_SECONDS = 15
 
@@ -166,15 +176,18 @@ def make_tracks(paths: StudioPaths, *, count: int, seconds: int, force: bool) ->
 def make_voices(paths: StudioPaths, *, voices: tuple[str, ...], force: bool) -> list[str]:
     """零样本参考音占位（目录结构与人提供的**完全一致**）。"""
     ids: list[str] = []
-    for voice_id in voices:
+    for position, voice_id in enumerate(voices):
         root = paths.voice_src_dir / voice_id
         root.mkdir(parents=True, exist_ok=True)
         ids.append(voice_id)
+        # 音高按**位次**分（不是按名字里的字）：名字是自由起的，拿它当判据，
+        # 换一个名字就会让两个音色听起来一模一样（占位件也要能分辨谁是谁）。
+        base = 160 + 60 * position
         for index in range(1, VOICE_SEGMENTS + 1):
             target = root / f"ref_{index:02d}.wav"
             if _skip(target, force=force):
                 continue
-            frequency = 160 if voice_id.endswith("da") else 220
+            frequency = base + 20 * index
             _run(
                 [
                     ffmpeg_binary(),
@@ -182,7 +195,7 @@ def make_voices(paths: StudioPaths, *, voices: tuple[str, ...], force: bool) -> 
                     "-f",
                     "lavfi",
                     "-i",
-                    f"sine=frequency={frequency + 20 * index}:duration={VOICE_SEGMENT_SECONDS}",
+                    f"sine=frequency={frequency}:duration={VOICE_SEGMENT_SECONDS}",
                     "-af",
                     f"volume={VOICE_PEAK}",
                     "-ac",
@@ -196,9 +209,15 @@ def make_voices(paths: StudioPaths, *, voices: tuple[str, ...], force: bool) -> 
             )
         text = root / "ref.txt"
         if not _skip(text, force=force):
+            # **一段一行**：``ref.txt`` 的第 N 行对应第 N 段参考音（§4.3.1）。行数与段数
+            # 对不上会被入库校验记一条 ``ref_text_mismatch`` —— 占位件不该带着一条
+            # **恒真**的警告出生：那样"真的对不上"的那天没人会当回事。
             text.write_text(
-                f"（占位参考音 {voice_id}）这段文字只为了满足目录约定：真实使用时，"
-                "这里要换成参考音里**逐字**说的那句话。\n",
+                "".join(
+                    f"（占位参考音 {voice_id} · 第 {index} 段）这段文字只为了满足目录约定："
+                    "真实使用时，这里要换成这一段里**逐字**说的那句话。\n"
+                    for index in range(1, VOICE_SEGMENTS + 1)
+                ),
                 encoding="utf-8",
             )
         profile = root / "profile.json"

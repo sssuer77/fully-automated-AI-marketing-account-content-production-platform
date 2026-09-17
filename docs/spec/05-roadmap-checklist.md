@@ -30,7 +30,7 @@
 | --- | --- | --- | --- |
 | 🔴 **MC 跑酷素材（★由你提供，D3）** | T3.1 | 放入 `data/assets/mc_parkour/`，建议 ≥60 条 / ≥30 分钟 | **`D:\MC` 为空** |
 | 🔴 **BGM 音乐库** | T3.1 | ≥20 首授权曲（可选，缺失则静音降级） | **`D:\MUSIC` 为空** |
-| 🔴 **熊大熊二原声录制** | T2.4 | 各 2–3 段，10–30s/段，**无背景音乐** | 缺失 |
+| 🔴 **熊大熊二原声录制** | T2.4 | 各 2–3 段，10–30s/段，**无背景音乐** | 占位已就位（2026-09-17 · 开箱即用）· **正式原声仍缺** |
 | 🔴 **水印 PNG** | T3.2 | `templates/<tid>/assets/images/watermark.png`（**必做**，D5） | 缺失 |
 | 🔴 **CosyVoice 权重下载** | T2.1 | 2–4 GB，落 `models/` 或 `D:\ai_models` | 缺失（版本待核验 Q7） |
 | 🟡 **LLM API Key** | T1.9 | [OI] 兼容接口 | 未提供（T1.8 代码已用脚本化传输全覆盖，**不阻塞**；`studio llm probe` 报 `no_key`） |
@@ -68,7 +68,7 @@
 | **T2.1** | **tts venv + 模型权重就位**：Python 3.11 + torch 2.4.0+cu121（复用 `D:\Torch` 预置 wheel）+ CosyVoice 源码（**revision 锁定**）+ 权重落 `models/` 或 `D:\ai_models` | T1.1 | `uv run --project tts python -c "import torch,cosyvoice;print(torch.__version__,torch.cuda.is_available())"` = `2.4.0+cu121 True`；`python scripts/smoke_cosyvoice.py --self-test` 打印模型路径/设备/权重 revision 并成功合成 1 句；权重目录与体积记入 `docs/runbook/tts_models.md` | **Q7 版本核验**：原文写 `CosyVoice3-0.5B`，FunAudioLLM 已知发布 CosyVoice / CosyVoice2-0.5B ⇒ **以实际能下载跑通的版本为准**，revision 写入留痕；**R5**：`pynini`/`WeTextProcessing` 在 Windows 装不上 ⇒ 不 import `tn`；下载中断 ⇒ ModelScope 缓存续传 |
 | **T2.2** | **常驻推理服务 + 并发实测标定**（★裁决 C8）：`/health` `/warmup` `/unload` `/voices` `/synth`、GPU 串行信号量、fp16 常驻、空闲 20min 卸载、429 背压 | T2.1 | `curl 127.0.0.1:8811/health` → `{ready:true,device:"cuda",model_state:"ready"}`；`python scripts/bench_tts.py --concurrency 1,2,3` 输出**各并发下的峰值显存与 RTF**，写出建议值到 `docs/runbook/tts_concurrency.md`；fp16 常驻 < 4 GB | **R4/C8 显存**：8 GB 卡且桌面占 1.49 GB ⇒ **默认并发 1**；若实测 3 并发 OOM ⇒ **正式否决原文的 3 并**并记录依据；显存不足 ⇒ 自动 `unload` 重载；服务崩溃 ⇒ supervisor 重启（T4.11）；**禁 bf16**（Turing 无原生支持） |
 | **T2.3** | **引擎适配层与路由**：§04.3.2 的 `VoiceEngine` ABC 实现、多引擎路由、熔断、§04.3.3 降级决策表落地 | T2.2 | `pytest tests/unit/tts/test_router.py -q`（§04.3.3 决策表**逐条**：OOM / 超时 / 静音 / 爆音 / 引擎宕 / 连续失败熔断）；`pytest tests/contract/test_voice_engine_abc.py`（Mock / 服务 / CosyVoice 三实现均满足 ABC） | 引擎"假成功"（返回静音）⇒ `RMS < -50 dBFS` 判 `TTS_SILENT`；熔断阈值可配（默认连续 3 句）；熔断后任务**不失败**，转"字幕模式" |
-| **T2.4** | **原声入库与音色注册（`bigbear`/`littlebear`）**：目录契约、质量校验（段数/时长/无 BGM/无削波/有效语音占比）、零样本复刻注册、试听样本 | T2.2 | `python scripts/ingest_voice_src.py --voice bigbear` 校验通过并注册；`studio tts list` 可见 `bigbear`/`littlebear`；`pytest tests/integration/test_voice_profile.py -q`（段数<2 / 时长越界 / 削波 / 采样率不足 **四类拒绝**）；`-k quality`（含 BGM 被标 `warn`） | **R2 版权**：《熊出没》IP 音色复刻存在声音权/著作权风险 ⇒ ①音色 ID 与展现名**可配置解耦**；②支持一键替换为自录音色；③WebUI 显著合规提示；④`profile.json` 来源登记留档；参考音质量差 ⇒ 入库校验 + 试听确认 + 可重录替换 |
+| **T2.4** 🔶 | **原声入库与音色注册（`bigbear`/`littlebear`）**：目录契约、质量校验（段数/时长/无 BGM/无削波/有效语音占比）、零样本复刻注册、试听样本 | T2.2 | `python scripts/ingest_voice_src.py --voice bigbear` 校验通过并注册 ⇒ **真机已跑通（`新增 2 / 未入库 0`）**；`studio tts list` 可见 `bigbear`/`littlebear`（**该 CLI 不存在**，裁定 288）；`pytest tests/integration/test_voice_profile.py -q`（段数<2 / 时长越界 / 削波 / 采样率不足 **四类拒绝**）⇒ **13 passed（2026-09-17）**；`-k quality`（含 BGM 被标 `warn`）**不做**（三条 `warn` 级检查见 `todolist.md` T2.4 裁定 287）；规格里的 `studio tts list` **该 CLI 不存在** ⇒ 口径改为脚本退出码（裁定 288） | **R2 版权**：《熊出没》IP 音色复刻存在声音权/著作权风险 ⇒ ①音色 ID 与展现名**可配置解耦**；②支持一键替换为自录音色；③WebUI 显著合规提示；④`profile.json` 来源登记留档；参考音质量差 ⇒ 入库校验 + 试听确认 + 可重录替换 |
 | **T2.5** ✅ | **文本归一化与切分**：数字/英文/多音字归一化（**幂等**）、标点→停顿映射、单句 ≤28 字切分、glossary 热更新 | T1.10 | `pytest tests/unit/tts/test_normalize.py -q`（≥40 条黄金用例：日期/百分比/英文缩写/多音字/emoji/超长句）；`pytest tests/unit/tts/test_segmenter.py -q`（每片 4–28 字且不破坏语义边界）；幂等性属性测试 `normalize(normalize(x)) == normalize(x)` | **R7 长句漂移** ⇒ 单句硬上限 + 自动切分并回写 DB；误读 ⇒ `glossary.yaml` 热更新且变更即回归；**不引入 `pynini`**（R5） |
 | **T2.6** ✅ | **按句合成流水线 + 句级缓存**：sentence 单元 job、`tts_hash` 缓存命中、单句重试/降级、`version` 竞态保护 | T2.3–T2.5, T1.5 | `pytest tests/integration/test_sentence_resume.py -q`：①杀进程重启后已完成句**引擎调用次数为 0**（Mock 计数断言）；②第 3 句注入失败 ⇒ 仅该句重试成功；③编辑某句后仅该句失效重合成；④缓存命中率 ≥30%；⑤产物落 `data/output/voice/<task_id>/s001.wav` | 缓存污染 ⇒ 哈希含引擎版本/音色/文本/参数；**R4** 缓存占盘 ⇒ LRU 5 GB；句级写冲突 ⇒ `version` 校验失败即**丢弃音频重合成** |
 | **T2.7** ✅ | **时长时间轴**（**已完成 2026-09-16**）：`ffprobe` 实测时长、句间停顿 + 抖动（种子派生）、`timeline.json`（§04.2.7）、批量回写 `start_ms/end_ms`、拼 `voice_master.wav` | T2.6 | `pytest tests/integration/test_timeline.py -q` ⇒ **7 passed**（单调不重叠、`total_ms = Σ句实测 + Σ停顿 + tail`；`ffprobe(voice_master)` 与 **`total_ms − tail_ms`** 偏差 ≤30ms；改一句 ⇒ 后面每句 `start_ms` **全量重算**；降级句照样占时间）。`scripts/av_sync_audit.py` 按 C12 降为**可选诊断**（不阻断发布） | **R9 音画不同步**：统一 48kHz mono s16 + `concat` filter + 显式总时长；句子重合成后**必须全量重算时间轴**（禁止增量拼接）；**不信任引擎返回的时长**，一律 ffprobe 实测 |
@@ -223,7 +223,7 @@
 
 ---
 
-## 5.7 高频陷阱对照表（149 条 · 实现期直接查阅）
+## 5.7 高频陷阱对照表（153 条 · 实现期直接查阅）
 
 | # | 现象 | 根因 | 正确做法 | 任务 |
 | --- | --- | --- | --- | --- |
@@ -379,6 +379,7 @@
 | 150 | **面板说"跑酷素材 0 条 / 当前为黑屏降级模式"，而片子里正放着跑酷** | 面板读**库**（`repo.list_all()`）、出片读**目录**（`render/assets.py` 只 `listdir`）—— 两个真相源，而用户只能看见一个。盘上 58 条一条没入库时，这一屏上的每个数字都与事实相反 | 面板必须把**盘上事实**合进来，并给出**一个与出片同口径**的数（`usable`）。三组数字分开报（出片能挑到 / 盘上 / 已入库），"不够多"（`shortfall`）与"会不会黑屏"（`degraded`）也分开 —— 后者只回答"一条都挑不到吗" | T4.8 |
 | 151 | **面板上点了「停用」，出片照样挑到它** | 验收写着"禁用 ⇒ 随机化不再选中"，而渲染器**全文没有 `enabled` 这个词** —— 它只列目录。库到渲染器之间**根本没有这条线** | 补的是**接线**、不是校验：调用方查库 → 翻成**文件名集合** → `pick_*(exclude=)` 做一次集合减法（渲染器照旧不碰数据库、不查时长、不算 pHash）。缺省 `None` ⇒ 退回"能进目录就算数"，旧调用方不受影响 | T4.8 |
 | 152 | **面板上写「出片照样会挑到它们」，可那一节是音色** | 想用一句通用的话盖住三类素材，而两条链路**真的不同**：出片挑素材只列目录（未入库照样用），配音只认 `voice_profiles` 表（未入库挑不了） | 同一件事按类别说不同的话（后端 `_usable` 与前端 `pendingNote` / `usableText` 各分一次叉）。"出片能挑到 0 个音色"还会让人以为音色是拿去当画面的 | T4.8 |
+| 153 | **占位音色造好了、系统却一个都不用**（每个角色都退回进程音色，而盘上躺着两个能用的） | 占位脚本的目录名（`bear_da` / `bear_xiong`）与 `TaskPayload.voice_map` 的默认值（`bigbear` / `littlebear`）**对不上**。症状不是报错，是 `resolve_voice` 静默走 `fallback` —— **只有翻 manifest 才看得见** | 占位件的名字必须与默认映射**一致**（开箱即用是它唯一的价值）；顺带 `ref.txt` 要**一段一行**、音高按**位次**分而不是按名字里的字。`tests/integration/test_voice_profile.py` 从**默认值**出发断言 `source == voice_map`，接不上就红 | T2.4 |
 
 ---
 
