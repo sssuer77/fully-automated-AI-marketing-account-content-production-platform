@@ -25,9 +25,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -62,6 +64,17 @@ PROBE_TIMEOUT_SEC: Final[int] = 30
 #: 一次响度测量的超时。比探测宽得多：``loudnorm`` 要**把整条音轨解一遍**，
 #: 一首 5 分钟的曲子在一台被渲染占满的机器上不是几毫秒的事。
 LOUDNESS_TIMEOUT_SEC: Final[int] = 300
+
+#: 超时后等"被杀进程"收尸的秒数。被杀掉的进程不会再有输出，正常是毫秒级；给余量是因为
+#: Windows 上"进程退出"与"管道关闭"不是同一拍（后代可能还攥着管道）。
+REAP_TIMEOUT_SEC: Final[int] = 10
+
+#: ``taskkill`` 自己的超时。它要是挂住，不能再把调用方一起拖住 —— 那时退回到只杀直接子进程。
+TASKKILL_TIMEOUT_SEC: Final[int] = 10
+
+#: POSIX 上用来打进程组的信号。``SIGKILL`` 在 Windows 上**不存在**（typeshed 里也没有），
+#: 所以取一次默认值；这个常量只在 POSIX 分支被用到。
+_SIGKILL: Final[int] = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 #: 带 alpha 通道的像素格式（水印必须落在这些里，否则叠上去是黑底方块）。
 ALPHA_PIX_FMTS: Final[frozenset[str]] = frozenset(
@@ -108,30 +121,121 @@ def run_command(argv: Sequence[str], *, timeout: int = PROBE_TIMEOUT_SEC) -> Com
     负的返回码是我们自己给的，与进程真实退出码区分开：
 
     - ``-1`` 找不到可执行文件（工具没装 / 不在 PATH）
-    - ``-2`` 超时
+    - ``-2`` 超时（**已终止整棵进程树**，见下）
     - ``-3`` 无法启动（权限 / OSError）
+
+    为什么超时要杀**整棵**进程树
+    ---------------------------
+    最重的一条是**调用方永远不返回**，2026-09-17 实测：``subprocess.run(timeout=)`` 超时后
+    只杀它直接启动的那个进程，然后（Windows 上）再 ``communicate()`` 一次把管道读干净 ——
+    而那个 ``communicate()`` **没有超时**。只要有一个继承了我们管道的孙进程还活着，它就永远
+    等不到 EOF：一个 ``timeout=2`` 的命令在 12 秒后仍然挂着，日志里只有一句超时。渲染 worker
+    就是这样卡死的。另外两条较轻：
+
+    - **两个写者抢同一个文件**：父进程被杀、子进程还在往 ``.partial`` 里写，而调用方已经
+      拿着 ``-2`` 去清理半成品了；
+    - ffmpeg 自己不开子进程，但"它不会"不是契约 —— 这条链路上还有 SAPI，将来还可能接别的编码器。
+
+    所以超时走 :func:`_kill_tree`：Windows ``taskkill /PID <pid> /T /F``（§01.5.2 的
+    "取消/超时"约定），POSIX ``killpg``；两条路都失败时至少把直接子进程杀掉 —— 那是
+    ``subprocess.run`` 原本的行为，不能比它更差。收尸那一步自己也带超时（:func:`_reap`）。
 
     为什么不抛：调用方（探测 / 入库 / 渲染）都要把失败**记进报告**继续跑完其余条目，
     而不是让一个坏文件中断整批扫描。真正的硬门禁（"ffmpeg 在不在"）在 ``doctor`` 那侧。
     """
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             list(argv),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            # POSIX 上让子进程自成会话，`killpg` 才能只打我们这一支（否则会打到调用方
+            # 自己所在的组）。Windows 忽略这个参数 —— 它靠 taskkill 遍历父子关系找树。
+            start_new_session=os.name != "nt",
+        )
+    except FileNotFoundError:
+        return CommandResult(-1, "", f"未找到可执行文件：{argv[0]}")
+    except OSError as exc:
+        return CommandResult(-3, "", f"命令无法启动：{exc}")
+
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        killed = "进程树" if _kill_tree(process) else "进程"
+        _reap(process)
+        return CommandResult(-2, "", f"命令超时（{timeout}s，已终止{killed}）：{' '.join(argv)}")
+    return CommandResult(process.returncode, stdout or "", stderr or "")
+
+
+def _kill_tree(process: subprocess.Popen[str]) -> bool:
+    """杀掉**整棵**进程树；返回"是否真的按树杀的"。
+
+    ``False`` 表示树杀没成功（``taskkill`` 不在 / 权限不够 / POSIX 上拿不到进程组），
+    此时只杀掉了直接子进程 —— 调用方据此在报错里如实说明，而不是假装树已经干净了。
+    """
+    tree = _taskkill(process.pid) if os.name == "nt" else _killpg(process.pid)
+    # 兜底：树杀失败时至少别比 `subprocess.run` 更差。已经退出的进程上再 kill 一次是安全的
+    # （`Popen.kill` 会先 poll，退出了就直接返回）。
+    with contextlib.suppress(OSError):
+        process.kill()
+    return tree
+
+
+def _taskkill(pid: int) -> bool:
+    """``taskkill /PID <pid> /T /F`` —— Windows 上杀一整棵进程树的标准做法。
+
+    走子进程而不是 ``os.kill``：Windows 没有进程组信号，"树"的真相是**父子关系**，
+    而遍历它正是 ``taskkill /T`` 干的事。
+    """
+    try:
+        completed = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
+            timeout=TASKKILL_TIMEOUT_SEC,
             check=False,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-    except FileNotFoundError:
-        return CommandResult(-1, "", f"未找到可执行文件：{argv[0]}")
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
+
+
+def _killpg(pid: int) -> bool:
+    """POSIX：打整个进程组（子进程由 ``start_new_session`` 自成一组）。
+
+    ``killpg`` / ``getpgid`` 在 Windows 上**不存在**（typeshed 里也没有），所以用
+    ``getattr`` 取 —— 这个分支在 Windows 上永远走不到，但不该因此让类型检查报错。
+    """
+    killpg = getattr(os, "killpg", None)
+    getpgid = getattr(os, "getpgid", None)
+    if killpg is None or getpgid is None:
+        return False
+    try:
+        killpg(getpgid(pid), _SIGKILL)
+    except OSError:
+        return False
+    return True
+
+
+def _reap(process: subprocess.Popen[str]) -> None:
+    """把被杀掉的进程收尸：读完管道、回收句柄。
+
+    ``communicate()`` 等的是**管道关闭**，而管道可能还被一个没死透的后代持有 —— 所以这里
+    自己也带超时。收不干净就把我们这一端的管道关掉：宁可少读几行日志，也不能让一次超时
+    把调用方永远挂住（那正是这次要修的东西）。
+    """
+    try:
+        process.communicate(timeout=REAP_TIMEOUT_SEC)
     except subprocess.TimeoutExpired:
-        return CommandResult(-2, "", f"命令超时（{timeout}s）：{' '.join(argv)}")
-    except OSError as exc:
-        return CommandResult(-3, "", f"命令无法启动：{exc}")
-    return CommandResult(completed.returncode, completed.stdout or "", completed.stderr or "")
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
 
 
 def ffmpeg_binary(env: Mapping[str, str] | None = None) -> str:

@@ -822,14 +822,15 @@
 - [x] **argv 数组**调用（**不用 shell 拼接**，防注入与转义地狱）—— `build_composite_argv()` 返回 `list[str]`，经 `run_command()` 走 `subprocess.run(argv, …)`
 - [ ] `-progress pipe:1 -stats_period 0.5` 进度解析（`out_time_us` → 百分比）—— **一期未做**：argv 里写的是 `-nostats`（`composite.py:281`）。渲染面板的进度是**粗粒度**的（`render 0/1` 那种），不是 ffmpeg 百分比
 - [ ] 进度推送限流 2Hz —— **一期未做**（没有 ffmpeg 进度流，也就没有可限流的东西）
-- [ ] 超时 / 取消 ⇒ **杀进程树**（`taskkill /PID <pid> /T /F`），清理半成品 —— **未做**：`core/media.py:105` 的 `run_command()` 用 `subprocess.run(…, timeout=)`，超时靠 `TimeoutExpired` 收口（`returncode = -2`），**没有** `taskkill /T /F`。半成品的清理是有的（`.partial` 会被删）
+- [x] 超时 / 取消 ⇒ **杀进程树**（`taskkill /PID <pid> /T /F`）—— `core/media.py` 的 `run_command()` 从 `subprocess.run(timeout=)` 换成 `Popen` + `_kill_tree()`：Windows 走 `taskkill /PID <pid> /T /F`（§01.5.2 的「取消/超时」约定），POSIX 走 `killpg`（子进程 `start_new_session` 自成一组）；树杀失败时退回只杀直接子进程，**并在报错里如实说明**（`已终止进程` vs `已终止进程树`）。半成品的清理（`.partial` 被删）本来就有
 - [x] `.partial` → 原子改名（`partial.replace(req.output)`，`composite.py:358`）
 - [x] stderr 尾部截断留痕 + 错误码映射（`CommandResult.tail()`；超时 ⇒ `RENDER_TIMEOUT`，其余 ⇒ `RENDER_FAILED`）
 - [x] **`composite_hash` 整片缓存**（同哈希二次运行**不调用 ffmpeg**）—— `src/studio/render/cache.py` + `produce_video` 合成前先比一次指纹：命中 ⇒ 复用盘上那一支（连响度都从上一轮 manifest 里读回来，**一次 ffmpeg 都不起**）。判据是「**这个文件是这批输入渲出来的**」，不是「文件在不在」——后者正是 `pools/render_worker.py` 纪律 2 否掉的短路；manifest 只在成片原子改名 + 量完响度**之后**才写，所以「manifest 在」本身就等于「那一轮跑到底了」。命中时 manifest 记 `reused=true` + `rendered_at`（比 `created_at` 早），`ProduceResult.reused` 与进度文案一起告诉面板；`--force-render` 可强制重渲（`ProduceRequest.force_render`）
 - [ ] Windows 用 `BELOW_NORMAL_PRIORITY_CLASS` 启动 —— **未做**：`core/media.py:126` 用的是 `CREATE_NO_WINDOW`（消黑框），没设优先级类
 - ✅ `pytest tests/integration/test_composite_runner.py -q`：①进度可解析 ②超时杀进程树且不留子进程 ③中断 ⇒ 目标文件不存在但 `.partial` 被清理 ④argv 不含 shell 拼接（静态断言）⑤同 `composite_hash` 二次运行**不调用 ffmpeg**（Mock 计数）⑥人声或素材改动 ⇒ 哈希变化 ⇒ 重渲
-- 📌 **`tests/integration/test_composite_runner.py` 不存在**；上面那条集成验收**未落地**（它的 ⑤「同哈希二次运行不调用 ffmpeg」已由 `tests/unit/services/test_render_cache.py` 以 Mock 计数覆盖）。其余已落地部分由 `tests/unit/render/test_degrade.py`（**8 passed**）与 `tests/unit/render/test_composite.py`（**23 passed**，含 argv 静态断言）覆盖
+- 📌 **`tests/integration/test_composite_runner.py` 不存在**；上面那条集成验收**未落地**（它的 ⑤「同哈希二次运行不调用 ffmpeg」已由 `tests/unit/services/test_render_cache.py` 以 Mock 计数覆盖；②「超时杀进程树且不留子进程」已由 `tests/unit/core/test_media.py::test_a_killed_tree_leaves_no_grandchild` 用真两级进程树覆盖）。其余已落地部分由 `tests/unit/render/test_degrade.py`（**8 passed**）与 `tests/unit/render/test_composite.py`（**23 passed**，含 argv 静态断言）覆盖
 - ⚠️ 陷阱 #9 崩溃留「假完成」⇒ `.partial` + 原子改名
+- ⚠️ **陷阱 #149 超时后调用方永远不返回**（2026-09-17 实测，已修）：`subprocess.run(timeout=)` 超时后只杀直接子进程，**然后（Windows 上）又调了一次不带超时的 `communicate()`** 去读管道 —— 只要有一个继承了我们管道的孙进程还活着，它就永远等不到 EOF。实测：`timeout=2` 的命令 **12 秒后仍挂着**，日志里只有一句超时，渲染 worker 就是这么卡死的。⇒ 超时改走 `_kill_tree()`，收尸那一步自己也带超时（`REAP_TIMEOUT_SEC`），收不干净就关掉我们这一端的管道
 - ⚠️ 陷阱 #8 缓存复用旧产物 ⇒ 哈希含 canonical plan + 输入 sha256 + 水印/字幕参数（**已接**：见上条）
 - 📌 **命中面如实说**：底片是**随机**挑的（陷阱 #14 反搬运），所以不带 `--seed` 的重跑通常挑到另一条底片 ⇒ 哈希不同 ⇒ **照常重渲**（设计如此，不是缓存失效）。会命中的是带 `seed` 的重跑 / 复现、以及队列把同一条 `render/final` 重投（payload 里带着同一个 seed）
 - 📌 **实测（2026-09-17 真机 · 同一条命令连跑）**：`studio render make --task-id t34cache-smoke --text … --seed 7` ⇒ 第一次 **6.8s**、第二次 **1.96s**（省下的正是 ffmpeg 那一段 + 响度测量），manifest 记 `reused=true`、`rendered_at=06:36:48Z` 早于 `created_at=06:36:59Z`、`final` 仍是第一次那一支（**没有**另存一个新时间戳的文件）；`--force-render` ⇒ 5.9s、`reused=false`、**哈希不变**（`916ef67a…`）；换文案 ⇒ 哈希变（`b0d4b163…`）、6.0s、`reused=false`。**注意**：这两次都没带 `--reuse-voice`，人声重新合成后母带 sha256 仍然一致 ⇒ 命中（SAPI 的母语带是确定性的）
@@ -1706,7 +1707,7 @@ T1.12 ✅             （一键启动）
 > 当前 T3 有 3 项部分完成：
 > ① `T3.1` 素材入库 —— 缺 pHash + 帧哈希、黑帧段落排除、`studio assets ingest` / `stats` CLI、`tests/integration/test_broll_ingest.py`（**前两项用户已裁定为非核心**）；
 > ② `T3.3` 单遍编译器 —— 缺语法预检、节点守卫 / 分块降级（**刻意不做**，见 `src/studio/render/degrade.py`）、`studio render plan`；规格里的 `CompositePlan` 实际名为 `CompositeRequest`；
-> ③ `T3.4` 单遍合成执行器 —— `composite_hash` 整片缓存**已接上（2026-09-17）**，仍缺 ffmpeg 进度解析与 2Hz 限流、超时杀进程树、`BELOW_NORMAL_PRIORITY_CLASS`。
+> ③ `T3.4` 单遍合成执行器 —— `composite_hash` 整片缓存与**超时杀进程树**均已接上（2026-09-17），仍缺 ffmpeg 进度解析与 2Hz 限流、`BELOW_NORMAL_PRIORITY_CLASS`。
 
 > 注 1：`T1.2` 含 **T1.2+ persona 可编辑改造**（人物库 / 热重载 / 一键切换 / 自动备份）。E7 现有 2 套可跑人物（`persona_default` 熊大熊二 · `solo_commentary` 快嘴单人），**口吻 / 受众 / 禁区仍待你定稿内容**（**可编辑性已就位**，见注 4）。
 >
@@ -1903,7 +1904,8 @@ T1.12 ✅             （一键启动）
 | 146 | **面板上那条进度条跑完停在 0%，旁边却写着「完成」** | 这条链路的进度回调**不是连续的**（配音按句、渲染按段、投递与拼母带那几步根本不回调），而 `percent` 直接按 `done/total` 算 ⇒ 最后停在哪取决于它是从哪一步收尾的。真机上 `produce_video` 最后那次回调是 `render 0/1` | `percent` 在 `status == "succeeded"` 时直接返回 100。`RenderJobService` 有同一处（已一并修） | T4.14+ |
 | 147 | **新端点的响应里少了一个字段，只有 `vue-tsc` 会告诉你** | 用 `**plan.to_dict()` 拼 payload，而响应模型里没声明那个字段 ⇒ FastAPI 按 `response_model` **静默过滤**（多出来的键不报错、少声明的字段也不报错） | `**dict` 拼 payload 时，字段清单是**响应模型**说了算：加字段要同时改模型；别指望运行时告诉你 | T4.14+ |
 | 148 | **模板里写的 `**加粗**` 在界面上是字面星号** | 前端没有 markdown 渲染器（`PanelCard` 直接 `{{ }}`），而提示语沿用了写文档的习惯 | 模板里用 `<b>` 或拆句，别写 markdown 语法 | T4.14+ |
-> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 148 条见该处；跨文档引用按编号即可）。
+| 149 | **命令「超时」之后调用方永远不返回**（渲染 worker 卡死，日志里只有一句超时） | `subprocess.run(timeout=)` 超时后只杀**直接子进程**，随后（Windows 上）又调了一次**不带超时**的 `communicate()` 去读管道 —— 只要有一个继承了我们管道的孙进程还活着，它就永远等不到 EOF。实测：`timeout=2` 的命令 12s 后仍挂着 | 超时改走 `_kill_tree()`（Windows `taskkill /PID <pid> /T /F`、POSIX `killpg`），收尸那一步自己也带超时（`REAP_TIMEOUT_SEC`），收不干净就关掉我们这一端的管道 | T3.4 |
+> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 149 条见该处；跨文档引用按编号即可）。
 
 ---
 

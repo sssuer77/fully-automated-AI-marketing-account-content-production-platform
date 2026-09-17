@@ -13,11 +13,15 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
+import psutil
 import pytest
 
+from studio.core import media as media_module
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.media import (
     PROBE_TIMEOUT_SEC,
@@ -204,6 +208,61 @@ class TestParseVolumeOutput:
         }
 
 
+#: "父进程"脚本：立刻开一个写心跳的**孙进程**，记下它的 pid，然后自己睡 60 秒。
+#: 用真脚本而不是 ``-c`` 拼字符串 —— Windows 上引号与转义会让这条用例测的是"引号"。
+_PARENT_SCRIPT = (
+    "import subprocess, sys, time\n"
+    "child = subprocess.Popen([sys.executable, sys.argv[1], sys.argv[2]])\n"
+    "open(sys.argv[3], 'w').write(str(child.pid))\n"
+    "time.sleep(60)\n"
+)
+
+#: "孙进程"脚本：每 50ms 把当前时间写进 argv[1]（判活用的心跳）。
+_HEARTBEAT_SCRIPT = (
+    "import pathlib, sys, time\n"
+    "target = pathlib.Path(sys.argv[1])\n"
+    "while True:\n"
+    "    target.write_text(str(time.time()), encoding='utf-8')\n"
+    "    time.sleep(0.05)\n"
+)
+
+
+def _process_tree(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    """造一套两级进程树的脚本；返回 ``(父脚本, 心跳脚本, 心跳文件, pid 文件)``。"""
+    parent = tmp_path / "parent.py"
+    heartbeat = tmp_path / "heartbeat.py"
+    target = tmp_path / "beat.txt"
+    pid_file = tmp_path / "grandchild.pid"
+    parent.write_text(_PARENT_SCRIPT, encoding="utf-8")
+    heartbeat.write_text(_HEARTBEAT_SCRIPT, encoding="utf-8")
+    return parent, heartbeat, target, pid_file
+
+
+def _pid_gone(pid: int, *, within: float = 5.0) -> bool:
+    """那个 pid 是不是真没了（轮询而不是睡一觉就断言：进程退出与信号送达不是同一拍）。"""
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        try:
+            process = psutil.Process(pid)
+        except psutil.NoSuchProcess:
+            return True
+        if not process.is_running() or process.status() == psutil.STATUS_ZOMBIE:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _kill_leftovers(pid_file: Path) -> None:
+    """用例失败时的清场：孙进程是 ``daemon`` 线程开出来的，没人替它收尸。"""
+    if not pid_file.is_file():
+        return
+    try:
+        process = psutil.Process(int(pid_file.read_text(encoding="utf-8")))
+        process.kill()
+    except (psutil.Error, ValueError):
+        pass
+
+
 class TestRunCommand:
     def test_success_keeps_both_streams(self) -> None:
         result = run_command([sys.executable, "-c", "print('out')"])
@@ -226,6 +285,55 @@ class TestRunCommand:
         # 目录当可执行文件：CreateProcess 直接拒绝（PermissionError）
         result = run_command([str(tmp_path)])
         assert result.returncode == -3
+
+    def test_a_killed_tree_leaves_no_grandchild(self, tmp_path: Path) -> None:
+        """★ 超时 ⇒ 连**孙进程**一起杀掉（§01.5.2 的"取消/超时"约定）。
+
+        为什么不能只杀直接子进程 —— 2026-09-17 实测：``subprocess.run(timeout=2)`` 遇到
+        一个攥着管道的孙进程时，**12 秒后仍然挂着**（它在超时分支里又调了一次**不带超时**的
+        ``communicate()``）。这条用例在回归时会**挂住**而不是失败，所以调用放在线程里、
+        带一个看门狗 —— 否则整个测试套件跟着卡死，看到的现象会像"pytest 坏了"。
+        """
+        parent, heartbeat, target, pid_file = _process_tree(tmp_path)
+        outcome: list[CommandResult] = []
+
+        def call() -> None:
+            outcome.append(
+                run_command(
+                    [sys.executable, str(parent), str(heartbeat), str(target), str(pid_file)],
+                    timeout=2,
+                )
+            )
+
+        worker = threading.Thread(target=call, daemon=True)
+        worker.start()
+        worker.join(timeout=30)
+        try:
+            assert not worker.is_alive(), "run_command 没返回：管道还被孙进程攥着（这正是要修的那个 bug）"
+            assert outcome[0].returncode == -2
+            assert "超时" in outcome[0].stderr
+            assert "已终止" in outcome[0].stderr
+            assert target.is_file(), "孙进程压根没起来 ⇒ 这条用例没测到东西"
+            assert _pid_gone(int(pid_file.read_text(encoding="utf-8")))
+        finally:
+            _kill_leftovers(pid_file)
+
+    def test_without_taskkill_it_still_kills_the_child(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``taskkill`` 用不了（不在 PATH / 权限不够）⇒ 至少杀掉直接子进程，**并且如实说**。
+
+        两件事一起验：①调用没有变慢 —— 只杀直接子进程时 ``_reap`` 会立刻拿到 EOF，而
+        "没杀干净"会让它一直等到 :data:`~studio.core.media.REAP_TIMEOUT_SEC`（10s）；
+        ②报错里不写"进程树"，不假装树已经干净了。
+        """
+        monkeypatch.setattr(media_module, "_taskkill", lambda pid: False)
+        started = time.monotonic()
+
+        result = run_command([sys.executable, "-c", "import time; time.sleep(30)"], timeout=1)
+
+        assert result.returncode == -2
+        assert "已终止" in result.stderr
+        assert "进程树" not in result.stderr, "taskkill 明明失败了，却报成杀掉了整棵树"
+        assert time.monotonic() - started < 5, "直接子进程没被杀掉（_reap 一直等到了收尸超时）"
 
     def test_tail_prefers_stderr_and_truncates(self) -> None:
         result = CommandResult(1, "stdout text", "x" * 500)

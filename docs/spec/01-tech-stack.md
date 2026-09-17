@@ -306,7 +306,7 @@ ffmpeg -hide_banner -nostdin -loglevel error -progress pipe:1 -stats_period 0.5 
 | 参数形式 | `list[str]` argv，禁止 `shell=True` |
 | 进度 | `-progress pipe:1 -stats_period 0.5` ⇒ 解析 `out_time_us` 换算百分比；**每任务限流 2Hz** 推送 WS |
 | 错误 | 保留 stderr 尾部 64KB 入 `artifacts`/日志；提取 `Invalid argument`、`Conversion failed`、`No such filter` 映射为 `error_code` |
-| 取消/超时 | `asyncio.wait_for` + 超时后**杀进程树**（`taskkill /PID <pid> /T /F`），清理半成品 |
+| 取消/超时 | 超时后**杀进程树**（`taskkill /PID <pid> /T /F`），清理半成品 · **实施（2026-09-17）**：`core/media.run_command` 用阻塞 `Popen` + `timeout` 收口（一期渲染 worker 是同步的，没有 `asyncio.wait_for`），超时走 `_kill_tree()`，树杀失败退回只杀直接子进程并如实说明。**为什么不能只杀直接子进程**：`subprocess.run(timeout=)` 在超时分支里还会调一次**不带超时**的 `communicate()`，孙进程攥着管道时调用方**永远不返回**（实测 `timeout=2` 挂了 12s+，陷阱 #149） |
 | 产物原子性 | 一律输出 `*.partial.mp4`，成功后 `os.replace()` 原子改名 ⇒ 崩溃不留"看起来完成"的残缺文件 |
 | 并发 | 池并发 × 每进程 `-threads 5`；Windows 下用 `BELOW_NORMAL_PRIORITY_CLASS` 启动 |
 
