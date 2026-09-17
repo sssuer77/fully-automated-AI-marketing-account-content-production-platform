@@ -1097,12 +1097,35 @@ class WebUiSecret(_Base):
     password: str | None = None
 
 
+class LlmSecret(_Base):
+    """LLM 密钥本体（**只有这一处允许存密钥本体**）。
+
+    为什么密钥可以写在这里，而 ``llm.yaml`` 里写一个字节都不行
+    -----------------------------------------------------------
+    ``llm.yaml`` 是**入库**的，所以那里只允许出现环境变量名（``api_key_env``，
+    见 :data:`SECRET_VALUE_PATTERN` 那条铁律）。本文件（``config/secrets.yaml``）
+    **从不入库**（``.gitignore`` 覆盖），与 ``webui.password`` 同一档次 ——
+    它是「这台机器的私事」，不是「项目的配置」。
+
+    优先级：``STUDIO_LLM_API_KEY`` 环境变量 > 这里的 ``api_key``。
+    容器 / CI 走环境变量；个人机器走这个文件（WebUI「设置」面板写的就是它）。
+    """
+
+    api_key: str | None = None
+
+
 class SecretsConfig(_FileConfig):
     webui: WebUiSecret = Field(default_factory=WebUiSecret)
+    llm: LlmSecret = Field(default_factory=LlmSecret)
 
     @property
     def has_webui_password(self) -> bool:
         return bool(self.webui.password)
+
+    @property
+    def llm_api_key(self) -> str | None:
+        """生效的 LLM 密钥（环境变量已在加载期合并进来）。"""
+        return self.llm.api_key
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1493,6 +1516,12 @@ def _load_secrets(paths: StudioPaths, env: Mapping[str, str]) -> SecretsConfig:
         merged = dict(webui) if isinstance(webui, dict) else {}
         merged["password"] = env_password
         data = dict(data) | {"webui": merged}
+    env_llm_key = env.get("STUDIO_LLM_API_KEY", "").strip()
+    if env_llm_key:
+        llm = data.get("llm")
+        merged_llm = dict(llm) if isinstance(llm, dict) else {}
+        merged_llm["api_key"] = env_llm_key
+        data = dict(data) | {"llm": merged_llm}
     try:
         return SecretsConfig.model_validate(data)
     except ValidationError as exc:

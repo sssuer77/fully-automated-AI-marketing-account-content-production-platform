@@ -16,6 +16,8 @@
 | 发布卡在 `pending` / `failed` / `manual_required`；`studio publish queue` 有待人工；任务 `completed` 但片子没发出去 | [`publish_stuck.md`](publish_stuck.md) |
 | `PUBLISH_LOGIN_EXPIRED`、`health.hint` 说「需人工扫码登录」/「登录态已过期」、要加第二个账号 | [`publish_account.md`](publish_account.md) |
 | 每月一次例行；或真要**回滚**数据 | [`restore_drill.md`](restore_drill.md) |
+| CosyVoice 权重没了 / 换了机器要重装 / 合成报 `No module named 'matcha'`、`No module named 'hyperpyyaml'` | [`tts_models.md`](tts_models.md) |
+| 面板上「缺密钥」、`studio llm probe` 报 `no_key`、想知道 Key 到底存在哪 | 见下「LLM 密钥存在哪」 |
 
 ## 三条通用纪律
 
@@ -36,8 +38,23 @@
 
 | 文件 | 属谁 | 内容 |
 | --- | --- | --- |
-| `tts_models.md` | T2.1 | CosyVoice 权重目录 / 体积 / revision 留痕 |
 | `tts_concurrency.md` | T2.2 | 实测峰值显存与 RTF ⇒ 回写 `pools.yaml` 的并发值 |
+
+## LLM 密钥存在哪
+
+**两处，环境变量优先**（`config/secrets.yaml` 从不入库）：
+
+| 放哪 | 什么时候用 |
+| --- | --- |
+| WebUI **「设置」面板** → LLM 密钥 → 粘贴 → 保存 | 个人机器（默认用法） |
+| 环境变量 `STUDIO_LLM_API_KEY` | 容器 / CI；**它会盖住面板里那份** |
+
+改完**立刻生效**：网关每次调用现取一次密钥，不需要重启 API 或 4 个 worker。
+面板上写着「环境变量优先」时，说明那份 Key 存在但没生效 —— 去清掉那个环境变量。
+
+```powershell
+uv run studio llm probe        # 逐通道探测（只发只读 GET，不产生一次计费调用）
+```
 
 ## 一页速查
 

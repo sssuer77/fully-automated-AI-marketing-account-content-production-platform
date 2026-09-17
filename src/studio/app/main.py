@@ -7,7 +7,8 @@ T1.7 落 **WS 骨架 + health + logs 分页**；T4.9 补日志过滤 / 搜索 / 
 T4.4 补确认闸与稿件面（`approvals` / `scripts`）；T4.3 补选题面（`topics` / `hot`）；
 T4.2 补总览台（`overview`）；T4.10 补四池控制台（`pools`）；T4.13 补人物库（`persona`）；
 T4.7 补合成配置（`outputs`）；T4.11 补无人值守守护（`watchdog`）；T4.8 补素材库（`assets`）；
-T4.6 补渲染面板（`render`）；T2.9 补配音操作面（`voice`）。
+T4.6 补渲染面板（`render`）；T2.9 补配音操作面（`voice`）；
+T6.1 补设置面板（`settings` —— LLM 通道与密钥的界面化配置）。
 其余面板的 REST 由 T4.x 逐步补上。
 """
 
@@ -35,6 +36,7 @@ from studio.app.routers.pools import router as pools_router
 from studio.app.routers.publish import router as publish_router
 from studio.app.routers.render import router as render_router
 from studio.app.routers.scripts import router as scripts_router
+from studio.app.routers.settings import router as settings_router
 from studio.app.routers.topics import router as topics_router
 from studio.app.routers.voice import router as voice_router
 from studio.app.routers.watchdog import router as watchdog_router
@@ -93,6 +95,7 @@ def create_app(
     application.include_router(pipeline_router)
     application.include_router(voice_router)
     application.include_router(publish_router)
+    application.include_router(settings_router)
     application.include_router(ws_router)
     mount_web_ui(application, resolved.paths)
     return application

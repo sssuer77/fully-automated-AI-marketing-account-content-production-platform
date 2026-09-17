@@ -50,6 +50,7 @@ from studio.core.outputs_store import OutputsStore
 from studio.core.paths import StudioPaths
 from studio.core.persona_store import PersonaStore, get_persona_store
 from studio.core.proto import Severity
+from studio.core.secret_store import SecretStore
 from studio.db import JobStore, ThreadLocalConnections
 from studio.db.models import DirectionRow, TopicRow
 from studio.db.repositories import AuditRepo, DirectionRepo, TopicRepo
@@ -74,6 +75,7 @@ from studio.services.render_job_service import RenderJobService
 from studio.services.review_service import ReviewService
 from studio.services.script_service import ScriptService
 from studio.services.service_manager import ServiceManager
+from studio.services.settings_service import SettingsService
 from studio.services.topic_service import TopicService
 from studio.services.watchdog_service import WatchdogService
 from studio.ws.hub import Hub, HubSettings
@@ -94,6 +96,7 @@ __all__ = [
     "publish_config_for",
     "review_service_for",
     "script_service_for",
+    "settings_service_for",
     "task_snapshot_sql",
     "topic_service_for",
 ]
@@ -143,6 +146,9 @@ class AppState:
     #: （158）——**由 `paths` 现造**，否则 `build_state(paths=tmp)` 里点一次「保存」
     #: 会写进真仓库的那一份。生产里只此一份，没有进程级单例。
     outputs: OutputsStore
+    #: 密钥（设置面板）：`config/secrets.yaml` 的热重载仓库。同样**由 `paths` 现造**。
+    #: 它必须是**网关用的那一个**实例 —— 面板写完、网关读旧的，就是「填了没生效」。
+    secrets: SecretStore
     #: 运行期可改的少量配置（T4.2 起）：`/overview` 的"一键全自动"改的就是它。
     #: **进程内单例**：必须与 `OverviewService` 共享同一个引用，否则改完这一份、
     #: 下一次请求又拿到旧值，面板上就是"改了但没变"。
@@ -230,6 +236,8 @@ def build_state(
         persona=persona,
         persona_events=PersonaBroadcaster(store=persona, hub=hub),
         outputs=outputs,
+        # 密钥与网关共用同一个实例：面板写完、网关下一次调用就取到新的。
+        secrets=SecretStore(paths),
         settings=settings,
         metrics=metrics,
         pump=pump,
@@ -427,6 +435,20 @@ def active_persona() -> PersonaConfig:
     return get_persona_store().current().config
 
 
+def settings_service_for(state: AppState) -> SettingsService:
+    """装配设置面板服务（密钥仓库**必须**是 `state.secrets` 那一个实例）。
+
+    为什么不现造一个：网关用的是 `state.secrets`。现造一份意味着「面板写进 A、
+    网关读 B」—— 症状是「填了 Key 却还说没配」，而两边的代码单看都没错。
+    """
+    return SettingsService(
+        state.paths,
+        state.secrets,
+        audit=AuditRepo(state.connections.get()),
+        log=state.logs.append,
+    )
+
+
 def topic_service_for(state: AppState) -> TopicService:
     """装配选题服务（配置 → 提示词 → 网关 → 三个 Agent）。
 
@@ -442,6 +464,7 @@ def topic_service_for(state: AppState) -> TopicService:
         llm=loaded.bundle.llm,
         paths=state.paths,
         log=_gateway_log_sink(state.logs),
+        secrets=state.secrets.lookup,
     )
     return TopicService(
         connection,
@@ -470,6 +493,7 @@ def script_service_for(state: AppState, *, with_agents: bool = True) -> ScriptSe
         llm=loaded.bundle.llm,
         paths=state.paths,
         log=_gateway_log_sink(state.logs),
+        secrets=state.secrets.lookup,
     )
     return ScriptService(
         connection,

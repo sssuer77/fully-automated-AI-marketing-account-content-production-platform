@@ -64,8 +64,13 @@ __all__ = [
     "LlmGateway",
     "LogSink",
     "ParseFn",
+    "SecretLookup",
     "Sleeper",
 ]
+
+#: 按**环境变量名**取密钥（持久化来源：`config/secrets.yaml`）。
+#: ``None`` ⇒ 只认环境变量（老口径，测试与既有调用方都不受影响）。
+type SecretLookup = Callable[[str], str | None]
 
 logger = get_logger("studio.agents.gateway")
 
@@ -159,6 +164,7 @@ class LlmGateway:
         sleeper: Sleeper | None = None,
         clock: Callable[[], float] = time.monotonic,
         env: Mapping[str, str] | None = None,
+        secrets: SecretLookup | None = None,
     ) -> None:
         self._config = config
         self._transport = transport
@@ -171,6 +177,7 @@ class LlmGateway:
         self._sleep: Sleeper = sleeper or asyncio.sleep
         self._clock = clock
         self._env = env
+        self._secrets = secrets
         self._guards: dict[str, SchemaGuard] = {}
 
     # ── 对外唯一入口 ────────────────────────────────────────────────
@@ -409,11 +416,21 @@ class LlmGateway:
         )
 
     def _api_key(self, profile: LlmProfileConfig) -> str | None:
-        """密钥只在**运行时**从环境变量取（配置里只有变量名，§01.2.4 密钥铁律）。"""
+        """密钥只在**运行时**取：环境变量 > 持久化密钥文件（§01.2.4 密钥铁律）。
+
+        为什么多这一路：面板里填的 Key 落在 ``config/secrets.yaml``，而网关**每次
+        调用都现取一次** —— 填完不需要重启 API 与 4 个 worker。环境变量仍然优先
+        （容器 / CI 的用法，且它要能压过盘上那一份）。
+        """
         if profile.api_key_env is None:
             return None
         source = self._env if self._env is not None else os.environ
-        return source.get(profile.api_key_env) or None
+        value = source.get(profile.api_key_env)
+        if value:
+            return value
+        if self._secrets is None:
+            return None
+        return self._secrets(profile.api_key_env)
 
     def _record(
         self,

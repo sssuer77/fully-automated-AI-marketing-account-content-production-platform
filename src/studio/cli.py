@@ -10,14 +10,12 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import sqlite3
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Annotated, Any
 
-import httpx
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -51,6 +49,7 @@ from studio.core.errors import ErrorCode, StudioError
 from studio.core.paths import StudioPaths
 from studio.core.persona_store import PersonaStore, get_persona_store
 from studio.core.proto import Severity
+from studio.core.secret_store import get_secret_store
 from studio.core.settings import inspect_env_contract
 from studio.db import TopicRepo, connect, discover, doctor_check, footprint, read_applied
 from studio.db import check as db_check
@@ -85,6 +84,7 @@ from studio.services import (
     read_active_script,
 )
 from studio.services.asset_service import DisabledAssets, disabled_assets
+from studio.services.llm_settings_service import probe_profiles
 from studio.services.pipeline_service import SUPPORTED_UNTIL, PipelineReport, run_task
 from studio.services.publish_service import (
     CoverReport,
@@ -1077,7 +1077,7 @@ def llm_probe(
         _fail(exc, json_output)
         raise typer.Exit(code=1) from exc
 
-    rows = asyncio.run(_probe_profiles(loaded.bundle.llm.profiles))
+    rows = asyncio.run(_probe_profiles(loaded.bundle.llm.profiles, paths))
     if json_output:
         console.print_json(data={"profiles": rows, "routing": _routing_rows(loaded.bundle.llm)})
     else:
@@ -1146,41 +1146,18 @@ def llm_budget(
     )
 
 
-async def _probe_profiles(profiles: dict[str, LlmProfileConfig]) -> list[dict[str, Any]]:
-    """并发探测各通道（只发只读 GET；本地走 ``/api/tags``）。"""
-    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-        return [await _probe_one(client, name, profile) for name, profile in sorted(profiles.items())]
+async def _probe_profiles(
+    profiles: dict[str, LlmProfileConfig],
+    paths: StudioPaths,
+) -> list[dict[str, Any]]:
+    """并发探测各通道 —— **委托给服务层**，与设置面板用的是同一份判定。
 
-
-async def _probe_one(client: httpx.AsyncClient, name: str, profile: LlmProfileConfig) -> dict[str, Any]:
-    base = profile.base_url.rstrip("/")
-    row: dict[str, Any] = {
-        "profile": name,
-        "engine": profile.engine,
-        "model": profile.model,
-        "base_url": profile.base_url,
-    }
-    if profile.engine == "ollama":
-        url, headers = f"{base}/api/tags", {}
-        api_key = None
-    else:
-        api_key = os.environ.get(profile.api_key_env) if profile.api_key_env else None
-        if profile.api_key_env and not api_key:
-            return {**row, "status": "no_key", "detail": f"环境变量 {profile.api_key_env} 未设置"}
-        url = f"{base}/models"
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    try:
-        response = await client.get(url, headers=headers)
-    except httpx.HTTPError as exc:
-        return {**row, "status": "unreachable", "detail": f"{type(exc).__name__}: {url}"}
-    if response.status_code >= 400:
-        return {**row, "status": "http_error", "detail": f"HTTP {response.status_code}"}
-    detail = "已连接"
-    if profile.engine == "ollama":
-        payload = response.json()
-        names = [item.get("name") for item in payload.get("models", []) if isinstance(item, dict)]
-        detail = f"本地模型 {len(names)} 个" + (f"（{names[0]}…）" if names else "（尚未 pull 模型）")
-    return {**row, "status": "ok", "detail": detail}
+    为什么不留在这里：面板要显示同一件事（这条通道现在能不能用、缺什么）。
+    两处各写一份判定，迟早出现「命令行说能进、面板说不能」——
+    这个仓库已经踩过同一族的坑（陷阱 #150 / #151）。
+    """
+    rows = await probe_profiles(profiles, get_secret_store(paths))
+    return [row.to_dict() for row in rows]
 
 
 def _routing_rows(llm: object) -> list[tuple[str, str, str]]:

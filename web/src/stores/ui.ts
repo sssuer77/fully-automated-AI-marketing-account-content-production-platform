@@ -17,6 +17,7 @@ export type PanelId =
   | "audit"
   | "personas"
   | "publish"
+  | "settings"
   | "logs";
 
 export interface PanelDef {
@@ -44,6 +45,7 @@ export const PANELS: readonly PanelDef[] = [
   { id: "audit", label: "审计留痕", task: "T4.12", ready: true },
   { id: "personas", label: "人物库", task: "T4.13", ready: true },
   { id: "publish", label: "发布", task: "T5.5", ready: true },
+  { id: "settings", label: "设置", task: "T6.1", ready: true },
 ];
 
 /**

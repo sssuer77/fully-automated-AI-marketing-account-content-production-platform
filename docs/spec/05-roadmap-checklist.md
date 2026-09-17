@@ -164,7 +164,7 @@
            「5 进程全 ready」要等 T2.2 / T2.6 / T3.x / T4.11 ⇒ 顺延 M4
 
 # ── 阶段 T2 · CosyVoice3 配音（9）── 门禁 M2
-[ ] T2.1  tts venv + 权重就位（py3.11 + torch2.4cu121 + revision 留痕 · Q7 核验）
+[x] T2.1  tts venv + 权重就位（py3.11 + torch2.4cu121 + revision 留痕 · Q7 核验）· ✅ 已完成（2026-09-17：权重 21 文件 / 5.23 GB · 真机加载 10.4s / 显存 2.38 GB）
 [ ] T2.2  常驻推理服务 + 并发实测标定（★裁决 C8：默认 1）
 [ ] T2.3  引擎适配层与路由（决策表逐条 + 熔断 + 字幕模式降级）
 [ ] T2.4  原声入库与音色注册（bigbear/littlebear + 质量校验 + R2 合规留档）
@@ -208,11 +208,14 @@
 [x] T5.2  发布适配层与 profile（一线三平台 + dry-run + 选择器集中化 + 标题回读比对）
 [x] T5.3  发布池 + 限频 + 失败转人工（幂等键含 account_id + 不回退任务）· ✅ 已完成（2026-09-17）
 [ ] T5.4  数据回收 + 记忆沉淀闭环（T+1h/6h/24h/72h + auto 回流可消费）
-[ ] T5.5  发布面板（七区块）+ 合规留档 + HandoffAdapter + 发布应急剧本
+[x] T5.5  发布面板（七区块）+ 合规留档 + HandoffAdapter + 发布应急剧本 · ✅ 已完成（2026-09-17）
 [ ] T5.6  定时发布调度（★D7：三模式 + 窗口随机 + next_run_at 持久化 + 到点才建 job）
 [ ] T5.7  数据报告与决策闭环（★D9：七维归因 + insights 置信度 + 人工采纳写回）
 [ ] T5.8  多账号支持与合规留档（★D1：结构支持/默认单账号 + 限频按账号独立）
        >>> M5：定时/即时自动发布（≥1 平台）+ 数据回流 + 报告与决策采纳 + 记忆沉淀闭环
+
+# ── 阶段 T6 · 追加任务（不在原文 50 个任务内 · 不占一期工期）── 无独立门禁
+[x] T6.1  设置面板（LLM 通道与密钥：`config/secrets.yaml` 热重载 + env 优先 + CLI/面板共用探测）· ✅ 已完成（2026-09-17）
 
 # ── 全程（横切）──
 [ ] 每个任务有引用条款编号的契约测试
@@ -223,7 +226,7 @@
 
 ---
 
-## 5.7 高频陷阱对照表（157 条 · 实现期直接查阅）
+## 5.7 高频陷阱对照表（161 条 · 实现期直接查阅）
 
 | # | 现象 | 根因 | 正确做法 | 任务 |
 | --- | --- | --- | --- | --- |
@@ -384,6 +387,10 @@
 | 156 | **夹具里第二条素材静默不入库，报错长得像查询写错了**（`KeyError`） | 跑酷 / BGM 的 `upsert` 按 **sha256 去重**，而夹具里拿一个常量当哈希 | 每条素材派生一个**各不相同**的 sha256；"入库没报错但查不到"先怀疑去重，别先怀疑 SQL | T5.5 |
 | 157 | **连按两下「导出」得到同一个目录，第一份被悄悄换掉** | 打包目录名的时间戳只取到**秒**（`[:15]`），而复制一个小文件远不到一秒 | 时间戳取到毫秒（`[:19]`）；这类坑在**所有**以时间戳命名产物的地方都成立 | T5.5 |
 | 153 | **占位音色造好了、系统却一个都不用**（每个角色都退回进程音色，而盘上躺着两个能用的） | 占位脚本的目录名（`bear_da` / `bear_xiong`）与 `TaskPayload.voice_map` 的默认值（`bigbear` / `littlebear`）**对不上**。症状不是报错，是 `resolve_voice` 静默走 `fallback` —— **只有翻 manifest 才看得见** | 占位件的名字必须与默认映射**一致**（开箱即用是它唯一的价值）；顺带 `ref.txt` 要**一段一行**、音高按**位次**分而不是按名字里的字。`tests/integration/test_voice_profile.py` 从**默认值**出发断言 `source == voice_map`，接不上就红 | T2.4 |
+| 158 | **请求体写错返回 500**，而且**响应里带着刚提交的密钥原文** | `RequestValidationError` handler 把 pydantic `errors()` 原样回显：`ctx` 里的 `ValueError` 对象让 `json.dumps` 抛 `TypeError`（⇒ 500），而 `input` 字段把用户输入抄回响应 | 只保留 `type` / `loc` / `msg`（`ctx` 转字符串），**绝不回显 `input`** | T6.1 |
+| 159 | **照抄上游 `requirements.txt` 会把能跑的环境降级** | CosyVoice 上游锁 `torch==2.3.1`，而本项目是 `torch 2.4.0+cu121`（`D:\Torch` 里的 cp311 wheel） | 单独维护 `tts/requirements-cosyvoice.txt`，**只列推理真正用到的**，**不写 torch / torchaudio** | T2.1 |
+| 160 | **`pip install openai-whisper` 报 `No module named 'pkg_resources'`**；装上了又 `No module named 'matcha'` | ① whisper 的 `setup.py` 用 `pkg_resources`，而 `setuptools>=81` 已删掉它；② `cosyvoice` 依赖 `third_party/Matcha-TTS` | ① `setuptools<81` **且** `--no-build-isolation`；② `PYTHONPATH` **必须同时含** `D:\ai_models\CosyVoice` **和** `...\third_party\Matcha-TTS` | T2.1 |
+| 161 | **`inference_zero_shot` 传张量报错；`torchaudio.save` 报 `Invalid file`** | 该 revision 的第三参是**参考音路径**不是张量；且此环境的 `torchaudio.save` 不可用 | 第三参传**路径**；落盘用 `soundfile.write` | T2.1 |
 
 ---
 

@@ -1145,6 +1145,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/settings/llm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Llm Settings
+         * @description 设置面板首屏：通道卡片 + 路由表 + 密钥状态（**只有掩码**）。
+         */
+        get: operations["get_llm_settings_api_v1_settings_llm_get"];
+        /**
+         * Put Llm Key
+         * @description 保存 / 清除密钥（**先校验、后落盘**：校验不过一个字节都不写）。
+         *
+         *     写完直接回刷新后的整屏 —— 面板不必再发一次 GET（那一次 GET 与这次 PUT 之间的
+         *     窗口里，面板显示的是旧掩码，用户会以为没存上）。
+         */
+        put: operations["put_llm_key_api_v1_settings_llm_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/llm/probe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Probe Llm
+         * @description 按需探测各通道（只发只读 GET，不产生一次计费调用）。
+         *
+         *     与 ``studio llm probe`` 走**同一份**判定（``llm_settings_service``）：
+         *     两处各写一份的话，迟早出现「命令行说能进、面板说不能」。
+         */
+        post: operations["probe_llm_api_v1_settings_llm_probe_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tasks/{task_id}/approve": {
         parameters: {
             query?: never;
@@ -2672,6 +2722,180 @@ export interface components {
              * @default 0
              */
             skipped: number;
+        };
+        /**
+         * LlmKeyModel
+         * @description 密钥的**静态**状态（不发任何请求就能回答）。
+         */
+        LlmKeyModel: {
+            /** Configured */
+            configured: boolean;
+            /** Env Overrides File */
+            env_overrides_file: boolean;
+            /** Env Var */
+            env_var: string;
+            /** File Exists */
+            file_exists: boolean;
+            /** Last Error */
+            last_error: string | null;
+            /** Loaded At */
+            loaded_at: string;
+            /** Masked Key */
+            masked_key: string | null;
+            /** Path */
+            path: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "env" | "file" | "none";
+            /** Source Label */
+            source_label: string;
+            /** Version */
+            version: number;
+        };
+        /**
+         * LlmKeyOutcome
+         * @description 一次写入的结果 = **刷新后的整屏** + 这次做了什么。
+         *
+         *     为什么把整屏带回来：面板写完要立刻显示新状态（掩码、来源、通道能不能用）。
+         *     只回一个 ``changed`` 的话，前端得再发一次 GET —— 那一次 GET 与这一次 PUT 之间
+         *     的窗口里，面板显示的是**旧的**掩码，用户会以为没存上。
+         */
+        LlmKeyOutcome: {
+            /** Changed */
+            changed: boolean;
+            /** Cleared */
+            cleared: boolean;
+            /** Default Profile */
+            default_profile: string;
+            /** Generated At */
+            generated_at: string;
+            key: components["schemas"]["LlmKeyModel"];
+            limits: components["schemas"]["LlmLimitsModel"];
+            /** Notes */
+            notes: string[];
+            /** Profiles */
+            profiles: components["schemas"]["LlmProfileModel"][];
+            /** Reason */
+            reason: string | null;
+            /** Routing */
+            routing: components["schemas"]["LlmRoutingModel"][];
+        };
+        /**
+         * LlmKeyRequest
+         * @description 写 / 清密钥。
+         *
+         *     ``api_key`` 与 ``clear`` **二选一**：都没给 ⇒ 422（不知道你想干嘛），
+         *     都给了 ⇒ 422（"填一把新的"与"删掉"不可能同时成立）。
+         */
+        LlmKeyRequest: {
+            /** Api Key */
+            api_key?: string | null;
+            /**
+             * Clear
+             * @default false
+             */
+            clear: boolean;
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
+         * LlmLimitsModel
+         * @description 密钥长度上下限（唯一真相在 ``secret_store``，前端不抄第二份）。
+         */
+        LlmLimitsModel: {
+            /** Max Len */
+            max_len: number;
+            /** Min Len */
+            min_len: number;
+        };
+        /**
+         * LlmProbeModel
+         * @description 一次探测的全部结果（``ok_count`` 让面板能一句话说结论）。
+         */
+        LlmProbeModel: {
+            /** Generated At */
+            generated_at: string;
+            /** Ok Count */
+            ok_count: number;
+            /** Rows */
+            rows: components["schemas"]["LlmProbeRowModel"][];
+        };
+        /**
+         * LlmProbeRowModel
+         * @description 一条通道的探测结果。
+         */
+        LlmProbeRowModel: {
+            /** Base Url */
+            base_url: string;
+            /** Detail */
+            detail: string;
+            /** Engine */
+            engine: string;
+            /** Model */
+            model: string;
+            /** Profile */
+            profile: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "no_key" | "unreachable" | "http_error";
+        };
+        /**
+         * LlmProfileModel
+         * @description 一条通道的静态状态。
+         */
+        LlmProfileModel: {
+            /** Api Key Env */
+            api_key_env: string | null;
+            /** Base Url */
+            base_url: string;
+            /** Detail */
+            detail: string;
+            /** Engine */
+            engine: string;
+            /** Is Default */
+            is_default: boolean;
+            /** Model */
+            model: string;
+            /** Name */
+            name: string;
+            /** Needs Key */
+            needs_key: boolean;
+            /** Usable */
+            usable: boolean;
+        };
+        /**
+         * LlmRoutingModel
+         * @description 一个 Agent 走哪条通道（只读展示；改它属于 ``llm.yaml``，不在这一屏）。
+         */
+        LlmRoutingModel: {
+            /** Agent */
+            agent: string;
+            /** Fallback */
+            fallback: string | null;
+            /** Profile */
+            profile: string;
+        };
+        /**
+         * LlmSettingsResponse
+         * @description 设置面板首屏（一个请求拿全）。
+         */
+        LlmSettingsResponse: {
+            /** Default Profile */
+            default_profile: string;
+            /** Generated At */
+            generated_at: string;
+            key: components["schemas"]["LlmKeyModel"];
+            limits: components["schemas"]["LlmLimitsModel"];
+            /** Notes */
+            notes: string[];
+            /** Profiles */
+            profiles: components["schemas"]["LlmProfileModel"][];
+            /** Routing */
+            routing: components["schemas"]["LlmRoutingModel"][];
         };
         /**
          * LogPage
@@ -6927,6 +7151,79 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_llm_settings_api_v1_settings_llm_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmSettingsResponse"];
+                };
+            };
+        };
+    };
+    put_llm_key_api_v1_settings_llm_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LlmKeyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmKeyOutcome"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    probe_llm_api_v1_settings_llm_probe_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmProbeModel"];
                 };
             };
         };

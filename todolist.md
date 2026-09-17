@@ -46,13 +46,13 @@
 | E2 | 🔴 **水印 PNG**（1080×1920 适配，带透明通道） | `templates/<tid>/assets/images/watermark.png` | **T3.2 开工前** | 缺失 |
 | E3 | 🔴 **BGM 音乐库**（≥20 首授权曲） | `data/assets/bgm/` 或 WebUI 上传 | T3.6 开工前 | 缺失（`D:\MUSIC` 空） |
 | E4 | 🔴 **熊大熊二原声**（各 2–3 段，10–30s，**无 BGM**） | `data/voice_src/{bigbear,littlebear}/` | **T2.4 开工前** | 占位已就位（2026-09-17 · `scripts/seed_placeholder_assets.py`，**开箱即用**）· **正式原声仍缺** |
-| E5 | 🔴 **CosyVoice 权重**（2–4 GB） | `models/` 或 `D:\ai_models` | **T2.1 开工前** | 缺失（版本基线见 Q7） |
-| E6 | 🟡 **LLM API Key**（[OI] 兼容） | 环境变量 `STUDIO_LLM_API_KEY` | **T1.9 真机联调前** | 未提供（T1.8 代码已用脚本化传输全覆盖，**不阻塞**；`studio llm probe` 会报 `no_key`） |
+| E5 | ✅ **CosyVoice 权重**（2–4 GB） | `models/` 或 `D:\ai_models` | **T2.1 开工前** | **已就位（2026-09-17）** —— `D:\ai_models\modelscope_cache\models\iic--CosyVoice2-0.5B\snapshots\master`，**21 文件 / 5.23 GB**（与远端清单逐条一致）；真机加载 **10.4s / 显存 2.38 GB** |
+| E6 | ✅ **LLM API Key**（[OI] 兼容） | `config/secrets.yaml` **或**环境变量 `STUDIO_LLM_API_KEY`（**env 优先**） | **T1.9 真机联调前** | **已可由面板配置（2026-09-17 · T6.1）** —— 打开「设置」面板填 key 即生效，**不改代码、不重启**；真 key 仍未填 ⇒ `studio llm probe` 报 `no_key`，其余施工照常 |
 | E7 | 🟡 **`config/persona.yaml`**（人设/口吻/受众/口癖/禁区） | `config/persona.yaml` | **随时**（不阻塞） | 缺失（**唯一人工必填**）· T1.9 / T1.10 均已用 `personas/persona_default.yaml` 现值开工；改人物文件即生效（阈值经 `ScriptRules.from_persona`），历史批次可按 `prompt_version` 追溯 |
 | E8 | 🟡 字体文件（中文字幕用） | `templates/<tid>/assets/fonts/` | T3.5 开工前 | 待确认 |
 
 > **不阻塞开发**：E1–E5 缺失时链路仍可跑通（黑屏降级 §04.2.8.6 / 字幕模式降级 §04.3.3），素材到位后自动提升画质。
-> **只有 E5 是硬阻塞**（CosyVoice 权重）。水印缺失 ⇒ **跳过水印照常出片**（可选装饰）；跑酷素材缺失 ⇒ 出纯黑底片。配音在 CosyVoice 到位前走 Windows SAPI。
+> **E5 已解除（2026-09-17）** —— 至此**没有任何外部项是硬阻塞**：权重到位 ⇒ 配音可走 CosyVoice（Windows SAPI 保留为降级档）。水印缺失 ⇒ **跳过水印照常出片**（可选装饰）；跑酷素材缺失 ⇒ 出纯黑底片；E6 未填 ⇒ 面板与 CLI **如实报 `no_key`**，不挡其余链路。
 
 ---
 
@@ -546,7 +546,7 @@
 - ⚠️ 新增陷阱 5 条已并入 §05.7（编号 34–38）：跨控制台 Ctrl-Break 静默失效 / 残留 `.stop` 标志导致「启动后什么都不干」/ 把「端口被占用」报成「已在运行」/ 对 uvicorn 白等优雅退出 / 子进程日志丢失
 - ⚠️ **一期降级现状（T1.12 时实测）**：`api` `ready`；`tts` `server_missing`；`draft`/`voice`/`render` `handler_missing`
   ⇒ 真拉起 5 进程要等 T2.2 / T2.6 / T3.x / T4.11。**2026-09-16 更新**：后三项都已落地（T4.11 / T2.6 / T3.7）
-  ⇒ 只剩 `tts` 报 `server_missing`（T2.2 被 E5 卡着）
+  ⇒ 只剩 `tts` 报 `server_missing`（等 `T2.2` 常驻服务；**E5 权重已于 2026-09-17 就位**）
 - ⚠️ 原文 §7.4 要求 WebUI 与 Worker 完全独立（ADR-002）⇒ 已由「五进程各自 `Popen` + 独立日志 + 只动自己台账」落实
 
 > **>>> M1 门禁**：网页端输入定位 + 热点 ⇒ 产出合格稿件（含评分）⇒ 确认闸可见；`启动.bat` 一键拉起全部服务。
@@ -558,16 +558,25 @@
 ---
 ## 2. 阶段 T2 · CosyVoice 配音（9 任务 → 门禁 M2）
 
-### T2.1 tts venv + 模型权重就位 · **P0** 🔴 需 E5
+### T2.1 tts venv + 模型权重就位 · **P0** ✅ **已完成（2026-09-17）**
 - 依赖：T1.1 ｜ 里程碑：M2 ｜ 契约：§01.4 / §04.3.1
-- [ ] tts venv = **Python 3.11** + torch **2.4.0+cu121**（复用 `D:\Torch` 预置 wheel，**不重装 CUDA Toolkit**）
-- [ ] CosyVoice 源码就位 + **revision 锁定并留痕**
-- [ ] 权重落 `models/` 或 `D:\ai_models`（**不落 C 盘**）
-- [ ] 版本基线：**CosyVoice2-0.5B**（Q7 裁定）；若 CosyVoice3 可下载且接口兼容 ⇒ 只改 `tts.yaml` 的 `model_dir`/`revision` 即可切换
-- [ ] `HF_HOME` / `MODELSCOPE_CACHE` 生效验证（下载过程不写 C 盘）
-- ✅ `uv run --project tts python -c "import torch,cosyvoice;print(torch.__version__,torch.cuda.is_available())"` = `2.4.0+cu121 True`；权重目录可加载
-- ⚠️ **Q7 版本不确定** ⇒ 用适配层隔离，不阻塞 T2.3 开发
+- [x] tts venv = **Python 3.11.15** + torch **2.4.0+cu121**（复用 `D:\Torch` 预置 wheel，**未重装 CUDA Toolkit**）
+- [x] CosyVoice 源码就位 + **revision 锁定并留痕**：`D:\ai_models\CosyVoice` @ `074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc`（2026-05-26）·
+      子模块 Matcha-TTS @ `dd9105b34bf2be2230f4aa1e4769fb586a3c824e`（浅克隆 + 浅子模块）
+- [x] 权重落 `D:\ai_models\modelscope_cache\models\iic--CosyVoice2-0.5B\snapshots\master`（**不落 C 盘**）：
+      **21 文件 / 5.23 GB**，**73 秒**下完，与远端清单逐条一致
+- [x] 版本基线：**CosyVoice2-0.5B**（Q7 裁定）；若 CosyVoice3 可下载且接口兼容 ⇒ 只改 `tts.yaml` 的 `model_dir`/`revision` 即可切换
+- [x] `MODELSCOPE_CACHE` 生效验证（下载全程**未写 C 盘**）
+- [x] 推理依赖清单 **`tts/requirements-cosyvoice.txt`**（**故意不写 torch / torchaudio** —— 裁定 304 / 陷阱 159）
+- ✅ **真机读数**：模型加载 **10.4s** · 显存 **2.38 GB** · 合成一句 13 字中文 **8.4s → 7.72s 音频（RTF 1.09）**
+      · 采样率 24000 · 输出 RMS 0.0071 / peak 0.0757（**非静音**）；样音留档 `data/output/voice/_cosyvoice2_smoke_bigbear.wav`
+- ✅ 环境自检：`.\tts\.venv\Scripts\python.exe -c "import torch;print(torch.__version__, torch.cuda.is_available())"` ⇒ `2.4.0+cu121 True`；权重目录**可加载**（真机 smoke 见上）
+      · `cosyvoice` **未装进 venv**，走 `PYTHONPATH` 指向源码目录（陷阱 160 的双路径要求）
+- ⚠️ 已知**非故障**：`onnxruntime` 跑 CPU（未装 `onnxruntime-gpu`）；无 `ttsfrd` 前端（走内置 normalize，符合 T2.5 取舍）
 - ⚠️ 禁用 bf16（Turing sm_75 不支持）
+- ⚠️ 陷阱 159（上游 requirements 写死 torch 2.3.1）· 160（`openai-whisper` 要 `pkg_resources`）· 161（`inference_zero_shot` 第三参是路径）
+- **施工裁定（本轮新增 304）**：
+  - **304** **不照抄上游 `requirements.txt`**，单独维护 `tts/requirements-cosyvoice.txt`：上游锁 `torch==2.3.1`，与本项目已验证的 `2.4.0+cu121` 冲突 —— 照单全收等于把一个能跑的环境换成另一个要重新验证的环境
 
 ### T2.2 常驻推理服务 + 并发实测标定 · **P0**
 - 依赖：T2.1 ｜ 里程碑：M2 ｜ 契约：§04.3.5 / 裁决 C8
@@ -596,7 +605,7 @@
 - [x] 质量校验的**四条硬拒**：段数 2–3 / 单段 10–30s / 无削波（峰值 ≤ −1.0 dBFS）/ 采样率 ≥ 16 kHz
 - [ ] 质量校验的三条 `warn`：无 BGM / 有效语音占比 ≥ 70% / 单发言人 —— **本轮刻意不做**（裁定 287）
 - [x] 入库命令 `scripts/ingest_voice_src.py`：扫目录 → 体检 → 写 `voice_profiles`（判定不重写，见裁定 289）
-- [ ] 零样本复刻注册 + **试听样本生成** —— 注册已通（库里有行 ⇒ `usable_voices` 选得到）；试听样本卡 E5（要引擎）
+- [ ] 零样本复刻注册 + **试听样本生成** —— 注册已通（库里有行 ⇒ `usable_voices` 选得到）；试听样本待 `T2.2`/`T2.3`（**E5 权重已就位**，差的是常驻引擎）
 - [x] **R2 合规**：音色 ID 与展现名**解耦**（`voice_map` 可换，配音面板可操作，**不用改代码**）
 - [x] 来源登记留档（`proof_path` ← 目录里的 `profile.json`）
 - ✅ **验收命令**（规格里的 `studio tts list` **不存在**，口径改如下 —— 裁定 288）：
@@ -1679,6 +1688,30 @@
 
 ---
 
+## T6. 追加任务（不在原文 50 个任务内 · **不占一期工期**）
+
+### T6.1 设置面板（LLM 通道与密钥）· **P1**（**已交付 2026-09-17**）
+- 依赖：T1.8 ｜ 里程碑：—（服务 M1 真机联调）｜ 契约：§01.4 / §04.2
+- [x] `core/secret_store.py`：`SecretStore`（mtime **热重载** · 原子落盘 · **env > 文件** · 写坏则沿用上一份可用值）
+      + `mask_secret` / `validate_api_key`（min 8 / max 512）
+- [x] 落盘位置 **`config/secrets.yaml`（不入库）**，`config/secrets.example.yaml` 给模板（裁定 300）
+- [x] `services/llm_settings_service.py`：探测判定收口（`probe_profiles` / `probe_one` / `profile_cards`）
+- [x] `services/settings_service.py`：读 / 写 / 探测 + `audit_ops` + 日志（明文密钥不出这一层，审计只记掩码）
+- [x] REST：`GET|PUT /api/v1/settings/llm` · `POST /api/v1/settings/llm/probe`（`app/routers/settings.py` + `app/schemas/settings.py`）；写密钥走 **PUT**（幂等替换），清除走同一端点的 `clear=true`
+- [x] WebUI：`web/src/views/Settings.vue` + `stores/settings.ts` + `api/endpoints/settings.ts`；`stores/ui.ts` 的 `settings` 置 `ready: true`；`api/http.ts` 新增 `apiPut`；契约再生成
+- [x] 顺手修一个**真 bug**：`app/errors.py` 原样回显 pydantic `errors()` ⇒ 请求体写错变 **500**，且把刚提交的密钥抄回 422 响应（裁定 302 / 陷阱 158）
+- ✅ `pytest tests/unit/core/test_secret_store.py tests/integration/test_settings_api.py -q` 全绿；面板改 key ⇒ **立即生效**（热重载，与网关**同一个 `SecretStore` 实例**），`POST .../probe` 回卡片状态
+- ⚠️ **不硬编码密钥**、**不在面板保存时回写环境变量**（裁定 300）：env 只是**优先级更高**的来源，不是保存目标
+- ⚠️ 表单校验失败 ⇒ `VALIDATION_FAILED`（422）；`CONFIG_INVALID`（400）留给「启动时读到坏配置」（裁定 301）
+- ⚠️ 陷阱 158
+- **施工裁定（本轮新增 300–303）**：
+  - **300** 密钥存 `config/secrets.yaml`（**不入库**），环境变量**优先**；面板保存**不**回写环境变量 —— 回写会让「我以为改了、其实只是这个进程改了」变成下一个人踩的坑
+  - **301** 表单校验失败 ⇒ `VALIDATION_FAILED`（422）；`CONFIG_INVALID`（400）**专指**「启动时读到一份坏配置」 —— 两者混用会让用户看着 400 去改一个根本没写错的字段
+  - **302** 请求体校验错误**不回显 `input`**，`ctx` 里的异常对象**转字符串**：原样回显既会 500，又等于把密钥抄进响应体（本文件上面那条分支早就写着「请求内容不进响应体」）
+  - **303** 探测判定收进 `llm_settings_service`，**CLI 与 REST 共用一份** —— 否则会出现「命令行说能进、面板说不能」这种两边都自洽的假矛盾（与陷阱 #150 / #151 同族）
+
+---
+
 ## 6. 横切任务（贯穿全程，每个任务都要满足）
 
 - [ ] **契约先行**：每个任务有引用 `§` 条款编号的契约测试
@@ -1759,14 +1792,16 @@ T1.12 ✅             （一键启动）
 | 阶段 | 任务数 | 已完成 | 里程碑 | 门禁状态 |
 | --- | --- | --- | --- | --- |
 | **T1** 基座 + 脚手架 + 选题池 | 12 | **12**（T1.1–T1.12 全部 ✅） | M1 | [ ] |
-| **T2** CosyVoice 配音 | 9 | **5**（T2.5 ✅ T2.6 ✅ T2.7 ✅ T2.8 ✅ T2.9 ✅）+ **1 部分**（T2.4 🔶） | M2 | [ ] |
+| **T2** CosyVoice 配音 | 9 | **6**（**T2.1 ✅** T2.5 ✅ T2.6 ✅ T2.7 ✅ T2.8 ✅ T2.9 ✅）+ **1 部分**（T2.4 🔶） | M2 | [ ] |
 | **T3** 渲染（一期单遍合成） | 7 | **4**（T3.2 ✅ T3.5 ✅ T3.6 ✅ T3.7 ✅）+ **3 部分**（T3.1 🔶 T3.3 🔶 T3.4 🔶） | M3 | [ ] |
 | **T4** 操作台 + 四池 + 无人值守 | 14 | **14**（T4.1 ✅ T4.2 ✅ T4.3 ✅ T4.4 ✅ **T4.5 ✅** T4.6 ✅ T4.7 ✅ T4.8 ✅ T4.9 ✅ T4.10 ✅ T4.11 ✅ T4.12 ✅ T4.13 ✅ **T4.14 ✅** —— **T4 齐了**） | M4 | [ ] |
-| **T5** 发布 + 定时 + 报告 | 8 | **3**（T5.1 ✅ T5.2 ✅ **T5.3 ✅**） | M5 | [ ] |
-| **合计（一期）** | **50** | **38**（另有 **4** 项部分完成） | — | — |
+| **T5** 发布 + 定时 + 报告 | 8 | **4**（T5.1 ✅ T5.2 ✅ T5.3 ✅ **T5.5 ✅**） | M5 | [ ] |
+| **T6** 追加任务（设置面板） | 1 | **1**（T6.1 ✅） | — | *不占一期工期* |
+| **合计（一期）** | **50** | **40**（另有 **4** 项部分完成） | — | — |
 | *T3-P1…T3-P4* | *4（二期）* | *0* | — | *不占一期工期* |
 
-**外部阻塞项**：E1 跑酷素材 🔴 / E2 水印 PNG 🔴 / E3 BGM 🔴 / E4 原声 🔴 / E5 CosyVoice 权重 🔴 / E6 LLM Key 🟡（T1.9 真机联调前，不阻塞编码）/ E7 persona 🟡 / E8 字体 🟡
+**外部阻塞项**：E1 跑酷素材 🔴 / E2 水印 PNG 🔴 / E3 BGM 🔴 / E4 原声 🔴 / ~~E5 CosyVoice 权重~~ ✅ **已就位 2026-09-17** / ~~E6 LLM Key~~ ✅ **面板可配 2026-09-17** / E7 persona 🟡 / E8 字体 🟡
+> ⇒ **当前无任何硬阻塞**：上表 🔴 四项只影响各自任务的真机验收（黑屏 / 无水印 / 无 BGM / 占位音色），不挡开发推进。
 
 > **「部分完成」口径（2026-09-17 核对）**：总表只把**整块做完**的任务计进「已完成」；主干已落地、但仍有明确缺口
 > 的记作 **🔶 部分完成**（未做的子项在任务块里逐条标 `[ ]` 并写了理由与落点）—— **不计入**「已完成」，也**不算未开工**。
@@ -1780,9 +1815,9 @@ T1.12 ✅             （一键启动）
 >
 > 注 2：**M1 仍未算过**（T1.12 裁定 108）：一键启动已可用，但「5 进程全 ready」只差 `tts`（T2.2）——
 > `draft`（T4.11）· `voice`（T2.6）· `render`（T3.7）都已注册真实 handler ⇒ 2026-09-16 实测 `spawned = api/draft/voice/render`。
-> ⇒ M1 的验收口径 = 「`api` ready + 其余**如实报降级**且不阻塞」。T2.1 起被 E5（CosyVoice 权重）硬阻塞 ⇒ **已先做 T4.1**（前端脚手架，P1，无外部依赖，2026-09-14 ✅）。
+> ⇒ M1 的验收口径 = 「`api` ready + 其余**如实报降级**且不阻塞」。**E5（CosyVoice 权重）已于 2026-09-17 就位** ⇒ `T2.1` ✅，剩下的只是 `T2.2` 常驻服务；当初为绕开它先做了 T4.1（前端脚手架，P1，2026-09-14 ✅）。
 >
-> 注 3：**下一批可开工任务**（依赖已满足，不碰 E1–E5）——
+> 注 3：**下一批可开工任务**（依赖已满足）——
 > ① ~~`T2.5` 文本归一化与切分~~ ⇒ **已完成（2026-09-15）**，见上方任务块。
 > ② **`T3.1` 素材入库补全**（P0 · 依赖 T1.3 ✅）：T4.8 已建好扫盘 / sha256 / 时长 / 响度 / 缩略图 / 入库主干，**缺口** = pHash + 帧哈希、黑帧段落排除、`studio assets ingest --kind parkour|bgm` CLI、`tests/integration/test_broll_ingest.py`；E1/E3 用 `scripts/seed_placeholder_assets.py` 的占位素材撑门禁。
 > ③ ~~`T3.2` 水印资产与合成 profile~~ ⇒ **已完成**（水印参数模型 / PNG 实测 / 编译期摆放 / `studio render profile --show` / `tests/unit/render/test_watermark.py`）。**硬门禁被推翻**：水印缺失改为**跳过水印层**，成片优先（理由见 `render/watermark.py` 的模块注释）。
@@ -1818,16 +1853,16 @@ T1.12 ✅             （一键启动）
 > ⑮ ~~**第一支 MP4 端到端打通**~~ ⇒ **已完成（2026-09-17）**：文案 → 配音 → 渲染出片整条链路真机跑通
 > （隔离家目录 · 真 SAPI · 真 ffmpeg · 1080×1920 h264 + aac · 16.3 MB · 23.63s · 4 句 0 降级），
 > 见 `T2.4` 任务块的「端到端真机出片」一段。顺带修掉一个**会让成片没人声**的回归（裁定 290–292 / 陷阱 #154）。
-> ⑯ **下一件待你定**：①把 `publish` 进程接进 supervisor（裁定 274 的收尾 —— 面板已落地，
-> 现在接进去就是"面板能看、进程能起"）；②`T5.4` 数据回收（T+1h/6h/24h/72h 采集 ——
-> 面板的「数据回流」区块现在只有时刻表、没有数字，缺的正是它）；③补 `T3.1` 素材入库缺口
-> （pHash / 黑帧 / `assets ingest` CLI —— 你已明确降级为**非核心**）；
-> ④按你的新要求另开（`T2.1–T2.4` 仍被 E5 权重硬阻塞）。
+> ⑰ ~~**设置面板（LLM 通道与密钥）**~~ ⇒ **已完成（2026-09-17 · T6.1）**：密钥不再需要改代码或配环境变量，打开「设置」面板填即生效（`config/secrets.yaml`，**不入库**，env 优先）；
+> 探测判定 CLI 与面板**共用一份**（裁定 300–303）。
+> ⑱ ~~**E5 CosyVoice 权重**~~ ⇒ **已就位（2026-09-17）**：源码 revision 锁定 + 权重 21 文件 / 5.23 GB + 真机合成读数（加载 10.4s / 显存 2.38 GB / 13 字 8.4s → 7.72s 音频），见 `T2.1` 任务块。
+> ⑲ **下一件待你定**：①起 `T2.2` 常驻推理服务（权重已就位 —— 这是把 CosyVoice 从「能加载」变成「能持续供片」的那一步）；
+> ②把 `publish` 进程接进 supervisor（裁定 274 的收尾 —— 面板已落地，接进去就是「面板能看、进程能起」）；
+> ③`T5.4` 数据回收（面板「数据回流」区块现在只有时刻表、没有数字，缺的正是它）；
+> ④补 `T3.1` 素材入库缺口（pHash / 黑帧 / `assets ingest` CLI —— 你已明确降级为**非核心**）。
 >
-> **`T2.3`（CosyVoice 引擎路由）仍被 T2.1/E5 卡着**，但不阻塞 T2.8 —— T2.6 自带最小引擎缝，当前跑 Windows SAPI。
->
-> **②③ 之后全线硬阻塞**：`T2.1`（E5 权重）⇒ T2.2–T2.9 ⇒ `T3.3`（时间轴 ✅，可直接开工）⇒ T3.4–T3.7 ⇒ `T4.6` 与 `T5.1` 起全部；`T4.5` 另需 T2.9。
-> ⇒ **E5（CosyVoice 权重）与 E2（水印 PNG）仍是关键路径瓶颈**，其余外部项只影响各自任务的真机验收。
+> **当前关键路径**：`T2.1 ✅` ⇒ **`T2.2`（常驻服务）→ T2.3（引擎路由）→ T2.4 正式音色** ⇒ `T3.3`（时间轴 ✅，可直接开工）⇒ T3.4–T3.7 ⇒ `T4.6` 与 `T5.1` 起全部。
+> ⇒ **没有任何硬阻塞**；E1/E2/E3/E4 只影响各自任务的真机验收，**不影响开发推进**。
 >
 > 注 4：**口吻 / 受众 / 禁区是数据，不是代码**（本轮的明确要求，现状核对如下）——
 > - **落在哪**：`config/personas/<id>.yaml` 的 `tone` / `audience` / `forbidden`（外加 `catchphrases` / `role_desc` / `style_hint` / 篇幅阈值）；
@@ -1985,7 +2020,11 @@ T1.12 ✅             （一键启动）
 | 155 | **交付包缺件那一行只有「缺」两个字，没有补救说明** | `build_package` 的兜底条件写成 `source is not None and not source.is_file()` —— "路径根本没给"（还没渲染 / 还没生成封面）走不到兜底，`note` 留在 `None` | 判据改成"**这一件不在盘上**就兜底"；"路径没给"与"路径给了但文件没了"都算缺（后者用更具体的那句话，**不覆盖**它）。这条是**写测试时才发现的** | T5.5 |
 | 156 | **夹具里第二条素材静默不入库，报错长得像查询写错了**（`KeyError`） | 跑酷 / BGM 的 `upsert` 按 **sha256 去重**（同一条素材重复入库 ⇒ 跳过），而夹具里拿一个常量当哈希 | 每条素材派生一个**各不相同**的 sha256（`sha256(clip_id)`）。"入库没报错但查不到"先怀疑去重，别先怀疑 SQL | T5.5 |
 | 157 | **连按两下「导出」得到同一个目录，第一份被悄悄换掉** | 打包目录名的时间戳只取到**秒**（`now_iso()` 变换后 `[:15]`），而复制一个小文件远不到一秒 | 时间戳取到毫秒（`[:19]`）。"两个动作落进同一个名字"在**所有**以时间戳命名产物的地方都成立 | T5.5 |
-> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 157 条见该处；跨文档引用按编号即可）。
+| 158 | **请求体写错返回 500**，而且**响应里带着刚提交的密钥原文** | `RequestValidationError` handler 把 pydantic `errors()` 原样回显：`ctx` 里的 `ValueError` 对象让 `json.dumps` 抛 `TypeError`（⇒ 500），而 `input` 字段把用户输入抄回响应 | 只保留 `type` / `loc` / `msg`（`ctx` 转字符串），**绝不回显 `input`** | T6.1 |
+| 159 | **照抄上游 `requirements.txt` 会把能跑的环境降级** | CosyVoice 上游锁 `torch==2.3.1`，而本项目是 `torch 2.4.0+cu121`（`D:\Torch` 里的 cp311 wheel） | 单独维护 `tts/requirements-cosyvoice.txt`，**只列推理真正用到的**，**不写 torch / torchaudio**（由 `tts/pyproject.toml` 负责，依赖想升级会被 uv 拦住） | T2.1 |
+| 160 | **`pip install openai-whisper` 报 `No module named 'pkg_resources'`**；装上了又 `No module named 'matcha'` | ① whisper 的 `setup.py` 用 `pkg_resources`，而 `setuptools>=81` 已删掉它；② `cosyvoice` 依赖 `third_party/Matcha-TTS` | ① `setuptools<81` **且** `--no-build-isolation`；② `PYTHONPATH` **必须同时含** `D:\ai_models\CosyVoice` **和** `...\third_party\Matcha-TTS`（缺后者报 `matcha`） | T2.1 |
+| 161 | **`inference_zero_shot` 传张量报错；`torchaudio.save` 报 `Invalid file`** | 该 revision 的第三参是**参考音路径**不是张量；且此环境的 `torchaudio.save` 不可用 | 第三参传**路径**；落盘用 `soundfile.write` | T2.1 |
+> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 161 条见该处；跨文档引用按编号即可）。
 
 ---
 

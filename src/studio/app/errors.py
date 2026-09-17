@@ -117,6 +117,37 @@ def install_error_handlers(app: FastAPI) -> None:
         error = StudioError(
             "请求参数不合法",
             code=ErrorCode.VALIDATION_FAILED,
-            context={"errors": exc.errors()},
+            context={"errors": _jsonable_errors(exc)},
         )
         return JSONResponse(status_code=status_for(error.code), content=error.to_dict())
+
+
+def _jsonable_errors(exc: RequestValidationError) -> list[dict[str, object]]:
+    """把 pydantic 的错误列表压成**一定能 JSON 化**的形状。
+
+    两件事各修一个坑，都不能省
+    --------------------------
+    ① **``ctx`` 里可能是异常对象**。``model_validator`` 里 ``raise ValueError(...)``
+       时，pydantic 把**那个异常本身**塞进 ``ctx.error``。``JSONResponse`` 走
+       ``json.dumps``，遇到它就抛 ``TypeError: Object of type ValueError is not
+       JSON serializable`` —— 于是「请求体写错了」这件小事变成 **500**，而前端
+       拿到的是「服务器崩了」，完全看不出该改哪个字段。
+    ② **``input`` 是用户刚提交的原文**。原样回显出去，等于把请求体抄进响应
+       —— 而密钥端点提交的正是密钥本身。本文件上面那条 ``StudioError`` 分支
+       早就写着「请求内容不进响应体」，这里必须同一条口径。
+
+    只保留三样：``type`` / ``loc`` / ``msg``（外加 ``ctx`` 里那些标量的文本形式）
+    —— 它们足够让人知道「哪个字段、为什么不行」，而不带任何原文。
+    """
+    rows: list[dict[str, object]] = []
+    for item in exc.errors():
+        row: dict[str, object] = {
+            "type": str(item.get("type", "")),
+            "loc": [str(part) for part in item.get("loc", ())],
+            "msg": str(item.get("msg", "")),
+        }
+        raw_ctx = item.get("ctx")
+        if isinstance(raw_ctx, dict) and raw_ctx:
+            row["ctx"] = {str(key): str(value) for key, value in raw_ctx.items()}
+        rows.append(row)
+    return rows

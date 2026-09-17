@@ -1,0 +1,194 @@
+"""设置面板的服务层（LLM 通道与密钥）。
+
+分层与人物库同一条
+------------------
+``router`` 只做「HTTP ↔ dict」，判定与落盘都在这里，审计与日志的写法也在这里。
+这样 CLI（``studio llm probe``）与 REST 走的是**同一份**判定，不会出现
+「命令行说能进、面板说不能」（陷阱 #150 / #151 是同一族）。
+
+三条硬规矩
+----------
+1. **明文密钥不出这个模块**：回给 REST 的形状里只有掩码，审计的 ``before/after``
+   里也只有掩码。要显示就显示掩码，没有第二条路。
+2. **审计失败不回滚**：文件已经写完了，这时回滚等于「把用户刚填好的 Key 又删掉」。
+   只能记账（与 ``persona_service`` 同一条）。
+3. **没变就不留痕**：填了同一把 Key ⇒ ``changed=false``，不写盘也不写审计 ——
+   不假装做了一次操作，也不给审计表灌噪音。
+"""
+
+from __future__ import annotations
+
+from typing import Any, Final
+
+from studio.core.clock import format_iso, utc_now
+from studio.core.config import load_config
+from studio.core.logging import get_logger
+from studio.core.paths import StudioPaths
+from studio.core.secret_store import (
+    API_KEY_MAX_LEN,
+    API_KEY_MIN_LEN,
+    LLM_API_KEY_ENV,
+    SecretStore,
+    mask_secret,
+)
+from studio.db.repositories import AuditRepo
+from studio.services.llm_settings_service import key_source_label, probe_profiles, profile_cards
+
+__all__ = ["LOG_SOURCE", "SettingsService"]
+
+logger = get_logger("studio.settings")
+
+#: 日志的 ``source`` 字段
+LOG_SOURCE: Final[str] = "settings"
+
+
+class SettingsService:
+    """设置面板的读写入口。
+
+    :param store: 密钥热重载仓库（由 ``AppState`` 持有 —— 与网关**同一个实例**，
+        否则「面板写完、网关还读旧的」）
+    :param audit: ``audit_ops`` 仓储（``None`` ⇒ 不写留痕，单测可以直接省掉）
+    :param log: 日志出口（``None`` ⇒ 不落日志）
+    """
+
+    def __init__(
+        self,
+        paths: StudioPaths,
+        store: SecretStore,
+        *,
+        audit: AuditRepo | None = None,
+        log: Any = None,
+    ) -> None:
+        self._paths = paths
+        self._store = store
+        self._audit = audit
+        self._log = log
+
+    # ── 读 ──────────────────────────────────────────────────────────────
+
+    def read(self) -> dict[str, Any]:
+        """一次读全：通道卡片 + 路由表 + 密钥状态 + 上下限。"""
+        llm = load_config(self._paths).bundle.llm
+        return {
+            "generated_at": format_iso(utc_now()),
+            "default_profile": llm.default_profile,
+            "profiles": [card.to_dict() for card in profile_cards(llm, self._store)],
+            "routing": [
+                {"agent": agent, "profile": route.profile, "fallback": route.fallback}
+                for agent, route in sorted(llm.routing.items())
+            ],
+            "key": self._key_view(),
+            "limits": {"min_len": API_KEY_MIN_LEN, "max_len": API_KEY_MAX_LEN},
+            "notes": self._notes(),
+        }
+
+    def _key_view(self) -> dict[str, Any]:
+        snapshot = self._store.snapshot()
+        source = self._store.source()
+        return {
+            "configured": self._store.api_key() is not None,
+            "masked_key": self._store.masked(),
+            "source": source,
+            "source_label": key_source_label(source),
+            "env_var": LLM_API_KEY_ENV,
+            "path": str(self._store.path),
+            "file_exists": snapshot.exists,
+            "version": snapshot.version,
+            "loaded_at": snapshot.loaded_at,
+            "last_error": self._store.last_error,
+            "env_overrides_file": self._store.env_api_key() is not None,
+        }
+
+    def _notes(self) -> list[str]:
+        """面板要说、但不构成错误的话。
+
+        「环境变量优先」必须说出来：不说的话，用户在面板里填完、发现**没生效**
+        （因为环境变量还占着位置），会以为这个面板坏了 —— 而他其实只需要去
+        环境变量那边改。这类「静默不生效」正是本仓库反复钉的那一类 bug。
+        """
+        notes: list[str] = []
+        if self._store.env_api_key() is not None:
+            notes.append(
+                f"环境变量 {LLM_API_KEY_ENV} 已设置，它**优先于**本文件；"
+                "在这里保存的密钥要等那个环境变量清掉之后才生效"
+            )
+        error = self._store.last_error
+        if error is not None:
+            notes.append(f"密钥文件读不出来（正在沿用上一份可用值）：{error}")
+        return notes
+
+    # ── 写 ──────────────────────────────────────────────────────────────
+
+    def write_key(
+        self,
+        *,
+        api_key: str | None = None,
+        clear: bool = False,
+        reason: str | None = None,
+        source: str = "webui",
+    ) -> dict[str, Any]:
+        """写入 / 清除密钥（**先校验、后落盘**；校验不过一个字节都不写）。"""
+        change = self._store.set_api_key(None if clear else api_key, reason=reason)
+        action = "settings.llm_key_cleared" if clear else "settings.llm_key_set"
+        if change.changed:
+            self._record(
+                action=action,
+                change_before=change.before.api_key,
+                change_after=change.after.api_key,
+                reason=reason,
+                source=source,
+            )
+        return {
+            **self.read(),
+            "changed": change.changed,
+            "cleared": clear,
+            "reason": reason,
+        }
+
+    def _record(
+        self,
+        *,
+        action: str,
+        change_before: str | None,
+        change_after: str | None,
+        reason: str | None,
+        source: str,
+    ) -> None:
+        """先落盘（调用方已做完）→ 再留痕 → 再写日志。两处失败都不许静默。"""
+        if self._audit is not None:
+            try:
+                self._audit.record(
+                    actor="user",
+                    action=action,
+                    target_type="config",
+                    target_id="secrets.llm.api_key",
+                    before={"masked_key": mask_secret(change_before)},
+                    after={"masked_key": mask_secret(change_after)},
+                    reason=reason,
+                    source=source,
+                )
+            except Exception:  # 密钥已经落盘：这里只能记账，不能回滚文件
+                logger.exception("settings.audit_failed", action=action)
+        if self._log is not None:
+            self._log(
+                level="info",
+                source=LOG_SOURCE,
+                message=f"LLM 密钥已更新（{mask_secret(change_after) or '已清除'}）",
+                payload={
+                    "action": action,
+                    "reason": reason,
+                    "masked_key": mask_secret(change_after),
+                },
+            )
+
+    # ── 探测 ────────────────────────────────────────────────────────────
+
+    async def probe(self) -> dict[str, Any]:
+        """按需探测各通道（**只发只读 GET**，不产生一次计费调用）。"""
+        llm = load_config(self._paths).bundle.llm
+        rows = await probe_profiles(llm.profiles, self._store)
+        return {
+            "generated_at": format_iso(utc_now()),
+            "rows": [row.to_dict() for row in rows],
+            "ok_count": sum(1 for row in rows if row.status == "ok"),
+        }

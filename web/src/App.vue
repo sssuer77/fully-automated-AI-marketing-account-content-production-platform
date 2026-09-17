@@ -18,6 +18,7 @@ import Pools from "@/views/Pools.vue";
 import Publish from "@/views/Publish.vue";
 import Renders from "@/views/Renders.vue";
 import Scripts from "@/views/Scripts.vue";
+import Settings from "@/views/Settings.vue";
 import Topics from "@/views/Topics.vue";
 import Voices from "@/views/Voices.vue";
 
@@ -41,6 +42,7 @@ const VIEWS: Partial<Record<PanelId, Component>> = {
   audit: Audit,
   personas: Personas,
   publish: Publish,
+  settings: Settings,
 };
 
 const activeView = computed(() => VIEWS[ui.activePanel] ?? null);

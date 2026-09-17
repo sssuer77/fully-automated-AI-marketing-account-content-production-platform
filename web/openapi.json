@@ -3037,6 +3037,441 @@
         "title": "ImportResult",
         "type": "object"
       },
+      "LlmKeyModel": {
+        "additionalProperties": false,
+        "description": "密钥的**静态**状态（不发任何请求就能回答）。",
+        "properties": {
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "env_overrides_file": {
+            "title": "Env Overrides File",
+            "type": "boolean"
+          },
+          "env_var": {
+            "title": "Env Var",
+            "type": "string"
+          },
+          "file_exists": {
+            "title": "File Exists",
+            "type": "boolean"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "loaded_at": {
+            "title": "Loaded At",
+            "type": "string"
+          },
+          "masked_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Masked Key"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "env",
+              "file",
+              "none"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "source_label": {
+            "title": "Source Label",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "configured",
+          "masked_key",
+          "source",
+          "source_label",
+          "env_var",
+          "path",
+          "file_exists",
+          "version",
+          "loaded_at",
+          "last_error",
+          "env_overrides_file"
+        ],
+        "title": "LlmKeyModel",
+        "type": "object"
+      },
+      "LlmKeyOutcome": {
+        "additionalProperties": false,
+        "description": "一次写入的结果 = **刷新后的整屏** + 这次做了什么。\n\n为什么把整屏带回来：面板写完要立刻显示新状态（掩码、来源、通道能不能用）。\n只回一个 ``changed`` 的话，前端得再发一次 GET —— 那一次 GET 与这一次 PUT 之间\n的窗口里，面板显示的是**旧的**掩码，用户会以为没存上。",
+        "properties": {
+          "changed": {
+            "title": "Changed",
+            "type": "boolean"
+          },
+          "cleared": {
+            "title": "Cleared",
+            "type": "boolean"
+          },
+          "default_profile": {
+            "title": "Default Profile",
+            "type": "string"
+          },
+          "generated_at": {
+            "title": "Generated At",
+            "type": "string"
+          },
+          "key": {
+            "$ref": "#/components/schemas/LlmKeyModel"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/LlmLimitsModel"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/LlmProfileModel"
+            },
+            "title": "Profiles",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "routing": {
+            "items": {
+              "$ref": "#/components/schemas/LlmRoutingModel"
+            },
+            "title": "Routing",
+            "type": "array"
+          }
+        },
+        "required": [
+          "generated_at",
+          "default_profile",
+          "profiles",
+          "routing",
+          "key",
+          "limits",
+          "notes",
+          "changed",
+          "cleared",
+          "reason"
+        ],
+        "title": "LlmKeyOutcome",
+        "type": "object"
+      },
+      "LlmKeyRequest": {
+        "additionalProperties": false,
+        "description": "写 / 清密钥。\n\n``api_key`` 与 ``clear`` **二选一**：都没给 ⇒ 422（不知道你想干嘛），\n都给了 ⇒ 422（\"填一把新的\"与\"删掉\"不可能同时成立）。",
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "clear": {
+            "default": false,
+            "title": "Clear",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "LlmKeyRequest",
+        "type": "object"
+      },
+      "LlmLimitsModel": {
+        "additionalProperties": false,
+        "description": "密钥长度上下限（唯一真相在 ``secret_store``，前端不抄第二份）。",
+        "properties": {
+          "max_len": {
+            "title": "Max Len",
+            "type": "integer"
+          },
+          "min_len": {
+            "title": "Min Len",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "min_len",
+          "max_len"
+        ],
+        "title": "LlmLimitsModel",
+        "type": "object"
+      },
+      "LlmProbeModel": {
+        "additionalProperties": false,
+        "description": "一次探测的全部结果（``ok_count`` 让面板能一句话说结论）。",
+        "properties": {
+          "generated_at": {
+            "title": "Generated At",
+            "type": "string"
+          },
+          "ok_count": {
+            "title": "Ok Count",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/LlmProbeRowModel"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "generated_at",
+          "rows",
+          "ok_count"
+        ],
+        "title": "LlmProbeModel",
+        "type": "object"
+      },
+      "LlmProbeRowModel": {
+        "additionalProperties": false,
+        "description": "一条通道的探测结果。",
+        "properties": {
+          "base_url": {
+            "title": "Base Url",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "engine": {
+            "title": "Engine",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "no_key",
+              "unreachable",
+              "http_error"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile",
+          "engine",
+          "model",
+          "base_url",
+          "status",
+          "detail"
+        ],
+        "title": "LlmProbeRowModel",
+        "type": "object"
+      },
+      "LlmProfileModel": {
+        "additionalProperties": false,
+        "description": "一条通道的静态状态。",
+        "properties": {
+          "api_key_env": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Env"
+          },
+          "base_url": {
+            "title": "Base Url",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "engine": {
+            "title": "Engine",
+            "type": "string"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "needs_key": {
+            "title": "Needs Key",
+            "type": "boolean"
+          },
+          "usable": {
+            "title": "Usable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "engine",
+          "base_url",
+          "model",
+          "api_key_env",
+          "is_default",
+          "needs_key",
+          "usable",
+          "detail"
+        ],
+        "title": "LlmProfileModel",
+        "type": "object"
+      },
+      "LlmRoutingModel": {
+        "additionalProperties": false,
+        "description": "一个 Agent 走哪条通道（只读展示；改它属于 ``llm.yaml``，不在这一屏）。",
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "fallback": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "profile",
+          "fallback"
+        ],
+        "title": "LlmRoutingModel",
+        "type": "object"
+      },
+      "LlmSettingsResponse": {
+        "additionalProperties": false,
+        "description": "设置面板首屏（一个请求拿全）。",
+        "properties": {
+          "default_profile": {
+            "title": "Default Profile",
+            "type": "string"
+          },
+          "generated_at": {
+            "title": "Generated At",
+            "type": "string"
+          },
+          "key": {
+            "$ref": "#/components/schemas/LlmKeyModel"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/LlmLimitsModel"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/LlmProfileModel"
+            },
+            "title": "Profiles",
+            "type": "array"
+          },
+          "routing": {
+            "items": {
+              "$ref": "#/components/schemas/LlmRoutingModel"
+            },
+            "title": "Routing",
+            "type": "array"
+          }
+        },
+        "required": [
+          "generated_at",
+          "default_profile",
+          "profiles",
+          "routing",
+          "key",
+          "limits",
+          "notes"
+        ],
+        "title": "LlmSettingsResponse",
+        "type": "object"
+      },
       "LogPage": {
         "description": "一页日志（按 id 升序）。\n\n:param next_since_id: 下一页的游标（本页为空时回传请求里的 `since_id`，\n    于是\"没有新日志\"不会把前端的游标清成 `None`）。",
         "properties": {
@@ -12530,6 +12965,90 @@
         "summary": "Resynth Sentence Endpoint",
         "tags": [
           "voice"
+        ]
+      }
+    },
+    "/api/v1/settings/llm": {
+      "get": {
+        "description": "设置面板首屏：通道卡片 + 路由表 + 密钥状态（**只有掩码**）。",
+        "operationId": "get_llm_settings_api_v1_settings_llm_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlmSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Llm Settings",
+        "tags": [
+          "settings"
+        ]
+      },
+      "put": {
+        "description": "保存 / 清除密钥（**先校验、后落盘**：校验不过一个字节都不写）。\n\n写完直接回刷新后的整屏 —— 面板不必再发一次 GET（那一次 GET 与这次 PUT 之间的\n窗口里，面板显示的是旧掩码，用户会以为没存上）。",
+        "operationId": "put_llm_key_api_v1_settings_llm_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LlmKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlmKeyOutcome"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Llm Key",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/v1/settings/llm/probe": {
+      "post": {
+        "description": "按需探测各通道（只发只读 GET，不产生一次计费调用）。\n\n与 ``studio llm probe`` 走**同一份**判定（``llm_settings_service``）：\n两处各写一份的话，迟早出现「命令行说能进、面板说不能」。",
+        "operationId": "probe_llm_api_v1_settings_llm_probe_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlmProbeModel"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Probe Llm",
+        "tags": [
+          "settings"
         ]
       }
     },

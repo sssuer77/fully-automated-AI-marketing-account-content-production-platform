@@ -122,7 +122,7 @@ export async function apiGet<T>(path: string, options: RequestOptions = {}): Pro
  * PATCH 只显示 '请求失败'"。
  */
 async function sendJson<T>(
-  method: "POST" | "PATCH",
+  method: "POST" | "PUT" | "PATCH",
   path: string,
   body: unknown,
   options: RequestOptions = {},
@@ -166,6 +166,17 @@ async function sendJson<T>(
 export function apiPost<T>(path: string, body?: unknown, options: RequestOptions = {}): Promise<T> {
   return sendJson<T>("POST", path, body, options);
 }
+
+/**
+ * PUT 一个 JSON 端点（T6.1：LLM 密钥 —— **幂等替换**）。
+ *
+ * 为什么是 PUT 而不是 POST：写密钥是「同一个值写两次，结果一样」的替换动作
+ * （第二次连盘都不碰）。PUT 的语义正好是这个；POST 会让人以为「每点一次就多一把」。
+ */
+export function apiPut<T>(path: string, body?: unknown, options: RequestOptions = {}): Promise<T> {
+  return sendJson<T>("PUT", path, body, options);
+}
+
 
 /**
  * PATCH 一个 JSON 端点（T4.8：素材标记 —— 只交**显式给了**的字段）。
