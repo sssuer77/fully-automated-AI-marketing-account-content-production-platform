@@ -34,12 +34,20 @@ from studio.db.repositories.publication_repo import (
 
 __all__ = [
     "NO_PUBLICATION_HINT",
+    "ComplianceItemView",
+    "ComplianceView",
+    "HandoffItemView",
+    "HandoffPreview",
+    "HandoffResponse",
     "PublicationList",
     "PublicationView",
     "PublishActionRequest",
     "PublishActionResponse",
     "PublishEnqueueRequest",
     "PublishEnqueueResponse",
+    "compliance_view",
+    "delivery_item_view",
+    "handoff_preview",
     "publication_view",
 ]
 
@@ -106,6 +114,95 @@ class PublicationList(BaseModel):
     #: 只有待人工那几条（T5.3 验收点名的 ``GET /api/v1/publish/queue`` 用它）。
     manual_required: list[PublicationView] = Field(default_factory=list)
     hint: str | None = None
+
+
+class HandoffItemView(BaseModel):
+    """交付包里的一件（预览与打包共用 —— 面板上"七件齐没齐"就是它）。"""
+
+    kind: str
+    label: str
+    required: bool
+    present: bool
+    source: str | None = None
+    bytes: int | None = None
+    note: str | None = None
+
+
+class HandoffPreview(BaseModel):
+    """交付包预览：**还没写任何东西**，只回答"包里会有什么、缺哪件"。"""
+
+    task_id: str
+    ready: bool
+    items: list[HandoffItemView] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)
+    adapter: str
+    output_dir: str
+    #: 发布时**自动**交付一份（``app.yaml → handoff.enabled``）。手动导出**不看它**：
+    #: 人按下的这一下就是意图本身，开关管的是"自动那条路要不要顺手带一份"。
+    auto_on_publish: bool = False
+    note: str | None = None
+
+
+class HandoffResponse(BaseModel):
+    """打包结论（包里有什么、落在哪、清单在哪）。"""
+
+    task_id: str
+    adapter: str
+    root: str
+    manifest: str
+    copied: list[dict[str, Any]] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)
+    bytes: int = 0
+
+
+class ComplianceItemView(BaseModel):
+    """一件素材的来源登记（R2 留档的一行）。"""
+
+    kind: str
+    id: str
+    license: str | None = None
+    proof: str | None = None
+    proof_present: bool = False
+    enabled: bool = True
+    note: str | None = None
+
+
+class ComplianceView(BaseModel):
+    """R2 合规留档快照（发布面板与素材库**共用**这一份）。"""
+
+    notice: str
+    ok: bool
+    items: list[ComplianceItemView] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+
+
+def delivery_item_view(item: Any) -> HandoffItemView:
+    """``DeliveryItem`` ⇒ 展示模型（字段名逐字对应，不在这里改语义）。"""
+    return HandoffItemView(**item.to_dict())
+
+
+def compliance_view(snapshot: Any) -> ComplianceView:
+    """``ComplianceSnapshot`` ⇒ 展示模型。"""
+    return ComplianceView(
+        notice=snapshot.notice,
+        ok=snapshot.ok,
+        items=[ComplianceItemView(**item.to_dict()) for item in snapshot.items],
+        gaps=list(snapshot.gaps),
+    )
+
+
+def handoff_preview(package: Any, *, adapter: str, output_dir: str, auto: bool) -> HandoffPreview:
+    """``DeliveryPackage`` ⇒ 面板要的那一份预览。"""
+    return HandoffPreview(
+        task_id=package.task_id,
+        ready=package.ready,
+        items=[delivery_item_view(item) for item in package.items],
+        missing=[item.kind for item in package.missing],
+        adapter=adapter,
+        output_dir=output_dir,
+        auto_on_publish=auto,
+        note=None if package.ready else "必需的那一件（成片）还不在盘上 —— 先把这条任务渲染出来",
+    )
 
 
 class PublishEnqueueRequest(BaseModel):

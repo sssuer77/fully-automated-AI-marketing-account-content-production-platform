@@ -43,7 +43,7 @@ export const PANELS: readonly PanelDef[] = [
   { id: "metrics", label: "观测面板", task: "T4.12", ready: true },
   { id: "audit", label: "审计留痕", task: "T4.12", ready: true },
   { id: "personas", label: "人物库", task: "T4.13", ready: true },
-  { id: "publish", label: "发布", task: "T5", ready: false },
+  { id: "publish", label: "发布", task: "T5.5", ready: true },
 ];
 
 /**

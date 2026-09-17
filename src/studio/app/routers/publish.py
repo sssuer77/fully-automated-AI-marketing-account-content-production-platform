@@ -31,18 +31,26 @@ from typing import Annotated
 from fastapi import APIRouter, Query, Request
 from fastapi import Path as PathParam
 
-from studio.app.deps import AppState, publish_config_for
+from studio.app.deps import AppState, handoff_config_for, publish_config_for
 from studio.app.schemas.publish import (
     NO_PUBLICATION_HINT,
+    ComplianceView,
+    HandoffPreview,
+    HandoffResponse,
     PublicationList,
     PublishActionRequest,
     PublishActionResponse,
     PublishEnqueueRequest,
     PublishEnqueueResponse,
+    compliance_view,
+    handoff_preview,
     publication_view,
 )
 from studio.core.errors import ErrorCode, StudioError
+from studio.db.repositories.audit_repo import AuditRepo
 from studio.db.repositories.publication_repo import PublicationRepo, PublicationRow
+from studio.publish.compliance import compliance_snapshot
+from studio.publish.handoff import build_package, handoff_adapter
 from studio.services.publish_service import (
     build_board,
     cancel_publication,
@@ -118,6 +126,84 @@ def manual_queue(
         manual_required=[publication_view(row) for row in rows],
         hint=None if rows else "待人工队列是空的（没有需要你处理的发布）",
     )
+
+
+@router.get("/api/v1/publish/handoff/{task_id}", response_model=HandoffPreview)
+def preview_handoff(
+    request: Request,
+    task_id: Annotated[str, _TASK_ID],
+) -> HandoffPreview:
+    """交付包**预览**：会打进去哪几件、缺哪件（**一个字节都不写**）。
+
+    与打包走**同一个** :func:`~studio.publish.handoff.build_package`：分开写的话，
+    面板上"七件齐"与真打出来的包里"少两件"会各自成立 —— 那种不一致最难查。
+    """
+    state: AppState = request.app.state.studio
+    config = handoff_config_for(state)
+    package = build_package(task_id=task_id, paths=state.paths, connection=state.connections.get())
+    return handoff_preview(
+        package,
+        adapter=config.adapter,
+        output_dir=str(state.paths.home / config.output_dir),
+        auto=config.enabled,
+    )
+
+
+@router.post("/api/v1/publish/handoff/{task_id}", response_model=HandoffResponse)
+def push_handoff(
+    request: Request,
+    task_id: Annotated[str, _TASK_ID],
+    body: PublishActionRequest | None = None,
+) -> HandoffResponse:
+    """打一个交付包出去（复制到 ``app.yaml → handoff.output_dir`` 下）。
+
+    **不看 ``handoff.enabled``**：那个开关管的是"发布时自动顺手交付一份"，
+    而人按下的这一下就是意图本身 —— 拦它只会得到"按钮是坏的"（与 T5.3 裁定 269
+    同一条：投递期不看开关，把判断留给真正执行的那一步）。
+
+    请求体复用 :class:`PublishActionRequest`：导出是**人**的动作，留痕里要写清
+    "谁、为什么导"，字段与人工处置那三个动作逐字相同（``actor`` / ``actor_ref`` /
+    ``reason``），没有第二套形状的必要。
+    """
+    state: AppState = request.app.state.studio
+    connection = state.connections.get()
+    config = handoff_config_for(state)
+    payload = body or PublishActionRequest()
+    package = build_package(task_id=task_id, paths=state.paths, connection=connection)
+    adapter = handoff_adapter(config.adapter)
+    result = adapter.push(package, output_dir=state.paths.home / config.output_dir)
+
+    # 留痕：交付包是**离开我们掌控**的东西（来源登记也跟着它走），所以这一下要记账。
+    AuditRepo(connection).record(
+        actor=payload.actor,
+        actor_ref=payload.actor_ref,
+        action="publish.handoff",
+        target_type="task",
+        target_id=task_id,
+        task_id=task_id,
+        after={
+            "root": result.root.as_posix(),
+            "adapter": result.adapter,
+            "copied": [entry["kind"] for entry in result.copied],
+            "missing": list(result.missing),
+            "bytes": result.bytes,
+        },
+        reason=payload.reason,
+        source="webui",
+    )
+    return HandoffResponse(**result.to_dict())
+
+
+@router.get("/api/v1/publish/compliance", response_model=ComplianceView)
+def compliance(request: Request) -> ComplianceView:
+    """R2 来源登记留档（**发布面板与素材库共用这一份**，§06.11）。
+
+    只读：它回答"我现在要发出去的东西，来源登记齐了吗"。缺了**不阻塞发布** ——
+    授权范围是人的判断，程序只负责让"缺一份"看得见。
+    """
+    state: AppState = request.app.state.studio
+    snapshot = compliance_snapshot(state.connections.get(), paths=state.paths)
+    return compliance_view(snapshot)
 
 
 @router.post("/api/v1/publish/tasks/{task_id}/enqueue", response_model=PublishEnqueueResponse)

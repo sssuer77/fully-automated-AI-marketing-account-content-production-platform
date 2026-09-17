@@ -14,6 +14,7 @@
 | 任务长时间停在 `queued_voice` / `queued_render` / `voicing` / `rendering` 不动 | [`pipeline_stuck.md`](pipeline_stuck.md) |
 | `PUBLISH_SELECTOR_MISS`、平台页面改版导致选择器失效 | [`publish_selector.md`](publish_selector.md) |
 | 发布卡在 `pending` / `failed` / `manual_required`；`studio publish queue` 有待人工；任务 `completed` 但片子没发出去 | [`publish_stuck.md`](publish_stuck.md) |
+| `PUBLISH_LOGIN_EXPIRED`、`health.hint` 说「需人工扫码登录」/「登录态已过期」、要加第二个账号 | [`publish_account.md`](publish_account.md) |
 | 每月一次例行；或真要**回滚**数据 | [`restore_drill.md`](restore_drill.md) |
 
 ## 三条通用纪律
@@ -37,7 +38,6 @@
 | --- | --- | --- |
 | `tts_models.md` | T2.1 | CosyVoice 权重目录 / 体积 / revision 留痕 |
 | `tts_concurrency.md` | T2.2 | 实测峰值显存与 RTF ⇒ 回写 `pools.yaml` 的并发值 |
-| `publish_account.md` | T5.5 | 登录态失效（需重新扫码）与多账号切换 |
 
 ## 一页速查
 

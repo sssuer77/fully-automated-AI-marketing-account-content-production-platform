@@ -15,6 +15,7 @@ import Overview from "@/views/Overview.vue";
 import Personas from "@/views/Personas.vue";
 import Pipeline from "@/views/Pipeline.vue";
 import Pools from "@/views/Pools.vue";
+import Publish from "@/views/Publish.vue";
 import Renders from "@/views/Renders.vue";
 import Scripts from "@/views/Scripts.vue";
 import Topics from "@/views/Topics.vue";
@@ -39,6 +40,7 @@ const VIEWS: Partial<Record<PanelId, Component>> = {
   metrics: Metrics,
   audit: Audit,
   personas: Personas,
+  publish: Publish,
 };
 
 const activeView = computed(() => VIEWS[ui.activePanel] ?? null);

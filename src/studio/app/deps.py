@@ -31,10 +31,12 @@ from studio.app.metrics import MetricsPump
 from studio.app.persona_events import PersonaBroadcaster
 from studio.app.watchdog import WatchdogPump
 from studio.core.config import (
+    HandoffConfig,
     PersonaConfig,
     PoolsConfig,
     PublishConfig,
     RuntimeSettings,
+    load_app_config,
     load_config,
     load_pools_config,
     load_publish_config,
@@ -84,6 +86,7 @@ __all__ = [
     "active_persona",
     "asset_service_for",
     "build_state",
+    "handoff_config_for",
     "outputs_service_for",
     "overview_service_for",
     "persona_service_for",
@@ -346,6 +349,20 @@ def publish_config_for(state: AppState) -> PublishConfig:
     面板的只读区块走的是各自的仓储，不经过本函数。
     """
     return load_publish_config(state.paths)
+
+
+def handoff_config_for(state: AppState) -> HandoffConfig:
+    """读 ``config/app.yaml`` 的 ``handoff`` 段（交付包的开关 / 适配器 / 落点）。
+
+    为什么读 ``app.yaml`` 而不是 ``publish.yaml``：交付包是**外部制片台对接**
+    （§04.6.3 · A2）的那条缝，它不只在发布那一屏用得上（审片、归档、别人来取片都
+    可能用）。``publish.yaml → handoff`` 只管"发布这条链路要不要顺手交付一份"，
+    两处的开关**刻意不合并**：合并之后"我只想让审片台取片、但不想发布"就配不出来了。
+
+    读失败**不吞**（与 :func:`publish_config_for` 同一条）：落点目录是"包往哪儿写"，
+    拿着一个猜的路径去写等于把文件散到别处。
+    """
+    return load_app_config(state.paths).handoff
 
 
 def asset_service_for(state: AppState) -> AssetService:

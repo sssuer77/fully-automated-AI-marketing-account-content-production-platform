@@ -54,6 +54,7 @@ import {
   usableText,
   useAssetsStore,
 } from "@/stores/assets";
+import { plainText } from "@/stores/publish";
 
 const assets = useAssetsStore();
 
@@ -188,6 +189,15 @@ function sectionTone(kind: AssetKind): StatusTone {
     </template>
 
     <div class="assets">
+      <!-- R2 来源登记提示：**常驻**（§06.11 要求发布面板与素材库两处都有）。
+           文案与缺口都来自服务端那一份，这一屏一个字都不自己写。 -->
+      <p v-if="assets.compliance" class="r2">
+        {{ plainText(assets.compliance.notice) }}
+        <span v-if="!assets.compliance.ok" class="r2__gap">
+          现在缺 {{ assets.compliance.gaps?.length ?? 0 }} 份登记 —— 在下面每一类里补授权类型 / 来源地址即可，缺了不阻塞出片。
+        </span>
+      </p>
+
       <p v-if="assets.loadError" class="alert alert--error">读素材库失败：{{ assets.loadError }}</p>
       <p v-if="assets.error" class="alert alert--error">{{ assets.error }}</p>
       <p v-if="assets.degradedNote" class="alert alert--warn">
@@ -356,6 +366,20 @@ function sectionTone(kind: AssetKind): StatusTone {
 </template>
 
 <style scoped>
+.r2 {
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.7;
+  background: var(--bg-raised);
+  border-left: 2px solid var(--warn);
+  border-radius: var(--radius-sm);
+}
+
+.r2__gap {
+  color: var(--warn);
+}
+
 .assets {
   display: flex;
   flex-direction: column;

@@ -738,6 +738,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/publish/compliance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Compliance
+         * @description R2 来源登记留档（**发布面板与素材库共用这一份**，§06.11）。
+         *
+         *     只读：它回答"我现在要发出去的东西，来源登记齐了吗"。缺了**不阻塞发布** ——
+         *     授权范围是人的判断，程序只负责让"缺一份"看得见。
+         */
+        get: operations["compliance_api_v1_publish_compliance_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/publish/handoff/{task_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview Handoff
+         * @description 交付包**预览**：会打进去哪几件、缺哪件（**一个字节都不写**）。
+         *
+         *     与打包走**同一个** :func:`~studio.publish.handoff.build_package`：分开写的话，
+         *     面板上"七件齐"与真打出来的包里"少两件"会各自成立 —— 那种不一致最难查。
+         */
+        get: operations["preview_handoff_api_v1_publish_handoff__task_id__get"];
+        put?: never;
+        /**
+         * Push Handoff
+         * @description 打一个交付包出去（复制到 ``app.yaml → handoff.output_dir`` 下）。
+         *
+         *     **不看 ``handoff.enabled``**：那个开关管的是"发布时自动顺手交付一份"，
+         *     而人按下的这一下就是意图本身 —— 拦它只会得到"按钮是坏的"（与 T5.3 裁定 269
+         *     同一条：投递期不看开关，把判断留给真正执行的那一步）。
+         *
+         *     请求体复用 :class:`PublishActionRequest`：导出是**人**的动作，留痕里要写清
+         *     "谁、为什么导"，字段与人工处置那三个动作逐字相同（``actor`` / ``actor_ref`` /
+         *     ``reason``），没有第二套形状的必要。
+         */
+        post: operations["push_handoff_api_v1_publish_handoff__task_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/publish/publications": {
         parameters: {
             query?: never;
@@ -2064,6 +2122,46 @@ export interface components {
             width: number | null;
         };
         /**
+         * ComplianceItemView
+         * @description 一件素材的来源登记（R2 留档的一行）。
+         */
+        ComplianceItemView: {
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** License */
+            license?: string | null;
+            /** Note */
+            note?: string | null;
+            /** Proof */
+            proof?: string | null;
+            /**
+             * Proof Present
+             * @default false
+             */
+            proof_present: boolean;
+        };
+        /**
+         * ComplianceView
+         * @description R2 合规留档快照（发布面板与素材库**共用**这一份）。
+         */
+        ComplianceView: {
+            /** Gaps */
+            gaps?: string[];
+            /** Items */
+            items?: components["schemas"]["ComplianceItemView"][];
+            /** Notice */
+            notice: string;
+            /** Ok */
+            ok: boolean;
+        };
+        /**
          * ConcurrencyRequest
          * @description 调一个池的并发（``concurrency`` 是**目标值**，不是增量）。
          */
@@ -2359,6 +2457,76 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * HandoffItemView
+         * @description 交付包里的一件（预览与打包共用 —— 面板上"七件齐没齐"就是它）。
+         */
+        HandoffItemView: {
+            /** Bytes */
+            bytes?: number | null;
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+            /** Note */
+            note?: string | null;
+            /** Present */
+            present: boolean;
+            /** Required */
+            required: boolean;
+            /** Source */
+            source?: string | null;
+        };
+        /**
+         * HandoffPreview
+         * @description 交付包预览：**还没写任何东西**，只回答"包里会有什么、缺哪件"。
+         */
+        HandoffPreview: {
+            /** Adapter */
+            adapter: string;
+            /**
+             * Auto On Publish
+             * @default false
+             */
+            auto_on_publish: boolean;
+            /** Items */
+            items?: components["schemas"]["HandoffItemView"][];
+            /** Missing */
+            missing?: string[];
+            /** Note */
+            note?: string | null;
+            /** Output Dir */
+            output_dir: string;
+            /** Ready */
+            ready: boolean;
+            /** Task Id */
+            task_id: string;
+        };
+        /**
+         * HandoffResponse
+         * @description 打包结论（包里有什么、落在哪、清单在哪）。
+         */
+        HandoffResponse: {
+            /** Adapter */
+            adapter: string;
+            /**
+             * Bytes
+             * @default 0
+             */
+            bytes: number;
+            /** Copied */
+            copied?: {
+                [key: string]: unknown;
+            }[];
+            /** Manifest */
+            manifest: string;
+            /** Missing */
+            missing?: string[];
+            /** Root */
+            root: string;
+            /** Task Id */
+            task_id: string;
         };
         /**
          * HealthResponse
@@ -6151,6 +6319,92 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RequeueResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    compliance_api_v1_publish_compliance_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ComplianceView"];
+                };
+            };
+        };
+    };
+    preview_handoff_api_v1_publish_handoff__task_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HandoffPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    push_handoff_api_v1_publish_handoff__task_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PublishActionRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HandoffResponse"];
                 };
             };
             /** @description Validation Error */

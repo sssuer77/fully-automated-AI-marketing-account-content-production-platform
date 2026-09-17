@@ -42,6 +42,7 @@ import {
   type IngestReport,
   type ScannedAsset,
 } from "@/api/endpoints/assets";
+import { fetchCompliance, type ComplianceView } from "@/api/endpoints/publish";
 import { useChannelStream } from "@/composables/useTaskStream";
 import { useWsConnection } from "@/composables/useWsConnection";
 import { describeError } from "@/stores/overview";
@@ -63,9 +64,11 @@ export interface AssetsApi {
   fetchAssetStats: typeof fetchAssetStats;
   ingestAssets: typeof ingestAssets;
   patchAsset: typeof patchAsset;
+  /** R2 来源登记留档（T5.5）：这一屏与发布面板**共用同一份**（§06.11 要求两处常驻）。 */
+  fetchCompliance: typeof fetchCompliance;
 }
 
-let api: AssetsApi = { fetchAssets, fetchAssetStats, ingestAssets, patchAsset };
+let api: AssetsApi = { fetchAssets, fetchAssetStats, ingestAssets, patchAsset, fetchCompliance };
 
 /** 换掉部分实现（**只用于测试**：生产代码不调用它）。 */
 export function configureAssetsApi(overrides: Partial<AssetsApi>): void {
@@ -298,6 +301,8 @@ export const useAssetsStore = defineStore("assets", () => {
   const dryRun = ref(false);
   /** 正在改的那条（防重复点击；`null` = 没有在途的标记动作）。 */
   const pendingId = ref<string | null>(null);
+  /** R2 来源登记留档（T5.5）：提示语与缺口**都来自服务端**，前端一个字都不自己写。 */
+  const compliance = ref<ComplianceView | null>(null);
 
   const sections = computed<AssetSection[]>(() => library.value?.sections ?? []);
   const degraded = computed(() => library.value?.degraded ?? false);
@@ -318,6 +323,22 @@ export const useAssetsStore = defineStore("assets", () => {
       loadError.value = describeError(failure);
     } finally {
       loading.value = false;
+    }
+  }
+
+  /**
+   * R2 来源登记体检（**只读**）。
+   *
+   * 放在素材库这一屏的理由：登记就在这些素材身上（音色的 profile.json、BGM 的授权书、
+   * 跑酷素材的来源地址）。把它只放在发布面板，等于让"入库时该补什么"和
+   * "发布时缺什么"分散在两屏 —— 而人在素材库这一屏才有机会补。
+   */
+  async function loadCompliance(): Promise<void> {
+    try {
+      compliance.value = await api.fetchCompliance();
+    } catch (failure) {
+      // 读不到合规快照**不算这一屏坏了**：素材该看还能看，缺的只是那行提示。
+      loadError.value = describeError(failure);
     }
   }
 
@@ -396,6 +417,7 @@ export const useAssetsStore = defineStore("assets", () => {
     wire();
     connect();
     void refresh();
+    void loadCompliance();
   }
 
   function stop(): void {
@@ -409,6 +431,7 @@ export const useAssetsStore = defineStore("assets", () => {
     // 状态
     library,
     stats,
+    compliance,
     loading,
     loadError,
     error,
@@ -425,6 +448,7 @@ export const useAssetsStore = defineStore("assets", () => {
     wsStatus,
     // 动作
     refresh,
+    loadCompliance,
     scan,
     setEnabled,
     applyPatch,

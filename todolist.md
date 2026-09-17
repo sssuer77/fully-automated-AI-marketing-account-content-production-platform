@@ -1163,7 +1163,7 @@
   - ④ 幂等与取消：连点两次只开一条（`deduped=true`，预览里带 `active_job`）；跑着时 `percent=50`；
     按取消**立刻返回但状态还是 running**，放行后在下一个检查点变 `canceled`
 - ✅ `cd web && npm run verify` ⇒ **378 passed**（18 文件）+ `vue-tsc` + `vite build` + 体积门禁 **0.32 MB / 3.00 MB**
-- ✅ `.	asks.ps1 check` ⇒ **3529 passed / 32 skipped / 27 deselected**（比 T5.3 多 **11 例**）；
+- ✅ `.\tasks.ps1 check` ⇒ **3529 passed / 32 skipped / 27 deselected**（比 T5.3 多 **11 例**）；
   `ruff format` + `ruff check` + Web 契约（`web/openapi.json` 重生成，新 5 个端点）+ `mypy` 全绿
 - **交付物**：
   - 服务层 `src/studio/services/pipeline_job_service.py`（`PipelineRequest` / `PipelineJob` / `PipelineJobService`
@@ -1574,17 +1574,53 @@
 - ✅ T+1h 能在发布面板看到数据；`auto_YYYYMM.md` 生成且**能被解析器消费**
 - ⚠️ 采集失败 ⇒ 顺延重试，不阻断其他任务
 
-### T5.5 发布面板 + 合规留档 + 外部对接 · **P1**
+### T5.5 发布面板 + 合规留档 + 外部对接 · **P1**（**已交付 2026-09-17**）
 - 依赖：T5.4 ｜ 里程碑：M5 ｜ 契约：§06.11 / §06.12
-- [ ] 面板**七区块**：待发布 / 发布中 / 已发布 / 数据回流 / **待人工** / **定时计划** / **报告**
-- [ ] `manual_required` 可重试 / 可标记已人工处理 / 可取消（**三者均写 `audit_ops`**）
-- [ ] `HandoffAdapter`（默认 `LocalHandoffAdapter`，可 push 自包含交付包：视频/封面/ASS/稿件/manifest/质检）
-- [ ] 来源登记留档（R2）
-- [x] 应急剧本：`docs/runbook/publish_selector.md`（**T5.2 已交付**）、`publish_account.md`（待本任务）
-- [ ] **R2 合规提示常驻**（发布面板 + 素材库）
+- [x] 面板**七区块**：待发布 / 发布中 / 已发布 / 数据回流 / **待人工** / **定时计划** / **报告**
+  - 前五块**后端齐备、面板可用**；后两块（T5.6 定时计划 / T5.7 报告）**后端没有端点**
+    （`tests/integration/test_scheduler.py` / `test_reports.py` 都不存在）⇒ 面板如实写
+    「尚未施工 + 卡在哪」，**一个数字都不画**（裁定 299）
+  - 另加**第八块「失败 / 已取消」**：`failed` 的记录还在自动重试，藏起来会被读成"这条根本没投出去过"（裁定 298）
+- [x] `manual_required` 可重试 / 可标记已人工处理 / 可取消（**三者均写 `audit_ops`**）
+  - 三个按钮的可用性由**服务端**给的 `can_retry` / `can_cancel` / `can_mark_done` 决定（裁定 275），前端一个布尔都不自己算
+  - 「标记已处理」**理由必填**（后端 422；面板先拦一道）
+- [x] `HandoffAdapter`（默认 `LocalHandoffAdapter`，可 push 自包含交付包：成片/封面/ASS/稿件/时间轴/manifest）
+- [x] 来源登记留档（R2）：`publish/compliance.py` 逐条列缺口（音色 `proof_path` / BGM `proof_path` / 跑酷 `source_url`）
+- [x] 应急剧本：`docs/runbook/publish_selector.md`（**T5.2 已交付**）、
+  `docs/runbook/publish_account.md`（**本任务交付**：登录态失效重新扫码 + 多账号切换 + 新增第 2 个账号要动什么）
+- [x] **R2 合规提示常驻**（发布面板 + 素材库，**同一份服务端文案** `R2_NOTICE`）
 - ✅ 七区块可用；`manual_required` 三种操作均留痕；交付包可导出；两个剧本齐备
 - ⚠️ `manual_required` 堆积 ⇒ 面板顶部计数 + 告警
 - ⚠️ 剧本过时 ⇒ 每次页面改版热修后更新剧本版本号
+
+- **落地清单**：
+  - 后端：`publish/handoff.py`（`build_package` / `DeliveryItem` / `DeliveryPackage` / `HandoffAdapter` /
+    `LocalHandoffAdapter` / `handoff_adapter` / `resolve_cover`）+ `publish/compliance.py`
+    （`R2_NOTICE` / `Registration` / `ComplianceSnapshot` / `compliance_snapshot`）
+  - REST **三个新端点** `app/routers/publish.py`：`GET /publish/handoff/{task_id}`（预览，**一个字节都不写**）·
+    `POST /publish/handoff/{task_id}`（导出 + 写 `audit_ops`）· `GET /publish/compliance`（只读）；
+    契约再生成（`web/openapi.json` + `types.gen.ts`）
+  - WebUI：`web/src/views/Publish.vue`（八区块）+ `web/src/stores/publish.ts` + `web/src/api/endpoints/publish.ts`；
+    `stores/ui.ts` 的 `publish` 置 `ready: true`、`App.vue` 接线；素材库加 R2 常驻提示（`stores/assets.ts` 的 `compliance`）
+  - 测试 **50 例**：`tests/unit/publish/test_handoff.py`（12）· `test_compliance.py`（7）·
+    `tests/integration/test_publish_handoff_api.py`（8）· `web/src/stores/publish.test.ts`（23）
+  - `.\tasks.ps1 check` ⇒ **3636 passed / 32 skipped / 27 deselected**（+27）；
+    `.\tasks.ps1 web:verify` ⇒ **406 passed · dist 0.34 MB**（+23 例）
+- **施工裁定（本轮新增 293–299）**：
+  - **293** 交付包**预览与打包走同一个 `build_package`**：分开写会让"面板说六件齐"与"真打出来的包少两件"
+    各自成立 —— 那种不一致最难查（与陷阱 #150 / #151 同族）
+  - **294** 预览是 **GET 且一个字节都不写**，导出才落盘 + 写 `audit_ops(action='publish.handoff')`：
+    交付包是**离开我们掌控**的东西，没有那一行就答不上"这份片子什么时候被谁导出去过"
+  - **295** 手动导出**不看** `handoff.enabled`（沿用裁定 269）：那个开关管的是"发布时自动顺手带一份"，
+    而人按下的这一下就是意图本身 —— 拦它只会得到"按钮是坏的"
+  - **296** 适配器名字不认识 ⇒ **抛 `CONFIG_INVALID`**，不静默退回 `local`：静默退回的后果是
+    "配置写了对接、包却一直落在本地盘上"，而两边都不报错
+  - **297** 打包目录名的时间戳取到**毫秒**（`[:19]`）：秒级精度下"连按两下导出"会算出同一个目录名，
+    而覆盖正是这一层要避免的（留两份的代价是几百 MB，留一份错的代价是"发出去的片子对不上归档"）
+  - **298** 面板排**八块**（规格七区块 + 「失败 / 已取消」）：`failed` 的记录**还在自动重试**
+  - **299** 「定时计划」与「报告」**不画假数据**：后端没有对应端点，面板如实写"尚未施工 + 卡在哪" ——
+    画一个看着像真的时刻表，比空着更糟（用户会按它去安排发布）
+- ⚠️ 新增陷阱 3 条已并入 §10（编号 155–157）
 
 ### T5.6 定时发布调度 · **P0**（★D7 + Q14）
 - 依赖：T5.3 ｜ 里程碑：M5 ｜ 契约：**§03.3.18 / §04.6.5.1 / §06.5.5**
@@ -1770,9 +1806,15 @@ T1.12 ✅             （一键启动）
 > **不消耗 attempts**）+ `UnitDeferred` + `publish/ratelimit.py` + `publication_repo.py` + `publish_worker.py`
 > + `workers/run_publish.py` + REST 六端点 + CLI 五命令全部落地；**四个池的 handler 都齐了**（裁定 268–275，陷阱 140–145）。
 > 出厂仍是 `publish.enabled=false`，真发布一律 `PUBLISH_DISABLED` 转人工（R14）。
-> ⑬ **下一件待你定**：①`T5.5` 发布面板（七区块 + 待人工队列；**顺带把发布进程接进 supervisor**，见裁定 274）；
-> ②`T5.4` 数据回收（T+1h/6h/24h/72h 采集）；③补 `T3.1` 素材入库缺口（pHash / 黑帧 / `assets ingest` CLI
-> —— 你已明确降级为**非核心**）；④按你的新要求另开（`T2.1–T2.4` 仍被 E5 权重硬阻塞）。
+> ⑬ ~~`T5.5` 发布面板~~ ⇒ **已完成（2026-09-17）**，见上方任务块。八区块（规格七区块 + 失败/已取消）+
+> 交付包（预览 / 导出，**预览不写盘、导出留痕**）+ R2 来源登记留档（发布面板与素材库常驻同一份）+
+> `docs/runbook/publish_account.md`；`manual_required` 三连按钮的可用性由服务端 `can_*` 决定
+> （裁定 293–299，陷阱 155–157）。**发布进程接进 supervisor 一事仍待你定**（裁定 274 的前提变了：
+> 面板已经落地，现在接进去就是"面板能看、进程能起"）。
+> ⑭ **下一件待你定**：①把 `publish` 进程接进 supervisor（裁定 274 的收尾）；②`T5.4` 数据回收
+> （T+1h/6h/24h/72h 采集 —— 面板的「数据回流」区块现在只有时刻表、没有数字，缺的正是它）；
+> ③补 `T3.1` 素材入库缺口（pHash / 黑帧 / `assets ingest` CLI —— 你已明确降级为**非核心**）；
+> ④按你的新要求另开（`T2.1–T2.4` 仍被 E5 权重硬阻塞）。
 > ⑭ ~~**一键出片面板**（把整条链路图形化）~~ ⇒ **已完成（2026-09-17）**，见上方 `T4.14+` 任务块。
 > `services/pipeline_service.run_task` 一直只有 CLI、没有 REST 面 —— 这一屏就是补上它：五个端点 + 一块面板
 > （填任务号 / 选落点 → 看进度 → 就地播成片），**同一个任务连点两次不会开两条**。它也是"第一支 MP4 的入口"：
@@ -1939,7 +1981,10 @@ T1.12 ✅             （一键启动）
 | 147 | **新端点的响应里少了一个字段，只有 `vue-tsc` 会告诉你** | 用 `**plan.to_dict()` 拼 payload，而响应模型里没声明那个字段 ⇒ FastAPI 按 `response_model` **静默过滤**（多出来的键不报错、少声明的字段也不报错） | `**dict` 拼 payload 时，字段清单是**响应模型**说了算：加字段要同时改模型；别指望运行时告诉你 | T4.14+ |
 | 148 | **模板里写的 `**加粗**` 在界面上是字面星号** | 前端没有 markdown 渲染器（`PanelCard` 直接 `{{ }}`），而提示语沿用了写文档的习惯 | 模板里用 `<b>` 或拆句，别写 markdown 语法 | T4.14+ |
 | 149 | **命令「超时」之后调用方永远不返回**（渲染 worker 卡死，日志里只有一句超时） | `subprocess.run(timeout=)` 超时后只杀**直接子进程**，随后（Windows 上）又调了一次**不带超时**的 `communicate()` 去读管道 —— 只要有一个继承了我们管道的孙进程还活着，它就永远等不到 EOF。实测：`timeout=2` 的命令 12s 后仍挂着 | 超时改走 `_kill_tree()`（Windows `taskkill /PID <pid> /T /F`、POSIX `killpg`），收尸那一步自己也带超时（`REAP_TIMEOUT_SEC`），收不干净就关掉我们这一端的管道 | T3.4 |
-> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 154 条见该处；跨文档引用按编号即可）。
+| 155 | **交付包缺件那一行只有「缺」两个字，没有补救说明** | `build_package` 的兜底条件写成 `source is not None and not source.is_file()` —— "路径根本没给"（还没渲染 / 还没生成封面）走不到兜底，`note` 留在 `None` | 判据改成"**这一件不在盘上**就兜底"；"路径没给"与"路径给了但文件没了"都算缺（后者用更具体的那句话，**不覆盖**它）。这条是**写测试时才发现的** | T5.5 |
+| 156 | **夹具里第二条素材静默不入库，报错长得像查询写错了**（`KeyError`） | 跑酷 / BGM 的 `upsert` 按 **sha256 去重**（同一条素材重复入库 ⇒ 跳过），而夹具里拿一个常量当哈希 | 每条素材派生一个**各不相同**的 sha256（`sha256(clip_id)`）。"入库没报错但查不到"先怀疑去重，别先怀疑 SQL | T5.5 |
+| 157 | **连按两下「导出」得到同一个目录，第一份被悄悄换掉** | 打包目录名的时间戳只取到**秒**（`now_iso()` 变换后 `[:15]`），而复制一个小文件远不到一秒 | 时间戳取到毫秒（`[:19]`）。"两个动作落进同一个名字"在**所有**以时间戳命名产物的地方都成立 | T5.5 |
+> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 157 条见该处；跨文档引用按编号即可）。
 
 ---
 
