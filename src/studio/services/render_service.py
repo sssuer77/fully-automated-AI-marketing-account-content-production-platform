@@ -16,6 +16,11 @@
 ⑥ 质检   mixdown.measure_file → quality_report   量**落盘的成片**，回填 tasks.quality_json
 ```
 
+**命中整片级缓存时少跑两步**：`render/cache.py`（§04.2.8.7）在合成前先比一次 `composite_hash`
+—— 命中就跳过 ④ 合成与 ⑥ 的成片响度测量（读数从上一轮 manifest 里读回来），直接把盘上
+那一支当本次交付。判据是「这个文件是这批输入渲出来的」，**不是**「文件在不在」；
+理由写在那个模块的开头。
+
 什么算**真**失败，什么算"降级 / 跳过"
 ------------------------------------
 - 真失败：**没人声**（配音没产出音频）、ffmpeg 报错且保底档也失败；
@@ -55,13 +60,14 @@ from studio.core.media import probe_media
 from studio.core.paths import StudioPaths
 from studio.domain.models import QualityReport
 from studio.render.assets import pick_bgm, pick_parkour_clip
+from studio.render.cache import reusable_output
 from studio.render.composite import (
     CompositeRequest,
     CompositeResult,
     duration_ms_for,
 )
 from studio.render.degrade import NO_BROLL, deliver
-from studio.render.hashing import composite_hash
+from studio.render.hashing import composite_hash, input_digests
 from studio.render.mixdown import LoudnessMeasurement, MixSettings, measure_file
 from studio.render.profiles import FALLBACK_PROFILE_NAME, resolve_profile
 from studio.render.subtitle import Cue, SubtitlePlan, build_cues, plan_subtitle
@@ -100,6 +106,10 @@ class ProduceRequest:
     #: 要不要烧字幕。``None`` = 听 ``config/outputs.yaml → subtitle.enabled``
     #: （三态而不是 bool：面板不传时不该把配置里的开关顶掉）
     subtitle: bool | None = None
+    #: 无视整片级缓存，强制重跑一遍 ffmpeg（``render/cache.py``）。
+    #: 平时**不该**用它：命中缓存意味着输入一个字节都没变，重渲出来的还是同一支片子。
+    #: 留给"我怀疑盘上那支是坏的"这种排查场景。
+    force_render: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +141,8 @@ class ProduceResult:
     degrade_reason: str | None
     #: 试过哪几档、各自什么下场（`["douyin_1080x1920_30fps_v1: RENDER_FAILED"]`）
     attempts: tuple[str, ...]
+    #: 这一次**没有**跑 ffmpeg，而是复用了盘上同哈希的那一支（§04.2.8.7）
+    reused: bool = False
     #: **成片自己**的响度读数（`mixdown.measure_file` 量的那一支；量不出来 ⇒ None）。
     #: 注意它与 ``composite.loudness`` 不是一回事：后者是 loudnorm **归一化之前**的输入读数。
     output_loudness: LoudnessMeasurement | None = None
@@ -154,6 +166,7 @@ class ProduceResult:
             "timeline": self.timeline.as_posix(),
             "bg_fill": self.bg_fill,
             "composite_hash": self.composite_hash,
+            "reused": self.reused,
             "degraded": self.degraded,
             "degrade_reason": self.degrade_reason,
             "attempts": list(self.attempts),
@@ -421,31 +434,58 @@ def produce_video(
     else:
         fallback_output = paths.final_video(request.task_id, degraded=True)
 
-    delivery = deliver(
-        composite_request,
-        fallback_profile=fallback_profile,
-        fallback_output=fallback_output,
-        on_progress=on_progress,
+    # ── 整片级缓存（§04.2.8.7）：同样的输入 ⇒ 盘上那一支就是答案 ──
+    # 指纹在这里先算一遍，而且把 digests 传进去：下面"真正渲出来那一支"还要再算一次
+    # （档位可能被降级换掉），两次的输入文件完全相同 —— 底片几十 MB，别为它读两遍盘。
+    digests = input_digests(composite_request)
+    cached = (
+        None
+        if request.force_render
+        else reusable_output(
+            manifest=paths.manifest_json(request.task_id),
+            plan_hash=composite_hash(composite_request, digests=digests),
+        )
     )
-    composite = delivery.composite
-    final = composite.output
 
-    # 指纹描述的是**真正渲出来那一支**，所以用生效后的档位重建请求（输出路径不进哈希）。
-    plan_hash = composite_hash(replace(composite_request, profile=delivery.profile))
-
-    # QC 量的是**落盘的这一支**，不是 loudnorm 的输入读数（见 `mixdown.measure_file`）。
-    output_loudness = measure_file(final, settings=composite_request.mix)
-
-    # 降级说明汇总成一处：面板只读这个数组，不必自己拼四种来源。
-    warnings: list[str] = list(warnings_seed) + list(delivery.warnings)
-    if clip is None:
-        warnings.append("没有跑酷底片，这次用纯黑底出片（黑屏降级）")
-    if subtitle.note:
-        warnings.append(subtitle.note)
-    if output_loudness is None:
-        warnings.append("成片响度没量出来：quality_json 里的 lufs / true_peak 会是空的")
-
-    degrade_reason = delivery.degrade_reason or (NO_BROLL if clip is None else None)
+    if cached is not None:
+        composite = cached.composite
+        final = cached.output
+        plan_hash = cached.plan_hash
+        profile_name = cached.profile_name
+        output_loudness = cached.output_loudness
+        degraded = cached.degraded
+        degrade_reason = cached.degrade_reason
+        attempts = cached.attempts
+        # 上一轮那几条说明**原样沿用**：它们描述的是同一支片子，重写一遍不该改内容。
+        # （本次新增的只有下面 manifest 里的 `reused` / `rendered_at` 两个字段。）
+        warnings: list[str] = list(cached.warnings)
+        if on_progress is not None:
+            on_progress("render", 1, 1, f"命中渲染缓存，复用 {final.name}")
+    else:
+        delivery = deliver(
+            composite_request,
+            fallback_profile=fallback_profile,
+            fallback_output=fallback_output,
+            on_progress=on_progress,
+        )
+        composite = delivery.composite
+        final = composite.output
+        # 指纹描述的是**真正渲出来那一支**，所以用生效后的档位重建请求（输出路径不进哈希）。
+        plan_hash = composite_hash(replace(composite_request, profile=delivery.profile), digests=digests)
+        # QC 量的是**落盘的这一支**，不是 loudnorm 的输入读数（见 `mixdown.measure_file`）。
+        output_loudness = measure_file(final, settings=composite_request.mix)
+        profile_name = delivery.profile.name
+        degraded = delivery.degraded or clip is None
+        degrade_reason = delivery.degrade_reason or (NO_BROLL if clip is None else None)
+        attempts = delivery.attempts
+        # 降级说明汇总成一处：面板只读这个数组，不必自己拼四种来源。
+        warnings = list(warnings_seed) + list(delivery.warnings)
+        if clip is None:
+            warnings.append("没有跑酷底片，这次用纯黑底出片（黑屏降级）")
+        if subtitle.note:
+            warnings.append(subtitle.note)
+        if output_loudness is None:
+            warnings.append("成片响度没量出来：quality_json 里的 lufs / true_peak 会是空的")
 
     manifest = _write_manifest(
         request=request,
@@ -458,15 +498,17 @@ def produce_video(
         voice_ms=voice_ms,
         watermark_enabled=composite.watermark_applied,
         watermark_skipped_reason=watermark.skipped_reason,
-        profile_name=delivery.profile.name,
+        profile_name=profile_name,
         subtitle=subtitle,
         timeline=timeline,
         warnings=warnings,
         plan_hash=plan_hash,
-        degraded=delivery.degraded or clip is None,
+        degraded=degraded,
         degrade_reason=degrade_reason,
-        attempts=delivery.attempts,
+        attempts=attempts,
         output_loudness=output_loudness,
+        reused=cached is not None,
+        rendered_at=cached.rendered_at if cached is not None else None,
     )
 
     return ProduceResult(
@@ -480,16 +522,17 @@ def produce_video(
         size_bytes=composite.size_bytes,
         watermark_enabled=composite.watermark_applied,
         watermark_skipped_reason=watermark.skipped_reason,
-        profile_name=delivery.profile.name,
+        profile_name=profile_name,
         manifest=manifest,
         timeline=timeline,
         composite=composite,
         subtitle=subtitle,
         bg_fill=composite.bg_fill,
         composite_hash=plan_hash,
-        degraded=delivery.degraded or clip is None,
+        reused=cached is not None,
+        degraded=degraded,
         degrade_reason=degrade_reason,
-        attempts=delivery.attempts,
+        attempts=attempts,
         output_loudness=output_loudness,
         warnings=tuple(warnings),
     )
@@ -543,11 +586,19 @@ def _write_manifest(
     degrade_reason: str | None,
     attempts: tuple[str, ...],
     output_loudness: LoudnessMeasurement | None,
+    reused: bool,
+    rendered_at: str | None,
 ) -> Path:
-    """把"这条片子是怎么渲出来的"落盘（复现、排障、以及将来算缓存都用它）。"""
+    """把"这条片子是怎么渲出来的"落盘（复现、排障、以及整片级缓存都读它）。
+
+    :param reused: 这一次**没有**跑 ffmpeg，而是复用了盘上同哈希的那一支
+    :param rendered_at: 那一支成片**渲出来的**时刻。复用命中时它比 ``created_at`` 早 ——
+        两者不是一回事：``created_at`` 是这份 manifest 的写入时间。
+    """
+    created_at = now_iso()
     payload: dict[str, Any] = {
         "task_id": request.task_id,
-        "created_at": now_iso(),
+        "created_at": created_at,
         "outputs_source": source.as_posix(),
         "profile": profile_name,
         "final": composite.output.as_posix(),
@@ -576,6 +627,10 @@ def _write_manifest(
         # 合成指纹（§04.2.8.7）：同样的输入 ⇒ 同样的值。"这条片子是不是同一支"、
         # "换稿之后有没有真的重剪"，都靠这一行回答。
         "composite_hash": plan_hash,
+        # 复用的留痕：`reused=true` + 比 created_at 早的 rendered_at。
+        # 缺了这两行，"这一支是本次渲的还是上次留下的"就只能靠猜。
+        "reused": reused,
+        "rendered_at": rendered_at or created_at,
         "degraded": degraded,
         "degrade_reason": degrade_reason,
         "attempts": list(attempts),

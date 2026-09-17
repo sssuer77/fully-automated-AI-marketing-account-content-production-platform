@@ -1367,6 +1367,20 @@ def composite_hash(*, plan: CompositePlan, encoder_args: list[str], input_digest
     """
 ```
 
+**实施状态（2026-09-17 · `render/cache.py` + `services/render_service.py`）**
+
+命中判据比上面这段更严：**上一轮 `manifest.json` 记的 `composite_hash` 与这一次算出来的完全一致**，
+且那支 `final.mp4` 还在盘上、**字节数与 manifest 记的一致**，且重建 `CompositeResult` 要用的字段
+一个不少（缺一个就重渲，不猜默认值）。manifest 是**最后**才写的（成片原子改名 → 量响度 → 写
+manifest），所以「manifest 在」本身就意味着那一轮跑到底了 —— 这正是不做「文件在就跳过」那种
+短路（`pools/render_worker.py` 纪律 2）的原因。
+
+复用是**任务级**的：直接用盘上那一支（不建 `cache/render/<hash>.mp4`，否则同一支片子存两遍、
+还要再写一套 GC）。命中时 `manifest.json` 记 `reused=true` + `rendered_at`（比 `created_at` 早），
+`ProduceResult.reused` 与进度文案一起告诉面板「这次没渲」。**命中面**：底片是随机挑的，所以不带
+`--seed` 的重跑通常挑到另一条底片、哈希不同、照常重渲（设计如此，不是缓存失效）；真正会命中的
+是带 `seed` 的重跑 / 复现，以及队列把同一条 `render/final` 重投。
+
 ---
 ## 4.3 CosyVoice 适配层契约（`tts/base.py`）
 

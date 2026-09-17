@@ -223,6 +223,7 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │  │  │                                  #      + `measure_file`（T3.7：量**落盘的成片**，QC 用）
 │  │  ├─ composite.py                    #   ✅ T3.4 单遍合成：argv + 滤镜图 + .partial 原子改名
 │  │  ├─ hashing.py                      #   ✅ T3.7 `composite_hash`（§04.2.8.7，排除输出路径/线程数）
+│  │  ├─ cache.py                        #   ✅ T3.4 整片级缓存：同哈希 ⇒ 复用 final.mp4，不重跑 ffmpeg
 │  │  └─ degrade.py                      #   ✅ T3.7 降级链：正常档 → 720P 保底档（只换一次）
 │  ├─ publish\                           # ★ 第六部分（✅ T5.1 封面/预检 · ✅ T5.2 发布适配层）
 │  │  ├─ ✅ base.py                       #   ✅ T5.2 `Publisher` ABC（§4.6.1）：三个抽象方法

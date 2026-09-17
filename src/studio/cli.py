@@ -1893,6 +1893,10 @@ def render_make(
         bool | None,
         typer.Option("--subtitle/--no-subtitle", help="烧字幕（默认听 outputs.yaml → subtitle.enabled）"),
     ] = None,
+    force_render: Annotated[
+        bool,
+        typer.Option("--force-render", help="无视整片级缓存，重跑一遍 ffmpeg"),
+    ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="输出机读 JSON")] = False,
 ) -> None:
     """**文案 → 配音 → 字幕 → 混音 → 渲染**：出一条 MP4（T3.x 主线）。
@@ -1904,6 +1908,10 @@ def render_make(
 
     字幕时间取自**逐句实测**的配音时长（不是按字数估的），所以它与人声是对齐的；
     字体优先用 ``templates/<模板>/assets/fonts/``，没有则退到系统字体目录。
+
+    同 ``composite_hash`` 的片子已经在盘上（同文案 / 同素材 / 同水印）⇒ **直接复用那一支**，
+    一次 ffmpeg 都不跑；``--force-render`` 可强制重渲。注意底片是随机挑的 —— 不带 ``--seed``
+    的重跑通常挑到另一条底片，哈希不同，照常重渲（设计如此，见 ``render/cache.py``）。
     """
     paths = StudioPaths.from_env()
     try:
@@ -1925,6 +1933,7 @@ def render_make(
                 threads=threads,
                 seed=seed,
                 subtitle=subtitle,
+                force_render=force_render,
             ),
             paths=paths,
             outputs=outputs,
