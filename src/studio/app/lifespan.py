@@ -41,8 +41,10 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         state.watchdog_pump.start()
     else:
         logger.info("app.watchdog_idle", reason="workers/ 目录不在或 watchdog.enabled=false")
-    # 出片工作线程（T4.6）：起在这里 ⇒ 提交的任务在请求返回后真的会跑起来。
+    # 出片工作线程（T4.6）与一键出片的工作线程：起在这里 ⇒ 提交的任务在请求返回后
+    # 真的会跑起来。两条线程各管各的队列（一个是"渲染这一步"，一个是"整条链路"）。
     state.render_jobs.start()
+    state.pipeline_jobs.start()
     logger.info("app.started", db=str(state.paths.db_file))
     try:
         yield
@@ -53,6 +55,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         # 不等当前这一条跑完：进程都要退了，等它没有意义（成片已在盘上，半成品
         # 是 `.partial`，不会被当成成片列出来）。
         state.render_jobs.stop()
+        state.pipeline_jobs.stop()
         await state.hub.stop()
         state.close()
         logger.info("app.stopped")

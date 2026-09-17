@@ -13,6 +13,7 @@ import Metrics from "@/views/Metrics.vue";
 import Outputs from "@/views/Outputs.vue";
 import Overview from "@/views/Overview.vue";
 import Personas from "@/views/Personas.vue";
+import Pipeline from "@/views/Pipeline.vue";
 import Pools from "@/views/Pools.vue";
 import Renders from "@/views/Renders.vue";
 import Scripts from "@/views/Scripts.vue";
@@ -32,6 +33,7 @@ const VIEWS: Partial<Record<PanelId, Component>> = {
   logs: Logs,
   templates: Outputs,
   renders: Renders,
+  pipeline: Pipeline,
   assets: Assets,
   pools: Pools,
   metrics: Metrics,

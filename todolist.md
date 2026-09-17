@@ -1116,6 +1116,42 @@
   - **254** 认领顺序是**先拉列表、再认领跳转**：稿件面板的 `refresh()` 会把"不在当前状态列表里"的选中项清掉，配音面板的 `setTaskId()` 会清掉上一条任务的快照 —— 反过来的话，跳转会被自己的首屏覆盖掉，而且**不报错**（陷阱 #128）
 - ⚠️ 新增陷阱 2 条已并入 §10（编号 128–129）
 
+### T4.14+ 一键出片面板（整条链路图形化：文案 → 配音 → 渲染出片）· **P0** ✅ **已完成（2026-09-17）**
+- 依赖：T4.14, T4.6, T2.9 ｜ 里程碑：M4 ｜ 契约：**§4.6.8（新增）**
+- [x] 服务层 `services/pipeline_job_service.py`：进程内登记表 + 后台线程 + 协作式取消 + **同任务幂等**
+- [x] `pipeline_service.plan_task`：把"这条任务点了会怎样"提前算出来（与 `run_task` **共用** `_STUCK`/`_FORWARD`/`_check_until`）
+- [x] REST **五个端点** `app/routers/pipeline.py` + `app/schemas/pipeline.py`（首屏 / 预览 / 开一条 / 轮询 / 叫停）
+- [x] 接线：`AppState.pipeline_jobs`（`build_state`）+ `lifespan` 起停 + `main` 挂路由
+- [x] 前端 `web/src/views/Pipeline.vue` + `stores/pipeline.ts`（+ `pipeline.test.ts` **23 例**）+ `api/endpoints/pipeline.ts`
+- [x] 侧边栏第 14 块面板「一键出片」；`stores/ui.ts` 的 `FlowPanelId` 加上 `pipeline`，稿件详情多一颗「一键出片 →」
+- ✅ `pytest tests/integration/test_pipeline_api.py -q` ⇒ **11 passed**，四条验收逐条对上：
+  - ① 首屏的落点**一个不多一个不少**（拿 `supported_until()` 逐字比对），且每个都有名字与说明
+  - ② 预览：审稿中的任务说"从 reviewing 一路推到 completed"；落点就是它自己时说"再点一次不会重跑（幂等）"；
+    确认闸 / `failed` ⇒ `runnable=false` + 原因；没有生效稿件 ⇒ `has_script=false` 提前说；落点写错 ⇒ **422** + `context.supported`
+  - ③ 主路径：填任务号 → 开始出片 → 轮询到 `succeeded`（`percent=100`、`steps=[voice, render]`、日志尾巴有 `[voice]`/`[done]`）
+    → 成片落在 `data/output/videos/` 且能播；首屏 `active` 清空、`jobs` 里有它
+  - ④ 幂等与取消：连点两次只开一条（`deduped=true`，预览里带 `active_job`）；跑着时 `percent=50`；
+    按取消**立刻返回但状态还是 running**，放行后在下一个检查点变 `canceled`
+- ✅ `cd web && npm run verify` ⇒ **378 passed**（18 文件）+ `vue-tsc` + `vite build` + 体积门禁 **0.32 MB / 3.00 MB**
+- ✅ `.	asks.ps1 check` ⇒ **3529 passed / 32 skipped / 27 deselected**（比 T5.3 多 **11 例**）；
+  `ruff format` + `ruff check` + Web 契约（`web/openapi.json` 重生成，新 5 个端点）+ `mypy` 全绿
+- **交付物**：
+  - 服务层 `src/studio/services/pipeline_job_service.py`（`PipelineRequest` / `PipelineJob` / `PipelineJobService`
+    + `supported_until()`；`MAX_JOBS_KEPT=50` / `MAX_LOG_LINES=200`；job id 前缀 `p`，与渲染的 `r` 分开）
+  - 编排侧 `src/studio/services/pipeline_service.py`：新增 `PipelinePlan` + `plan_task`，并把落点校验抽成 `_check_until`
+  - REST `src/studio/app/routers/pipeline.py` + 契约 `src/studio/app/schemas/pipeline.py`
+  - 接线 `src/studio/app/deps.py` · `src/studio/app/lifespan.py` · `src/studio/app/main.py`
+  - 前端 `web/src/views/Pipeline.vue` · `web/src/stores/pipeline.ts` · `web/src/stores/pipeline.test.ts` · `web/src/api/endpoints/pipeline.ts`
+  - 测试 `tests/integration/test_pipeline_api.py`（11 例，进 `check`）
+- **施工裁定（本轮新增 276–281）**：
+  - **276** 一键出片**不新起一个池**，而是进程内登记表 + 后台线程（与 `render_jobs` 同形）：整条链路的最后一步本来就是进程内的渲染，而把它接进队列要先有一个 `pipeline` 池。代价写在明处（重启即丢、只在本进程可见），替换点是 `PipelineJobService._run`
+  - **277** `submit` **同任务幂等**（该任务已有在跑的 job ⇒ 原样返回那一条 + `deduped=true`）：连点两次是很自然的动作，而两条链路同时改一个任务的状态轻则踩乐观锁、重则**渲染两遍**（花的是真金白银的编码时间）
+  - **278** 落点收**字符串**、由服务端按 `supported_until()` 复核（422 + `context.supported`），**不在这里再抄一份枚举** —— 抄了之后加落点时总有一处会忘，而忘了的那一处只会让新落点从界面上消失。下拉框文案的键由契约用例盯着覆盖全部落点
+  - **279** "点了会怎样"由**服务端**算（`plan_task`，与 `run_task` 共用判据），前端只负责显示：判据写两份 ⇒ 面板说能跑、点了报错（或更糟：面板说不能跑、其实能跑）
+  - **280** `PipelineJob.percent` 在 `succeeded` 时**恒为 100**：这条链路的进度回调不是连续的，最后停在哪取决于它是从哪一步收尾的（陷阱 146）。`RenderJobService` 的同一处一并修掉
+  - **281** 这一屏**不重复渲染层参数**（画布档 / 字幕 / 线程数）：要么得多问后端一次"配置里现在开着吗"（多一处会过时的显示），要么变成"看着是关的、实际跟随配置"的假开关 —— 后者比没有更糟
+- ⚠️ 新增陷阱 3 条已并入 §10（编号 146–148）
+
 ### T4.6 ⑤ 渲染面板 · **P1** ✅ **已完成（2026-09-15）**
 - 依赖：T3.4, T3.7, T4.1 ｜ 里程碑：M4 ｜ 契约：§04.2.8
 - [x] **合成进度**（阶段 + 已完成 / 总数 + 日志尾巴；**轮询** 1s，不是 WS）
@@ -1690,6 +1726,11 @@ T1.12 ✅             （一键启动）
 > ⑬ **下一件待你定**：①`T5.5` 发布面板（七区块 + 待人工队列；**顺带把发布进程接进 supervisor**，见裁定 274）；
 > ②`T5.4` 数据回收（T+1h/6h/24h/72h 采集）；③补 `T3.1` 素材入库缺口（pHash / 黑帧 / `assets ingest` CLI
 > —— 你已明确降级为**非核心**）；④按你的新要求另开（`T2.1–T2.4` 仍被 E5 权重硬阻塞）。
+> ⑭ ~~**一键出片面板**（把整条链路图形化）~~ ⇒ **已完成（2026-09-17）**，见上方 `T4.14+` 任务块。
+> `services/pipeline_service.run_task` 一直只有 CLI、没有 REST 面 —— 这一屏就是补上它：五个端点 + 一块面板
+> （填任务号 / 选落点 → 看进度 → 就地播成片），**同一个任务连点两次不会开两条**。它也是"第一支 MP4 的入口"：
+> 配音那一步就地借 worker，**不需要先把常驻池起起来**（裁定 276–281，陷阱 146–148）。
+>
 > **`T2.3`（CosyVoice 引擎路由）仍被 T2.1/E5 卡着**，但不阻塞 T2.8 —— T2.6 自带最小引擎缝，当前跑 Windows SAPI。
 >
 > **②③ 之后全线硬阻塞**：`T2.1`（E5 权重）⇒ T2.2–T2.9 ⇒ `T3.3`（时间轴 ✅，可直接开工）⇒ T3.4–T3.7 ⇒ `T4.6` 与 `T5.1` 起全部；`T4.5` 另需 T2.9。
@@ -1844,7 +1885,10 @@ T1.12 ✅             （一键启动）
 | 143 | **`db/` 里冒出 `from studio.domain.publish import …`**（契约测试 `test_db_layer_does_not_import_domain` 当场红） | 幂等键的实现写在 `domain/publish.py`，而 `publications` 的唯一写入者是 `db/repositories/`，分层是 `core → db → domain` | 纯函数下沉 `core/ids.py`（`publication_idempotency_key`），`domain.publish.idempotency_key` 留作**别名**（契约名不变） | T5.3 |
 | 144 | **测试里 `dataclasses.replace(PoolConfig(...))` 直接 `TypeError`**，而"把退避压到毫秒"也没生效 | ① `PoolConfig` 是 **pydantic 模型**不是 dataclass；②"等多久"有**两个真相源** —— `pools.yaml`（传进处理器的 `PoolConfig`）与 `pool_settings` 表（`fail` 之后算退避用的） | 用 `PoolConfig(**{**cfg.model_dump(), **overrides})`（还能顺带过一遍校验）；压测试时间要**两处一起压**，否则第二次尝试要等 60 秒 | T5.3 |
 | 145 | **手工改完 import，`ruff format` 绿、`check` 却红（I001）** | `tasks.ps1 fmt` 只跑 `ruff format`（格式化），**不管 import 排序** | 改完 import 补一条 `uv run ruff check`（或 `--fix`）；`fmt` 绿 ≠ `check` 绿 | T5.3 |
-> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 145 条见该处；跨文档引用按编号即可）。
+| 146 | **面板上那条进度条跑完停在 0%，旁边却写着「完成」** | 这条链路的进度回调**不是连续的**（配音按句、渲染按段、投递与拼母带那几步根本不回调），而 `percent` 直接按 `done/total` 算 ⇒ 最后停在哪取决于它是从哪一步收尾的。真机上 `produce_video` 最后那次回调是 `render 0/1` | `percent` 在 `status == "succeeded"` 时直接返回 100。`RenderJobService` 有同一处（已一并修） | T4.14+ |
+| 147 | **新端点的响应里少了一个字段，只有 `vue-tsc` 会告诉你** | 用 `**plan.to_dict()` 拼 payload，而响应模型里没声明那个字段 ⇒ FastAPI 按 `response_model` **静默过滤**（多出来的键不报错、少声明的字段也不报错） | `**dict` 拼 payload 时，字段清单是**响应模型**说了算：加字段要同时改模型；别指望运行时告诉你 | T4.14+ |
+| 148 | **模板里写的 `**加粗**` 在界面上是字面星号** | 前端没有 markdown 渲染器（`PanelCard` 直接 `{{ }}`），而提示语沿用了写文档的习惯 | 模板里用 `<b>` 或拆句，别写 markdown 语法 | T4.14+ |
+> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 148 条见该处；跨文档引用按编号即可）。
 
 ---
 

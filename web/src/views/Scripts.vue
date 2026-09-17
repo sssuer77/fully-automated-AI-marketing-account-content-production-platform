@@ -276,6 +276,16 @@ useTaskStream(onTaskEvent);
               >
                 去渲染 →
               </AppButton>
+              <!-- 与「去渲染」的区别：渲染面板只跑**渲染这一步**，而一键出片从这条任务
+                   当前的状态出发，该投配音就投、该拼母带就拼、该渲染就渲染 —— 一路到成片。
+                   稿子刚放行时，后者才是"我要的就是一支 MP4"的那条路。 -->
+              <AppButton
+                size="sm"
+                :title="`把 ${detail.task_id} 交给一键出片（整条链路一次跑完）`"
+                @click="ui.goTo('pipeline', detail.task_id)"
+              >
+                一键出片 →
+              </AppButton>
             </header>
 
             <div v-if="approval" class="gate">

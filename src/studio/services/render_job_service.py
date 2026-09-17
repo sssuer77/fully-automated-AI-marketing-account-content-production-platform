@@ -126,7 +126,14 @@ class RenderJob:
 
     @property
     def percent(self) -> int:
-        """粗粒度百分比。``total<=0`` ⇒ 0（**不猜**：配音与渲染两段的权重不一样）。"""
+        """粗粒度百分比。``total<=0`` ⇒ 0（**不猜**：配音与渲染两段的权重不一样）。
+
+        **跑完就是 100%**，不看最后一次回调落在哪个分母上：这条链路的进度回调不是连续的
+        （配音按句、渲染按段、挑素材那一步只有一次），而 ``produce_video`` 最后那次回调是
+        ``render 0/1`` ⇒ 按 ``done/total`` 算会得到一个 0% 的"已完成"（陷阱 #146）。
+        """
+        if self.status == "succeeded":
+            return 100
         if self.total <= 0:
             return 0
         return min(100, max(0, round(self.done * 100 / self.total)))

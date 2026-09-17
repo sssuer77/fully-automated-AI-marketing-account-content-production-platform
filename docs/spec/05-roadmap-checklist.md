@@ -223,7 +223,7 @@
 
 ---
 
-## 5.7 高频陷阱对照表（145 条 · 实现期直接查阅）
+## 5.7 高频陷阱对照表（148 条 · 实现期直接查阅）
 
 | # | 现象 | 根因 | 正确做法 | 任务 |
 | --- | --- | --- | --- | --- |
@@ -372,6 +372,9 @@
 | 143 | **`db/` 里冒出 `from studio.domain.publish import …`**（契约测试 `test_db_layer_does_not_import_domain` 当场红） | 幂等键的实现写在 `domain/publish.py`，而 `publications` 的唯一写入者是 `db/repositories/`，分层是 `core → db → domain` | 纯函数下沉 `core/ids.py`（`publication_idempotency_key`），`domain.publish.idempotency_key` 留作**别名**（契约名不变） | T5.3 |
 | 144 | **测试里 `dataclasses.replace(PoolConfig(...))` 直接 `TypeError`**，而"把退避压到毫秒"也没生效 | ① `PoolConfig` 是 **pydantic 模型**不是 dataclass；②"等多久"有**两个真相源** —— `pools.yaml`（传进处理器的 `PoolConfig`）与 `pool_settings` 表（`fail` 之后算退避用的） | 用 `PoolConfig(**{**cfg.model_dump(), **overrides})`（还能顺带过一遍校验）；压测试时间要**两处一起压**，否则第二次尝试要等 60 秒 | T5.3 |
 | 145 | **手工改完 import，`ruff format` 绿、`check` 却红（I001）** | `tasks.ps1 fmt` 只跑 `ruff format`（格式化），**不管 import 排序** | 改完 import 补一条 `uv run ruff check`（或 `--fix`）；`fmt` 绿 ≠ `check` 绿 | T5.3 |
+| 146 | **面板上那条进度条跑完停在 0%，旁边却写着「完成」** | 这条链路的进度回调**不是连续的**（配音按句、渲染按段、投递与拼母带那几步根本不回调），而 `percent` 直接按 `done/total` 算 ⇒ 最后停在哪取决于它是从哪一步收尾的。真机上 `produce_video` 最后那次回调是 `render 0/1` | `percent` 在 `status == "succeeded"` 时直接返回 100。`RenderJobService` 有同一处（已一并修） | T4.14+ |
+| 147 | **新端点的响应里少了一个字段，只有 `vue-tsc` 会告诉你** | 用 `**plan.to_dict()` 拼 payload，而响应模型里没声明那个字段 ⇒ FastAPI 按 `response_model` **静默过滤**（多出来的键不报错、少声明的字段也不报错） | `**dict` 拼 payload 时，字段清单是**响应模型**说了算：加字段要同时改模型；别指望运行时告诉你 | T4.14+ |
+| 148 | **模板里写的 `**加粗**` 在界面上是字面星号** | 前端没有 markdown 渲染器（`PanelCard` 直接 `{{ }}`），而提示语沿用了写文档的习惯 | 模板里用 `<b>` 或拆句，别写 markdown 语法 | T4.14+ |
 
 
 ---

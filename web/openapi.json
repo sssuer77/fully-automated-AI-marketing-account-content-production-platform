@@ -4306,6 +4306,456 @@
         "title": "PersonaUpdateRequest",
         "type": "object"
       },
+      "PipelineConsoleResponse": {
+        "description": "面板首屏：一次拿全（可选参数 + 在跑的那条 + 最近几条）。",
+        "properties": {
+          "active": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PipelineJobModel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "default_until": {
+            "title": "Default Until",
+            "type": "string"
+          },
+          "default_voice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Voice"
+          },
+          "engine_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine Hint"
+          },
+          "engine_ready": {
+            "title": "Engine Ready",
+            "type": "boolean"
+          },
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/PipelineJobModel"
+            },
+            "title": "Jobs",
+            "type": "array"
+          },
+          "max_log_lines": {
+            "title": "Max Log Lines",
+            "type": "integer"
+          },
+          "until_options": {
+            "items": {
+              "$ref": "#/components/schemas/PipelineUntilOptionModel"
+            },
+            "title": "Until Options",
+            "type": "array"
+          },
+          "voices": {
+            "items": {
+              "$ref": "#/components/schemas/PipelineVoiceModel"
+            },
+            "title": "Voices",
+            "type": "array"
+          }
+        },
+        "required": [
+          "until_options",
+          "default_until",
+          "voices",
+          "default_voice",
+          "engine_ready",
+          "engine_hint",
+          "active",
+          "jobs",
+          "max_log_lines"
+        ],
+        "title": "PipelineConsoleResponse",
+        "type": "object"
+      },
+      "PipelineJobModel": {
+        "description": "一次「一路做到出片」的全部可见状态（面板轮询的就是它）。",
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "done": {
+            "title": "Done",
+            "type": "integer"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "final": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "logs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Logs",
+            "type": "array"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "percent": {
+            "title": "Percent",
+            "type": "integer"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality"
+          },
+          "remediation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remediation"
+          },
+          "request": {
+            "additionalProperties": true,
+            "title": "Request",
+            "type": "object"
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "until": {
+            "title": "Until",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "task_id",
+          "until",
+          "status",
+          "stage",
+          "done",
+          "total",
+          "percent",
+          "note",
+          "created_at",
+          "started_at",
+          "finished_at",
+          "steps",
+          "final",
+          "quality",
+          "error_code",
+          "error_message",
+          "remediation",
+          "logs",
+          "request"
+        ],
+        "title": "PipelineJobModel",
+        "type": "object"
+      },
+      "PipelineJobRequest": {
+        "additionalProperties": false,
+        "description": "开一条「一路做到出片」。",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          },
+          "subtitle": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle"
+          },
+          "task_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          },
+          "voice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voice"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "title": "PipelineJobRequest",
+        "type": "object"
+      },
+      "PipelineSubmitResponse": {
+        "description": "提交的结果。",
+        "properties": {
+          "deduped": {
+            "title": "Deduped",
+            "type": "boolean"
+          },
+          "job": {
+            "$ref": "#/components/schemas/PipelineJobModel"
+          }
+        },
+        "required": [
+          "job",
+          "deduped"
+        ],
+        "title": "PipelineSubmitResponse",
+        "type": "object"
+      },
+      "PipelineTaskModel": {
+        "description": "「这条任务交给流水线会怎样」—— 按按钮**之前**显示的那一块。\n\n``runnable=False`` 时 ``reason`` 必有内容：面板据此把按钮灰掉并把原因写在旁边，\n而不是让人点了之后等一条 409 回来。判据来自\n:func:`~studio.services.pipeline_service.plan_task`（与 ``run_task`` 同一批常量）。",
+        "properties": {
+          "active_job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PipelineJobModel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "has_script": {
+            "title": "Has Script",
+            "type": "boolean"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "runnable": {
+            "title": "Runnable",
+            "type": "boolean"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "until": {
+            "title": "Until",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "title",
+          "status",
+          "until",
+          "runnable",
+          "reason",
+          "note",
+          "has_script",
+          "active_job"
+        ],
+        "title": "PipelineTaskModel",
+        "type": "object"
+      },
+      "PipelineUntilOptionModel": {
+        "description": "一个可选的落点（下拉框的一行）。\n\n``value`` 是喂给 :func:`~studio.services.pipeline_service.run_task` 的那个\n``TaskStatus``；``label`` / ``description`` 是给人看的。文案由服务端给，\n因为\"这个落点意味着什么\"只有 ``pipeline_service`` 说得准（``voicing`` 收、\n``rendering`` 不收，那条理由写在它的模块注释里）。",
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "label",
+          "description"
+        ],
+        "title": "PipelineUntilOptionModel",
+        "type": "object"
+      },
+      "PipelineVoiceModel": {
+        "description": "一个可选的音色（下拉框的一行）。",
+        "properties": {
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "is_default"
+        ],
+        "title": "PipelineVoiceModel",
+        "type": "object"
+      },
       "PolicyRequest": {
         "additionalProperties": false,
         "description": "切自动放行策略（`grade_ab` = 一键全自动；`grade_a` = 一键回退）。",
@@ -10492,6 +10942,218 @@
         "summary": "Save As Persona",
         "tags": [
           "persona"
+        ]
+      }
+    },
+    "/api/v1/pipeline/console": {
+      "get": {
+        "description": "面板首屏：一次拿全（可选落点 / 可选音色 / 在跑的那条 / 最近几条）。",
+        "operationId": "get_console_api_v1_pipeline_console_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineConsoleResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Console",
+        "tags": [
+          "pipeline"
+        ]
+      }
+    },
+    "/api/v1/pipeline/jobs": {
+      "post": {
+        "description": "开一条「一路做到出片」（**立刻返回**，活在工作线程里跑）。\n\n**同一个任务已有在跑的 job ⇒ 原样返回那一条**（服务层的幂等），此时 ``deduped=true``：\n连点两次\"开始出片\"是很自然的动作，面板据此说一句\"它还在跑\"，而不是让人以为自己开了两条。",
+        "operationId": "create_job_api_v1_pipeline_jobs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PipelineJobRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineSubmitResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Job",
+        "tags": [
+          "pipeline"
+        ]
+      }
+    },
+    "/api/v1/pipeline/jobs/{job_id}": {
+      "get": {
+        "description": "查一条的进度 / 结果（面板轮询的就是它）。",
+        "operationId": "get_job_api_v1_pipeline_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "pattern": "^p[0-9]{4,}$",
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineJobModel"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job",
+        "tags": [
+          "pipeline"
+        ]
+      }
+    },
+    "/api/v1/pipeline/jobs/{job_id}/cancel": {
+      "post": {
+        "description": "叫停一条。\n\n**协作式**：排队中的立刻作废；已经在跑的会在下一次进度回调处停下 —— 检查点只在\n**配音的每一句**与**渲染的每一段**，投递与拼母带那几步之间按取消要等它进到下一个\n回调点。这一点由服务层写进 ``note``，面板照它显示。",
+        "operationId": "cancel_job_api_v1_pipeline_jobs__job_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "pattern": "^p[0-9]{4,}$",
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineJobModel"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Job",
+        "tags": [
+          "pipeline"
+        ]
+      }
+    },
+    "/api/v1/pipeline/tasks/{task_id}": {
+      "get": {
+        "description": "这条任务现在在哪一步、点了会怎样（**面板按按钮之前**显示的就是它）。\n\n``until`` 可给可不给：面板换落点时重调一次，那一行字就跟着变（\"从 voicing 推到\ncompleted\"和\"已经在 completed 上了\"是两句话）。",
+        "operationId": "get_task_api_v1_pipeline_tasks__task_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9A-Za-z_-]{1,64}$",
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Until"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineTaskModel"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Task",
+        "tags": [
+          "pipeline"
         ]
       }
     },

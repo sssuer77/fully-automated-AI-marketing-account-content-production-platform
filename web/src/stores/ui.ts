@@ -9,6 +9,7 @@ export type PanelId =
   | "scripts"
   | "voices"
   | "renders"
+  | "pipeline"
   | "templates"
   | "assets"
   | "pools"
@@ -34,6 +35,7 @@ export const PANELS: readonly PanelDef[] = [
   { id: "scripts", label: "稿件", task: "T4.4", ready: true },
   { id: "voices", label: "配音", task: "T4.5", ready: true },
   { id: "renders", label: "渲染", task: "T4.6", ready: true },
+  { id: "pipeline", label: "一键出片", task: "T4.14+", ready: true },
   { id: "templates", label: "合成配置", task: "T4.7", ready: true },
   { id: "assets", label: "素材库", task: "T4.8", ready: true },
   { id: "logs", label: "实时日志", task: "T4.1/T4.9", ready: true },
@@ -44,8 +46,14 @@ export const PANELS: readonly PanelDef[] = [
   { id: "publish", label: "发布", task: "T5", ready: false },
 ];
 
-/** 端到端流程里能互相跳过去的四屏（T4.14：选题 → 稿件 → 配音 → 渲染）。 */
-export type FlowPanelId = "topics" | "scripts" | "voices" | "renders";
+/**
+ * 端到端流程里能互相跳过去的几屏（T4.14：选题 → 稿件 → 配音 → 渲染）。
+ *
+ * `pipeline` 是后加的第五个：它不在那条链上，而是**把整条链一次跑完**的那一屏。
+ * 加进来是为了让"我在稿件面板刚出了一版稿，直接拿它出成片"不用手抄任务号 ——
+ * 与四屏接力解决的是同一件事。
+ */
+export type FlowPanelId = "topics" | "scripts" | "voices" | "renders" | "pipeline";
 
 /** 一次待认领的跳转：去哪一屏 + 带上哪个任务号。 */
 export interface FlowHandoff {

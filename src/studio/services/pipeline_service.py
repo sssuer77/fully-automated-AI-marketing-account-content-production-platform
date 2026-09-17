@@ -85,8 +85,10 @@ from studio.services.voice_service import VoiceStageReport, enqueue_sentences, s
 
 __all__ = [
     "SUPPORTED_UNTIL",
+    "PipelinePlan",
     "PipelineReport",
     "StepReport",
+    "plan_task",
     "run_task",
 ]
 
@@ -168,6 +170,21 @@ def _rank(status: TaskStatus) -> int:
         return len(_FORWARD)
 
 
+def _check_until(until: TaskStatus) -> None:
+    """落点必须落在 :data:`SUPPORTED_UNTIL` 里。
+
+    ``run_task`` 与 ``plan_task`` 共用这一份判据：面板的预览说"能跑"、真跑起来却说
+    "落点不支持"，是最难解释的一类不一致。
+    """
+    if until not in SUPPORTED_UNTIL:
+        raise StudioError(
+            f"--until 不支持 {until.value}",
+            code=ErrorCode.STATE_TRANSITION_ILLEGAL,
+            context={"until": until.value, "supported": [item.value for item in SUPPORTED_UNTIL]},
+            remediation="落点只能是 " + " / ".join(item.value for item in SUPPORTED_UNTIL),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class StepReport:
     """流水线走过的一步（留痕：这条命令到底做了什么）。"""
@@ -233,13 +250,7 @@ def run_task(
     :param streaming_render: ``app.yaml → pipeline.streaming_render``（C7，默认关）。
         由调用方读配置传进来，与 ``outputs`` 同一条：服务层不自己去翻 YAML。
     """
-    if until not in SUPPORTED_UNTIL:
-        raise StudioError(
-            f"--until 不支持 {until.value}",
-            code=ErrorCode.STATE_TRANSITION_ILLEGAL,
-            context={"until": until.value, "supported": [item.value for item in SUPPORTED_UNTIL]},
-            remediation="落点只能是 " + " / ".join(item.value for item in SUPPORTED_UNTIL),
-        )
+    _check_until(until)
 
     if streaming_render:
         raise StudioError(
@@ -389,6 +400,76 @@ def run_task(
         steps=tuple(steps),
         final=final,
         quality=quality,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class PipelinePlan:
+    """「这条任务交给流水线会怎样」的结论（面板按按钮**之前**显示的那一行）。"""
+
+    task_id: str
+    status: str
+    until: str
+    #: 能不能跑。``False`` 时 ``reason`` 必有内容。
+    runnable: bool
+    reason: str | None
+    #: 能跑时的一句话：从哪儿推到哪儿 / 已经在落点上了
+    note: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "status": self.status,
+            "until": self.until,
+            "runnable": self.runnable,
+            "reason": self.reason,
+            "note": self.note,
+        }
+
+
+def plan_task(task_id: str, status: TaskStatus, until: TaskStatus = TaskStatus.COMPLETED) -> PipelinePlan:
+    """把"这条任务交给流水线会怎样"提前算出来（**只读一个状态，不碰库**）。
+
+    与 :func:`run_task` 的分工：这里没有副作用，判据用的是同一批常量（``_STUCK`` /
+    ``_FORWARD``）与同一个 :func:`_check_until`。把判断写两份的话，面板会说"可以跑"、
+    而真跑起来第一件事就是报错；反过来更糟：面板说"不能跑"，其实能跑 —— 于是这个按钮
+    在真需要它的时候没人敢按。
+    """
+    _check_until(until)
+    if status in _STUCK:
+        return PipelinePlan(
+            task_id=task_id,
+            status=status.value,
+            until=until.value,
+            runnable=False,
+            reason=f"任务停在 {status.value}，流水线不自动往下走",
+            note="这一步要人工或重试链介入：failed ⇒ 退避重试 / manual_pool；editing ⇒ 改稿循环",
+        )
+    if status is TaskStatus.AWAITING_APPROVAL:
+        return PipelinePlan(
+            task_id=task_id,
+            status=status.value,
+            until=until.value,
+            runnable=False,
+            reason="任务停在确认闸（awaiting_approval），流水线不代按",
+            note="在「确认闸」放行或退回之后再来",
+        )
+    if _rank(status) >= _rank(until):
+        return PipelinePlan(
+            task_id=task_id,
+            status=status.value,
+            until=until.value,
+            runnable=True,
+            reason=None,
+            note=f"已经在 {until.value} 或更靠后：再点一次不会重跑（幂等）",
+        )
+    return PipelinePlan(
+        task_id=task_id,
+        status=status.value,
+        until=until.value,
+        runnable=True,
+        reason=None,
+        note=f"从 {status.value} 一路推到 {until.value}",
     )
 
 

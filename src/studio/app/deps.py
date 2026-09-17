@@ -66,6 +66,7 @@ from studio.services.observability_service import ObservabilityService
 from studio.services.outputs_service import OutputsService
 from studio.services.overview_service import OverviewService
 from studio.services.persona_service import PersonaService
+from studio.services.pipeline_job_service import PipelineJobService
 from studio.services.pool_service import PoolService
 from studio.services.render_job_service import RenderJobService
 from studio.services.review_service import ReviewService
@@ -154,6 +155,12 @@ class AppState:
     #: 每次请求现造一份等于"刚提交的任务下一次请求就查不到了"。`lifespan` 起停它的
     #: 工作线程。代价写在 `render_job_service` 的模块注释里（重启即丢，成片不受影响）。
     render_jobs: RenderJobService
+    #: 一键出片登记表（T4.14 延伸）。**进程内单例**，与 `render_jobs` 同一条理由：
+    #: 任务表与工作线程都是内存状态。两者并存是因为管的**不是同一件事** ——
+    #: `render_jobs` 管渲染那一步（给它文案或任务号，它出片），这里管整条链路
+    #: （从任务当前状态出发，该投配音就投、该拼母带就拼、该渲染就渲染）。
+    #: `lifespan` 起停它的工作线程。
+    pipeline_jobs: PipelineJobService
     snapshots: SnapshotRegistry = field(default_factory=SnapshotRegistry)
     #: 素材库的外部工具（T4.8）。**由 `build_state` 注入**：REST 面每次现造服务，
     #: 注入点只有这一处，测试换一次假件就够（不必去 patch 路由模块的内部名字）。
@@ -230,6 +237,9 @@ def build_state(
         # 配置快照，长跑的 API 进程就会一直用启动那一刻的档位 —— 面板显示新值、
         # 实际按旧值编码，这类漂移没有任何地方会报错。
         render_jobs=RenderJobService(paths=paths, connection_factory=pool.get),
+        # `outputs=None` 与上面同一条：出片每次现读 `config/outputs.yaml`，于是
+        # "在合成配置面板改完档位、下一次出片就用新档"这句话在整条链路上也成立。
+        pipeline_jobs=PipelineJobService(paths=paths, connection_factory=pool.get),
         snapshots=snapshots,
         asset_tools=asset_tools or AssetTools(),
     )

@@ -297,6 +297,9 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │  │  │                                  #   ✅ T3.x `render_service`：文案 → 配音 → 合成 → manifest
 │  │  │                                  #      + `quality_report`（T3.7，成片实测 → quality_json）
 │  │  ├─ render_job_service.py           #   ✅ T4.6 出片任务登记表（进程内串行；T3.7 起回填 quality_json）
+│  ├─ pipeline_job_service.py         #   ✅ T4.14+ 一键出片登记表（**整条链路**：文案 → 配音 → 渲染出片）。
+│  │                                  #      与 render_job_service 同形（登记表 + 后台线程 + 轮询 + 协作式取消），
+│  │                                  #      多一条**同任务幂等**：连点两次不会开两条（裁定 277）
 │  │  ├─ pipeline_service.py             #   ✅ T3.7 编排：把**一个任务**从当前状态推到 `--until`
 │  │  │                                  #      （**为什么不在 `pipeline/` 里**：§02.1 的箭头是
 │  │  │                                  #       `services → pipeline`，pipeline 不得 import services，
@@ -321,7 +324,7 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │     ├─ main.py  lifespan.py  deps.py       #   ✅ 建应用 / 起停 Hub / 组装连接池 + LogService + 快照 provider
 │     │                                       #   ✅ T1.12：`run_server()` 被 `studio serve` 与 `workers/run_api.py` **共用一份**
 │     ├─ routers\{✅ health, ✅ logs, ✅ ws, ✅ voice, overview, topics, hot, feedback, tasks,
-│     │            scripts, sentences, voices, templates, assets, renders, ✅publish, metrics,
+│     │            scripts, sentences, voices, templates, assets, renders, ✅publish, ✅pipeline, metrics,
 │     │            pools, audit}.py
 │     │                                       #   ✅ T2.9 `voice.py`：配音操作面五个端点。**名字与计划里的
 │     │                                       #      `sentences.py` / `voices.py` 合并成一个** —— 它们服务的是
@@ -331,6 +334,8 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │     │                                        #   ✅ T5.3 `schemas/publish.py`（发布记录视图 / 待人工队列 /
 │     │                                        #      投递与处置请求；`can_retry`/`can_cancel`/`can_mark_done`
 │     │                                        #      由**服务端**算 —— 状态机规则只该有一处）
+│     │                                        #   ✅ T4.14+ `schemas/pipeline.py`（首屏 / 预览 / 开一条 / 轮询）。
+│     │                                        #      落点收**字符串**，由服务端按 `supported_until()` 复核（裁定 278）
 │     └─ middleware\{request_id.py, access_log.py, errors.py, auth.py, audit.py}
 │
 ├─ tts\                                  # ★ TTS 运行时子项目（独立 3.11 venv，uv 托管）
@@ -349,17 +354,18 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │     ├─ ✅ api\{http.ts, types.gen.ts, http.test.ts}
 │     │                                 #   http.ts 是**全前端唯一允许出现 `fetch(` 的地方**（陷阱 #59 / 契约测试拦截）
 │     ├─ ✅ api\endpoints\{health, logs, overview, topics, scripts, approvals, outputs, assets,
-│     │                    pools, persona, metrics, audit, watchdog, render, voice}.ts
+│     │                    pools, persona, metrics, audit, watchdog, render, voice, pipeline}.ts
 │     │                                 #   一个面板一份出口；请求/响应类型一律从 types.gen.ts 取，不手写形状
 │     │                                 #   voice.ts（T4.5）：sentences / voices / resynth / voice_map 四个端点
 │     ├─ ✅ ws\{client.ts, reconnect.ts, events.ts}
 │     │                                 #   events.ts 为生成物；reconnect.ts 放纯策略（退避/缺口/URL）供单测
 │     ├─ ✅ stores\{ui, overview, logs, topics, scripts, outputs, assets, pools, persona,
-│     │             metrics, audit, render, voice}.ts
+│     │             metrics, audit, render, voice, pipeline}.ts
 │     │                                 #   logs.ts（T4.9）：过滤/搜索/告警/补洞/导出
 │     │                                 #   render.ts（T4.6）/ voice.ts（T4.5）：注入点 + 纯函数 + 轮询
 │     │                                 #   voice.ts 另有二次确认流（409 ⇒ 确认框 ⇒ 带 confirm 重发）
 │     │                                 #   ui.ts（T4.14）：四屏跳转（goTo / takeHandoff）+ 纯函数（配套 ui.test.ts 14 例）
+│     │                                 #   pipeline.ts（T4.14+）：一键出片（预览 + 轮询 + 同任务幂等；配套 23 例）
 │     ├─ ✅ composables\{useWsConnection, useTaskStream}.ts
 │     ├─ ✅ components\{AppButton, StatusDot, PanelCard, LogStream, EmptyState, GradeBadge,
 │     │                  SentenceDiffList}.vue  ✅ components\tone.ts
@@ -367,9 +373,10 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │     │                                 #   隔离 DOM（下载）与不可信文本渲染（高亮）
 │     ├─ ✅ styles\{tokens.css, base.css}   #   tokens.css 是**唯一**颜色/间距/字号来源
 │     ├─ ✅ views\{Overview, Topics, Scripts, Voices, Renders, Outputs, Assets, Logs, Pools,
-│     │              Metrics, Audit, Personas}.vue
+│     │              Metrics, Audit, Personas, Pipeline}.vue
 │     │                                 #   Voices.vue（T4.5）：逐句进度条 + 逐句表（试听/重配）+ 音色映射 + 确认框
 │     │                                 #   T4.14：Topics / Scripts / Voices / Renders 四屏各带「去下一屏 →」，跳转语义在 stores/ui.ts
+│     │                                 #   Pipeline.vue（T4.14+）：一键出片 —— 填任务号 / 选落点 → 预览 → 进度 → 就地播成片
 │     ├─ ✅ App.vue  ✅ main.ts  ✅ env.d.ts
 │     └─ （待 T5.x）views\Publish.vue  stores\publish.ts
 │

@@ -562,6 +562,116 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pipeline/console": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Console
+         * @description 面板首屏：一次拿全（可选落点 / 可选音色 / 在跑的那条 / 最近几条）。
+         */
+        get: operations["get_console_api_v1_pipeline_console_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipeline/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Job
+         * @description 开一条「一路做到出片」（**立刻返回**，活在工作线程里跑）。
+         *
+         *     **同一个任务已有在跑的 job ⇒ 原样返回那一条**（服务层的幂等），此时 ``deduped=true``：
+         *     连点两次"开始出片"是很自然的动作，面板据此说一句"它还在跑"，而不是让人以为自己开了两条。
+         */
+        post: operations["create_job_api_v1_pipeline_jobs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipeline/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Job
+         * @description 查一条的进度 / 结果（面板轮询的就是它）。
+         */
+        get: operations["get_job_api_v1_pipeline_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipeline/jobs/{job_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Job
+         * @description 叫停一条。
+         *
+         *     **协作式**：排队中的立刻作废；已经在跑的会在下一次进度回调处停下 —— 检查点只在
+         *     **配音的每一句**与**渲染的每一段**，投递与拼母带那几步之间按取消要等它进到下一个
+         *     回调点。这一点由服务层写进 ``note``，面板照它显示。
+         */
+        post: operations["cancel_job_api_v1_pipeline_jobs__job_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipeline/tasks/{task_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Task
+         * @description 这条任务现在在哪一步、点了会怎样（**面板按按钮之前**显示的就是它）。
+         *
+         *     ``until`` 可给可不给：面板换落点时重调一次，那一行字就跟着变（"从 voicing 推到
+         *     completed"和"已经在 completed 上了"是两句话）。
+         */
+        get: operations["get_task_api_v1_pipeline_tasks__task_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/pools": {
         parameters: {
             query?: never;
@@ -622,6 +732,138 @@ export interface paths {
          *     不折叠成一句「部分失败」—— 用户要的是「哪几条没进去、为什么」。
          */
         post: operations["requeue_dead_api_v1_pools_requeue_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/publish/publications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Publications
+         * @description 发布看板（六状态各若干条 + 全量计数）。
+         *
+         *     带上 ``task_id`` ⇒ 只回这条任务的记录，``counts`` 也**只算这条任务的**：
+         *     任务详情页里显示"这条片子发了 1 条、失败 2 次"，而全站计数放在那里会让人以为
+         *     整个系统只有这几条。
+         */
+        get: operations["list_publications_api_v1_publish_publications_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/publish/queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Manual Queue
+         * @description **待人工**队列（§06.10）：自动这条路走完了，等人做决定的那几条。
+         *
+         *     每一条都带着 ``error_code`` / ``error_message`` / ``evidence``（截图与 DOM 快照的
+         *     路径）—— 那正是"失败可排查"（R13）要的东西：人要能看着截图决定是重试、是去平台上
+         *     手工发、还是干脆取消。
+         */
+        get: operations["manual_queue_api_v1_publish_queue_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/publish/tasks/{task_id}/enqueue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enqueue Task
+         * @description 把这条任务排进发布池（幂等）。
+         *
+         *     **不看 ``publish.enabled``**：开关关着的时候投递依然成功，作业会在 worker 那一侧
+         *     转人工并带上 ``PUBLISH_DISABLED``。投递期直接拒绝的话，面板上什么都不会出现 ——
+         *     而"点了没反应"比"有一条带原因的待人工"难查得多（见模块注释）。
+         */
+        post: operations["enqueue_task_api_v1_publish_tasks__task_id__enqueue_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/publish/{publication_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel
+         * @description 人工取消：``canceled`` + 作废还没被认领的作业。
+         */
+        post: operations["cancel_api_v1_publish__publication_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/publish/{publication_id}/manual-done": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Manual Done
+         * @description 标记已人工处理（**必须写说明**，见服务层注释）。
+         */
+        post: operations["manual_done_api_v1_publish__publication_id__manual_done_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/publish/{publication_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry
+         * @description 人工重试：记录回 ``queued`` + 作业重排（两者都做，见服务层注释）。
+         */
+        post: operations["retry_api_v1_publish__publication_id__retry_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2753,6 +2995,162 @@ export interface components {
             tone?: string | null;
         };
         /**
+         * PipelineConsoleResponse
+         * @description 面板首屏：一次拿全（可选参数 + 在跑的那条 + 最近几条）。
+         */
+        PipelineConsoleResponse: {
+            active: components["schemas"]["PipelineJobModel"] | null;
+            /** Default Until */
+            default_until: string;
+            /** Default Voice */
+            default_voice: string | null;
+            /** Engine Hint */
+            engine_hint: string | null;
+            /** Engine Ready */
+            engine_ready: boolean;
+            /** Jobs */
+            jobs: components["schemas"]["PipelineJobModel"][];
+            /** Max Log Lines */
+            max_log_lines: number;
+            /** Until Options */
+            until_options: components["schemas"]["PipelineUntilOptionModel"][];
+            /** Voices */
+            voices: components["schemas"]["PipelineVoiceModel"][];
+        };
+        /**
+         * PipelineJobModel
+         * @description 一次「一路做到出片」的全部可见状态（面板轮询的就是它）。
+         */
+        PipelineJobModel: {
+            /** Created At */
+            created_at: string;
+            /** Done */
+            done: number;
+            /** Error Code */
+            error_code: string | null;
+            /** Error Message */
+            error_message: string | null;
+            /** Final */
+            final: string | null;
+            /** Finished At */
+            finished_at: string | null;
+            /** Id */
+            id: string;
+            /** Logs */
+            logs: string[];
+            /** Note */
+            note: string;
+            /** Percent */
+            percent: number;
+            /** Quality */
+            quality: {
+                [key: string]: unknown;
+            } | null;
+            /** Remediation */
+            remediation: string | null;
+            /** Request */
+            request: {
+                [key: string]: unknown;
+            };
+            /** Stage */
+            stage: string;
+            /** Started At */
+            started_at: string | null;
+            /** Status */
+            status: string;
+            /** Steps */
+            steps: {
+                [key: string]: unknown;
+            }[];
+            /** Task Id */
+            task_id: string;
+            /** Total */
+            total: number;
+            /** Until */
+            until: string;
+        };
+        /**
+         * PipelineJobRequest
+         * @description 开一条「一路做到出片」。
+         */
+        PipelineJobRequest: {
+            /** Profile */
+            profile?: string | null;
+            /** Seed */
+            seed?: number | null;
+            /** Subtitle */
+            subtitle?: boolean | null;
+            /** Task Id */
+            task_id: string;
+            /** Until */
+            until?: string | null;
+            /** Voice */
+            voice?: string | null;
+        };
+        /**
+         * PipelineSubmitResponse
+         * @description 提交的结果。
+         */
+        PipelineSubmitResponse: {
+            /** Deduped */
+            deduped: boolean;
+            job: components["schemas"]["PipelineJobModel"];
+        };
+        /**
+         * PipelineTaskModel
+         * @description 「这条任务交给流水线会怎样」—— 按按钮**之前**显示的那一块。
+         *
+         *     ``runnable=False`` 时 ``reason`` 必有内容：面板据此把按钮灰掉并把原因写在旁边，
+         *     而不是让人点了之后等一条 409 回来。判据来自
+         *     :func:`~studio.services.pipeline_service.plan_task`（与 ``run_task`` 同一批常量）。
+         */
+        PipelineTaskModel: {
+            active_job: components["schemas"]["PipelineJobModel"] | null;
+            /** Has Script */
+            has_script: boolean;
+            /** Note */
+            note: string;
+            /** Reason */
+            reason: string | null;
+            /** Runnable */
+            runnable: boolean;
+            /** Status */
+            status: string;
+            /** Task Id */
+            task_id: string;
+            /** Title */
+            title: string;
+            /** Until */
+            until: string;
+        };
+        /**
+         * PipelineUntilOptionModel
+         * @description 一个可选的落点（下拉框的一行）。
+         *
+         *     ``value`` 是喂给 :func:`~studio.services.pipeline_service.run_task` 的那个
+         *     ``TaskStatus``；``label`` / ``description`` 是给人看的。文案由服务端给，
+         *     因为"这个落点意味着什么"只有 ``pipeline_service`` 说得准（``voicing`` 收、
+         *     ``rendering`` 不收，那条理由写在它的模块注释里）。
+         */
+        PipelineUntilOptionModel: {
+            /** Description */
+            description: string;
+            /** Label */
+            label: string;
+            /** Value */
+            value: string;
+        };
+        /**
+         * PipelineVoiceModel
+         * @description 一个可选的音色（下拉框的一行）。
+         */
+        PipelineVoiceModel: {
+            /** Is Default */
+            is_default: boolean;
+            /** Name */
+            name: string;
+        };
+        /**
          * PolicyRequest
          * @description 切自动放行策略（`grade_ab` = 一键全自动；`grade_a` = 一键回退）。
          */
@@ -3031,6 +3429,198 @@ export interface components {
             quality?: number | null;
             /** Width */
             width?: number | null;
+        };
+        /**
+         * PublicationList
+         * @description 一份发布面板快照（六状态计数 + 各若干条）。
+         */
+        PublicationList: {
+            /** By Status */
+            by_status?: {
+                [key: string]: components["schemas"]["PublicationView"][];
+            };
+            /** Counts */
+            counts?: {
+                [key: string]: number;
+            };
+            /** Hint */
+            hint?: string | null;
+            /** Manual Required */
+            manual_required?: components["schemas"]["PublicationView"][];
+        };
+        /**
+         * PublicationView
+         * @description 一条发布记录（``PublicationRow.to_dict()`` 的展示模型）。
+         */
+        PublicationView: {
+            /** Account Id */
+            account_id: string;
+            /**
+             * Attempt Count
+             * @default 0
+             */
+            attempt_count: number;
+            /**
+             * Can Cancel
+             * @default false
+             */
+            can_cancel: boolean;
+            /**
+             * Can Mark Done
+             * @default false
+             */
+            can_mark_done: boolean;
+            /**
+             * Can Retry
+             * @default false
+             */
+            can_retry: boolean;
+            /**
+             * Caption
+             * @default
+             */
+            caption: string;
+            /** Cover Path */
+            cover_path?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /**
+             * Dry Run
+             * @default false
+             */
+            dry_run: boolean;
+            /** Error Code */
+            error_code?: string | null;
+            /** Error Message */
+            error_message?: string | null;
+            /** Evidence */
+            evidence?: {
+                [key: string]: unknown;
+            };
+            /** Finished At */
+            finished_at?: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Max Attempts
+             * @default 3
+             */
+            max_attempts: number;
+            /** Metrics */
+            metrics?: {
+                [key: string]: unknown;
+            };
+            /** Next Metric At */
+            next_metric_at?: string | null;
+            /** Platform */
+            platform: string;
+            /** Platform Post Id */
+            platform_post_id?: string | null;
+            /** Profile Key */
+            profile_key?: string | null;
+            /** Published At */
+            published_at?: string | null;
+            /** Scheduled At */
+            scheduled_at?: string | null;
+            /** Status */
+            status: string;
+            /** Tags */
+            tags?: string[];
+            /** Task Id */
+            task_id: string;
+            /** Title */
+            title: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Url */
+            url?: string | null;
+            /** Video Path */
+            video_path: string;
+        };
+        /**
+         * PublishActionRequest
+         * @description 人工处置的请求体（重试 / 取消 / 标记已人工处理共用）。
+         */
+        PublishActionRequest: {
+            /**
+             * Actor
+             * @default user
+             */
+            actor: string;
+            /**
+             * Actor Ref
+             * @description 操作人标识（写进留痕）
+             */
+            actor_ref?: string | null;
+            /**
+             * Reason
+             * @description 说明（标记已处理时必填）
+             */
+            reason?: string | null;
+        };
+        /**
+         * PublishActionResponse
+         * @description 人工处置的结论。
+         */
+        PublishActionResponse: {
+            /** Action */
+            action: string;
+            /**
+             * Job Changed
+             * @default false
+             */
+            job_changed: boolean;
+            /** Message */
+            message: string;
+            publication: components["schemas"]["PublicationView"];
+        };
+        /**
+         * PublishEnqueueRequest
+         * @description 投递请求：把这条任务排进发布池。
+         */
+        PublishEnqueueRequest: {
+            /**
+             * Account Id
+             * @description 指定账号；缺省 = 该平台唯一启用的那个
+             */
+            account_id?: string | null;
+            /**
+             * Dry Run
+             * @description 演练（走完前七步停在第 ⑥ 步之前）；缺省 = 跟随 publish.yaml
+             */
+            dry_run?: boolean | null;
+            /**
+             * Platforms
+             * @description 目标平台；缺省 = 所有启用账号所在的平台
+             */
+            platforms?: string[] | null;
+            /**
+             * Scheduled At
+             * @description 定时发布时刻（T5.6 用）
+             */
+            scheduled_at?: string | null;
+        };
+        /**
+         * PublishEnqueueResponse
+         * @description 投递结论。
+         */
+        PublishEnqueueResponse: {
+            /**
+             * Missing
+             * @default false
+             */
+            missing: boolean;
+            /** Platforms */
+            platforms?: string[];
+            /**
+             * Queued
+             * @default 0
+             */
+            queued: number;
+            /** Skipped */
+            skipped?: string[];
+            /** Task Id */
+            task_id: string;
         };
         /**
          * RejectBody
@@ -5281,6 +5871,154 @@ export interface operations {
             };
         };
     };
+    get_console_api_v1_pipeline_console_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineConsoleResponse"];
+                };
+            };
+        };
+    };
+    create_job_api_v1_pipeline_jobs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PipelineJobRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineSubmitResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_job_api_v1_pipeline_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineJobModel"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_job_api_v1_pipeline_jobs__job_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineJobModel"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_task_api_v1_pipeline_tasks__task_id__get: {
+        parameters: {
+            query?: {
+                until?: string | null;
+            };
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineTaskModel"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_pools_api_v1_pools_get: {
         parameters: {
             query?: never;
@@ -5354,6 +6092,212 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RequeueResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_publications_api_v1_publish_publications_get: {
+        parameters: {
+            query?: {
+                /** @description 每个状态最多几条 */
+                limit?: number;
+                /** @description 只看这条任务 */
+                task_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    manual_queue_api_v1_publish_queue_get: {
+        parameters: {
+            query?: {
+                /** @description 最多几条 */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enqueue_task_api_v1_publish_tasks__task_id__enqueue_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PublishEnqueueRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishEnqueueResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_api_v1_publish__publication_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PublishActionRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishActionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    manual_done_api_v1_publish__publication_id__manual_done_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PublishActionRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishActionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_api_v1_publish__publication_id__retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PublishActionRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishActionResponse"];
                 };
             };
             /** @description Validation Error */

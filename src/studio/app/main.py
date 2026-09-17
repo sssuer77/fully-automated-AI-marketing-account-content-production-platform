@@ -30,6 +30,7 @@ from studio.app.routers.metrics import router as metrics_router
 from studio.app.routers.outputs import router as outputs_router
 from studio.app.routers.overview import router as overview_router
 from studio.app.routers.persona import router as persona_router
+from studio.app.routers.pipeline import router as pipeline_router
 from studio.app.routers.pools import router as pools_router
 from studio.app.routers.publish import router as publish_router
 from studio.app.routers.render import router as render_router
@@ -89,6 +90,7 @@ def create_app(
     application.include_router(assets_router)
     application.include_router(watchdog_router)
     application.include_router(render_router)
+    application.include_router(pipeline_router)
     application.include_router(voice_router)
     application.include_router(publish_router)
     application.include_router(ws_router)
