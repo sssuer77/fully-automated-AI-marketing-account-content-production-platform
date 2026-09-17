@@ -578,17 +578,39 @@
 - **施工裁定（本轮新增 304）**：
   - **304** **不照抄上游 `requirements.txt`**，单独维护 `tts/requirements-cosyvoice.txt`：上游锁 `torch==2.3.1`，与本项目已验证的 `2.4.0+cu121` 冲突 —— 照单全收等于把一个能跑的环境换成另一个要重新验证的环境
 
-### T2.2 常驻推理服务 + 并发实测标定 · **P0**
+### T2.2 常驻推理服务 + 并发实测标定 · **P0** ✅ **已完成（2026-09-17）**
 - 依赖：T2.1 ｜ 里程碑：M2 ｜ 契约：§04.3.5 / 裁决 C8
-- [ ] HTTP 服务接口：`/health`、`/warmup`、`/unload`、`/voices`、`/synth`
-- [ ] GPU 串行信号量（**默认并发 1**，可调 1–3）
-- [ ] **fp16 常驻** + 空闲 20min 卸载
-- [ ] 429 背压（超并发请求不排队雪崩）
-- [ ] **实测标定**：`scripts/bench_tts.py` 跑并发 1/2/3，把实测结论**回写** `pools.yaml`
-- [ ] OOM 自动降并发（连续 3 次 `TTS_OOM` ⇒ `concurrency-1` + `audit_ops`，恢复需人工确认）
-- ✅ `curl 127.0.0.1:8811/health` → `{ready:true,device:"cuda",model_state:"ready"}`；`python scripts/bench_tts.py --concurrency 1` 产出延迟基线；**首句延迟 <5s**（常驻 + 预热）
+- [x] HTTP 服务接口：`/health`、`/warmup`、`/unload`、`/voices`、`/synth`（`src/studio/tts/server.py`）
+- [x] GPU 串行信号量（**实测裁定 1**，可调 1–3；`config/tts.yaml: server.concurrency`）
+- [x] **fp16 常驻** + 空闲 20min 卸载（看门狗 30s 一跳；`POST /unload` 手动版）
+- [x] 429 背压（`queue_max=8`；超了回 `TTS_BUSY`，**排队不雪崩**）
+- [x] **实测标定**：`scripts/bench_tts.py` 跑并发 1/2/3 ⇒ 结论 **1**，已回写 `pools.yaml` 与 `tts.yaml`
+- [x] OOM 自动降并发（T4.10 已落地：`db/queue.py` 连续 `oom_threshold` 次 `TTS_OOM` ⇒ 池并发 −1 + `audit_ops`，恢复需人工确认）
+- ✅ **真机标定读数**（RTX 2080 SUPER 8 GB · `docs/runbook/tts_concurrency.md` · 原始读数 `tts_concurrency.json`）：
+  模型加载 16890 ms · 常驻显存 2442 MB
+  | 并发 | ok | 中位 RTF | 峰值显存 | 墙钟 |
+  | --- | --- | --- | --- | --- |
+  | 1 | 3 | **0.819** | 3643 MB | 41.38s |
+  | 2 | 3 | 1.344 | 4060 MB | 36.67s |
+  | 3 | 3 | 2.021 | 4090 MB | 35.61s |
+  ⇒ **2/3 路都不会 OOM，但吞吐只快 11% / 14%（理想 +100%），中位 RTF 却涨 1.6–2.5 倍** ⇒ 裁定 **306**：并发取 **1**
+- ✅ **真机 HTTP 冒烟**（跑在 8799，**没碰你自己的 8787/8788**）：`/health` ⇒ `ready:true · device:cuda · fp16:true · sample_rate:24000`；
+  `/warmup` 真念一句；`/voices` 列出 `bigbear` / `littlebear` 均 usable；`/synth` ⇒ `duration_ms=12000 · synth_ms=11515 · rtf=0.96`
+  （ffprobe 复核 12000ms / 24000Hz / 有音轨）；`../evil.wav` 与 `C:/evil.wav` ⇒ **400 `CONFIG_PATH_OUT_OF_BOUNDS`**；
+  未知音色 ⇒ **422 `TTS_VOICE_MISSING`**（带 `available` 清单）；`/unload` ⇒ `freed_mb=2402`
+- ✅ **验收命令**：`pytest tests/unit/tts/test_server.py tests/unit/tts/test_cosyvoice_backend.py -q` ⇒ **38 passed**（FakeBackend 注入，无 GPU 也能跑）；
+  `pytest tests/unit/services/test_service_manager.py -q` ⇒ **60 passed**（含「argv 指向子环境解释器」「PYTHONPATH 前置」「配了 python 但文件不在 ⇒ 不静默换」）
+- ✅ **门禁（2026-09-18）**：`.\tasks.ps1 check` ⇒ **3715 passed / 32 skipped / 27 deselected**（162s）；
+  `web: npm run verify` ⇒ **428 passed** + `vite build` + dist 体积门禁 OK（本轮**没动前端**）
 - ⚠️ **R4 显存紧**（8GB，桌面占 1.49GB）⇒ fp16 + 单并发 + 禁 bf16
 - ⚠️ 陷阱 #10 首句延迟 20s+ ⇒ 常驻服务 + `/warmup` + 空闲卸载
+- ⚠️ 陷阱 **162**（`tts/.venv` 缺 `tzdata` ⇒ `import studio.core.clock` 抛 `ZoneInfoNotFoundError`）· **163**（子环境没装 `studio` 包 ⇒ 启动器必须前置 `PYTHONPATH`）
+- **施工裁定（本轮新增 305–308）**：
+  - **305** 音色的**注册 / 注销不在推理服务上**（`POST|DELETE /voices` ⇒ **501**）：入库判定（四条硬拒 + R2 留痕）只在 T2.4 的 `AssetService.ingest` 有一份，服务上再实现一遍就是两份判定迟早对不上（与陷阱 #150 同族）
+  - **306** 常驻服务的并发**不按显存判，按吞吐增益判**：8 GB 卡上 2/3 路不 OOM，但吞吐只 +13%、RTF 涨 1.6–2.5 倍，且 render 池要共用这块卡 ⇒ 取 **1**。门槛写死在 `bench_tts.py: MIN_GAIN_RATIO = 0.4`（升一档至少拿到理想增益的 40%）
+  - **307** `tts` 的「模块在不在」（`server_missing`）与「子环境在不在」（`env_missing`）**分开报**：模块不在 ⇒ 写代码，环境不在 ⇒ 建 venv；最糟的第三种结果是拉起来一个「活着、`/health` 回 200、每句都报 `no module named torch`」的进程（**真机复现过**：T2.2 落地前起的那个 `tts` 进程就是这个状态）
+  - **308** 服务自己带 `concurrency` 时，标定脚本必须在**进程内**直驱引擎：打 HTTP 测到的是**排队**，不是显卡容量。`--from-json` 支持拿上次读数重出报告 —— 改措辞不必重跑 40 秒 GPU
+  - **309** **`mypy.ini` 里不能写 `[[mypy.overrides]]`**（那是 `pyproject.toml` 的写法）：写在 INI 里会被 mypy **静默忽略**，不报配置错。原文件里那段一直没生效，只因那几个包恰好都装着，所以没人发现；直到 `torch` / `soundfile` / `cosyvoice` 只在子环境里，才炸出来。改成逐段 `[mypy-<模块>]`（见陷阱 164）
 
 ### T2.3 引擎适配层与路由 · **P0**
 - 依赖：T2.2 ｜ 里程碑：M2 ｜ 契约：§04.3.2 / §04.3.3
@@ -605,7 +627,7 @@
 - [x] 质量校验的**四条硬拒**：段数 2–3 / 单段 10–30s / 无削波（峰值 ≤ −1.0 dBFS）/ 采样率 ≥ 16 kHz
 - [ ] 质量校验的三条 `warn`：无 BGM / 有效语音占比 ≥ 70% / 单发言人 —— **本轮刻意不做**（裁定 287）
 - [x] 入库命令 `scripts/ingest_voice_src.py`：扫目录 → 体检 → 写 `voice_profiles`（判定不重写，见裁定 289）
-- [ ] 零样本复刻注册 + **试听样本生成** —— 注册已通（库里有行 ⇒ `usable_voices` 选得到）；试听样本待 `T2.2`/`T2.3`（**E5 权重已就位**，差的是常驻引擎）
+- [ ] 零样本复刻注册 + **试听样本生成** —— 注册已通（库里有行 ⇒ `usable_voices` 选得到）；试听样本待 `T2.3`（**常驻引擎已于 T2.2 就位**，差的是引擎适配层与路由）
 - [x] **R2 合规**：音色 ID 与展现名**解耦**（`voice_map` 可换，配音面板可操作，**不用改代码**）
 - [x] 来源登记留档（`proof_path` ← 目录里的 `profile.json`）
 - ✅ **验收命令**（规格里的 `studio tts list` **不存在**，口径改如下 —— 裁定 288）：
@@ -1792,12 +1814,12 @@ T1.12 ✅             （一键启动）
 | 阶段 | 任务数 | 已完成 | 里程碑 | 门禁状态 |
 | --- | --- | --- | --- | --- |
 | **T1** 基座 + 脚手架 + 选题池 | 12 | **12**（T1.1–T1.12 全部 ✅） | M1 | [ ] |
-| **T2** CosyVoice 配音 | 9 | **6**（**T2.1 ✅** T2.5 ✅ T2.6 ✅ T2.7 ✅ T2.8 ✅ T2.9 ✅）+ **1 部分**（T2.4 🔶） | M2 | [ ] |
+| **T2** CosyVoice 配音 | 9 | **7**（**T2.1 ✅ T2.2 ✅** T2.5 ✅ T2.6 ✅ T2.7 ✅ T2.8 ✅ T2.9 ✅）+ **1 部分**（T2.4 🔶） | M2 | [ ] |
 | **T3** 渲染（一期单遍合成） | 7 | **4**（T3.2 ✅ T3.5 ✅ T3.6 ✅ T3.7 ✅）+ **3 部分**（T3.1 🔶 T3.3 🔶 T3.4 🔶） | M3 | [ ] |
 | **T4** 操作台 + 四池 + 无人值守 | 14 | **14**（T4.1 ✅ T4.2 ✅ T4.3 ✅ T4.4 ✅ **T4.5 ✅** T4.6 ✅ T4.7 ✅ T4.8 ✅ T4.9 ✅ T4.10 ✅ T4.11 ✅ T4.12 ✅ T4.13 ✅ **T4.14 ✅** —— **T4 齐了**） | M4 | [ ] |
 | **T5** 发布 + 定时 + 报告 | 8 | **4**（T5.1 ✅ T5.2 ✅ T5.3 ✅ **T5.5 ✅**） | M5 | [ ] |
 | **T6** 追加任务（设置面板） | 1 | **1**（T6.1 ✅） | — | *不占一期工期* |
-| **合计（一期）** | **50** | **40**（另有 **4** 项部分完成） | — | — |
+| **合计（一期）** | **50** | **41**（另有 **4** 项部分完成） | — | — |
 | *T3-P1…T3-P4* | *4（二期）* | *0* | — | *不占一期工期* |
 
 **外部阻塞项**：E1 跑酷素材 🔴 / E2 水印 PNG 🔴 / E3 BGM 🔴 / E4 原声 🔴 / ~~E5 CosyVoice 权重~~ ✅ **已就位 2026-09-17** / ~~E6 LLM Key~~ ✅ **面板可配 2026-09-17** / E7 persona 🟡 / E8 字体 🟡
@@ -1816,6 +1838,10 @@ T1.12 ✅             （一键启动）
 > 注 2：**M1 仍未算过**（T1.12 裁定 108）：一键启动已可用，但「5 进程全 ready」只差 `tts`（T2.2）——
 > `draft`（T4.11）· `voice`（T2.6）· `render`（T3.7）都已注册真实 handler ⇒ 2026-09-16 实测 `spawned = api/draft/voice/render`。
 > ⇒ M1 的验收口径 = 「`api` ready + 其余**如实报降级**且不阻塞」。**E5（CosyVoice 权重）已于 2026-09-17 就位** ⇒ `T2.1` ✅，剩下的只是 `T2.2` 常驻服务；当初为绕开它先做了 T4.1（前端脚手架，P1，2026-09-14 ✅）。
+> ⇒ **2026-09-17 `T2.2` 落地后**：`tts` 的 `server_missing` / `env_missing` 两条判据都已消解，五个进程的入口、解释器、`PYTHONPATH` 都齐了。
+> **但「5 进程全 ready」仍未真机复核** —— 你机器上 8787/8788 跑着自己起的服务，其中 `tts` 是 T2.2 落地**之前**起的
+> （系统 python ⇒ `/health` 回 200 但每句报 `no module named torch`，正是裁定 307 说的第三种结果），**没动它**。
+> 复核方式：`停止.bat` → `启动.bat`，`tts` 会改用 `tts/.venv` 解释器重启。
 >
 > 注 3：**下一批可开工任务**（依赖已满足）——
 > ① ~~`T2.5` 文本归一化与切分~~ ⇒ **已完成（2026-09-15）**，见上方任务块。
@@ -1856,12 +1882,16 @@ T1.12 ✅             （一键启动）
 > ⑰ ~~**设置面板（LLM 通道与密钥）**~~ ⇒ **已完成（2026-09-17 · T6.1）**：密钥不再需要改代码或配环境变量，打开「设置」面板填即生效（`config/secrets.yaml`，**不入库**，env 优先）；
 > 探测判定 CLI 与面板**共用一份**（裁定 300–303）。
 > ⑱ ~~**E5 CosyVoice 权重**~~ ⇒ **已就位（2026-09-17）**：源码 revision 锁定 + 权重 21 文件 / 5.23 GB + 真机合成读数（加载 10.4s / 显存 2.38 GB / 13 字 8.4s → 7.72s 音频），见 `T2.1` 任务块。
-> ⑲ **下一件待你定**：①起 `T2.2` 常驻推理服务（权重已就位 —— 这是把 CosyVoice 从「能加载」变成「能持续供片」的那一步）；
+> ⑲ ~~**T2.2 常驻推理服务 + 并发标定**~~ ⇒ **已完成（2026-09-17）**，见上方任务块。`src/studio/tts/server.py`
+> （五端点 + 429 背压 + 空闲卸载 + 看门狗）+ `src/studio/tts/cosyvoice.py`（fp16 常驻后端）+ `scripts/bench_tts.py`
+> （真机标定 ⇒ 并发 **1**，已回写 `pools.yaml` / `tts.yaml`）；`tts` 进程改用 `tts/.venv` 解释器 + 前置 `PYTHONPATH`
+> （裁定 305–308，陷阱 162–163）。
+> ⑳ **下一件待你定**：①`T2.3` 引擎适配层与路由（**当前关键路径的下一个** —— 常驻服务已能供片，缺的是「谁去调它、失败了怎么办」）；
 > ②把 `publish` 进程接进 supervisor（裁定 274 的收尾 —— 面板已落地，接进去就是「面板能看、进程能起」）；
 > ③`T5.4` 数据回收（面板「数据回流」区块现在只有时刻表、没有数字，缺的正是它）；
 > ④补 `T3.1` 素材入库缺口（pHash / 黑帧 / `assets ingest` CLI —— 你已明确降级为**非核心**）。
 >
-> **当前关键路径**：`T2.1 ✅` ⇒ **`T2.2`（常驻服务）→ T2.3（引擎路由）→ T2.4 正式音色** ⇒ `T3.3`（时间轴 ✅，可直接开工）⇒ T3.4–T3.7 ⇒ `T4.6` 与 `T5.1` 起全部。
+> **当前关键路径**：`T2.1 ✅` ⇒ `T2.2 ✅` ⇒ **`T2.3`（引擎路由）→ T2.4 正式音色** ⇒ `T3.3`（时间轴 ✅，可直接开工）⇒ T3.4–T3.7 ⇒ `T4.6` 与 `T5.1` 起全部。
 > ⇒ **没有任何硬阻塞**；E1/E2/E3/E4 只影响各自任务的真机验收，**不影响开发推进**。
 >
 > 注 4：**口吻 / 受众 / 禁区是数据，不是代码**（本轮的明确要求，现状核对如下）——
@@ -2024,7 +2054,10 @@ T1.12 ✅             （一键启动）
 | 159 | **照抄上游 `requirements.txt` 会把能跑的环境降级** | CosyVoice 上游锁 `torch==2.3.1`，而本项目是 `torch 2.4.0+cu121`（`D:\Torch` 里的 cp311 wheel） | 单独维护 `tts/requirements-cosyvoice.txt`，**只列推理真正用到的**，**不写 torch / torchaudio**（由 `tts/pyproject.toml` 负责，依赖想升级会被 uv 拦住） | T2.1 |
 | 160 | **`pip install openai-whisper` 报 `No module named 'pkg_resources'`**；装上了又 `No module named 'matcha'` | ① whisper 的 `setup.py` 用 `pkg_resources`，而 `setuptools>=81` 已删掉它；② `cosyvoice` 依赖 `third_party/Matcha-TTS` | ① `setuptools<81` **且** `--no-build-isolation`；② `PYTHONPATH` **必须同时含** `D:\ai_models\CosyVoice` **和** `...\third_party\Matcha-TTS`（缺后者报 `matcha`） | T2.1 |
 | 161 | **`inference_zero_shot` 传张量报错；`torchaudio.save` 报 `Invalid file`** | 该 revision 的第三参是**参考音路径**不是张量；且此环境的 `torchaudio.save` 不可用 | 第三参传**路径**；落盘用 `soundfile.write` | T2.1 |
-> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 161 条见该处；跨文档引用按编号即可）。
+| 162 | **`tts/.venv` 里 `import studio.core.clock` 抛 `ZoneInfoNotFoundError`**（`No time zone found with key Asia/Shanghai`） | Windows 没有系统 tz 数据库，CPython 要靠 `tzdata` 包；pip **不装也不报缺** | 把 `tzdata` 写进 `tts/requirements-cosyvoice.txt`（已装）。报错点离「少装一个包」隔了**四层 import**（`studio.tts.server` → … → `studio.core.clock`），别顺着调用栈查 | T2.2 |
+| 163 | **tts 进程活着、`/health` 回 200，可每个请求都报 `No module named 'studio'`** | `tts/pyproject.toml` 是 `package = false` ⇒ 子环境里**没有**本项目；启动器不前置 `PYTHONPATH` 就 import 不到 | `ServiceSpec.env_prepend` 前置 `PYTHONPATH=<仓库>/src`（**前置不覆盖**已有值）；手工起进程要自己加 | T2.2 |
+| 164 | **`mypy.ini` 里的 `[[mypy.overrides]]` 段一个字都没生效，却也不报错** | `[[...]]` 是 **TOML** 的数组表写法（`pyproject.toml` 用）；INI 里 mypy **静默忽略**整段 —— 连「未知键」都不提醒 | INI 一律写 `[mypy-<模块>]`（`[mypy-yaml.*]` 这种）。判据：写完后**故意**把某个 `[mypy-<模块>]` 删掉，看那个 import-not-found 会不会**回来** —— 回来了才说明这一段真的在生效 | T2.2 |
+> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 164 条见该处；跨文档引用按编号即可）。
 
 ---
 

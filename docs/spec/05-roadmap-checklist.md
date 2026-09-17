@@ -32,8 +32,8 @@
 | 🔴 **BGM 音乐库** | T3.1 | ≥20 首授权曲（可选，缺失则静音降级） | **`D:\MUSIC` 为空** |
 | 🔴 **熊大熊二原声录制** | T2.4 | 各 2–3 段，10–30s/段，**无背景音乐** | 占位已就位（2026-09-17 · 开箱即用）· **正式原声仍缺** |
 | 🔴 **水印 PNG** | T3.2 | `templates/<tid>/assets/images/watermark.png`（**必做**，D5） | 缺失 |
-| 🔴 **CosyVoice 权重下载** | T2.1 | 2–4 GB，落 `models/` 或 `D:\ai_models` | 缺失（版本待核验 Q7） |
-| 🟡 **LLM API Key** | T1.9 | [OI] 兼容接口 | 未提供（T1.8 代码已用脚本化传输全覆盖，**不阻塞**；`studio llm probe` 报 `no_key`） |
+| ✅ ~~CosyVoice 权重下载~~ | T2.1 | 2–4 GB，落 `models/` 或 `D:\ai_models` | **已就位（2026-09-17）**：21 文件 / 5.23 GB · revision `074ca6dc` 锁定（Q7 已核验）· 见 `docs/runbook/tts_models.md` |
+| 🟡 **LLM API Key** | T1.9 | [OI] 兼容接口 | **面板可配（2026-09-17 · T6.1）**：WebUI「设置」面板填入即生效（`config/secrets.yaml`，env 优先）；未填时 `studio llm probe` 报 `no_key`，**不阻塞** |
 | 🟡 **`config/persona.yaml` 填写** | T1.9 | 人设/口吻/受众/口癖/禁区 | 缺失（**唯一人工必填**） |
 | ✅ 前端脚手架与设计系统 | T4.1 | 可与 T2/T3 并行 | **已交付（2026-09-14）**：无外部依赖，先于 T2/T3 完成 |
 
@@ -66,7 +66,7 @@
 | ID | 模块与目标 | 依赖 | 验收标准 / 验证命令 | 风险点与降级预案 |
 | --- | --- | --- | --- | --- |
 | **T2.1** | **tts venv + 模型权重就位**：Python 3.11 + torch 2.4.0+cu121（复用 `D:\Torch` 预置 wheel）+ CosyVoice 源码（**revision 锁定**）+ 权重落 `models/` 或 `D:\ai_models` | T1.1 | `uv run --project tts python -c "import torch,cosyvoice;print(torch.__version__,torch.cuda.is_available())"` = `2.4.0+cu121 True`；`python scripts/smoke_cosyvoice.py --self-test` 打印模型路径/设备/权重 revision 并成功合成 1 句；权重目录与体积记入 `docs/runbook/tts_models.md` | **Q7 版本核验**：原文写 `CosyVoice3-0.5B`，FunAudioLLM 已知发布 CosyVoice / CosyVoice2-0.5B ⇒ **以实际能下载跑通的版本为准**，revision 写入留痕；**R5**：`pynini`/`WeTextProcessing` 在 Windows 装不上 ⇒ 不 import `tn`；下载中断 ⇒ ModelScope 缓存续传 |
-| **T2.2** | **常驻推理服务 + 并发实测标定**（★裁决 C8）：`/health` `/warmup` `/unload` `/voices` `/synth`、GPU 串行信号量、fp16 常驻、空闲 20min 卸载、429 背压 | T2.1 | `curl 127.0.0.1:8811/health` → `{ready:true,device:"cuda",model_state:"ready"}`；`python scripts/bench_tts.py --concurrency 1,2,3` 输出**各并发下的峰值显存与 RTF**，写出建议值到 `docs/runbook/tts_concurrency.md`；fp16 常驻 < 4 GB | **R4/C8 显存**：8 GB 卡且桌面占 1.49 GB ⇒ **默认并发 1**；若实测 3 并发 OOM ⇒ **正式否决原文的 3 并**并记录依据；显存不足 ⇒ 自动 `unload` 重载；服务崩溃 ⇒ supervisor 重启（T4.11）；**禁 bf16**（Turing 无原生支持） |
+| **T2.2** ✅ | **常驻推理服务 + 并发实测标定**（★裁决 C8 · **已完成 2026-09-17**）：`/health` `/warmup` `/unload` `/voices` `/synth`、GPU 串行信号量、fp16 常驻、空闲 20min 卸载、429 背压 | T2.1 | `curl 127.0.0.1:8811/health` → `{ready:true,device:"cuda",model_state:"ready"}`；`python scripts/bench_tts.py --concurrency 1,2,3` 输出**各并发下的峰值显存与 RTF**，写出建议值到 `docs/runbook/tts_concurrency.md`；fp16 常驻 < 4 GB | **R4/C8 显存**：8 GB 卡且桌面占 1.49 GB ⇒ **默认并发 1**；若实测 3 并发 OOM ⇒ **正式否决原文的 3 并**并记录依据；显存不足 ⇒ 自动 `unload` 重载；服务崩溃 ⇒ supervisor 重启（T4.11）；**禁 bf16**（Turing 无原生支持） |
 | **T2.3** | **引擎适配层与路由**：§04.3.2 的 `VoiceEngine` ABC 实现、多引擎路由、熔断、§04.3.3 降级决策表落地 | T2.2 | `pytest tests/unit/tts/test_router.py -q`（§04.3.3 决策表**逐条**：OOM / 超时 / 静音 / 爆音 / 引擎宕 / 连续失败熔断）；`pytest tests/contract/test_voice_engine_abc.py`（Mock / 服务 / CosyVoice 三实现均满足 ABC） | 引擎"假成功"（返回静音）⇒ `RMS < -50 dBFS` 判 `TTS_SILENT`；熔断阈值可配（默认连续 3 句）；熔断后任务**不失败**，转"字幕模式" |
 | **T2.4** 🔶 | **原声入库与音色注册（`bigbear`/`littlebear`）**：目录契约、质量校验（段数/时长/无 BGM/无削波/有效语音占比）、零样本复刻注册、试听样本 | T2.2 | `python scripts/ingest_voice_src.py --voice bigbear` 校验通过并注册 ⇒ **真机已跑通（`新增 2 / 未入库 0`）**；`studio tts list` 可见 `bigbear`/`littlebear`（**该 CLI 不存在**，裁定 288）；`pytest tests/integration/test_voice_profile.py -q`（段数<2 / 时长越界 / 削波 / 采样率不足 **四类拒绝**）⇒ **13 passed（2026-09-17）**；`-k quality`（含 BGM 被标 `warn`）**不做**（三条 `warn` 级检查见 `todolist.md` T2.4 裁定 287）；规格里的 `studio tts list` **该 CLI 不存在** ⇒ 口径改为脚本退出码（裁定 288） | **R2 版权**：《熊出没》IP 音色复刻存在声音权/著作权风险 ⇒ ①音色 ID 与展现名**可配置解耦**；②支持一键替换为自录音色；③WebUI 显著合规提示；④`profile.json` 来源登记留档；参考音质量差 ⇒ 入库校验 + 试听确认 + 可重录替换 |
 | **T2.5** ✅ | **文本归一化与切分**：数字/英文/多音字归一化（**幂等**）、标点→停顿映射、单句 ≤28 字切分、glossary 热更新 | T1.10 | `pytest tests/unit/tts/test_normalize.py -q`（≥40 条黄金用例：日期/百分比/英文缩写/多音字/emoji/超长句）；`pytest tests/unit/tts/test_segmenter.py -q`（每片 4–28 字且不破坏语义边界）；幂等性属性测试 `normalize(normalize(x)) == normalize(x)` | **R7 长句漂移** ⇒ 单句硬上限 + 自动切分并回写 DB；误读 ⇒ `glossary.yaml` 热更新且变更即回归；**不引入 `pynini`**（R5） |
@@ -162,10 +162,12 @@
        >>> M1：网页端输入定位+热点 → 产出合格稿件（含评分）→ 确认闸可见
        >>> **M1 口径（T1.12 裁定 108）**：一键启动**已可用**（`api` ready + 其余如实报 `degraded`）；
            「5 进程全 ready」要等 T2.2 / T2.6 / T3.x / T4.11 ⇒ 顺延 M4
+           **2026-09-17 更新**：T2.2 落地 ⇒ `tts` 的 `server_missing` / `env_missing` 都已消解，五进程入口齐备；
+           仍未真机复核（8787/8788 上跑着用户自己起的服务，未动）—— `停止.bat` → `启动.bat` 即可复核
 
 # ── 阶段 T2 · CosyVoice3 配音（9）── 门禁 M2
 [x] T2.1  tts venv + 权重就位（py3.11 + torch2.4cu121 + revision 留痕 · Q7 核验）· ✅ 已完成（2026-09-17：权重 21 文件 / 5.23 GB · 真机加载 10.4s / 显存 2.38 GB）
-[ ] T2.2  常驻推理服务 + 并发实测标定（★裁决 C8：默认 1）
+[x] T2.2  常驻推理服务 + 并发实测标定（★裁决 C8：**实测并发 1** · 五端点 + 429 背压 + 空闲卸载 + 看门狗）· ✅ 已完成（2026-09-17）
 [ ] T2.3  引擎适配层与路由（决策表逐条 + 熔断 + 字幕模式降级）
 [ ] T2.4  原声入库与音色注册（bigbear/littlebear + 质量校验 + R2 合规留档）
 [x] T2.5  文本归一化与切分（幂等 + ≥40 用例 + glossary + 不引入 pynini）· ✅ 已完成（2026-09-15）
@@ -226,7 +228,7 @@
 
 ---
 
-## 5.7 高频陷阱对照表（161 条 · 实现期直接查阅）
+## 5.7 高频陷阱对照表（164 条 · 实现期直接查阅）
 
 | # | 现象 | 根因 | 正确做法 | 任务 |
 | --- | --- | --- | --- | --- |
@@ -391,6 +393,9 @@
 | 159 | **照抄上游 `requirements.txt` 会把能跑的环境降级** | CosyVoice 上游锁 `torch==2.3.1`，而本项目是 `torch 2.4.0+cu121`（`D:\Torch` 里的 cp311 wheel） | 单独维护 `tts/requirements-cosyvoice.txt`，**只列推理真正用到的**，**不写 torch / torchaudio** | T2.1 |
 | 160 | **`pip install openai-whisper` 报 `No module named 'pkg_resources'`**；装上了又 `No module named 'matcha'` | ① whisper 的 `setup.py` 用 `pkg_resources`，而 `setuptools>=81` 已删掉它；② `cosyvoice` 依赖 `third_party/Matcha-TTS` | ① `setuptools<81` **且** `--no-build-isolation`；② `PYTHONPATH` **必须同时含** `D:\ai_models\CosyVoice` **和** `...\third_party\Matcha-TTS` | T2.1 |
 | 161 | **`inference_zero_shot` 传张量报错；`torchaudio.save` 报 `Invalid file`** | 该 revision 的第三参是**参考音路径**不是张量；且此环境的 `torchaudio.save` 不可用 | 第三参传**路径**；落盘用 `soundfile.write` | T2.1 |
+| 162 | **`tts/.venv` 里 `import studio.core.clock` 抛 `ZoneInfoNotFoundError`**（`No time zone found with key Asia/Shanghai`） | Windows 没有系统 tz 数据库，CPython 要靠 `tzdata` 包；pip **不装也不报缺** | 把 `tzdata` 写进 `tts/requirements-cosyvoice.txt`（已装）。报错点离「少装一个包」隔了**四层 import**，别顺着调用栈查 | T2.2 |
+| 163 | **tts 进程活着、`/health` 回 200，可每个请求都报 `No module named 'studio'`** | `tts/pyproject.toml` 是 `package = false` ⇒ 子环境里**没有**本项目；启动器不前置 `PYTHONPATH` 就 import 不到 | `ServiceSpec.env_prepend` 前置 `PYTHONPATH=<仓库>/src`（**前置不覆盖**已有值）；手工起进程要自己加 | T2.2 |
+| 164 | **`mypy.ini` 里的 `[[mypy.overrides]]` 段一个字都没生效，却也不报错** | `[[...]]` 是 **TOML** 的数组表写法（`pyproject.toml` 用）；INI 里 mypy **静默忽略**整段 —— 连「未知键」都不提醒 | INI 一律写 `[mypy-<模块>]`（`[mypy-yaml.*]` 这种） | T2.2 |
 
 ---
 
@@ -400,7 +405,7 @@
 | --- | --- | --- |
 | **M1** | 网页端输入定位 + 热点 ⇒ 产出合格稿件（含评分）⇒ 确认闸可见；`启动.bat` 一键拉起全部服务 | T1.1–T1.12 |
 
-> **M1 口径（裁定 108）**：一键启动**已可用**（`api` ready + 其余如实报 `degraded`），但「5 进程全部 ready」**在 M1 阶段不可能达成** —— `tts` 属 T2.2、`voice` 属 T2.6、`draft` 属 T4.11、`render` 属 T3.7（**已落地**）。验收以「未就绪进程被**如实报告**且不阻塞其余进程」为准（P4：宁要真话，不要好看的假绿灯）；「5 进程全 ready」顺延到 M4。
+> **M1 口径（裁定 108）**：一键启动**已可用**（`api` ready + 其余如实报 `degraded`），但「5 进程全部 ready」**在 M1 阶段不可能达成** —— `tts` 属 T2.2、`voice` 属 T2.6、`draft` 属 T4.11、`render` 属 T3.7（**已落地**）。验收以「未就绪进程被**如实报告**且不阻塞其余进程」为准（P4：宁要真话，不要好看的假绿灯）；「5 进程全 ready」顺延到 M4。**2026-09-17 更新**：`tts`（T2.2）已落地 —— `server_missing` / `env_missing` 两条判据都消解，五个进程的入口、解释器与 `PYTHONPATH` 都齐了，**M1 的「5 进程全 ready」在代码层面已可达成**；剩下的只是一次真机复核（8787/8788 上跑着用户自己起的服务，本轮未动它）。
 | **M2** | 一句话用熊大音色读出；杀进程重启后已完成句**引擎调用为 0**；网页可见逐句进度 | T2.1–T2.9 |
 | **M3** | 换稿不重剪（**同素材 + 同水印，换稿件直接出片**）；网页一键出新片并在线预览；水印/响度/相似度门禁通过 | T3.1–T3.7 |
 | **M4** | ≥3 篇同时推进；中断后恢复；连续 24h 无人干预；全程网页操作 | T4.1–T4.14 |

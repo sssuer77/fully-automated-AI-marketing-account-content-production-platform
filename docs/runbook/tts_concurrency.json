@@ -1,0 +1,40 @@
+{
+  "generated_at": "2026-09-17T23:41:19",
+  "voice_id": "bigbear",
+  "total_vram_mb": 8191,
+  "recommended_concurrency": 1,
+  "reason": "最保守档并发 1 全绿、峰值 3643 MB ≤ 6962 MB；再往上加不划算 —— 并发 2 全绿、峰值 4060 MB 也没超线，但吞吐只快 11.4%（理想 100%，门槛 40%），却把中位 RTF 从 0.819 拖到 1.344 ⇒ 不值得，停在 1",
+  "levels": [
+    {
+      "concurrency": 1,
+      "ok": 3,
+      "failed": 0,
+      "oom": 0,
+      "rtf_median": 0.819,
+      "peak_mb": 3643,
+      "wall_sec": 41.38,
+      "audio_sec": 49.3
+    },
+    {
+      "concurrency": 2,
+      "ok": 3,
+      "failed": 0,
+      "oom": 0,
+      "rtf_median": 1.344,
+      "peak_mb": 4060,
+      "wall_sec": 36.67,
+      "audio_sec": 47.2
+    },
+    {
+      "concurrency": 3,
+      "ok": 3,
+      "failed": 0,
+      "oom": 0,
+      "rtf_median": 2.021,
+      "peak_mb": 4090,
+      "wall_sec": 35.61,
+      "audio_sec": 47.3
+    }
+  ],
+  "rerendered_at": "2026-09-18T00:04:03"
+}

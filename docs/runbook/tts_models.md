@@ -1,7 +1,10 @@
-# CosyVoice 权重与推理环境（T2.1 · E5）
+# CosyVoice 权重与推理环境（T2.1 · T2.2 · E5）
 
 > 2026-09-17 真机跑通：**权重加载 10.4s / 一句合成 8.4s（7.72s 音频，RTF 1.09）**。
 > 这份手册记的是「怎么装回来的」—— 下一次换机器 / 重装系统时照敲即可。
+>
+> T2.2 起它还是**常驻推理服务**（`tts` 进程 · 127.0.0.1:8788）的解释器：
+> 装完不只要能合成一句，还要能被 `studio service start tts` 拉起来。
 
 ## 一、东西在哪
 
@@ -37,7 +40,7 @@ uv pip install --python tts\.venv\Scripts\python.exe --no-build-isolation openai
 降级 —— 那是把一个**已验证能跑**的环境换成另一个要重新验证的环境。
 `tts/requirements-cosyvoice.txt` 只列推理真正用到的那些，并且**故意不写 torch**。
 
-三个非显而易见的坑（都踩过）：
+四个非显而易见的坑（都踩过）：
 
 - `openai-whisper==20231117` 的 `setup.py` 要 `pkg_resources`，而 setuptools ≥ 81 已把它删掉
   ⇒ 必须 `setuptools<81` + `--no-build-isolation`。不装它整个包 import 不了
@@ -45,6 +48,10 @@ uv pip install --python tts\.venv\Scripts\python.exe --no-build-isolation openai
 - `pyarrow` / `pyworld` 也要装：`cosyvoice/dataset/processor.py` 被间接 import 到。
 - 上游 `requirements.txt` 里的 `deepspeed` / `tensorrt` / `vllm` 是 **Linux 专属**，
   Windows 上不装（代码里都是条件 import）。
+- **`tzdata` 在 Windows 上是必需品**（已列进 `tts/requirements-cosyvoice.txt`）。
+  少了它，`import studio.core.clock` 抛 `ZoneInfoNotFoundError: No time zone found with key Asia/Shanghai`，
+  而这个报错出现在**四层 import 之外**（`studio.tts.server` → … → `studio.core.clock`），
+  看上去完全不像「少装一个包」（陷阱 162）。
 
 ## 三、怎么验
 
@@ -52,6 +59,17 @@ uv pip install --python tts\.venv\Scripts\python.exe --no-build-isolation openai
 $env:PYTHONPATH = "D:\ai_models\CosyVoice;D:\ai_models\CosyVoice\third_party\Matcha-TTS"
 tts\.venv\Scripts\python.exe -c "from cosyvoice.cli.cosyvoice import CosyVoice2; print('ok')"
 ```
+
+服务侧再加两条（T2.2 —— 子环境里**没有** `studio` 包，`tts/pyproject.toml` 是 `package = false`）：
+
+```powershell
+tts\.venv\Scripts\python.exe -c "import zoneinfo; zoneinfo.ZoneInfo('Asia/Shanghai'); print('tz ok')"
+$env:PYTHONPATH = "$PWD\src"
+tts\.venv\Scripts\python.exe -c "import studio.tts.server; print('studio ok')"
+```
+
+手工起服务时忘了前置 `PYTHONPATH`，现象是**进程起来了、端口也 listen 了，但每个请求都 500**
+（`No module named 'studio'`）—— `service_manager` 会自动前置，见陷阱 163。
 
 **`PYTHONPATH` 这两段都不能少**：第一段是 CosyVoice 本体，第二段是 Matcha-TTS
 （`cosyvoice.flow.flow_matching` 依赖 `matcha` 包；少了它的报错是
@@ -107,3 +125,6 @@ sf.write("out.wav", audio, model.sample_rate)
   所以验收直接用 `data/voice_src/bigbear/ref_01.wav` —— 那也是真实用法。
 - **torchaudio 的 `save` 在这个环境里会炸**（`Invalid file: tensor(...)`）。
   写文件用 `soundfile.write(path, tensor.squeeze(0).numpy(), sr)`。
+- **子环境不是「装上就能用」**：它只有 torch / cosyvoice，没有本项目。所以「模块在不在」
+  （`server_missing`）和「子环境在不在」（`env_missing`）要分开报 —— 前者要写代码，
+  后者要建 venv；最糟的第三种结果是拉起来一个「活着但每句报 no module named torch」的进程。

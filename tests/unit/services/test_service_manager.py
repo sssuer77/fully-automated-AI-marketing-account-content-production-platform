@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from studio.services.service_manager import (
     build_specs,
     probe_port,
     run_entry,
+    tts_python_for,
 )
 
 # ── 假件 ────────────────────────────────────────────────────────────────
@@ -133,6 +135,27 @@ class Recorder:
 
 
 # ── 夹具 ────────────────────────────────────────────────────────────────
+
+
+def write_tts_config(paths: StudioPaths) -> Path:
+    """写一份最小的 ``config/tts.yaml``（显式指定解释器）。"""
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    path = paths.config_dir / "tts.yaml"
+    path.write_text(
+        'schema_version: "1.0"\n'
+        "python: tts/.venv/Scripts/python.exe\n"
+        "model:\n"
+        "  dir: D:/somewhere/models\n"
+        "  revision: abcdef12\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def tts_interpreter(paths: StudioPaths) -> Path:
+    """本平台上 ``tts/.venv`` 里那个解释器（测试用它模拟「环境装好了」）。"""
+    scripts = "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    return paths.home / "tts" / ".venv" / scripts
 
 
 @pytest.fixture
@@ -281,12 +304,40 @@ class TestReadiness:
         manager = make_manager(worker_home)
         assert manager.readiness(manager.spec("api")).ready
 
-    def test_tts_is_not_ready_before_t2_2(self, worker_home: StudioPaths) -> None:
-        """常驻推理服务模块还没落地 ⇒ 报 server_missing，且**不阻塞**其余进程。"""
+    def test_tts_reports_the_missing_inference_env(self, worker_home: StudioPaths) -> None:
+        """T2.2 的模块已落地，但隔离家目录里没有 ``tts/.venv`` ⇒ ``env_missing``。
+
+        与 ``server_missing`` 分开是有原因的：模块不在 ⇒ 去写代码；环境不在 ⇒ 去建 venv。
+        拉起来一个「活着但每句都报 no module named torch」的进程是最糟的第三种结果 ——
+        探活回 200，业务每句都失败。
+        """
         manager = make_manager(worker_home)
         item = manager.readiness(manager.spec("tts"))
-        assert item.readiness is Readiness.SERVER_MISSING
-        assert item.remediation is not None and "T2.2" in item.remediation
+        assert item.readiness is Readiness.ENV_MISSING
+        assert item.remediation is not None and "tts_models.md" in item.remediation
+
+    def test_tts_is_ready_once_the_inference_env_exists(self, worker_home: StudioPaths) -> None:
+        """子环境在位 ⇒ 真就绪，且命令行指向它（不是启动器自己的解释器）。"""
+        interpreter = tts_interpreter(worker_home)
+        interpreter.parent.mkdir(parents=True, exist_ok=True)
+        interpreter.write_text("", encoding="utf-8")
+        manager = make_manager(worker_home)
+        assert manager.readiness(manager.spec("tts")).readiness is Readiness.READY
+        assert manager.spec("tts").argv[0] == str(interpreter)
+
+    def test_tts_spec_prepends_src_to_pythonpath(self, worker_home: StudioPaths) -> None:
+        """子环境里没装 ``studio`` 这个包 ⇒ 必须前置 ``src/`` 才 import 得到。"""
+        spec = make_manager(worker_home).spec("tts")
+        assert dict(spec.env_prepend)["PYTHONPATH"] == str(worker_home.home / "src")
+
+    def test_configured_interpreter_is_not_silently_swapped_out(self, worker_home: StudioPaths) -> None:
+        """配置说了用哪个就用哪个：指错了 ⇒ 报 env_missing，**不静默换一个**。"""
+        write_tts_config(worker_home)
+        assert tts_python_for(worker_home) is None
+        interpreter = tts_interpreter(worker_home)
+        interpreter.parent.mkdir(parents=True, exist_ok=True)
+        interpreter.write_text("", encoding="utf-8")
+        assert tts_python_for(worker_home) == interpreter
 
     def test_pool_without_a_handler_is_not_ready(
         self, worker_home: StudioPaths, monkeypatch: pytest.MonkeyPatch
@@ -410,6 +461,10 @@ class TestStart:
         monkeypatch.setattr(
             "studio.services.service_manager.importlib.util.find_spec", lambda _name: object()
         )
+        # tts 还要子环境在位（模块在 ≠ 环境在，两条判据都要过）
+        interpreter = tts_interpreter(worker_home)
+        interpreter.parent.mkdir(parents=True, exist_ok=True)
+        interpreter.write_text("", encoding="utf-8")
         table, rec = ready_pair()
         manager = make_manager(worker_home, table=table, rec=rec, doctor=ok_doctor())
         manager.start(open_browser=False)

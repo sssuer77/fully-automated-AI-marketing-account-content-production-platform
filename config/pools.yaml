@@ -23,7 +23,9 @@ pools:
 
   voice:
     unit_type: sentence
-    concurrency: 1               # ⚠️ 显存保守值；T2.2 bench 后回写
+    # T2.2 真机标定（docs/runbook/tts_concurrency.md）：8 GB 卡上 2/3 路**不会 OOM**
+    # （峰值 3643 → 4090 MB），但吞吐只快 11.4%、中位 RTF 从 0.819 涨到 1.344 ⇒ 裁定 306：取 1。
+    concurrency: 1
     poll_ms: 500
     lease_sec: 90
     backoff_base_ms: 3000

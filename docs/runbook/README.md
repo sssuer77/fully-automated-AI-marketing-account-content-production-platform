@@ -17,6 +17,7 @@
 | `PUBLISH_LOGIN_EXPIRED`、`health.hint` 说「需人工扫码登录」/「登录态已过期」、要加第二个账号 | [`publish_account.md`](publish_account.md) |
 | 每月一次例行；或真要**回滚**数据 | [`restore_drill.md`](restore_drill.md) |
 | CosyVoice 权重没了 / 换了机器要重装 / 合成报 `No module named 'matcha'`、`No module named 'hyperpyyaml'` | [`tts_models.md`](tts_models.md) |
+| 想改 `voice.concurrency` / 怀疑并发开大了把卡拖慢 / 换了显卡要重新标定 | [`tts_concurrency.md`](tts_concurrency.md) |
 | 面板上「缺密钥」、`studio llm probe` 报 `no_key`、想知道 Key 到底存在哪 | 见下「LLM 密钥存在哪」 |
 
 ## 三条通用纪律
@@ -33,12 +34,6 @@
    ```
 3. **留痕**。每次应急在对应剧本末尾的「本次记录」里补一行（时间 / 触发信号 / 动作 / 结果）。
    没有这一行，下次遇到同一个现象就得从零查起。
-
-## 不在本目录的
-
-| 文件 | 属谁 | 内容 |
-| --- | --- | --- |
-| `tts_concurrency.md` | T2.2 | 实测峰值显存与 RTF ⇒ 回写 `pools.yaml` 的并发值 |
 
 ## LLM 密钥存在哪
 

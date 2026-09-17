@@ -65,14 +65,14 @@ def _expect(paths: StudioPaths, code: ErrorCode, env: dict[str, str] | None = No
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 基线：8 份文件全部可加载
+# 基线：9 份文件全部可加载
 # ══════════════════════════════════════════════════════════════════════
 
 
 def test_loads_all_eight_files(config_paths: StudioPaths) -> None:
     loaded = _load(config_paths)
     assert tuple(source.name for source in loaded.sources) == CONFIG_FILE_NAMES
-    assert len(loaded.sources) == 8
+    assert len(loaded.sources) == 9
     assert all(source.sha256 for source in loaded.sources)
 
 
@@ -484,7 +484,7 @@ def test_dump_has_no_nested_schema_version(config_paths: StudioPaths) -> None:
 def test_dump_meta_records_sources(config_paths: StudioPaths) -> None:
     payload = _load(config_paths).dump()
     assert payload["_meta"]["studio_home"] == str(config_paths.home)
-    assert len(payload["_meta"]["sources"]) == 8
+    assert len(payload["_meta"]["sources"]) == 9
     assert {item["name"] for item in payload["_meta"]["sources"]} == set(CONFIG_FILE_NAMES)
 
 

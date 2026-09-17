@@ -1,4 +1,4 @@
-"""配置系统（T1.2 · §01.2 / §README.6）—— 8 份 YAML 的强类型契约与加载器。
+"""配置系统（T1.2 · §01.2 / §README.6）—— 9 份 YAML 的强类型契约与加载器。
 
 设计要点
 --------
@@ -23,6 +23,7 @@
     config/randomization.yaml 防搬运随机化九维
     config/publish.yaml       平台 / 账号 / 限频 / 发布前校验
     config/logging.yaml       日志级别与脱敏
+    config/tts.yaml           模型位置 / 常驻服务（T2.2）
     config/secrets.yaml       密钥（**不入库**；secrets.example.yaml 为模板）
 """
 
@@ -73,6 +74,7 @@ __all__ = [
     "RandomizationConfig",
     "RuntimeSettings",
     "SecretsConfig",
+    "TtsConfig",
     "WatchdogConfig",
     "concurrency_bounds",
     "load_app_config",
@@ -82,6 +84,7 @@ __all__ = [
     "load_pools_config",
     "load_publish_config",
     "load_runtime_settings",
+    "load_tts_config",
     "redact",
     "set_auto_approve_policy",
 ]
@@ -93,7 +96,7 @@ SCHEMA_VERSION: Final[str] = "1.0"
 #: 环境变量覆盖层前缀（与 T1.1 的 STUDIO_HOME 等契约**不冲突**）
 ENV_OVERRIDE_PREFIX: Final[str] = "STUDIO_CFG__"
 
-#: 8 份配置文件的文件名（不含扩展名），顺序即加载顺序
+#: 9 份配置文件的文件名（不含扩展名），顺序即加载顺序
 #: 密钥文件名（不入库；可被 STUDIO_CFG__SECRETS__* 覆盖）
 SECRETS_FILE_NAME: Final[str] = "secrets"
 
@@ -106,6 +109,7 @@ CONFIG_FILE_NAMES: Final[tuple[str, ...]] = (
     "randomization",
     "publish",
     "logging",
+    "tts",
 )
 
 #: 密钥本体识别（写进 yaml 即视为泄漏）
@@ -520,7 +524,7 @@ def load_outputs_config(path: Path) -> OutputsConfig:
     为什么不用 :func:`load_config`
     ------------------------------
     与 :func:`load_pools_config` 同一条理由：面板每次请求都要知道"当前这一档是什么"，
-    走 :func:`load_config` 会把 9 份 YAML 全读一遍并全量校验 ⇒ `llm.yaml` 里少一个 key
+    走 :func:`load_config` 会把 10 份 YAML 全读一遍并全量校验 ⇒ `llm.yaml` 里少一个 key
     会让**合成配置面板打不开**。两件事之间没有任何关系。
 
     代价同样如实说明：`outputs.local.yaml` 覆盖层不生效（那是启动路径的机制），
@@ -537,7 +541,7 @@ def load_pools_config(paths: StudioPaths) -> PoolsConfig:
     为什么不用 :func:`load_config`
     ------------------------------
     四池控制台（T4.10）每次请求都要知道"优先级 / 单元类型 / OOM 阈值"。走
-    :func:`load_config` 会把 9 份 YAML 全读一遍并全量校验 —— 于是 ``llm.yaml``
+    :func:`load_config` 会把 10 份 YAML 全读一遍并全量校验 —— 于是 ``llm.yaml``
     里少一个 key，**四池面板就打不开**。两件事之间没有任何关系，这种耦合
     （"改配置 B 弄坏了面板 A"）是最难查的一类故障。
 
@@ -555,7 +559,7 @@ def load_publish_config(paths: StudioPaths) -> PublishConfig:
 
     与 :func:`load_pools_config` 同一条理由：发布面板（T5.3 的"待人工"区块 / T5.5 的
     七区块）每次刷新都要知道"有哪些平台、哪些账号、开关状态"。走 :func:`load_config`
-    会把 9 份 YAML 全读一遍并全量校验 —— 于是 ``llm.yaml`` 里少一个 key，
+    会把 10 份 YAML 全读一遍并全量校验 —— 于是 ``llm.yaml`` 里少一个 key，
     **发布面板就打不开**，而这两件事之间没有任何关系。
 
     代价：``publish.local.yaml`` 覆盖层不生效（那是**启动路径**的机制，
@@ -568,11 +572,39 @@ def load_publish_config(paths: StudioPaths) -> PublishConfig:
     return model
 
 
+def load_tts_config(
+    paths: StudioPaths,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> TtsConfig:
+    """只读 ``config/tts.yaml``（模型位置 / 常驻服务）。
+
+    与 :func:`load_pools_config` 同一条理由：``tts`` 进程只关心这一份 —— 它
+    **不该**因为 ``llm.yaml`` 里少一个 key 而起不来。推理进程起不来 = 整条配音链路
+    停摆，而这两件事之间没有任何关系。
+
+    **但覆盖层生效**（与 ``load_pools_config`` 不同）：那几位是**请求路径**的读取
+    （面板每次刷新都要读），这里是**启动路径** —— 而 ``tts.local.yaml`` 与
+    ``STUDIO_CFG__TTS__*`` 正是为启动路径准备的（换台机器端口被占、显存不同要调
+    并发，都不该去改那份入库的基准配置）。
+    """
+    path = paths.config_dir / "tts.yaml"
+    source_env = dict(env if env is not None else os.environ)
+    data = _read_yaml(path)
+    local_path = paths.config_dir / "tts.local.yaml"
+    if local_path.exists():
+        data = _deep_merge(data, _read_yaml(local_path))
+    data, _applied = _apply_env_overrides(data, name="tts", env=source_env)
+    model = _validate("tts", data, path)
+    assert isinstance(model, TtsConfig)
+    return model
+
+
 def load_app_config(paths: StudioPaths) -> AppConfig:
     """只读 ``config/app.yaml``（路径 / 保留期 / 超时 / 确认闸 / 定时）。
 
     与 :func:`load_pools_config` 同一条理由：媒资 GC（T4.12）每次跑都要知道
-    "句子音频留多久 / TTS 缓存上限几个 G"。走 :func:`load_config` 会把 9 份 YAML
+    "句子音频留多久 / TTS 缓存上限几个 G"。走 :func:`load_config` 会把 10 份 YAML
     全读一遍并全量校验 —— 于是 ``llm.yaml`` 里少一个 key，**每日 GC 直接停摆**，
     而它本该是"无人值守地清垃圾"的那件事。
 
@@ -1089,7 +1121,68 @@ class LoggingConfig(_FileConfig):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 9. secrets.yaml（不入库；缺失时全部为空）
+# 9. tts.yaml —— CosyVoice 常驻推理服务（T2.2 · §04.3.5）
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TtsModelConfig(_Base):
+    """模型与推理环境（T2.1 落地的东西在这里被**指**到，而不是被复制）。
+
+    为什么 :attr:`dir` 允许绝对路径：权重有 5 GB 且**不进仓库**（``.gitignore`` 覆盖
+    ``models/``），放在 D 盘是正常用法（R1 只管「不许落系统盘」）。
+    """
+
+    dir: _ConfigPath
+    revision: str = Field(min_length=4, max_length=64)
+    source_dir: _ConfigPath | None = None
+    matcha_dir: _ConfigPath | None = None
+    fp16: bool = True
+    sample_rate: int = Field(default=24_000, ge=8_000, le=48_000)
+    warmup_text: str = Field(default="预热。", min_length=1, max_length=200)
+
+    @field_validator("dir", "source_dir", "matcha_dir")
+    @classmethod
+    def _not_on_system_drive(cls, value: Path | None) -> Path | None:
+        """R1：模型与源码都不许落系统盘（5 GB 权重塞 C 盘是"装完就后悔"的典型）。"""
+        if value is None:
+            return None
+        if is_on_system_drive(value):
+            raise ValueError(f"{value} 落在系统盘（R1 禁止）")
+        return value
+
+
+class TtsServerConfig(_Base):
+    """常驻服务的监听与并发（C8 裁决：默认并发 1）。"""
+
+    host: str = "127.0.0.1"
+    port: int = Field(default=8788, ge=1, le=65_535)
+    #: GPU 串行信号量。**默认 1**：8 GB 卡 + 桌面占 1.49 GB（R4）。
+    concurrency: int = Field(default=1, ge=1, le=3)
+    #: 排队上限，超过即 429（背压）。
+    queue_max: int = Field(default=8, ge=1, le=64)
+    idle_unload_min: int = Field(default=20, ge=1, le=1_440)
+    #: 启动即加载（"常驻"的字面意思）。关掉它 ⇒ 首句要等一次 10 秒的冷加载。
+    warmup_on_start: bool = True
+    #: 单句合成的硬超时（秒）。**下界只有 1**：真正把守「这句不许超过 60 秒」的
+    #: 是池的 ``unit_timeout_sec`` 与这里的默认值，而留出小值是为了让超时那条路
+    #: **能测**（不然测一次要睡 5 秒）。
+    request_timeout_sec: int = Field(default=60, ge=1, le=600)
+
+
+class TtsConfig(_FileConfig):
+    """``config/tts.yaml``：模型在哪 + 服务怎么起。
+
+    :attr:`python` 指向推理子环境（``tts/.venv``）：``tts`` 进程**必须**用它起 ——
+    torch 2.4.0+cu121 与 cosyvoice 只装在那里面，主 venv（3.12）装不了（§01.6.2）。
+    """
+
+    python: _ConfigPath | None = None
+    model: TtsModelConfig
+    server: TtsServerConfig = Field(default_factory=TtsServerConfig)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 10. secrets.yaml（不入库；缺失时全部为空）
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -1142,11 +1235,12 @@ CONFIG_MODELS: Final[dict[str, type[BaseModel]]] = {
     "randomization": RandomizationConfig,
     "publish": PublishConfig,
     "logging": LoggingConfig,
+    "tts": TtsConfig,
 }
 
 
 class ConfigBundle(BaseModel):
-    """8 份配置 + 密钥的聚合视图（加载后不可变）。"""
+    """9 份配置 + 密钥的聚合视图（加载后不可变）。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
 
@@ -1158,6 +1252,7 @@ class ConfigBundle(BaseModel):
     randomization: RandomizationConfig
     publish: PublishConfig
     logging: LoggingConfig
+    tts: TtsConfig
     secrets: SecretsConfig = Field(default_factory=SecretsConfig)
 
     def assert_lan_auth(self) -> None:
@@ -1634,7 +1729,7 @@ class RuntimeSettings:
 
     为什么不全量 `load_config`
     --------------------------
-    `load_config` 要读 9 份 YAML、跑 pydantic 全量校验、查路径越界，一次几十毫秒。
+    `load_config` 要读 10 份 YAML、跑 pydantic 全量校验、查路径越界，一次几十毫秒。
     总览台是常驻页面（资源 5s 一拍），每拍重读一遍纯属浪费；而"一键全自动"改的
     就是这几个字段之一 —— 把它们单独拎出来，改完**就地更新**，
     `GET /overview` 下一拍就能看到（不用重读磁盘）。

@@ -1,0 +1,33 @@
+# ── CosyVoice 常驻推理服务（T2.2 · §04.3.5 / 裁决 C8）──────────────
+# 这一份管的是「模型在哪、服务怎么起、并发几路」——**不是**密钥（那在 secrets.yaml）。
+# 换模型版本只改 model.dir / model.revision（Q7），不改代码。
+schema_version: "1.0"
+
+# 推理子环境的解释器（相对仓库根）。tts 进程**必须**用它起：
+# torch 2.4.0+cu121 / cosyvoice 只装在这个 venv 里（主 venv 是 3.12，装不了）。
+python: tts/.venv/Scripts/python.exe
+
+model:
+  # 权重目录（**不落系统盘**，R1）。换机器时改这一行。
+  dir: D:/ai_models/modelscope_cache/models/iic--CosyVoice2-0.5B/snapshots/master
+  # 版本留痕：进 /health 与日志，也是缓存键的一部分（Q7）
+  revision: 074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc
+  # CosyVoice 源码 + 它的子模块 Matcha-TTS（**两段都要**，缺 Matcha 报 no module named matcha）
+  source_dir: D:/ai_models/CosyVoice
+  matcha_dir: D:/ai_models/CosyVoice/third_party/Matcha-TTS
+  # fp16 常驻；**禁 bf16**（Turing sm_75 无原生支持，R4）
+  fp16: true
+  sample_rate: 24000
+  # 预热用的短句：/warmup 念它一遍，把首句延迟从 20s+ 压到 <5s
+  warmup_text: "预热。"
+
+server:
+  host: 127.0.0.1          # ★ 只绑回环：这个端口没有鉴权，不对外
+  port: 8788               # 与 service_manager 的规格表一致（spec 里旧稿写的 8811 已废弃）
+  # ★ 实测裁定 1（T2.2 标定 docs/runbook/tts_concurrency.md）：2 路吞吐仅 +11.4%、
+  # 中位 RTF 0.819 → 1.344，且 render 池要共用这块卡 ⇒ 裁定 306 按吞吐判，不按显存判。
+  concurrency: 1
+  queue_max: 8             # 排队超过它 ⇒ 429（背压，不排队雪崩）
+  idle_unload_min: 20      # 空闲 20 分钟卸载显存
+  warmup_on_start: true    # 启动即加载（"常驻"的字面意思；首句不用等冷加载）
+  request_timeout_sec: 60  # 单句合成硬超时（与 app.timeouts.tts_sentence_sec 同源）

@@ -21,6 +21,10 @@ dependencies = [
   "uvicorn[standard]>=0.34",
   "pydantic>=2.8",
   "structlog>=24.1",
+  # 常驻服务要 import studio.core.clock（ZoneInfo("Asia/Shanghai")）。
+  # Windows 没有系统 tz 库 ⇒ 少了它报 ZoneInfoNotFoundError，
+  # 而报错点离"少装了一个包"隔了四层 import（陷阱 162）。
+  "tzdata>=2025.1; sys_platform == 'win32'",
 ]
 
 # 本子项目只用于承载 venv，自身不作为包被安装

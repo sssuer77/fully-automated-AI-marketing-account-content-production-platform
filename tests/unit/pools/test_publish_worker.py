@@ -29,7 +29,13 @@ from typing import Any, ClassVar
 import pytest
 
 from studio.core.clock import parse_iso
-from studio.core.config import AccountConfig, PlatformConfig, PoolConfig, PublishConfig
+from studio.core.config import (
+    CONFIG_FILE_NAMES,
+    AccountConfig,
+    PlatformConfig,
+    PoolConfig,
+    PublishConfig,
+)
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.paths import StudioPaths
 from studio.db import connect, migrate
@@ -594,16 +600,10 @@ def test_build_handler_reads_the_config_once(rig: Rig) -> None:
     """装配期读配置（缺平台表 / 缺账号 ⇒ 起不来，而不是发到一半才炸）。"""
     repo_root = Path(__file__).resolve().parents[3]
     rig.paths.config_dir.mkdir(parents=True, exist_ok=True)
-    for name in (
-        "publish.yaml",
-        "pools.yaml",
-        "persona.yaml",
-        "llm.yaml",
-        "app.yaml",
-        "outputs.yaml",
-        "randomization.yaml",
-        "logging.yaml",
-    ):
+    # 跟着 CONFIG_FILE_NAMES 走，不抄一份手写清单：清单漏一份的症状是
+    # `load_config` 报 CONFIG_MISSING（看着像"夹具坏了"，其实是新增了第 9 份配置）。
+    for stem in CONFIG_FILE_NAMES:
+        name = f"{stem}.yaml"
         source = repo_root / "config" / name
         if source.is_file():
             shutil.copyfile(source, rig.paths.config_dir / name)

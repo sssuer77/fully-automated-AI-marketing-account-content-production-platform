@@ -122,6 +122,9 @@ class ErrorCode(StrEnum):
     #: 三句失败之后整条片子会降级成静音模式 —— 用户看到的是"换音色成功"，
     #: 拿到的是一支没有人声的成片。
     TTS_VOICE_MISSING = "TTS_VOICE_MISSING"
+    #: 服务排队已满（429 背压）。与 ``TTS_OOM`` 分开：那个要**降并发**，
+    #: 这个只是**此刻忙**，退避重试就会好 —— 两者的修复动作完全不同。
+    TTS_BUSY = "TTS_BUSY"
     #: 换音色会让 N 句重新合成，调用方**没有带上确认**（T2.9 · §05 的"二次确认"）。
     #: 与 ``VALIDATION_FAILED`` 分开：请求本身一个字都没写错，缺的是"你确认过代价了"。
     VOICE_MAP_CONFIRM_REQUIRED = "VOICE_MAP_CONFIRM_REQUIRED"

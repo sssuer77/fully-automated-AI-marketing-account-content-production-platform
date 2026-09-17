@@ -259,7 +259,7 @@ class Doctor:
 
     # ── 2. 配置校验（persona 缺字段 / 越界路径 / 局域网无密码）──
     def _check_config(self) -> CheckResult:
-        """8 份 YAML 强校验；任何一项失败都**拒绝启动**（含局域网鉴权底线）。"""
+        """9 份 YAML 强校验；任何一项失败都**拒绝启动**（含局域网鉴权底线）。"""
         try:
             loaded = load_config(self._paths, env=self._env)
         except ConfigError as exc:
@@ -276,7 +276,7 @@ class Doctor:
             status="ok",
             blocking=True,
             detail=(
-                f"8 份配置校验通过（persona={loaded.bundle.persona.name}，"
+                f"9 份配置校验通过（persona={loaded.bundle.persona.name}，"
                 f"pools={'/'.join(f'{k}×{v.concurrency}' for k, v in loaded.bundle.pools.pools.items())}）"
             ),
             data={

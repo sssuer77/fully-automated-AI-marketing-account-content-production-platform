@@ -54,7 +54,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Final, Protocol
 
-from studio.core.config import load_config
+from studio.core.config import load_config, load_tts_config
 from studio.core.doctor import Doctor, DoctorReport
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.logging import get_logger
@@ -109,6 +109,7 @@ class Readiness(StrEnum):
     ENTRY_MISSING = "entry_missing"  # workers/run_*.py 不存在
     HANDLER_MISSING = "handler_missing"  # 池 handler 未注册
     SERVER_MISSING = "server_missing"  # tts 常驻服务模块未落地
+    ENV_MISSING = "env_missing"  # tts 推理子环境（tts/.venv）不存在
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +130,18 @@ class ServiceSpec:
     #: HTTP 面的进程（uvicorn）没有 tick ⇒ ``False``，对它直接走信号/强杀，
     #: 免得白等一个"永远不会发生"的优雅退出（T1.12 裁定 107）。
     polls_stop_flag: bool = False
+    #: 这个服务**必须**用哪个解释器起（``None`` ⇒ 用当前解释器）。
+    #:
+    #: ``tts`` 是唯一一个填它的：torch 2.4.0+cu121 与 cosyvoice 只装得进
+    #: Python 3.11 的 ``tts/.venv``，而启动器自己是主 venv（3.12）的解释器。
+    #: 用错解释器的现象是「进程起来了，但每句都报 no module named torch」——
+    #: 看上去像代码坏了，其实是解释器错了。
+    python: Path | None = None
+    #: 拉起时**前置**到子进程环境变量的键值对。
+    #:
+    #: 用来把仓库 ``src/`` 塞进 ``PYTHONPATH``：``tts`` 子环境里没装 ``studio``
+    #: 这个包（``tts/pyproject.toml`` 写着 ``package = false``），不前置就 import 不到。
+    env_prepend: tuple[tuple[str, str], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -141,6 +154,7 @@ class ServiceSpec:
             "pool": self.pool,
             "required": self.required,
             "polls_stop_flag": self.polls_stop_flag,
+            "python": str(self.python) if self.python is not None else None,
         }
 
 
@@ -350,6 +364,28 @@ def probe_port(host: str, port: int, *, timeout: float = 0.25) -> bool:
 # ── 规格表 ──────────────────────────────────────────────────────────────
 
 
+def tts_python_for(paths: StudioPaths) -> Path | None:
+    """推理子环境的解释器（``config/tts.yaml: python``；缺了返回 ``None``）。
+
+    ``None`` 不是「没有解释器」，而是「**推理环境没装好**」—— 调用方据此把
+    ``tts`` 标成 :attr:`Readiness.ENV_MISSING` 并给出「去建 venv」的提示，
+    而不是拉起来一个每句都报 ``no module named torch`` 的进程。
+
+    显式配置了 ``python`` 但那个文件不在 ⇒ **不退回**默认位置：配置说了用哪个，
+    就只用那个。静默换一个解释器的后果是「环境看起来对，跑起来全不对」。
+    """
+    configured: Path | None = None
+    try:
+        configured = load_tts_config(paths).python
+    except StudioError:  # 配置读不出来 ⇒ 退回默认位置，让 doctor 去报那一件事
+        configured = None
+    if configured is not None:
+        candidate = configured if configured.is_absolute() else paths.home / configured
+        return candidate if candidate.is_file() else None
+    default = paths.home / "tts" / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    return default if default.is_file() else None
+
+
 def build_specs(paths: StudioPaths, *, python: str | None = None) -> tuple[ServiceSpec, ...]:
     """构造五进程规格表（命令行 = ``<python> workers/run_<name>.py``）。
 
@@ -358,6 +394,7 @@ def build_specs(paths: StudioPaths, *, python: str | None = None) -> tuple[Servi
     """
     executable = python or sys.executable
     workers = paths.workers_dir
+    tts_python = tts_python_for(paths) if python is None else None
 
     def entry(name: str) -> tuple[Path, tuple[str, ...]]:
         script = workers / f"run_{name}.py"
@@ -368,6 +405,8 @@ def build_specs(paths: StudioPaths, *, python: str | None = None) -> tuple[Servi
     draft_entry, draft_argv = entry("draft")
     voice_entry, voice_argv = entry("voice")
     render_entry, render_argv = entry("render")
+    if tts_python is not None:
+        tts_argv = (str(tts_python), str(tts_entry))
 
     return (
         ServiceSpec(
@@ -386,6 +425,8 @@ def build_specs(paths: StudioPaths, *, python: str | None = None) -> tuple[Servi
             argv=tts_argv,
             port=8788,
             health_path="/health",
+            python=tts_python,
+            env_prepend=(("PYTHONPATH", str(paths.home / "src")),),
         ),
         ServiceSpec(
             name="draft",
@@ -507,6 +548,18 @@ class ServiceManager:
                 detail="常驻推理服务模块尚未落地（studio.tts.server）",
                 remediation="T2.2 落地后自动就绪；在此之前其余进程照常启动（降级模式 §1.7）",
             )
+        if spec.name == "tts" and spec.python is None:
+            # 模块在、环境不在：拉起来只会得到一个「每句都报 no module named torch」的
+            # 进程 —— 那比「没起来」更难查（进程是活的，探活还回 200）。
+            return ServiceReadiness(
+                name=spec.name,
+                readiness=Readiness.ENV_MISSING,
+                detail="推理子环境不存在（tts/.venv）",
+                remediation=(
+                    "按 docs/runbook/tts_models.md 第二节建 tts/.venv 并装依赖；"
+                    "config/tts.yaml 的 python 指错了也会走到这里"
+                ),
+            )
         return ServiceReadiness(name=spec.name, readiness=Readiness.READY, detail="就绪")
 
     def readiness_all(self) -> tuple[ServiceReadiness, ...]:
@@ -596,6 +649,11 @@ class ServiceManager:
         log_path = self._paths.service_log_file(spec.name)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         env = dict(self._env)
+        for key, value in spec.env_prepend:
+            # 前置而不是覆盖：用户自己设的 PYTHONPATH 里可能有别的东西，
+            # 直接盖掉等于悄悄改了他给别的工具准备的环境。
+            existing = env.get(key)
+            env[key] = f"{value}{os.pathsep}{existing}" if existing else value
         env[STOP_FLAG_ENV] = str(self._paths.stop_flag_file(spec.name))
         env["PYTHONUNBUFFERED"] = "1"
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0

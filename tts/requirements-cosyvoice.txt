@@ -23,3 +23,6 @@ gdown==5.1.0
 wget==3.2
 rich==13.7.1
 matplotlib==3.7.5
+
+# 常驻服务（studio.tts.server）需要：Windows 上 ZoneInfo 靠这个包
+tzdata>=2025.1
