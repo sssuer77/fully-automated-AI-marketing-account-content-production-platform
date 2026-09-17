@@ -773,59 +773,64 @@
 > **v3.2 范围**：一期 = **音画合成 + 固定水印**，一次 ffmpeg 调用直出 `final.mp4`。
 > **不做**句子↔镜头对齐（D2），**不做**场景中间产物与三层模板编排（C13 ⇒ 二期 P1）。
 
-### T3.1 素材入库（跑酷 + BGM）· **P0** 🔴 需 E1/E3
+### T3.1 素材入库（跑酷 + BGM）· **P0** 🔴 需 E1/E3 ｜ 🔶 **部分完成（2026-09-17 核对）**
 - 依赖：T1.3 ｜ 里程碑：M3 ｜ 契约：§03.3.14 / §04.2.4
-- [ ] 跑酷素材入库：通配 `parkour_*.mp4`、缩略图、**指纹（sha256 + pHash + 帧哈希）**、可用区间（`usable_from_ms/to_ms`）、`has_text` 标记
-- [ ] **BGM 入库**（Q12）：`bgm_tracks` 表、`loudness_lufs`（ffmpeg 实测）、`mood`、`loopable` 标记
-- [ ] **授权登记**：`license` 枚举强制（`self_recorded`/`authorized`/`cc0`/`purchased`）+ `proof_path`；**缺 license 直接拒绝入库**
-- [ ] 重复素材按 sha256 / pHash 拒绝
-- [ ] 黑帧段落自动排除
-- [ ] `studio assets ingest --kind bgm --dir <源>` / `--kind parkour`
+- [x] 跑酷素材入库：通配 `parkour_*.mp4`、缩略图、可用区间（`usable_from_ms/to_ms`）、`has_text` 标记；**指纹只做了 sha256**（pHash / 帧哈希见下条）
+- [x] **BGM 入库**（Q12）：`bgm_tracks` 表、`loudness_lufs`（ffmpeg 实测）、`mood`、`loopable` 标记
+- [x] **授权登记**：`license` 枚举强制（`self_recorded`/`authorized`/`cc0`/`purchased`）+ `proof_path`；**缺 license 直接拒绝入库**（`services/asset_service.py` 的 `LICENSES`，非法 ⇒ `ASSET_INVALID`）
+- [x] 重复素材按 **sha256** 拒绝（`IngestAction.DUPLICATE`）
+- [ ] 重复素材按 **pHash** 拒绝 + **帧哈希** —— **用户已裁定为非核心（2026-09-17），一期不做**。列 `broll_clips.phash` / `frame_hashes_json`（`db/models.py:562-563`）与 DDL 都在，但**全仓没有任何代码写它们**
+- [ ] 黑帧段落自动排除 —— **用户已裁定为非核心（2026-09-17），一期不做**
+- [ ] `studio assets ingest --kind bgm --dir <源>` / `--kind parkour` —— **未做**：`cli.py` 里**没有 `assets_app`**；入库主干走 T4.8 的 REST 面板（`studio assets stats` 同理，该 CLI 也不存在）
 - ✅ `studio assets stats` 显示 clips 数/总时长/bgm 数；`pytest tests/integration/test_broll_ingest.py -q`（重复拒绝、黑帧排除、可用区间正确）；**缺 `license` 直接拒绝**
+- 📌 **实测（2026-09-17 核对）**：`tests/unit/services/test_asset_service.py` ⇒ **40 passed**（含 `test_duplicate_content_is_not_ingested_twice` / `test_new_asset_without_a_license_stays_out` / `test_illegal_license_is_refused_before_any_write`）；`tests/unit/render/test_assets.py` ⇒ **13 passed**；`tests/integration/test_broll_ingest.py` **不存在** ⇒ 上面那条集成验收**未落地**
 - ⚠️ **R3 版权** ⇒ 只收自录/授权 + 强制留档
 - ⚠️ 🔴 **E1 素材未到位** ⇒ 走**黑屏降级**（§04.2.8.6）保证链路不断
 - ⚠️ 陷阱 #14 素材被判搬运 ⇒ 随机化两档 + 相似度审计
 
-### T3.2 水印资产与合成 profile · **P0** 🔴 需 E2
+### T3.2 水印资产与合成 profile · **P0** 🔴 需 E2 ✅ **已完成（核对确认 2026-09-17）**
 - 依赖：T1.2, T1.3 ｜ 里程碑：M3 ｜ 契约：§04.2.8.2
-- [ ] `watermark.png` 入库与校验（尺寸/透明通道/路径存在）
-- [ ] 水印参数：位置枚举 / 边距（**偶数**）/ 宽度（≤ 画布 1/4）/ 透明度
-- [ ] `config/outputs.yaml` 合成 profile：**1080×1920 / 30fps / libx264 CRF21 / faststart / bt709**
-- [ ] **720P 保底档**（渲染失败降级用）
-- [ ] `studio render profile --show`
+- [x] `watermark.png` 入库与校验（尺寸/透明通道/路径存在）
+- [x] 水印参数：位置枚举 / 边距（**偶数**）/ 宽度（≤ 画布 1/4）/ 透明度
+- [x] `config/outputs.yaml` 合成 profile：**1080×1920 / 30fps / libx264 CRF21 / faststart / bt709**（`douyin_1080x1920_30fps_v1`；另带 `xhs_1080x1440_30fps_v1` / `bili_1920x1080_30fps_v1`）
+- [x] **720P 保底档**（`fallback_720x1280_v1`，渲染失败降级用）
+- [x] `studio render profile --show`（`cli.py:1670`）
 - ✅ `studio render profile --show` 打印合成 profile 并说明这次贴不贴水印；`pytest tests/unit/render/test_watermark.py -q`（位置枚举/边距偶数/宽度上限/透明度范围）
+- 📌 **实测（2026-09-17 核对）**：`tests/unit/render/test_watermark.py` ⇒ **95 passed**；`tests/unit/render/test_profiles.py` ⇒ **21 passed**。实现落在 `src/studio/render/watermark.py`（`WatermarkSpec` / `WatermarkAsset` / `WatermarkPlacement` / `WatermarkPlan`）与 `src/studio/render/profiles.py`
 - ⚠️ **水印是可选装饰** ⇒ 缺失 / 不可用 / 放不下都只**跳过**（原因写进 `manifest.json`），不阻塞出片
 - ⚠️ 位置越界 ⇒ **编译期**报错（不要留到 ffmpeg 运行时报）
 
-### T3.3 `CompositePlan` 与单遍编译器 · **P0**
+### T3.3 `CompositePlan` 与单遍编译器 · **P0** 🔶 **部分完成（2026-09-17 核对）**
 - 依赖：T3.1, T3.2, T2.7 ｜ 里程碑：M3 ｜ 契约：**§04.2.8.2 / §04.2.8.3 / §04.2.8.5**
-- [ ] `CompositePlan` + `WatermarkSpec` 数据结构
-- [ ] `total_ms = ffprobe(voice_master.wav).duration + tail_ms`（**音频为时长基准**）
-- [ ] `filter_complex` 生成链：跑酷循环裁长 → 缩放铺满 → 水印 overlay → 混音
-- [ ] **共用规则**（§04.2.8.4，一期同样适用）：`fps=30` 在 `scale` 前、`setpts=PTS-STARTPTS`、`setsar=1`、显式 `-t`、**禁用 `-shortest`**、`amix normalize=0`
-- [ ] `ff_path()` 统一转义（Windows 驱动器冒号转 `\:`）
-- [ ] **语法预检**：`ffmpeg -filter_complex_script … -f null -`（快速失败）
-- [ ] 节点守卫：`estimated_nodes > 60` ⇒ 触发分块降级
-- [ ] `studio render plan --task <id> --out plan.json`
+- [x] 数据结构 —— **实际名字是 `CompositeRequest`**（`src/studio/render/composite.py:69`）+ `CompositeResult`；`CompositePlan` 这个名字只出现在 `watermark.py:26` 的注释里。**不为对名字去改名**：会牵动 `render_service` / `render_worker` / `hashing` / 一大片测试
+- [x] `total_ms = ffprobe(voice_master.wav).duration + tail_ms`（**音频为时长基准**）
+- [x] `filter_complex` 生成链：跑酷循环裁长 → 缩放铺满 → 水印 overlay → 混音
+- [x] **共用规则**（§04.2.8.4，一期同样适用）：`fps=30` 在 `scale` 前、`setpts=PTS-STARTPTS`、`setsar=1`、显式 `-t`、**禁用 `-shortest`**、`amix normalize=0`
+- [x] 路径统一转义（Windows 驱动器冒号转 `\:`）—— 实际函数名 `filter_path_arg()`（`composite.py:137`）
+- [ ] **语法预检**：`ffmpeg -filter_complex_script … -f null -`（快速失败）—— **一期未做**（全仓无此实现）。它只是「快速失败」的优化，不影响出片
+- [ ] 节点守卫：`estimated_nodes > 60` ⇒ 触发分块降级 —— **刻意不做**：一期是**单底片**合成，整张滤镜图实测十来二十个节点，离 60 差得远；现在写分块就是写一段**永远不会被执行、因而永远不会被验证**的代码，留到二期三层模板。理由写在 `src/studio/render/degrade.py` 的模块注释里；`COMPOSITE_CHUNKED` 常量（`degrade.py:56`）只作占位，**没有代码读它**
+- [ ] `studio render plan --task <id> --out plan.json` —— **没有**：`render_app` 只有 `profile` 与 `make` 两个命令
 - ✅ `pytest tests/unit/render/test_composite.py -q`：①`total_ms = ffprobe + tail_ms` ②`fps=30` 在 `scale` 前 ③`overlay` x/y 为偶数 ④`amix` 含 `normalize=0` ⑤`estimated_nodes > 60` 触发分块；`pytest tests/golden/test_filtergraph.py -q`（含中文/空格/冒号路径）；语法预检退出码 0
-- ⚠️ **R8 复杂度爆炸** ⇒ 节点守卫 + 分块降级
-- ⚠️ 陷阱 #6 路径报错 ⇒ 统一 `ff_path()`
-- ⚠️ 陷阱 #7 命令行超长 ⇒ `-filter_complex_script` 文件
+- 📌 **实测（2026-09-17 核对）**：`tests/unit/render/test_composite.py` ⇒ **23 passed**（①–④ 都在）；`tests/unit/render/test_hashing.py` ⇒ **15 passed**；**⑤ 不适用**（分块不做）；`tests/golden/test_filtergraph.py` **不存在** —— 中文/空格/盘符冒号的转义由 `test_composite.py` 的用例直接覆盖（对 `filter_path_arg()` 断言含 `\:`），golden 文件不必再建；语法预检未做 ⇒ 无退出码可验
+- ⚠️ **R8 复杂度爆炸** ⇒ ~~节点守卫 + 分块降级~~ **一期不做**（理由见上）
+- ⚠️ 陷阱 #6 路径报错 ⇒ 统一 `filter_path_arg()`
+- ⚠️ 陷阱 #7 命令行超长 ⇒ ~~`-filter_complex_script` 文件~~ **一期未做**：`build_composite_argv()` 用的是内联 `-filter_complex`（`composite.py:283`）。单底片滤镜图只有十来二十个节点，离命令行长度上限很远；滤镜图仍会落盘到 `graphs/` 供手工重跑（`_record_graph()`）
 - ⚠️ 陷阱 #28 素材比人声短 ⇒ `loop` + `trim=duration=total_ms` 补齐；素材为空 ⇒ 纯黑底仍出片
 
-### T3.4 单遍合成执行器 · **P0**
+### T3.4 单遍合成执行器 · **P0** 🔶 **部分完成（2026-09-17 核对）**
 - 依赖：T3.3 ｜ 里程碑：M3 ｜ 契约：§01.5.2
-- [ ] **argv 数组**调用（**不用 shell 拼接**，防注入与转义地狱）
-- [ ] `-progress pipe:1 -stats_period 0.5` 进度解析（`out_time_us` → 百分比）
-- [ ] 进度推送限流 2Hz
-- [ ] 超时 / 取消 ⇒ **杀进程树**（`taskkill /PID <pid> /T /F`），清理半成品
-- [ ] `.partial` → `os.replace` **原子改名**
-- [ ] stderr 尾部 64KB 截断留痕 + 错误码映射
-- [ ] `composite_hash` 整片缓存（同哈希二次运行**不调用 ffmpeg**）
-- [ ] Windows 用 `BELOW_NORMAL_PRIORITY_CLASS` 启动
+- [x] **argv 数组**调用（**不用 shell 拼接**，防注入与转义地狱）—— `build_composite_argv()` 返回 `list[str]`，经 `run_command()` 走 `subprocess.run(argv, …)`
+- [ ] `-progress pipe:1 -stats_period 0.5` 进度解析（`out_time_us` → 百分比）—— **一期未做**：argv 里写的是 `-nostats`（`composite.py:281`）。渲染面板的进度是**粗粒度**的（`render 0/1` 那种），不是 ffmpeg 百分比
+- [ ] 进度推送限流 2Hz —— **一期未做**（没有 ffmpeg 进度流，也就没有可限流的东西）
+- [ ] 超时 / 取消 ⇒ **杀进程树**（`taskkill /PID <pid> /T /F`），清理半成品 —— **未做**：`core/media.py:105` 的 `run_command()` 用 `subprocess.run(…, timeout=)`，超时靠 `TimeoutExpired` 收口（`returncode = -2`），**没有** `taskkill /T /F`。半成品的清理是有的（`.partial` 会被删）
+- [x] `.partial` → 原子改名（`partial.replace(req.output)`，`composite.py:358`）
+- [x] stderr 尾部截断留痕 + 错误码映射（`CommandResult.tail()`；超时 ⇒ `RENDER_TIMEOUT`，其余 ⇒ `RENDER_FAILED`）
+- [ ] `composite_hash` 整片缓存（同哈希二次运行**不调用 ffmpeg**）—— **未做缓存**：hash 算了（`render_service.py:434` 的 `composite_hash(…)`）也写进了 `manifest.json` / `quality_json.plan_hash`，但**没有「同哈希直接复用产物」的分支**
+- [ ] Windows 用 `BELOW_NORMAL_PRIORITY_CLASS` 启动 —— **未做**：`core/media.py:126` 用的是 `CREATE_NO_WINDOW`（消黑框），没设优先级类
 - ✅ `pytest tests/integration/test_composite_runner.py -q`：①进度可解析 ②超时杀进程树且不留子进程 ③中断 ⇒ 目标文件不存在但 `.partial` 被清理 ④argv 不含 shell 拼接（静态断言）⑤同 `composite_hash` 二次运行**不调用 ffmpeg**（Mock 计数）⑥人声或素材改动 ⇒ 哈希变化 ⇒ 重渲
-- ⚠️ 陷阱 #9 崩溃留"假完成" ⇒ `.partial` + `os.replace`
-- ⚠️ 陷阱 #8 缓存复用旧产物 ⇒ 哈希含 canonical plan + 输入 sha256 + 水印/字幕参数
+- 📌 **实测（2026-09-17 核对）**：`tests/integration/test_composite_runner.py` **不存在**；上面这条集成验收**未落地**。已落地部分由 `tests/unit/render/test_degrade.py`（**8 passed**）与 `tests/unit/render/test_composite.py`（**23 passed**，含 argv 静态断言）覆盖
+- ⚠️ 陷阱 #9 崩溃留「假完成」⇒ `.partial` + 原子改名
+- ⚠️ 陷阱 #8 缓存复用旧产物 ⇒ 哈希含 canonical plan + 输入 sha256 + 水印/字幕参数（**哈希已算，缓存未接**）
 - ⚠️ NVENC 失败 ⇒ 回退 `libx264`
 
 ### T3.5 字幕生成（Q11：**开启**）· **P0** ✅ **已完成（2026-09-15）**
@@ -1685,13 +1690,20 @@ T1.12 ✅             （一键启动）
 | --- | --- | --- | --- | --- |
 | **T1** 基座 + 脚手架 + 选题池 | 12 | **12**（T1.1–T1.12 全部 ✅） | M1 | [ ] |
 | **T2** CosyVoice 配音 | 9 | **5**（T2.5 ✅ T2.6 ✅ T2.7 ✅ T2.8 ✅ T2.9 ✅） | M2 | [ ] |
-| **T3** 渲染（一期单遍合成） | 7 | **3**（T3.5 ✅ T3.6 ✅ T3.7 ✅） | M3 | [ ] |
+| **T3** 渲染（一期单遍合成） | 7 | **4**（T3.2 ✅ T3.5 ✅ T3.6 ✅ T3.7 ✅）+ **3 部分**（T3.1 🔶 T3.3 🔶 T3.4 🔶） | M3 | [ ] |
 | **T4** 操作台 + 四池 + 无人值守 | 14 | **14**（T4.1 ✅ T4.2 ✅ T4.3 ✅ T4.4 ✅ **T4.5 ✅** T4.6 ✅ T4.7 ✅ T4.8 ✅ T4.9 ✅ T4.10 ✅ T4.11 ✅ T4.12 ✅ T4.13 ✅ **T4.14 ✅** —— **T4 齐了**） | M4 | [ ] |
 | **T5** 发布 + 定时 + 报告 | 8 | **3**（T5.1 ✅ T5.2 ✅ **T5.3 ✅**） | M5 | [ ] |
-| **合计（一期）** | **50** | **37** | — | — |
+| **合计（一期）** | **50** | **38**（另有 **3** 项部分完成） | — | — |
 | *T3-P1…T3-P4* | *4（二期）* | *0* | — | *不占一期工期* |
 
 **外部阻塞项**：E1 跑酷素材 🔴 / E2 水印 PNG 🔴 / E3 BGM 🔴 / E4 原声 🔴 / E5 CosyVoice 权重 🔴 / E6 LLM Key 🟡（T1.9 真机联调前，不阻塞编码）/ E7 persona 🟡 / E8 字体 🟡
+
+> **「部分完成」口径（2026-09-17 核对）**：总表只把**整块做完**的任务计进「已完成」；主干已落地、但仍有明确缺口
+> 的记作 **🔶 部分完成**（未做的子项在任务块里逐条标 `[ ]` 并写了理由与落点）—— **不计入**「已完成」，也**不算未开工**。
+> 当前 T3 有 3 项部分完成：
+> ① `T3.1` 素材入库 —— 缺 pHash + 帧哈希、黑帧段落排除、`studio assets ingest` / `stats` CLI、`tests/integration/test_broll_ingest.py`（**前两项用户已裁定为非核心**）；
+> ② `T3.3` 单遍编译器 —— 缺语法预检、节点守卫 / 分块降级（**刻意不做**，见 `src/studio/render/degrade.py`）、`studio render plan`；规格里的 `CompositePlan` 实际名为 `CompositeRequest`；
+> ③ `T3.4` 单遍合成执行器 —— 缺 ffmpeg 进度解析与 2Hz 限流、超时杀进程树、`composite_hash` 整片缓存、`BELOW_NORMAL_PRIORITY_CLASS`。
 
 > 注 1：`T1.2` 含 **T1.2+ persona 可编辑改造**（人物库 / 热重载 / 一键切换 / 自动备份）。E7 现有 2 套可跑人物（`persona_default` 熊大熊二 · `solo_commentary` 快嘴单人），**口吻 / 受众 / 禁区仍待你定稿内容**（**可编辑性已就位**，见注 4）。
 >
