@@ -28,19 +28,28 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+import sqlite3
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, cast
 
 from studio.agents.base import AgentContext
-from studio.core.config import AccountConfig, PlatformCode, PublishConfig
+from studio.core.config import AccountConfig, PlatformCode, PlatformConfig, PublishConfig
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.ids import new_ulid
 from studio.core.logging import get_logger
 from studio.core.paths import StudioPaths
+from studio.db.queue import Job, JobStore
 from studio.db.repositories.artifact_repo import ArtifactRepo
+from studio.db.repositories.audit_repo import AuditRepo
+from studio.db.repositories.publication_repo import (
+    MANUAL_REQUIRED,
+    PublicationRepo,
+    PublicationRow,
+)
 from studio.domain.cover import CoverInput, CoverOutput, rule_cover_output
+from studio.domain.enums import UnitType
 from studio.domain.publish import build_caption, fit_text, render_tags
 from studio.domain.script import find_forbidden
 from studio.domain.task_service import TaskService
@@ -61,16 +70,29 @@ from studio.publish.precheck import (
 from studio.services.script_service import read_active_script
 
 __all__ = [
+    "AUDIT_CANCEL",
+    "AUDIT_MANUAL_DONE",
+    "AUDIT_RETRY",
     "COVER_KIND",
     "FIXTURE_ACCOUNT_ID",
+    "PUBLISH_POOL",
     "TARGETS",
     "TTL_COVER",
     "CoverReport",
     "CoverRequest",
     "DryRunReport",
     "DryRunRequest",
+    "EnqueueReport",
+    "PublicationBoard",
     "PublishService",
+    "build_board",
+    "cancel_publication",
+    "enqueue_publications",
+    "mark_manual_done",
+    "resolve_account",
     "resolve_final_video",
+    "resolve_platform",
+    "retry_publication",
 ]
 
 logger = get_logger("studio.services.publish")
@@ -656,6 +678,464 @@ class PublishService:
             context={"platform": request.platform},
             remediation="在 config/publish.yaml 的 accounts 里加一条（首次发布前需人工扫码登录）",
         )
+
+
+# ── 投递：把一条任务排进发布池（T5.3 · §03.3.9 / §03.3.10）──────────────
+
+#: 发布池名（与 DDL 的 ``jobs.pool`` CHECK 一致）
+PUBLISH_POOL: Final[str] = "publish"
+
+#: 三个人工处置动作的留痕名（§06.10 不变量 3：**处置动作必须写 audit_ops**）。
+AUDIT_RETRY: Final[str] = "publish.retry"
+AUDIT_CANCEL: Final[str] = "publish.cancel"
+AUDIT_MANUAL_DONE: Final[str] = "publish.manual_done"
+
+
+@dataclass(frozen=True, slots=True)
+class EnqueueReport:
+    """一次投递的结论（CLI / 面板 / 定时器读同一份）。
+
+    ``skipped`` 与 ``queued`` 分开报，而不是只回一个数字：投递这条路有三种"没投出去"
+    —— 平台没启用、这条早投过了、开关关着 —— 它们的**处置动作完全不同**
+    （改配置 / 什么都不用做 / 打开开关）。合成一个 0 之后，操作员只能靠猜。
+    """
+
+    task_id: str
+    platforms: tuple[str, ...]
+    queued: int
+    #: 没投出去的平台及原因（``"douyin：已经投过"``）。
+    skipped: tuple[str, ...] = ()
+    #: 任务**不存在**时也走这条路（返回而不是抛）：投递常由"任务完成"的事件触发，
+    #: 那时任务一定存在；而人工点一次不存在的任务号，报错比静默好。见 ``missing``。
+    missing: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "platforms": list(self.platforms),
+            "queued": self.queued,
+            "skipped": list(self.skipped),
+            "missing": self.missing,
+        }
+
+
+def resolve_platform(config: PublishConfig, platform: str) -> PlatformConfig:
+    """平台配置；``config/publish.yaml`` 里没有 ⇒ 抛（**不猜**）。
+
+    **不看 ``enabled``**：这条函数回答的是"有没有这个平台"，而"能不能发"是调用方
+    自己的判断 —— 演练（T5.2）与真发布（T5.3）对 ``enabled`` 的处置**不一样**
+    （演练放行、真发拒绝），把它塞进这里会让两种语义挤在一个返回值里。
+    """
+    cfg = config.platforms.get(cast("PlatformCode", platform))
+    if cfg is None:
+        raise StudioError(
+            f"config/publish.yaml 里没有平台 {platform or '(空)'}",
+            code=ErrorCode.VALIDATION_FAILED,
+            context={"platform": platform, "known": sorted(config.platforms)},
+            remediation="平台代号只能是 config/publish.yaml 的 platforms 键",
+        )
+    return cfg
+
+
+def resolve_account(
+    config: PublishConfig,
+    *,
+    platform: str,
+    account_id: str | None = None,
+) -> AccountConfig:
+    """这条发布用哪个账号：指定的那个 ⇒ 它；没指定 ⇒ 该平台**唯一**启用的那个。
+
+    为什么"该平台有多个启用账号"要**报错**而不是挑第一个
+    --------------------------------------------------
+    发布单元是"一任务一平台一次"（§03.3.10：``unit_ref = platform``，每平台 1 条作业），
+    所以一个平台上配两个启用账号时，**没有**哪一条作业能覆盖第二个账号。挑第一个
+    会安静地少发一半 —— 而"配了两个号，只发出去一个"在面板上看起来完全正常
+    （有一条 ``published``），要等到人自己去平台上数才发现。
+
+    多账号分发（一条任务发到两个账号）归 **T5.8**：那时要么把账号编进 ``unit_ref``，
+    要么投两条作业。这里把边界说清楚，比现在猜一个方案好。
+    """
+    enabled = [a for a in config.enabled_accounts if a.platform == platform]
+    if account_id:
+        for account in enabled:
+            if account.account_id == account_id:
+                return account
+        raise StudioError(
+            f"平台 {platform} 上没有启用的账号 {account_id}",
+            code=ErrorCode.VALIDATION_FAILED,
+            context={"account_id": account_id, "enabled": [a.account_id for a in enabled]},
+            remediation="在 config/publish.yaml 的 accounts 里加一条并 enabled: true",
+        )
+    if not enabled:
+        raise StudioError(
+            f"平台 {platform} 没有启用的账号",
+            code=ErrorCode.CONFIG_INVALID,
+            context={"platform": platform},
+            remediation="在 config/publish.yaml 的 accounts 里加一条（首次发布前需人工扫码登录）",
+        )
+    if len(enabled) > 1:
+        raise StudioError(
+            f"平台 {platform} 有 {len(enabled)} 个启用账号，而发布单元是「一任务一平台一次」（§03.3.10）",
+            code=ErrorCode.CONFIG_INVALID,
+            context={"platform": platform, "accounts": [a.account_id for a in enabled]},
+            remediation=(
+                "一个平台上只启用一个账号，或给 payload 指定 account_id；"
+                "多账号分发（一条任务发到多个账号）归 T5.8"
+            ),
+        )
+    return enabled[0]
+
+
+def enqueue_publications(
+    *,
+    connection: sqlite3.Connection,
+    task_id: str,
+    config: PublishConfig,
+    platforms: Sequence[str] | None = None,
+    account_id: str | None = None,
+    dry_run: bool | None = None,
+    scheduled_at: str | None = None,
+) -> EnqueueReport:
+    """把这条任务排进发布池（幂等；返回**这次真投出去**的条数）。
+
+    ``platforms`` 缺省 = 所有**启用账号**所在的平台（出厂配置就是 ``douyin`` 一个）。
+    显式给平台时，未启用的平台落进 ``skipped`` 而**不抛**：二线平台 ``enabled=false``
+    是出厂状态（Q9），一条"把这些平台都发一遍"的批量指令不该整批失败。
+
+    ``publications`` 那一行**不在这里建**：它要的是"这一版成片的路径与哈希、这一版的
+    标题与文案"，而那是发布**那一刻**的事实（worker 手里才有）。这里只投作业。
+
+    幂等由 ``JobStore.enqueue`` 保证（``(task_id, pool, unit_type, unit_ref)`` 上有唯一
+    约束，冲突即 ``DO NOTHING``）—— 所以"任务完成后自动投一遍 + 人工再点一遍"是安全的。
+    """
+    store = JobStore(connection)
+    tasks = TaskService(connection)
+    try:
+        tasks.get(task_id)
+    except StudioError:
+        logger.info("publish.enqueue_missing_task", task_id=task_id)
+        return EnqueueReport(task_id=task_id, platforms=(), queued=0, missing=True)
+
+    wanted: list[str] = []
+    for platform in platforms if platforms is not None else _default_platforms(config):
+        if platform not in wanted:
+            wanted.append(platform)
+
+    queued = 0
+    skipped: list[str] = []
+    for platform in wanted:
+        platform_cfg = resolve_platform(config, platform)
+        if not platform_cfg.enabled:
+            skipped.append(f"{platform}：平台未启用（§06.2.1 · Q9）")
+            continue
+        account = resolve_account(config, platform=platform, account_id=account_id)
+        payload: dict[str, Any] = {"account_id": account.account_id}
+        if dry_run is not None:
+            payload["dry_run"] = bool(dry_run)
+        if scheduled_at:
+            payload["scheduled_at"] = scheduled_at
+        job_id = store.enqueue(
+            task_id=task_id,
+            pool=PUBLISH_POOL,
+            unit_type=UnitType.PUBLISH.value,
+            unit_ref=platform,
+            payload=payload,
+        )
+        if job_id is None:
+            skipped.append(f"{platform}：已经投过（幂等命中）")
+            continue
+        queued += 1
+    logger.info(
+        "publish.enqueued",
+        task_id=task_id,
+        queued=queued,
+        platforms=wanted,
+        skipped=skipped,
+    )
+    return EnqueueReport(task_id=task_id, platforms=tuple(wanted), queued=queued, skipped=tuple(skipped))
+
+
+def _default_platforms(config: PublishConfig) -> tuple[str, ...]:
+    """出厂口径的目标平台 = 启用账号所在的平台（顺序按 ``accounts`` 的书写顺序）。"""
+    out: list[str] = []
+    for account in config.enabled_accounts:
+        if account.platform not in out:
+            out.append(account.platform)
+    return tuple(out)
+
+
+# ── 面板数据（T5.3 先供"待人工"一处，七区块归 T5.5）────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationBoard:
+    """发布面板的一份快照（计数 + 每个状态的最新若干条）。
+
+    **六个状态各取一份**而不是"一个列表加筛选"：面板的区块是固定的六块，一次请求
+    全部拿到，第一帧就不会是"先画一半、再补一半"。``counts`` 是**全量**计数
+    （不带 limit）—— 区块标题上的数字必须是总数，跟着 limit 变小会让人以为记录没了。
+    """
+
+    counts: dict[str, int]
+    by_status: dict[str, tuple[PublicationRow, ...]]
+
+    def rows(self, status: str) -> tuple[PublicationRow, ...]:
+        return self.by_status.get(status, ())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "counts": dict(self.counts),
+            "by_status": {status: [row.to_dict() for row in rows] for status, rows in self.by_status.items()},
+        }
+
+
+def build_board(connection: sqlite3.Connection, *, limit: int = 50) -> PublicationBoard:
+    """读一份发布面板快照（六个状态各 ``limit`` 条）。"""
+    repo = PublicationRepo(connection)
+    per_status: dict[str, tuple[PublicationRow, ...]] = {}
+    for status in repo.counts():
+        per_status[status] = repo.list_by_status(status, limit=limit)
+    return PublicationBoard(counts=repo.counts(), by_status=per_status)
+
+
+# ── 人工处置（§06.10 不变量 3：三者均写 audit_ops）─────────────────────
+
+
+def retry_publication(
+    *,
+    connection: sqlite3.Connection,
+    publication_id: str,
+    actor: str = "user",
+    actor_ref: str | None = None,
+    reason: str | None = None,
+    request_id: str | None = None,
+    ip: str | None = None,
+    source: str = "webui",
+) -> PublicationRow:
+    """人工重试一条发布：``publications`` 回 ``queued`` + 把作业重排进待办。
+
+    两件事**都要做**，缺一个就是"点了没反应"：
+    - 只改 ``publications`` ⇒ 队列那条作业已经 ``succeeded``，永远没有 worker 再看它
+      （与 T2.9 的单句重配同一条陷阱）；
+    - 只重排作业 ⇒ worker 一看 ``publications`` 是 ``manual_required``，会把这一轮
+      又记成一次失败。
+
+    ``attempt_count`` 归零（``reset_for_retry``）：人工重试的意思是"给它一次完整的
+    机会"，接着上一轮的第 3 次算的话，下一次失败就直接又转人工了。
+    """
+    repo = PublicationRepo(connection)
+    before = repo.get(publication_id)
+    if before is None:
+        raise StudioError(
+            f"发布记录不存在：{publication_id}",
+            code=ErrorCode.VALIDATION_FAILED,
+            context={"publication_id": publication_id},
+            remediation="刷新发布面板，确认这条记录还在（任务被删会级联删掉它）",
+        )
+    row = repo.reset_for_retry(publication_id)
+    requeued = _requeue_publication_job(connection, row)
+    _audit(
+        connection,
+        action=AUDIT_RETRY,
+        row=row,
+        actor=actor,
+        actor_ref=actor_ref,
+        reason=reason or "人工重试",
+        before={"status": before.status, "attempt_count": before.attempt_count},
+        after={"status": row.status, "job_requeued": requeued},
+        request_id=request_id,
+        ip=ip,
+        source=source,
+    )
+    return row
+
+
+def cancel_publication(
+    *,
+    connection: sqlite3.Connection,
+    publication_id: str,
+    actor: str = "user",
+    actor_ref: str | None = None,
+    reason: str | None = None,
+    request_id: str | None = None,
+    ip: str | None = None,
+    source: str = "webui",
+) -> PublicationRow:
+    """人工取消一条发布：``canceled`` + 把还没认领的作业作废。
+
+    ``publications`` 已 ``published`` 的**不能**取消（``PublicationRepo.cancel`` 会抛）：
+    平台上已经有了那条作品，本系统这一侧删掉记录只会让"发过什么"变成一笔糊涂账。
+    """
+    repo = PublicationRepo(connection)
+    before = repo.get(publication_id)
+    row = repo.cancel(publication_id, reason=reason or "人工取消")
+    job_canceled = _cancel_publication_job(connection, row, actor=actor, actor_ref=actor_ref)
+    _audit(
+        connection,
+        action=AUDIT_CANCEL,
+        row=row,
+        actor=actor,
+        actor_ref=actor_ref,
+        reason=reason or "人工取消",
+        before=None if before is None else {"status": before.status},
+        after={"status": row.status, "job_canceled": job_canceled},
+        request_id=request_id,
+        ip=ip,
+        source=source,
+    )
+    return row
+
+
+def mark_manual_done(
+    *,
+    connection: sqlite3.Connection,
+    publication_id: str,
+    actor: str = "user",
+    actor_ref: str | None = None,
+    reason: str,
+    request_id: str | None = None,
+    ip: str | None = None,
+    source: str = "webui",
+) -> PublicationRow:
+    """人工标记"这条我处理完了"（§06.10 不变量 2 的第三个动作）。
+
+    ``reason`` **必填**：这条动作的全部信息量就是那句人话。允许空串的话，面板上会
+    留下一排"已处理"而没有任何一条说得出为什么 —— 那比不记还糟。
+
+    落点为什么是 ``canceled`` 而不是 ``published``
+    ---------------------------------------------
+    人把片子发到平台上之后，那条作品是**人发的**：本系统手上没有 ``url``、
+    没有 ``platform_post_id``，写成 ``published`` 等于伪造一条发布记录
+    （T5.4 会拿着空 post id 去抓数据；限频守卫会把它算成"今天发过一条"）。
+    这一侧的语义只是"从自动链路上摘下来，别再管它了"，那就是 ``canceled``。
+    人发出去的那一条要不要占额度，记在 ``audit_ops`` 里由人自己看 —— 见 §06.10 的
+    人工兜底说明。
+    """
+    if not reason.strip():
+        raise StudioError(
+            "标记已人工处理必须写一句说明",
+            code=ErrorCode.VALIDATION_FAILED,
+            context={"publication_id": publication_id},
+            remediation="在 reason 里写清楚是人工发出去了，还是决定不发（会进 audit_ops）",
+        )
+    repo = PublicationRepo(connection)
+    before = repo.get(publication_id)
+    if before is None:
+        raise StudioError(
+            f"发布记录不存在：{publication_id}",
+            code=ErrorCode.VALIDATION_FAILED,
+            context={"publication_id": publication_id},
+        )
+    if before.status != MANUAL_REQUIRED:
+        raise StudioError(
+            f"这条发布不在「待人工」队列里（当前：{before.status}）",
+            code=ErrorCode.STATE_TRANSITION_ILLEGAL,
+            context={"publication_id": publication_id, "status": before.status},
+            remediation="「标记已人工处理」只对待人工的那几条有意义",
+        )
+    row = repo.cancel(publication_id, reason=f"人工已处理：{reason}")
+    _cancel_publication_job(connection, row, actor=actor, actor_ref=actor_ref)
+    _audit(
+        connection,
+        action=AUDIT_MANUAL_DONE,
+        row=row,
+        actor=actor,
+        actor_ref=actor_ref,
+        reason=reason,
+        before={"status": before.status},
+        after={"status": row.status},
+        request_id=request_id,
+        ip=ip,
+        source=source,
+    )
+    return row
+
+
+def _requeue_publication_job(connection: sqlite3.Connection, row: PublicationRow) -> bool:
+    """把这条发布的作业重排进待办；没有这条作业 ⇒ 现投一条。"""
+    store = JobStore(connection)
+    job = _find_publication_job(connection, row)
+    if job is None:
+        store.enqueue(
+            task_id=row.task_id,
+            pool=PUBLISH_POOL,
+            unit_type=UnitType.PUBLISH.value,
+            unit_ref=row.platform,
+            payload={"account_id": row.account_id},
+        )
+        return True
+    store.requeue_unit(
+        task_id=row.task_id,
+        pool=PUBLISH_POOL,
+        unit_type=UnitType.PUBLISH.value,
+        unit_ref=row.platform,
+        payload={"account_id": row.account_id},
+    )
+    return True
+
+
+def _cancel_publication_job(
+    connection: sqlite3.Connection,
+    row: PublicationRow,
+    *,
+    actor: str,
+    actor_ref: str | None,
+) -> bool:
+    """作废还没被认领的作业；已经在跑的返回 ``False``（由它自己收工）。"""
+    job = _find_publication_job(connection, row)
+    if job is None:
+        return False
+    return JobStore(connection).cancel(
+        job_id=job.id,
+        actor=actor if actor in {"user", "system", "auto", "worker"} else "user",
+        actor_ref=actor_ref,
+        reason=f"发布记录已{row.status}",
+    )
+
+
+def _find_publication_job(connection: sqlite3.Connection, row: PublicationRow) -> Job | None:
+    """找这条发布对应的作业（``(task_id, publish, publish, platform)``）。"""
+    jobs = JobStore(connection).list_jobs(pool=PUBLISH_POOL, task_id=row.task_id, limit=100)
+    for job in jobs:
+        if job.unit_type == UnitType.PUBLISH.value and job.unit_ref == row.platform:
+            return job
+    return None
+
+
+def _audit(
+    connection: sqlite3.Connection,
+    *,
+    action: str,
+    row: PublicationRow,
+    actor: str,
+    actor_ref: str | None,
+    reason: str,
+    before: Mapping[str, Any] | None,
+    after: Mapping[str, Any] | None,
+    request_id: str | None,
+    ip: str | None,
+    source: str,
+) -> None:
+    """写一条人工处置留痕（§06.10 不变量 3）。
+
+    ``actor`` 白名单外的值落 ``user``：留痕的 CHECK 会拒掉非法 actor，而"传错了"不该
+    把一次已经生效的处置变成 500 —— 处置本身已经落库了，留痕只是补记。
+    """
+    AuditRepo(connection).record(
+        actor=actor if actor in {"user", "system", "auto", "worker"} else "user",
+        actor_ref=actor_ref,
+        action=action,
+        target_type="publication",
+        target_id=row.id,
+        task_id=row.task_id,
+        before=before,
+        after=after,
+        result="ok",
+        reason=reason,
+        request_id=request_id,
+        ip=ip,
+        source=source,
+    )
 
 
 def _default_title(script: Any, task: Any, task_id: str) -> str:

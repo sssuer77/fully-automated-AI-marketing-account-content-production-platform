@@ -1443,16 +1443,52 @@
   - **267** `_dry_run_account` 里 `fixture` 目标**现造**账号（`_fixture`，profile 落 `data/browser_profile/_fixture/`）：为了演练在配置里加一个假账号，会让配置里出现一条**永远发不出去**的东西；而真账号的 profile 必须与演练**物理隔离**（不然演练会把真 cookie 弄脏）
 - ⚠️ 新增陷阱 5 条已并入 §10（编号 135–139）
 
-### T5.3 发布池 + 限频 + 失败转人工 · **P0**
-- 依赖：T5.2, T1.5 ｜ 里程碑：M5 ｜ 契约：§03.4.4 / §06.5.4
-- [ ] `publish` 池 worker
-- [ ] 限频：**≤3 条/天/账号** + 间隔 ≥30min
-- [ ] 重试 ≤3 次指数退避
-- [ ] 失败转"待人工发布"（`manual_required`）
-- [ ] **幂等键含 `account_id`**（`task_id + platform + account_id`）
-- [ ] 发布失败**不回退任务状态**（任务仍为 `completed`）
-- ✅ `pytest tests/integration/test_publish_pool.py -q`：①第 4 条当天发布被限频拒绝（**自动顺延，不报失败**）②连续失败 3 次 ⇒ `manual_required` 且任务仍 `completed` ③幂等键防重复发布
-- ⚠️ **R13 风控** ⇒ 限频 + 登录态探测 + 转人工 + **不实现验证码绕过**
+### T5.3 发布池 + 限频 + 失败转人工 · **P0** ✅ **已完成（2026-09-17）**
+- 依赖：T5.2, T1.5 ｜ 里程碑：M5 ｜ 契约：**§4.6.7（新增）** / §03.4.4 / §06.5.4 / §06.10 / §06.12
+- [x] `publish` 池 worker（`pools/publish_worker.py` + `workers/run_publish.py`）
+- [x] 限频：**≤3 条/天/账号** + 间隔 ≥30min ⇒ 不过**顺延**（不是失败）
+- [x] 重试 ≤3 次指数退避（复用 `JobStore.fail` 那一份退避算术，不另写一条曲线）
+- [x] 失败转"待人工发布"（`manual_required`）+ 写 `audit_ops`（§06.10 不变量 3）
+- [x] **幂等键含 `account_id`**（`sha256(task_id|platform|account_id)`，落在 `publications.idempotency_key` 的 UNIQUE 上）
+- [x] 发布失败**不回退任务状态**（任务仍为 `completed`，成片可下载后人工发）
+- ✅ `pytest tests/integration/test_publish_pool.py -q` ⇒ **4 passed**，四条验收逐条对上：
+  - ① 第 4 条当天被限频 ⇒ **自动顺延**：`units_deferred=1` / `units_failed=0`，作业回 `pending`、`attempts=0`、
+    `error_code=PUBLISH_RATELIMIT`、`not_before` 在**未来**，且**一条记录都不落**（它还没开始发）；任务仍 `completed`
+  - ② 连续失败 3 次 ⇒ `publications.status='manual_required'`、`attempt_count=3`、`error_message` 是发布器原话，
+    且**任务仍为 `completed`**；`audit_ops` 恰好一条 `publish.manual_required`
+  - ③ 幂等键防重复发布：同一条任务投两次（第二次被幂等挡下且**说得出为什么**）、池跑两轮（第二轮 `units_done=0`）
+    ⇒ 发布器**只被叫过一次**，`idempotency_key` 逐字等于 `sha256(f"{task_id}|douyin|acc_main")`
+  - ④ `GET /api/v1/publish/queue` 查得到待人工那一条（带 `error_code` / 三个 `can_*`），看板 `counts` 与它一致
+- ✅ `pytest tests/unit/pools/test_publish_worker.py tests/unit/db/test_publication_repo.py tests/unit/publish/test_ratelimit.py -q`
+  ⇒ **39 passed**（19 + 12 + 8）；`tests/integration/test_queue_lease.py` 另加 **4 例** `defer` 用例（含"连顺延五轮仍不进死信"）
+- ✅ `.\tasks.ps1 check` ⇒ **3518 passed / 32 skipped / 27 deselected**（比 T5.2 多 **47 例**）；
+  `ruff format` + `ruff check` + Web 契约（`web/openapi.json` 重生成，新 6 个端点）+ `mypy`（**344 source files**）全绿
+- ⚠️ **R13 风控** ⇒ 限频 + 登录态探测 + 转人工 + **不实现验证码绕过 / 不自动登录**
+- ⚠️ **R14 不可逆** ⇒ 出厂 `publish.enabled=false`：真发布一律 `PUBLISH_DISABLED` 死信，**演练照样放行**（裁定 269）
+- **交付物**：
+  - 队列原语 `src/studio/db/queue.py` 的 `JobStore.defer`（回 `pending` + `not_before` + **把刚加上的那次尝试退回去**）
+  - 池层顺延语义 `src/studio/pools/worker_base.py` 的 `UnitDeferred` + `PoolWorker._defer` + `WorkerRunReport.units_deferred`
+  - 限频策略 `src/studio/publish/ratelimit.py`（次日零点 + `blake2s` **确定性**抖动；`min_gap` 那条不加抖动）
+  - 记录仓储 `src/studio/db/repositories/publication_repo.py`（`publications` 的**唯一写入者**：幂等 `create` / `mark_failed` /
+    `mark_manual_required` / `mark_dry_run` / `reset_for_retry` / `manual_queue` / `counts`）
+  - 单元处理器 `src/studio/pools/publish_worker.py`（八步 + 转人工 + **只读幂等短路**）+ `workers/run_publish.py`
+  - 登记 `src/studio/pools/runner.py` 的 `HANDLER_MODULES["publish"]`（**四个池的 handler 都齐了**）
+  - 服务面 `services/publish_service.py`（`enqueue_publications` / `build_board` / `retry_publication` /
+    `cancel_publication` / `mark_manual_done` + `resolve_platform` / `resolve_account`）
+  - REST **六个端点** `app/routers/publish.py`（看板 / **待人工队列** / 投递 / 重试 / 取消 / 标记已人工处理）+ `app/schemas/publish.py`
+  - CLI 五个命令 `studio publish {enqueue,queue,retry,cancel,manual-done}`
+  - 测试 **47 例**（进 `check`）：`test_publish_worker.py`（19）· `test_publication_repo.py`（12）·
+    `test_ratelimit.py`（8）· `test_publish_pool.py`（4，集成）· `test_queue_lease.py`（+4）
+- **施工裁定（本轮新增 268–275）**：
+  - **268** 限频触顶 ⇒ **顺延**（`JobStore.defer` + `UnitDeferred`），**不消耗 `attempts`**：走 `fail` 会把"今天额度用完了"算成三次失败之一 ⇒ 三天后一条**从没真正试过**的作业自己进死信并告警。`defer` **不做成"认领前先查限频"**：认领是单条 SQL 的原子操作，认领前查会开出超发窗口，而超发**不可逆**（R14）
+  - **269** `publish.enabled=false` 时**演练照样放行**，真发布一律 `PUBLISH_DISABLED` 死信；而**投递期不看开关**（`POST /publish/tasks/{id}/enqueue` 照样成功，作业在 worker 那一侧带原因转人工）—— "点了没反应"比"有一条带原因的待人工"难查得多
+  - **270** "转人工"让 **job 成功**（`manual_required` 的语义是"自动这条路走完了，接下来等人"）：让它以失败收场会把同一条记录**既送进待人工队列、又送进死信告警**，而两者的排障动作完全不同。判"重试还是转人工"用**错误码 + 剩余次数**，不照抄 `PublishResult.status` —— 发布器**不知道还剩几次机会**
+  - **271** 幂等短路排在限频**之前**（只读、不改库）：已经 `published`/`canceled` 的记录再去问"今天额度够不够"没有意义，而额度用满时它会先被顺延 30 分钟 —— 一次重投变成一次白等
+  - **272** 限频**计数在 `JobStore`**（要读 `publications` 表），**策略在 `publish/ratelimit.py`**。次日顺延的抖动由 `blake2s(account_id + 日期)` 派生 ⇒ **同一天问多少次都是同一个时刻**（随机的话每次被限频都把 `not_before` 往后推一点，那条作业永远等不到自己）；`min_gap` 那条**不加**抖动（锚点本身已经是散的）
+  - **273** 幂等键的实现下沉 `core/ids.py`（`db` 不许 import `domain`，§02.4 —— 契约测试当场会红），`domain.publish.idempotency_key` 保留为**别名**。§03.3.15 的 `|` 分隔符与真机已落库的键**一字不改**（换分隔符等于让每条已有记录换个键，重复发布防护当场失效）
+  - **274** `publish` **不进** `SERVICE_NAMES`（仍是"五进程"）：发布进程随 T5.5 发布面板一起接进 supervisor。理由是出厂 `publish.enabled=false` —— 一个常驻发布 worker 在开关关着时唯一会做的事，是把投递进来的作业标成 `PUBLISH_DISABLED`
+  - **275** `can_retry` / `can_cancel` / `can_mark_done` 由**服务端**算：判据（`published` 不能取消、`manual_required` 才能标记已处理）是服务端的状态机规则，发给面板三个布尔比让前端记住"哪些状态能点"可靠 —— 规则改一次就漏一处，而漏的那一处会变成"点了按钮报 400"
+- ⚠️ 新增陷阱 6 条已并入 §10（编号 140–145）
 
 ### T5.4 数据回收 + 记忆沉淀闭环 · **P1**
 - 依赖：T5.3 ｜ 里程碑：M5 ｜ 契约：§06.6 / §06.8
@@ -1615,8 +1651,8 @@ T1.12 ✅             （一键启动）
 | **T2** CosyVoice 配音 | 9 | **5**（T2.5 ✅ T2.6 ✅ T2.7 ✅ T2.8 ✅ T2.9 ✅） | M2 | [ ] |
 | **T3** 渲染（一期单遍合成） | 7 | **3**（T3.5 ✅ T3.6 ✅ T3.7 ✅） | M3 | [ ] |
 | **T4** 操作台 + 四池 + 无人值守 | 14 | **14**（T4.1 ✅ T4.2 ✅ T4.3 ✅ T4.4 ✅ **T4.5 ✅** T4.6 ✅ T4.7 ✅ T4.8 ✅ T4.9 ✅ T4.10 ✅ T4.11 ✅ T4.12 ✅ T4.13 ✅ **T4.14 ✅** —— **T4 齐了**） | M4 | [ ] |
-| **T5** 发布 + 定时 + 报告 | 8 | **2**（T5.1 ✅ T5.2 ✅） | M5 | [ ] |
-| **合计（一期）** | **50** | **36** | — | — |
+| **T5** 发布 + 定时 + 报告 | 8 | **3**（T5.1 ✅ T5.2 ✅ **T5.3 ✅**） | M5 | [ ] |
+| **合计（一期）** | **50** | **37** | — | — |
 | *T3-P1…T3-P4* | *4（二期）* | *0* | — | *不占一期工期* |
 
 **外部阻塞项**：E1 跑酷素材 🔴 / E2 水印 PNG 🔴 / E3 BGM 🔴 / E4 原声 🔴 / E5 CosyVoice 权重 🔴 / E6 LLM Key 🟡（T1.9 真机联调前，不阻塞编码）/ E7 persona 🟡 / E8 字体 🟡
@@ -1647,9 +1683,13 @@ T1.12 ✅             （一键启动）
 > ⑪ ~~`T5.2` 发布适配层与 profile~~ ⇒ **已完成（2026-09-16）**，见上方任务块。`Publisher` ABC + 通用八步
 > `PlaywrightPublisher` + 一线三平台子类 + 二线四个空实现 + 选择器集中化（yaml 可热修）+ 本地靶页 +
 > `studio publish dry-run`。真机两条都验了（裁定 262–267，陷阱 135–139）。
-> ⑫ **下一件待你定**：①`T5.3` 发布池（`publish_worker.py` + 限频 + 幂等键落库 + `publications` 表写入，
-> **仍受 `publish.enabled=false` 保护**）；②补 `T3.1` 素材入库缺口（pHash / 黑帧 / `assets ingest` CLI
-> —— 你已明确降级为**非核心**）；③按你的新要求另开（`T2.1–T2.4` 仍被 E5 权重硬阻塞）。
+> ⑫ ~~`T5.3` 发布池 + 限频 + 失败转人工~~ ⇒ **已完成（2026-09-17）**，见上方任务块。`JobStore.defer`（顺延原语，
+> **不消耗 attempts**）+ `UnitDeferred` + `publish/ratelimit.py` + `publication_repo.py` + `publish_worker.py`
+> + `workers/run_publish.py` + REST 六端点 + CLI 五命令全部落地；**四个池的 handler 都齐了**（裁定 268–275，陷阱 140–145）。
+> 出厂仍是 `publish.enabled=false`，真发布一律 `PUBLISH_DISABLED` 转人工（R14）。
+> ⑬ **下一件待你定**：①`T5.5` 发布面板（七区块 + 待人工队列；**顺带把发布进程接进 supervisor**，见裁定 274）；
+> ②`T5.4` 数据回收（T+1h/6h/24h/72h 采集）；③补 `T3.1` 素材入库缺口（pHash / 黑帧 / `assets ingest` CLI
+> —— 你已明确降级为**非核心**）；④按你的新要求另开（`T2.1–T2.4` 仍被 E5 权重硬阻塞）。
 > **`T2.3`（CosyVoice 引擎路由）仍被 T2.1/E5 卡着**，但不阻塞 T2.8 —— T2.6 自带最小引擎缝，当前跑 Windows SAPI。
 >
 > **②③ 之后全线硬阻塞**：`T2.1`（E5 权重）⇒ T2.2–T2.9 ⇒ `T3.3`（时间轴 ✅，可直接开工）⇒ T3.4–T3.7 ⇒ `T4.6` 与 `T5.1` 起全部；`T4.5` 另需 T2.9。
@@ -1798,7 +1838,13 @@ T1.12 ✅             （一键启动）
 | 137 | **回读把「吞 emoji」误判成 `mismatch`**，给操作员的建议方向全错 | 判据没抹平空白差异：真机上「吞 emoji + 尾部多一个换行」退化成 `mismatch`（该去查编辑器吃字，却叫人去查选择器） | 判据先 `_squash(_drop_emoji(x))` 再比；真机踩过 | T5.2 |
 | 138 | **注册表里的类“不接受参数”**（`Too many arguments for "Publisher"`） | `Publisher` ABC 只声明了三个抽象方法，没有 `__init__` —— 而 `PUBLISHERS` 里存的是**类**，服务层要 `get_publisher(code)(ctx)` | 构造签名写进基类（`_ctx` 由基类持有，子类 `super().__init__(ctx)`）。靠 `cast` 蒙混会让“漏传参数”拖到真机（裁定 262） | T5.2 |
 | 139 | **`health()` 的两条失败分支从来没人走过**（直到第一次真机 dry-run 报 `AttributeError`） | 假页面测试只能验“读得到”那一条；“未登录”与“已过期”需要**真的页面**才能造出来 | 靶页要能用 `?logged_out=1` / `?expired=1` **制造**这两种状态，否则它们是死代码 | T5.2 |
-> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 139 条见该处；跨文档引用按编号即可）。
+| 140 | **pytest 静默挂死两分钟、一行输出都没有**（发布池的集成测试） | 给 `PoolWorker` 传了 `connection=`，而它的**心跳线程**用的是自己开的连接 ⇒ 跨线程复用一条 sqlite 连接，两个线程互相等 | 测试里给 `PoolWorker` **别传** `connection`（让它自己开），并把 `max_empty_rounds=1` 当保险；排查靠"按启动时间杀 python 进程" | T5.3 |
+| 141 | **重投一条「已经发过」的内容，要白等 30 分钟** | 幂等短路排在**限频判定之后**：已经 `published` 的记录先撞上"距上次发布不足最小间隔" ⇒ 顺延 | 幂等短路要排在限频**之前**（只读、不改库）；`run()` 里原有那处终态分支保留作双保险 | T5.3 |
+| 142 | **面板说"试了 2 次"，备注说"重试 3 次仍失败"**（同一件事两个数字） | `mark_failed` 记 `attempt_count += 1`，而 `mark_manual_required` 不记 —— 可它俩是**替代**关系不是补充关系（最后一次失败只走后者） | 转人工也 `attempt_count + 1`：漏掉它，面板上那个数字永远比实际少一次 | T5.3 |
+| 143 | **`db/` 里冒出 `from studio.domain.publish import …`**（契约测试 `test_db_layer_does_not_import_domain` 当场红） | 幂等键的实现写在 `domain/publish.py`，而 `publications` 的唯一写入者是 `db/repositories/`，分层是 `core → db → domain` | 纯函数下沉 `core/ids.py`（`publication_idempotency_key`），`domain.publish.idempotency_key` 留作**别名**（契约名不变） | T5.3 |
+| 144 | **测试里 `dataclasses.replace(PoolConfig(...))` 直接 `TypeError`**，而"把退避压到毫秒"也没生效 | ① `PoolConfig` 是 **pydantic 模型**不是 dataclass；②"等多久"有**两个真相源** —— `pools.yaml`（传进处理器的 `PoolConfig`）与 `pool_settings` 表（`fail` 之后算退避用的） | 用 `PoolConfig(**{**cfg.model_dump(), **overrides})`（还能顺带过一遍校验）；压测试时间要**两处一起压**，否则第二次尝试要等 60 秒 | T5.3 |
+| 145 | **手工改完 import，`ruff format` 绿、`check` 却红（I001）** | `tasks.ps1 fmt` 只跑 `ruff format`（格式化），**不管 import 排序** | 改完 import 补一条 `uv run ruff check`（或 `--fix`）；`fmt` 绿 ≠ `check` 绿 | T5.3 |
+> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 145 条见该处；跨文档引用按编号即可）。
 
 ---
 

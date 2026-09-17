@@ -33,9 +33,11 @@ from studio.app.watchdog import WatchdogPump
 from studio.core.config import (
     PersonaConfig,
     PoolsConfig,
+    PublishConfig,
     RuntimeSettings,
     load_config,
     load_pools_config,
+    load_publish_config,
     load_runtime_settings,
 )
 from studio.core.errors import StudioError
@@ -85,6 +87,7 @@ __all__ = [
     "overview_service_for",
     "persona_service_for",
     "pool_service_for",
+    "publish_config_for",
     "review_service_for",
     "script_service_for",
     "task_snapshot_sql",
@@ -321,6 +324,18 @@ def pool_service_for(state: AppState) -> PoolService:
         config_path=config_path,
         log=state.logs.append,
     )
+
+
+def publish_config_for(state: AppState) -> PublishConfig:
+    """读 ``config/publish.yaml``（**只碰这一份**）。
+
+    与 :func:`pool_service_for` 同一条理由：发布面板要知道"有哪些平台、哪些账号、
+    开关状态"，而 ``llm.yaml`` 里少一个 key 不该让发布面板打不开（裁定 150）。
+    读失败**不吞**：这里不做 ``config=None`` 那套降级 —— 投递一条发布需要**确切**的
+    平台与账号清单，拿着半个配置去投会把"配置坏了"变成"发到错的账号上"。
+    面板的只读区块走的是各自的仓储，不经过本函数。
+    """
+    return load_publish_config(state.paths)
 
 
 def asset_service_for(state: AppState) -> AssetService:

@@ -80,6 +80,7 @@ __all__ = [
     "load_outputs_config",
     "load_persona_file",
     "load_pools_config",
+    "load_publish_config",
     "load_runtime_settings",
     "redact",
     "set_auto_approve_policy",
@@ -546,6 +547,24 @@ def load_pools_config(paths: StudioPaths) -> PoolsConfig:
     path = paths.config_dir / "pools.yaml"
     model = _validate("pools", _read_yaml(path), path)
     assert isinstance(model, PoolsConfig)
+    return model
+
+
+def load_publish_config(paths: StudioPaths) -> PublishConfig:
+    """只读 ``config/publish.yaml``（**只碰这一份文件**）。
+
+    与 :func:`load_pools_config` 同一条理由：发布面板（T5.3 的"待人工"区块 / T5.5 的
+    七区块）每次刷新都要知道"有哪些平台、哪些账号、开关状态"。走 :func:`load_config`
+    会把 9 份 YAML 全读一遍并全量校验 —— 于是 ``llm.yaml`` 里少一个 key，
+    **发布面板就打不开**，而这两件事之间没有任何关系。
+
+    代价：``publish.local.yaml`` 覆盖层不生效（那是**启动路径**的机制，
+    ``load_config`` 负责）。面板读的是"盘上那份基准" —— 与 :func:`load_pools_config`
+    同一取舍。
+    """
+    path = paths.config_dir / "publish.yaml"
+    model = _validate("publish", _read_yaml(path), path)
+    assert isinstance(model, PublishConfig)
     return model
 
 

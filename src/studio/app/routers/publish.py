@@ -1,0 +1,258 @@
+"""发布操作面 REST（T5.3 · §06.5.4 / §06.10 / §06.12）。
+
+五个端点 = 面板上现在能做的五件事
+---------------------------------
+投递（``POST /publish/tasks/{id}/enqueue``）、看板（``GET /publish/publications``）、
+待人工队列（``GET /publish/queue``，T5.3 验收点名的那一条）、人工处置三连
+（``retry`` / ``cancel`` / ``manual-done``）。
+
+**这里没有"点发布"**：真发布是 publish 池 worker 干的，本层只投作业 —— 与"CLI 不
+替人点按钮"同一条边界。``publish.enabled=false`` 时投递**照样成功**，作业会在 worker
+那一侧带 ``PUBLISH_DISABLED`` 转人工（R14 的不可逆防护）。让投递直接报错会得到
+"面板点不动"，而操作员真正需要看到的是"作业在那儿、它为什么没发"。
+
+为什么"待人工"要一个独立端点
+----------------------------
+它是**唯一一个要求人做决定的列表**（§06.10）：其余区块是"看"，它是"办"。独立成一个
+端点之后，面板可以只轮询它、只给它做红点计数，而不必每次都拉全量记录。
+
+为什么处置动作要回一句 ``message``
+----------------------------------
+三个动作在库里的落点不一样（``queued`` / ``canceled`` / ``canceled``），而"取消一条
+排队中的"与"取消一条已经发出去的"是两件完全不同的事。服务端把"到底改了什么"写成
+一句话，比让面板自己拼（然后拼错）可靠。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from typing import Annotated
+
+from fastapi import APIRouter, Query, Request
+from fastapi import Path as PathParam
+
+from studio.app.deps import AppState, publish_config_for
+from studio.app.schemas.publish import (
+    NO_PUBLICATION_HINT,
+    PublicationList,
+    PublishActionRequest,
+    PublishActionResponse,
+    PublishEnqueueRequest,
+    PublishEnqueueResponse,
+    publication_view,
+)
+from studio.core.errors import ErrorCode, StudioError
+from studio.db.repositories.publication_repo import PublicationRepo, PublicationRow
+from studio.services.publish_service import (
+    build_board,
+    cancel_publication,
+    enqueue_publications,
+    mark_manual_done,
+    retry_publication,
+)
+
+__all__ = ["router"]
+
+router = APIRouter(tags=["publish"])
+
+#: 发布记录 id 的形状（ULID，Crockford base32）。面板只回传服务端给过的 id。
+_PUBLICATION_ID = PathParam(pattern=r"^[0-9A-Za-z]{1,64}$")
+
+#: 任务 id 的形状 —— 与渲染面板同一条口径（任务号是**调用方起的名**，
+#: ``ui-20260915-120000`` 这类必须能进得来，见 ``routers/voice.py`` 的注释）。
+_TASK_ID = PathParam(pattern=r"^[0-9A-Za-z_-]{1,64}$")
+
+
+@router.get("/api/v1/publish/publications", response_model=PublicationList)
+def list_publications(
+    request: Request,
+    limit: Annotated[int, Query(ge=1, le=200, description="每个状态最多几条")] = 50,
+    task_id: Annotated[str | None, Query(description="只看这条任务")] = None,
+) -> PublicationList:
+    """发布看板（六状态各若干条 + 全量计数）。
+
+    带上 ``task_id`` ⇒ 只回这条任务的记录，``counts`` 也**只算这条任务的**：
+    任务详情页里显示"这条片子发了 1 条、失败 2 次"，而全站计数放在那里会让人以为
+    整个系统只有这几条。
+    """
+    state: AppState = request.app.state.studio
+    connection = state.connections.get()
+    if task_id:
+        rows = PublicationRepo(connection).list_for_task(task_id)
+        return PublicationList(
+            counts=_tally(rows),
+            by_status={"all": [publication_view(row) for row in rows[:limit]]},
+            manual_required=[publication_view(row) for row in rows if row.needs_human],
+            hint=None if rows else NO_PUBLICATION_HINT,
+        )
+
+    board = build_board(connection, limit=limit)
+    manual = [publication_view(row) for row in board.rows("manual_required")]
+    return PublicationList(
+        counts=board.counts,
+        by_status={
+            status: [publication_view(row) for row in rows] for status, rows in board.by_status.items()
+        },
+        manual_required=manual,
+        hint=None if sum(board.counts.values()) else NO_PUBLICATION_HINT,
+    )
+
+
+@router.get("/api/v1/publish/queue", response_model=PublicationList)
+def manual_queue(
+    request: Request,
+    limit: Annotated[int, Query(ge=1, le=200, description="最多几条")] = 100,
+) -> PublicationList:
+    """**待人工**队列（§06.10）：自动这条路走完了，等人做决定的那几条。
+
+    每一条都带着 ``error_code`` / ``error_message`` / ``evidence``（截图与 DOM 快照的
+    路径）—— 那正是"失败可排查"（R13）要的东西：人要能看着截图决定是重试、是去平台上
+    手工发、还是干脆取消。
+    """
+    state: AppState = request.app.state.studio
+    repo = PublicationRepo(state.connections.get())
+    rows = repo.manual_queue(limit=limit)
+    return PublicationList(
+        counts=repo.counts(),
+        by_status={"manual_required": [publication_view(row) for row in rows]},
+        manual_required=[publication_view(row) for row in rows],
+        hint=None if rows else "待人工队列是空的（没有需要你处理的发布）",
+    )
+
+
+@router.post("/api/v1/publish/tasks/{task_id}/enqueue", response_model=PublishEnqueueResponse)
+def enqueue_task(
+    request: Request,
+    task_id: Annotated[str, _TASK_ID],
+    body: PublishEnqueueRequest | None = None,
+) -> PublishEnqueueResponse:
+    """把这条任务排进发布池（幂等）。
+
+    **不看 ``publish.enabled``**：开关关着的时候投递依然成功，作业会在 worker 那一侧
+    转人工并带上 ``PUBLISH_DISABLED``。投递期直接拒绝的话，面板上什么都不会出现 ——
+    而"点了没反应"比"有一条带原因的待人工"难查得多（见模块注释）。
+    """
+    state: AppState = request.app.state.studio
+    config = publish_config_for(state)
+    payload = body or PublishEnqueueRequest()
+    report = enqueue_publications(
+        connection=state.connections.get(),
+        task_id=task_id,
+        config=config,
+        platforms=payload.platforms,
+        account_id=payload.account_id,
+        dry_run=payload.dry_run,
+        scheduled_at=payload.scheduled_at,
+    )
+    if report.missing:
+        raise StudioError(
+            f"任务不存在：{task_id}",
+            code=ErrorCode.TASK_NOT_FOUND,
+            context={"task_id": task_id},
+            remediation="确认任务号；任务被删之后不能再投递发布",
+        )
+    return PublishEnqueueResponse(**report.to_dict())
+
+
+@router.post(
+    "/api/v1/publish/{publication_id}/retry",
+    response_model=PublishActionResponse,
+)
+def retry(
+    request: Request,
+    publication_id: Annotated[str, _PUBLICATION_ID],
+    body: PublishActionRequest | None = None,
+) -> PublishActionResponse:
+    """人工重试：记录回 ``queued`` + 作业重排（两者都做，见服务层注释）。"""
+    return _action(
+        request,
+        publication_id,
+        body,
+        action="retry",
+        run=retry_publication,
+        message="已重排：这条会重新走一遍发布流程（计数已归零）",
+    )
+
+
+@router.post(
+    "/api/v1/publish/{publication_id}/cancel",
+    response_model=PublishActionResponse,
+)
+def cancel(
+    request: Request,
+    publication_id: Annotated[str, _PUBLICATION_ID],
+    body: PublishActionRequest | None = None,
+) -> PublishActionResponse:
+    """人工取消：``canceled`` + 作废还没被认领的作业。"""
+    return _action(
+        request,
+        publication_id,
+        body,
+        action="cancel",
+        run=cancel_publication,
+        message="已取消：这条不会再自动发布（已经发出去的取消不了）",
+    )
+
+
+@router.post(
+    "/api/v1/publish/{publication_id}/manual-done",
+    response_model=PublishActionResponse,
+)
+def manual_done(
+    request: Request,
+    publication_id: Annotated[str, _PUBLICATION_ID],
+    body: PublishActionRequest | None = None,
+) -> PublishActionResponse:
+    """标记已人工处理（**必须写说明**，见服务层注释）。"""
+    payload = body or PublishActionRequest()
+    if not (payload.reason or "").strip():
+        raise StudioError(
+            "标记已人工处理必须写一句说明",
+            code=ErrorCode.VALIDATION_FAILED,
+            context={"publication_id": publication_id},
+            remediation="在 reason 里写清楚是人工发出去了，还是决定不发（会进 audit_ops）",
+        )
+    return _action(
+        request,
+        publication_id,
+        payload,
+        action="manual_done",
+        run=mark_manual_done,
+        message="已从待人工队列摘下（留痕里记着你写的说明）",
+    )
+
+
+def _action(
+    request: Request,
+    publication_id: str,
+    body: PublishActionRequest | None,
+    *,
+    action: str,
+    run: Callable[..., PublicationRow],
+    message: str,
+) -> PublishActionResponse:
+    """三个人工处置共用的外壳（差别只在调哪个服务函数 + 回哪句话）。"""
+    state: AppState = request.app.state.studio
+    payload = body or PublishActionRequest()
+    row = run(
+        connection=state.connections.get(),
+        publication_id=publication_id,
+        actor=payload.actor,
+        actor_ref=payload.actor_ref,
+        reason=payload.reason,
+        source="webui",
+    )
+    return PublishActionResponse(
+        publication=publication_view(row),
+        action=action,
+        message=message,
+        job_changed=True,
+    )
+
+
+def _tally(rows: Sequence[PublicationRow]) -> dict[str, int]:
+    """按状态计数（任务维度的看板用；全站维度走 ``PublicationRepo.counts``）。"""
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row.status] = counts.get(row.status, 0) + 1
+    return counts

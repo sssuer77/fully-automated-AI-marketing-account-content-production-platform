@@ -157,7 +157,11 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │  │  │                                      #   30 表 / 61 索引 / 6 触发器（§03.7.1）
 │  │  └─ repositories\{✅hot, ✅feedback, ✅direction, ✅topic, ✅script, ✅review, ✅approval,
 │  │                   ✅audit, task, job, ✅sentence, ✅artifact, template, log, broll,
-│  │                   persona, publication, event, voice}_repo.py
+│  │                   persona, ✅publication, event, voice}_repo.py
+│  │                                     #   ✅ T5.3 `publication_repo.py`：`publications` 的**唯一写入者**
+│  │                                     #      （幂等 `create` 返回 `(row, created)`；`mark_failed` /
+│  │                                     #      `mark_manual_required` 各自记一次尝试；`mark_dry_run`
+│  │                                     #      回 `queued` 且不占额度 —— 见 §06.5.4）
 │  │                                     #   ★ 唯一允许出现 SQL 的地方；id 由仓储自派 ULID
 │  ├─ domain\                            # ✅ T1.4 已落地（枚举 / 状态机 / 契约 / 唯一写入口）
 │  │  ├─ enums.py                        # ✅ 16 态 TaskStatus + Grade + PoolName(4) + TaskPool(5) + ...
@@ -243,7 +247,9 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │  │  │                                  #      本文件碰 ffmpeg、`agents/cover.py` 出文案
 │  │  ├─ ✅ precheck.py                   #   ✅ T5.1 发布前二次校验（§06.4）：字幕/水印/响度/禁区四道门禁
 │  │  │                                  #      —— **只判定不发布**；判据读 `config/publish.yaml`
-│  │  ├─ ratelimit.py                    #   发布限频（≤3/天/账号）—— T5.3
+│  │  ├─ ✅ ratelimit.py                  #   ✅ T5.3 发布限频（§03.4.4 ⑥）：把 `JobStore.rate_limit_state`
+│  │  │                                  #      的结论翻成"到几点再来"（次日零点 + `blake2s` 确定性抖动，
+│  │  │                                  #      见 §4.6.7）。**只算策略，不数数**（计数要读表 ⇒ 在 db 层）
 │  │  ├─ metrics.py                      #   数据回收（播放/点赞/评论/分享）
 │  │  ├─ memory.py                       #   记忆沉淀（回流 feedback + 选题降权）
 │  │  └─ handoff.py                      #   ★ HandoffAdapter（对接外部制片台，A2）
@@ -264,7 +270,11 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │  │  │                                       #   （文案 ⇒ 逐句配音 ⇒ 合成 ⇒ QC 回填；进度落 `jobs.result_json`）
 │  │  │                                       #   `voice_worker` 的三条纪律与渲染池逐条对应：不自己收尾 /
 │  │  │                                       #   可重入 / 不在单元里开池（缓存·引擎·音色装配期一次装好）
-│  │  └─ {publish}_worker.py                                      # T5.3 待落地
+│  │  └─ ✅ publish_worker.py             # ✅ T5.3 `publish/publish`：限频（不过 ⇒ `UnitDeferred`，
+│  │                                      #   回 `pending` 且**不计 attempts**）⇒ 幂等登记 ⇒ 登录态探测
+│  │                                      #   ⇒ §06.5.3 八步 ⇒ 落 published/failed/manual_required。
+│  │                                      #   判"重试还是转人工"用的是**错误码 + 剩余次数**，不是照抄
+│  │                                      #   发布器给的状态（发布器不知道还剩几次机会）—— 见 §4.6.7
 │  ├─ services\
 │  │  ├─ service_manager.py                   #   ✅ T1.12 五进程编排：readiness / start / stop / status
 │  │  │                                       #      规格表 + PID 台账 + 三级关停时序（裁定 102/104/107）
@@ -311,13 +321,16 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │     ├─ main.py  lifespan.py  deps.py       #   ✅ 建应用 / 起停 Hub / 组装连接池 + LogService + 快照 provider
 │     │                                       #   ✅ T1.12：`run_server()` 被 `studio serve` 与 `workers/run_api.py` **共用一份**
 │     ├─ routers\{✅ health, ✅ logs, ✅ ws, ✅ voice, overview, topics, hot, feedback, tasks,
-│     │            scripts, sentences, voices, templates, assets, renders, publish, metrics,
+│     │            scripts, sentences, voices, templates, assets, renders, ✅publish, metrics,
 │     │            pools, audit}.py
 │     │                                       #   ✅ T2.9 `voice.py`：配音操作面五个端点。**名字与计划里的
 │     │                                       #      `sentences.py` / `voices.py` 合并成一个** —— 它们服务的是
 │     │                                       #      同一块面板（逐句状态 / 试听 / 重配 / 换音色），拆开会让
 │     │                                       #      "这一句现在能不能重配"这条判据出现两处
 │     ├─ schemas\*.py                          #   ✅ T2.9 `schemas/voice.py`（逐句视图 / 音色选项 / 换音色请求与报告）
+│     │                                        #   ✅ T5.3 `schemas/publish.py`（发布记录视图 / 待人工队列 /
+│     │                                        #      投递与处置请求；`can_retry`/`can_cancel`/`can_mark_done`
+│     │                                        #      由**服务端**算 —— 状态机规则只该有一处）
 │     └─ middleware\{request_id.py, access_log.py, errors.py, auth.py, audit.py}
 │
 ├─ tts\                                  # ★ TTS 运行时子项目（独立 3.11 venv，uv 托管）
@@ -361,10 +374,15 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │     └─ （待 T5.x）views\Publish.vue  stores\publish.ts
 │
 ├─ workers\{✅ run_api.py, ✅ run_tts.py, ✅ run_draft.py, ✅ run_voice.py, ✅ run_render.py,
-│           run_publish.py, supervisor.py}
+│           ✅ run_publish.py, supervisor.py}
 │                                        #   ✅ T1.12：五个入口全部在位（`run_*` = `run_entry()` 薄壳）
-│                                        #      `run_draft.py`（T4.11）、`run_voice.py`（T2.6）与 `run_render.py`（T3.7）
-│                                        #      已注册真实 handler；其余池未注册 ⇒ **报错退出**，不静默起空转 worker（裁定 103）
+│                                        #      `run_draft.py`（T4.11）、`run_voice.py`（T2.6）、`run_render.py`（T3.7）
+│                                        #      与 `run_publish.py`（T5.3）已注册真实 handler ⇒ **四个池都齐了**；
+│                                        #      未注册的池 ⇒ **报错退出**，不静默起空转 worker（裁定 103）
+│                                        #      ⚠️ `publish` **不在** `service_manager.SERVICE_NAMES` 里
+│                                        #      （六个进程是另一件事）：发布进程随 T5.5 发布面板一起接进
+│                                        #      supervisor —— 出厂 `publish.enabled=false`，常驻发布 worker
+│                                        #      在开关关着时唯一会做的事是把投递进来的作业标成 `PUBLISH_DISABLED`
 │                                        #      `run_voice.py` 在装配期解析音色（列音色要起 PowerShell，1–2 秒）：
 │                                        #      解析不到 ⇒ 启动即报 `TTS_ENGINE_UNAVAILABLE`（裁定 214）
 │                                        #      `run_tts.py` 在 `studio.tts.server` 落地（T2.2）前抛

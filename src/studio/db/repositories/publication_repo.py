@@ -38,9 +38,8 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 from studio.core.errors import ErrorCode, StudioError
-from studio.core.ids import new_ulid
+from studio.core.ids import new_ulid, publication_idempotency_key
 from studio.db.engine import transaction
-from studio.domain.publish import idempotency_key
 
 __all__ = [
     "CANCELED",
@@ -210,7 +209,7 @@ class PublicationRepo:
 
     def find(self, *, task_id: str, platform: str, account_id: str) -> PublicationRow | None:
         """按**幂等键的三个组成部分**查（与 ``idempotency_key`` 同义，但可读）。"""
-        key = idempotency_key(task_id, platform, account_id)
+        key = publication_idempotency_key(task_id, platform, account_id)
         row = self._connection.execute(
             f"SELECT {_COLUMNS} FROM publications WHERE idempotency_key = ?", (key,)
         ).fetchone()
@@ -281,7 +280,7 @@ class PublicationRepo:
             **已经登记过**（重投 / 断点续跑 / 定时到点都会走到），返回的是
             原来那一行。调用方据此决定"还要不要再往队列里投一次"。
         """
-        key = idempotency_key(task_id, platform, account_id)
+        key = publication_idempotency_key(task_id, platform, account_id)
         existing = self.get_by_key(key)
         if existing is not None:
             return existing, False
@@ -338,6 +337,28 @@ class PublicationRepo:
             "UPDATE publications SET status = ?, error_code = NULL, error_message = NULL "
             "WHERE id = ? AND status IN (?, ?)",
             (UPLOADING, pub_id, QUEUED, UPLOADING),
+        )
+        return self._require(pub_id)
+
+    def mark_dry_run(self, pub_id: str, *, evidence: Mapping[str, Any] | None = None) -> PublicationRow:
+        """演练收工：回 ``queued`` + 留取证，**不碰** ``attempt_count``（§06.5.3 第 ⑥ 步）。
+
+        为什么演练的落点是 ``queued`` 而不是 ``published``
+        -------------------------------------------------
+        ``publications`` 那一行是"这份内容在这个账号上处于什么状态"的**唯一凭据**。
+        把演练写成 ``published`` 等于在库里记下一条**从没发生过的发布**：面板上多一条
+        点不开的作品，而限频守卫正是按 ``status IN ('uploading','published')`` 数
+        "今天发了几条"的 —— 演练会把自己的额度占掉。
+
+        ``WHERE status <> 'published'``：一条真发出去过的记录不会被后一次演练抹掉。
+        """
+        self._connection.execute(
+            """
+            UPDATE publications
+               SET status = ?, evidence_json = ?, error_code = NULL, error_message = NULL
+             WHERE id = ? AND status <> ?
+            """,
+            (QUEUED, _dump(evidence), pub_id, PUBLISHED),
         )
         return self._require(pub_id)
 
@@ -411,11 +432,17 @@ class PublicationRepo:
 
         **不碰 ``tasks``**：成片仍然有效，人可以从渲染面板下载后手工发。
         ``finished_at`` 也不写 —— 它在面板上是"等人"，人接手之后才算完结。
+
+        ``attempt_count`` 照样 +1：这条路是 :meth:`mark_failed` 的**替代**而不是补充
+        （见那边的注释"到了就直接调 mark_manual_required"），所以那一次失败的账要记在
+        这里。漏掉它，面板上会出现"试了 2 次"配着"重试 3 次仍失败"的结论 —— 两个数字
+        说的是同一件事，对不上就没人信第二个。
         """
         self._connection.execute(
             """
             UPDATE publications
-               SET status = ?, error_code = ?, error_message = ?, evidence_json = ?
+               SET status = ?, attempt_count = attempt_count + 1,
+                   error_code = ?, error_message = ?, evidence_json = ?
              WHERE id = ?
             """,
             (MANUAL_REQUIRED, error_code, error_message, _dump(evidence), pub_id),

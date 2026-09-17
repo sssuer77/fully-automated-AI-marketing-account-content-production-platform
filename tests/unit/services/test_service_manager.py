@@ -293,9 +293,12 @@ class TestReadiness:
     ) -> None:
         """**不静默起一个空转 worker**：handler 未注册 ⇒ 不拉起。
 
-        四个池里只剩 ``publish``（T5.3）没落地，而它不是 ``SERVICE_NAMES`` 里的
-        服务 —— 所以这里**模拟**"某个池还没落地"：把 ``voice`` 从声明表里摘掉，
-        判据必须立刻翻回 ``handler_missing``（这也让这条护栏不依赖任务进度）。
+        四个池的 handler 现在**都已落地**（publish 是 T5.3 补上的最后一个），而
+        ``publish`` 仍然不在 ``SERVICE_NAMES`` 里 —— 发布进程要等发布面板（T5.5）
+        一起接进 supervisor（出厂 ``publish.enabled=false``，一个常驻发布 worker
+        在开关关着时唯一会做的事是把投递进来的作业标成 ``PUBLISH_DISABLED``）。
+        所以这里**模拟**"某个池还没落地"：把 ``voice`` 从声明表里摘掉，判据必须立刻
+        翻回 ``handler_missing`` —— 这也让这条护栏不依赖任务进度。
         """
         monkeypatch.delitem(pool_runner.HANDLER_MODULES, "voice")
         manager = make_manager(worker_home)

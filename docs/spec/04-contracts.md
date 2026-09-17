@@ -1848,7 +1848,7 @@ class ApprovalDecision(StrEnum):
 | 6 | **模板面板**（一期落地为「合成配置」） | `logs`（`source=outputs`） | `GET /api/v1/outputs`、`POST /api/v1/outputs`；`GET/POST /templates`、`POST /templates/{id}/{validate,assets}`（**二期 · C13**） | 表单编辑合成 profile / 水印 / 字幕（**保存前强校验** + 并发指纹）；拖拽定位与三层模板树**延后二期**（R17） | T4.7 |
 | 7 | **素材库** | — | `POST /assets/ingest`、`GET /assets/stats`、`PATCH /assets/{id}` | 上传 / 预览 / 标记（跑酷·原声·BGM） | T4.8 |
 | 8 | **实时日志** | `logs` | `GET /logs?level=&task_id=&cursor=` | 过滤级别 / 搜索 / 导出 | T4.9 |
-| 9 | **发布面板**（工程必需，原文未列） | `publish` | `GET /publish/queue`、`POST /publish/{id}/retry`、`POST /publish/{id}/cancel` | 待发布 / 已发布 / 数据回流 / 待人工 | T5.5 |
+| 9 | **发布面板**（工程必需，原文未列） | `publish` | `GET /publish/queue`、`POST /publish/{id}/retry`、`POST /publish/{id}/cancel`（**端点在 T5.3 已落地**，见 §4.6.7） | 待发布 / 已发布 / 数据回流 / 待人工 | T5.5 |
 | 10 | **四池调度**（工程必需，原文未列） | `pools` | `GET /api/v1/pools`、`POST /api/v1/pools/{concurrency,requeue}` | 调并发（无需重启）/ 暂停恢复（复用面板 1 的入口）/ 死信重投 / 看自动降级 | T4.10 |
 | 11 | **人物库**（工程必需，原文未列） | `system`（`system.persona_changed`） | `GET /api/v1/persona`、`POST /api/v1/persona`、`POST /api/v1/persona/{activate,save-as,rollback}` | 改人设 / 口吻 / 口癖 / 禁区（**保存前强校验**）/ 一键切换（旧版自动备份）/ 另存为 / 回滚 | T4.13 |
 
@@ -3050,7 +3050,7 @@ class Report(BaseModel):
 | ⑤ | **回读逐字比对** | ``_step_readback``（``compare_readback``；不一致重填 ≤2 次） |
 | ⑥ | **点发布** | ``_step_publish`` —— **``dry_run=True`` 时流程到此为止** |
 | ⑦ | 留证（截图 + DOM + 平台提示原文） | ``_step_result`` / ``PublishEvidence`` |
-| ⑧ | 落库 + 回填 | T5.3（发布池） |
+| ⑧ | 落库 + 回填 | ``publish_worker._publish_row`` → ``PublicationRepo``（T5.3 已落地，见 §4.6.7） |
 
 **② 选择器：一个平台一份 yaml，装配期就校验**
 
@@ -3125,6 +3125,87 @@ studio publish dry-run --task <id> --platform <p> [--account <a>] [--target fixt
 ``--target fixture`` 打 ``publish/fixtures/upload_form.html``（真浏览器、真导航、真选文件、
 真填字、真回读、真截图）；不带 ``--target`` 则打平台真实创作页 —— 需要**已登录**的账号，
 R13 不自动登录，探测不过就如实报"需人工扫码登录"。
+
+### 4.6.7 发布池落地契约（T5.3 · 已落地）
+
+§06.5.4 定的是**六态状态机**，§06.10 定的是**六个错误码怎么处置**；这一节定的是
+"一个 ``publish/publish`` 单元从被认领到有结论"这段路上，**每一条判据住在哪**。
+
+**① 单元生命周期（``publish/publish`` · ``unit_ref`` = 平台代号）**
+
+```text
+claim(publish/publish, unit_ref = douyin)
+   ├─ 解析账号（payload.account_id ⇒ 该平台唯一启用的账号）
+   ├─ 幂等短路（只读）：已有 published / canceled 的记录 ⇒ 直接收工
+   ├─ 限频守卫：≤3 条/天/账号（池级为准）+ 间隔 ≥30min
+   │     └─ 不过 ⇒ UnitDeferred（回 pending + not_before，**不计 attempts**）
+   ├─ 开关守卫：enabled=false 且非演练 ⇒ PUBLISH_DISABLED（死信）
+   ├─ 幂等登记 publications（sha256(task_id|platform|account_id) 上有 UNIQUE）
+   ├─ 登录态探测：不 ready ⇒ manual_required（**不自动登录**，R13）
+   ├─ 发布器 ①–⑦（§4.6.6）⇒ 按结果落 published / failed / manual_required
+   └─ 失败**不回退任务状态**：任务仍是 completed，成片可下载后人工发
+```
+
+**② 两条"非失败"的出口（这是本节最要紧的一件事）**
+
+| 出口 | 触发 | 队列里发生什么 | 为什么不是失败 |
+| --- | --- | --- | --- |
+| **顺延** | 限频触顶（日额度 / 最小间隔） | ``JobStore.defer``：回 ``pending`` + ``not_before``，并把认领时加的 ``attempts`` **退回去** | 走 ``fail`` 会消耗一次尝试 ⇒ 三天后一条**从没真正试过**的作业自己进死信并告警（半夜被叫起来看一条没跑过的发布） |
+| **转人工** | 登录态失效 / 选择器失效 / 审核不通过 / 重试到 ``max_attempts`` | ``publications.status='manual_required'`` + 写一条 ``audit_ops``，**job 正常成功** | ``manual_required`` 的语义是"自动这条路走完了，接下来等人"。以失败收场会把同一条记录**既送进待人工队列、又送进死信告警**，而两者的排障动作完全不同 |
+
+判"重试还是转人工"用的是**错误码 + 剩余次数**（``RETRYABLE_CODES`` + ``ctx.attempt``），
+**不照抄** ``PublishResult.status`` —— 发布器不知道还剩几次机会，那是队列的事。
+
+**③ 限频：计数与策略分居两层**
+
+- **计数**在 :meth:`studio.db.queue.JobStore.rate_limit_state`（要读 ``publications``，
+  按**本地日**统计，``status IN ('uploading','published')``）；判据读 ``pool_settings.rate_limit_json``，
+  而那张表由 ``pools.yaml`` 的 ``daily_limit_per_account`` / ``min_gap_min`` 落种。
+- **策略**在 ``publish/ratelimit.py``：把结论翻成"**到几点再来**"。次日顺延加
+  ``blake2s(account_id + 日期)`` 派生的**确定性**抖动（0–30 分钟）——
+  随机会让"每次被限频都把 ``not_before`` 往后推一点"，那条作业永远等不到自己。
+  ``min_gap`` 那条**不加**抖动（锚点本身已经是散的）。
+- **不做"认领前先查限频"**：认领是单条 SQL 的原子操作，认领前查会开出"查完到认领之间"的
+  窗口 —— 窗口里另一个 worker 恰好发了一条，这条就**超发**了，而超发**不可逆**（R14）。
+  代价是浪费一次认领，下次轮到它是 ``not_before`` 之后。
+
+**④ 幂等键**
+
+``publications.idempotency_key = sha256(task_id|platform|account_id)``（§03.3.15），
+实现住在 ``core/ids.py`` 的 ``publication_idempotency_key``（``domain.publish.idempotency_key``
+是它的别名）：``publications`` 的唯一写入者是 ``db/repositories/``，而分层是
+``core → db → domain``，``db`` 反向 import ``domain`` 会被
+``tests/contract/test_no_direct_job_write.py::test_db_layer_does_not_import_domain`` 当场拦下。
+``|`` 分隔符**逐字照抄规格书**：换一个分隔符等于让每条已有记录换个键，重复发布防护当场失效。
+
+**⑤ 操作面（六个端点 / 五个 CLI 命令）**
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | ``/api/v1/publish/publications`` | 看板：六状态计数 + 各若干条（``task_id`` 过滤时计数**只算这条任务**） |
+| GET | ``/api/v1/publish/queue`` | **待人工**队列（§06.10）：带 ``error_code`` / ``error_message`` / ``evidence`` |
+| POST | ``/api/v1/publish/tasks/{task_id}/enqueue`` | 投递（幂等）。**不看** ``publish.enabled`` |
+| POST | ``/api/v1/publish/{publication_id}/retry`` | 人工重试：记录回 ``queued`` + 作业重排（两处都改） |
+| POST | ``/api/v1/publish/{publication_id}/cancel`` | 人工取消：``canceled`` + 作废还没被认领的作业 |
+| POST | ``/api/v1/publish/{publication_id}/manual-done`` | 标记已人工处理（写 ``finished_at``） |
+
+``studio publish {enqueue,queue,retry,cancel,manual-done}`` 与上表一一对应。
+``PublicationView`` 的 ``can_retry`` / ``can_cancel`` / ``can_mark_done`` 由**服务端**算：
+判据是服务端的状态机规则，发给面板三个布尔比让前端记住"哪些状态能点"可靠 ——
+规则改一次就漏一处，而漏的那一处会变成"点了按钮报 400"。
+
+**⑥ 投递期**不看**开关**
+
+``enqueue`` 在 ``publish.enabled=false`` 时**照样成功**：作业会在 worker 那一侧带
+``PUBLISH_DISABLED`` 转人工。投递期直接拒绝的话，面板上什么都不会出现 ——
+而"点了没反应"比"有一条带原因的待人工"难查得多。
+
+**⑦ 为什么发布进程不在 ``SERVICE_NAMES`` 里**
+
+``workers/run_publish.py`` 已落地（四个池的 handler 都齐了），但 ``publish`` **不进**
+``service_manager.SERVICE_NAMES``（仍是"五进程"）：发布进程随 **T5.5 发布面板**一起接进
+supervisor。出厂 ``publish.enabled=false``，一个常驻发布 worker 在开关关着时唯一会做的事，
+是把投递进来的作业标成 ``PUBLISH_DISABLED``。
 
 ---
 

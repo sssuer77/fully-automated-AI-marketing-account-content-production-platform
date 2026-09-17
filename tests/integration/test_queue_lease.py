@@ -764,6 +764,79 @@ def test_fail_missing_job_raises(store: JobStore) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 顺延（``defer``）：限频触顶**不是失败**（§06.10 · T5.3）
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_defer_returns_the_attempt_and_pushes_not_before(store: JobStore) -> None:
+    """顺延 = 回 ``pending`` + 推到给定时刻 + **把刚加上的那次尝试退回去**。"""
+    job_id = _enqueue(store, "u1")
+    assert job_id is not None
+    store.claim(pool="draft", worker_id="w1", now=T0)
+
+    outcome = store.defer(
+        job_id=job_id,
+        worker_id="w1",
+        not_before=format_iso(T0 + timedelta(minutes=30)),
+        reason="daily_limit",
+    )
+
+    assert outcome.status == "pending"
+    assert outcome.attempts == 0, "顺延不消耗尝试（否则三天后一条没跑过的作业自己进死信）"
+    assert outcome.not_before == "2026-09-13T06:30:00.000Z"
+    assert outcome.error_code == ErrorCode.PUBLISH_RATELIMIT.value
+
+    job = store.get(job_id)
+    assert job.status == "pending"
+    assert job.lease_owner is None, "顺延要放开租约，否则没人能再认领它"
+    assert job.lease_expires_at is None
+    assert not store.claim(pool="draft", worker_id="w1", now=T0), "还没到 not_before，认领不到"
+    assert store.claim(pool="draft", worker_id="w1", now=T0 + timedelta(minutes=31)) is not None
+
+
+def test_deferring_forever_never_reaches_dead_letter(store: JobStore) -> None:
+    """反复顺延 ⇒ 永远 ``pending``（这是"限频不写成失败"的**全部意义**）。"""
+    job_id = _enqueue(store, "u1")
+    assert job_id is not None
+
+    for round_no in range(1, 6):
+        moment = T0 + timedelta(days=round_no - 1)
+        claimed = store.claim(pool="draft", worker_id="w1", now=moment)
+        assert claimed is not None and claimed.id == job_id
+        store.defer(
+            job_id=job_id,
+            worker_id="w1",
+            not_before=format_iso(moment + timedelta(minutes=30)),
+            reason="daily_limit",
+        )
+
+    job = store.get(job_id)
+    assert job.status == "pending"
+    assert job.attempts == 0, "五轮顺延之后 attempts 仍是 0"
+    assert store.dead_letters(pool="draft") == (), "顺延不进死信 —— 那会半夜把人叫起来看一条没跑过的作业"
+
+
+def test_defer_requires_lease(store: JobStore) -> None:
+    """租约不在自己手上就顺延不了（说明这一轮已被别人接手）。"""
+    job_id = _enqueue(store, "u1")
+    assert job_id is not None
+    store.claim(pool="draft", worker_id="w1", now=T0)
+
+    with pytest.raises(QueueError) as excinfo:
+        store.defer(job_id=job_id, worker_id="w2", not_before=format_iso(T0), reason="daily_limit")
+
+    assert excinfo.value.code is ErrorCode.JOB_LEASE_LOST
+    assert store.get(job_id).status == "claimed", "越权的顺延不该动那一行"
+
+
+def test_defer_missing_job_raises(store: JobStore) -> None:
+    with pytest.raises(QueueError) as excinfo:
+        store.defer(job_id="j_missing", worker_id="w1", not_before=format_iso(T0), reason="daily_limit")
+
+    assert excinfo.value.code is ErrorCode.JOB_NOT_FOUND
+
+
+# ══════════════════════════════════════════════════════════════════════
 # 统计与读接口
 # ══════════════════════════════════════════════════════════════════════
 

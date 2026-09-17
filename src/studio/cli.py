@@ -13,7 +13,7 @@ import asyncio
 import os
 import sqlite3
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -44,6 +44,7 @@ from studio.core.config import (
     load_app_config,
     load_config,
     load_outputs_config,
+    load_publish_config,
 )
 from studio.core.doctor import Doctor, dumps, render_text
 from studio.core.errors import ErrorCode, StudioError
@@ -90,6 +91,11 @@ from studio.services.publish_service import (
     DryRunReport,
     DryRunRequest,
     PublishService,
+    build_board,
+    cancel_publication,
+    enqueue_publications,
+    mark_manual_done,
+    retry_publication,
 )
 from studio.services.render_service import (
     ProduceRequest,
@@ -140,7 +146,10 @@ pipeline_app = typer.Typer(
 )
 publish_app = typer.Typer(
     name="publish",
-    help="发布前准备：封面合成 + 二次校验 + 发布演练（T5.1 / T5.2；**不发布**）",
+    help=(
+        "发布链路：封面合成 + 二次校验 + 演练（T5.1 / T5.2）+ "
+        "投递 / 看板 / 人工处置（T5.3；真发布由 publish 池 worker 执行）"
+    ),
     no_args_is_help=True,
 )
 
@@ -2493,6 +2502,227 @@ def _render_dry_run(report: DryRunReport) -> None:
     for item in report.warnings:
         console.print(f"[yellow]提示[/yellow] {item}")
     console.print("[dim]本次**没有真的发**：publish.enabled=false 是出厂状态（R14）。[/dim]")
+
+
+@publish_app.command("enqueue")
+def publish_enqueue(
+    task_id: Annotated[str, typer.Option("--task", "--task-id", help="任务 id")],
+    platform: Annotated[
+        list[str] | None,
+        typer.Option("--platform", help="目标平台，可重复传；缺省 = 所有启用账号所在的平台"),
+    ] = None,
+    account: Annotated[
+        str | None, typer.Option("--account", help="账号 id（缺省 = 该平台唯一启用的那个）")
+    ] = None,
+    dry_run: Annotated[
+        bool | None,
+        typer.Option("--dry-run/--live", help="演练（停在第 ⑥ 步之前）；缺省 = 跟随 publish.yaml"),
+    ] = None,
+    scheduled_at: Annotated[
+        str | None, typer.Option("--scheduled-at", help="定时发布时刻（T5.6 用，ISO 串）")
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="输出机读 JSON")] = False,
+) -> None:
+    """把这条任务排进发布池（T5.3 · §03.3.10）。
+
+    **幂等**：``(task_id, publish, publish, <平台>)`` 上有唯一约束 ⇒ "任务完成后自动投一遍
+    + 人工再点一遍"不会发两次，第二次会出现在 ``skipped`` 里。
+
+    这条命令**只投作业**，不发布、不看 ``publish.enabled``：开关关着时作业照样进队列，
+    由 worker 那一侧带 ``PUBLISH_DISABLED`` 转人工（R14：不可逆的动作必须有人点头）。
+    要看"投进去之后发生了什么"跑 ``studio publish queue``。
+    """
+    paths = StudioPaths.from_env()
+    if not paths.db_file.is_file():
+        console.print(f"[yellow]数据库尚未初始化[/yellow]：{paths.db_file}\n先跑 `studio db migrate`")
+        raise typer.Exit(code=1)
+
+    connection = connect(paths.db_file)
+    try:
+        try:
+            config = load_publish_config(paths)
+            report = enqueue_publications(
+                connection=connection,
+                task_id=task_id,
+                config=config,
+                platforms=tuple(platform) if platform else None,
+                account_id=account,
+                dry_run=dry_run,
+                scheduled_at=scheduled_at,
+            )
+        except StudioError as exc:
+            _fail(exc, json_output)
+            raise typer.Exit(code=1) from exc
+    finally:
+        connection.close()
+
+    if json_output:
+        console.print_json(data=report.to_dict())
+        return
+    if report.missing:
+        console.print(f"[red]任务不存在[/red] {task_id}")
+        raise typer.Exit(code=1)
+    console.print(
+        f"[green]已投递[/green] {report.task_id} · {report.queued} 条作业"
+        f"（平台：{'、'.join(report.platforms) or '无'}）"
+    )
+    for item in report.skipped:
+        console.print(f"[yellow]跳过[/yellow] {item}")
+    if report.queued:
+        console.print("[dim]publish 池会按限频（≤3 条/天/账号 · 间隔 ≥30min）串行处理。[/dim]")
+
+
+@publish_app.command("queue")
+def publish_queue(
+    limit: Annotated[int, typer.Option("--limit", help="每个状态最多几条")] = 20,
+    json_output: Annotated[bool, typer.Option("--json", help="输出机读 JSON")] = False,
+) -> None:
+    """发布看板：六状态计数 + 待人工那几条（T5.3 / §06.10）。
+
+    与面板的 ``GET /api/v1/publish/queue`` 读的是**同一份数据**（同一个服务函数）——
+    命令行看到"待人工 2 条"而网页上写着 3 条，那种差异查起来最费劲。
+    """
+    paths = StudioPaths.from_env()
+    if not paths.db_file.is_file():
+        console.print(f"[yellow]数据库尚未初始化[/yellow]：{paths.db_file}\n先跑 `studio db migrate`")
+        raise typer.Exit(code=1)
+
+    connection = connect(paths.db_file)
+    try:
+        board = build_board(connection, limit=limit)
+    finally:
+        connection.close()
+
+    if json_output:
+        console.print_json(data=board.to_dict())
+        return
+
+    table = Table(title="发布看板", show_lines=False)
+    table.add_column("状态", style="cyan", no_wrap=True)
+    table.add_column("条数", justify="right")
+    for status, count in board.counts.items():
+        table.add_row(status, str(count))
+    console.print(table)
+
+    manual = board.rows("manual_required")
+    if not manual:
+        console.print("[green]待人工队列是空的[/green]")
+        return
+    console.print(f"[yellow]待人工 {len(manual)} 条[/yellow]（要人做决定的那几条）：")
+    for row in manual:
+        console.print(
+            f"  · {row.id} {row.platform}/{row.account_id} "
+            f"[dim]{row.error_code or ''} {row.error_message or ''}[/dim]"
+        )
+        if row.evidence.get("screenshot_path"):
+            console.print(f"    [dim]截图 {row.evidence['screenshot_path']}[/dim]")
+    console.print("[dim]处置：studio publish retry / cancel / manual-done --publication <id>[/dim]")
+
+
+@publish_app.command("retry")
+def publish_retry(
+    publication_id: Annotated[str, typer.Option("--publication", "--id", help="发布记录 id")],
+    reason: Annotated[str | None, typer.Option("--reason", help="写进留痕的说明")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="输出机读 JSON")] = False,
+) -> None:
+    """人工重试一条发布（§06.10）：记录回 ``queued`` + 作业重排 + 写 ``audit_ops``。"""
+    _publish_action(
+        action="publish.retry",
+        publication_id=publication_id,
+        reason=reason,
+        json_output=json_output,
+        run=lambda connection: retry_publication(
+            connection=connection,
+            publication_id=publication_id,
+            actor="user",
+            reason=reason,
+            source="cli",
+        ),
+        done="已重排：这条会重新走一遍发布流程（计数已归零）",
+    )
+
+
+@publish_app.command("cancel")
+def publish_cancel(
+    publication_id: Annotated[str, typer.Option("--publication", "--id", help="发布记录 id")],
+    reason: Annotated[str | None, typer.Option("--reason", help="写进留痕的说明")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="输出机读 JSON")] = False,
+) -> None:
+    """人工取消一条发布（§06.10）：``canceled`` + 作废未认领的作业 + 写 ``audit_ops``。
+
+    已经 ``published`` 的取消不了（平台上那条作品还在）—— 那种情况要人去平台处理。
+    """
+    _publish_action(
+        action="publish.cancel",
+        publication_id=publication_id,
+        reason=reason,
+        json_output=json_output,
+        run=lambda connection: cancel_publication(
+            connection=connection,
+            publication_id=publication_id,
+            actor="user",
+            reason=reason,
+            source="cli",
+        ),
+        done="已取消：这条不会再自动发布",
+    )
+
+
+@publish_app.command("manual-done")
+def publish_manual_done(
+    publication_id: Annotated[str, typer.Option("--publication", "--id", help="发布记录 id")],
+    reason: Annotated[str, typer.Option("--reason", help="必填：人工发出去了，还是决定不发")],
+    json_output: Annotated[bool, typer.Option("--json", help="输出机读 JSON")] = False,
+) -> None:
+    """标记"这条我处理完了"（§06.10）：从待人工队列摘下 + 写 ``audit_ops``。
+
+    ``--reason`` **必填**：这条动作的全部信息量就是那句人话（服务层会拒空串）。
+    """
+    _publish_action(
+        action="publish.manual_done",
+        publication_id=publication_id,
+        reason=reason,
+        json_output=json_output,
+        run=lambda connection: mark_manual_done(
+            connection=connection,
+            publication_id=publication_id,
+            actor="user",
+            reason=reason,
+            source="cli",
+        ),
+        done="已从待人工队列摘下（留痕里记着这句说明）",
+    )
+
+
+def _publish_action(
+    *,
+    action: str,
+    publication_id: str,
+    reason: str | None,
+    json_output: bool,
+    run: Callable[[sqlite3.Connection], Any],
+    done: str,
+) -> None:
+    """三个人工处置命令共用的外壳（与 REST 的 ``_action`` 同一条）。"""
+    paths = StudioPaths.from_env()
+    if not paths.db_file.is_file():
+        console.print(f"[yellow]数据库尚未初始化[/yellow]：{paths.db_file}\n先跑 `studio db migrate`")
+        raise typer.Exit(code=1)
+
+    connection = connect(paths.db_file)
+    try:
+        try:
+            row = run(connection)
+        except StudioError as exc:
+            _fail(exc, json_output)
+            raise typer.Exit(code=1) from exc
+    finally:
+        connection.close()
+
+    if json_output:
+        console.print_json(data={"action": action, "publication": row.to_dict()})
+        return
+    console.print(f"[green]{done}[/green] {row.id} · {row.platform}/{row.account_id} ⇒ {row.status}")
 
 
 def _fail(error: StudioError, json_output: bool) -> None:

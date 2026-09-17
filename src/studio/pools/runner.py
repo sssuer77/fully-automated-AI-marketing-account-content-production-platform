@@ -6,7 +6,7 @@
 处理器注册表
 ------------
 四个池的业务处理器随各自任务落地：``draft`` → T4.11 ✅ / ``render`` → T3.7 ✅ /
-``voice`` → T2.6 ✅ / ``publish`` → T5.3。已落地的三个在 :data:`HANDLER_MODULES` 里
+``voice`` → T2.6 ✅ / ``publish`` → T5.3 ✅。四个都已在 :data:`HANDLER_MODULES` 里
 登记了模块名，启动器据此判"这个池现在能不能拉起来"。
 没注册就启动 ⇒ 立刻 ``INTERNAL`` + 明确的 remediation，而不是"起来了但什么都不干"
 （后者才是最坏的情况：看着在跑，实际队列永远不消化）。
@@ -85,6 +85,7 @@ HANDLER_MODULES: Final[Mapping[str, str]] = {
     "draft": "studio.pools.draft_worker",
     "render": "studio.pools.render_worker",
     "voice": "studio.pools.voice_worker",
+    "publish": "studio.pools.publish_worker",
 }
 
 #: 处理器未落地时的统一 remediation：:func:`handler_for`（进程内取不到）与
@@ -94,7 +95,7 @@ HANDLER_MODULES: Final[Mapping[str, str]] = {
 #: 于是 WebUI 显示"去等 T3.x"，而代码里 T3.7 早跑完了 —— T3.7 收口时真撞上过。
 HANDLER_REMEDIATION: Final[str] = (
     "该池 handler 随业务任务落地：draft→T4.11（已落地）/ render→T3.7（已落地）/ "
-    "voice→T2.6（已落地）/ publish→T5.3"
+    "voice→T2.6（已落地）/ publish→T5.3（已落地）"
 )
 
 

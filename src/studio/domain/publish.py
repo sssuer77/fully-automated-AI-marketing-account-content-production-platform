@@ -22,9 +22,14 @@ r"""发布领域规则（T5.2 · §06.2.2 / §06.5.3）—— 全是纯函数，
 
 from __future__ import annotations
 
-import hashlib
 import re
 from dataclasses import dataclass
+
+from studio.core.ids import IDEMPOTENCY_SEP, publication_idempotency_key
+
+#: 发布幂等键（§03.3.15）。**实现住在 ``core/ids.py``**，这里只留契约名 ——
+#: ``publications`` 的唯一写入者是 ``db/``，而 ``db`` 不许 import ``domain``（§02.4）。
+idempotency_key = publication_idempotency_key
 
 __all__ = [
     "IDEMPOTENCY_SEP",
@@ -39,9 +44,6 @@ __all__ = [
     "render_tags",
 ]
 
-#: 幂等键的字段分隔符（§03.3.15 逐字：``sha256(task_id|platform|account_id)``）。
-IDEMPOTENCY_SEP = "|"
-
 #: 回读比对的取景半径（不一致处左右各取这么多字符）。取 12 是因为一个中文标题
 #: 在日志里折一行大约就是 20 出头 —— 再宽，日志里那条证据本身就得折行看。
 _EXCERPT_RADIUS = 12
@@ -49,20 +51,6 @@ _EXCERPT_RADIUS = 12
 #: emoji 的粗略范围。**不求全**：这里只回答"这段文本里有没有 emoji、两边是不是同一批"，
 #: 不回答"哪个字符属于哪个 emoji"（那是渲染层的事，而且是件很难做对的事）。
 _EMOJI = re.compile("[\U0001f000-\U0001faff\U00002600-\U000027bf\u2b00-\u2bff\ufe0f\u200d]")
-
-
-def idempotency_key(task_id: str, platform: str, account_id: str) -> str:
-    """发布幂等键 ``sha256(task_id|platform|account_id)``（§03.3.15）。
-
-    为什么把 ``account_id`` 算进去：同一个任务**分发到两个账号**是两件不同的事
-    （§06.2.4「同任务可安全分发到多账号」），键里不含账号就会互相顶掉 ——
-    而 `publications.idempotency_key` 是 UNIQUE 的，顶掉的表现是"第二个账号永远发不出去"。
-
-    为什么返回摘要而不是那个 ``|`` 拼接串：键要进 UNIQUE 索引（长度稳定）**并且**
-    会被写进日志与告警（``|`` 拼接串会把 task_id 和账号名一起泄进日志行）。
-    """
-    raw = IDEMPOTENCY_SEP.join((task_id, platform, account_id))
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 # ── 标题 / 文案 / 话题 ────────────────────────────────────────────────
