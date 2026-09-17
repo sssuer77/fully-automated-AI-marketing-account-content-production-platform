@@ -71,6 +71,7 @@ from studio.tts.sentence import (
     synthesize_sentence,
     write_placeholder,
 )
+from studio.tts.service_engine import ResidentEngine, active_resident
 from studio.tts.text_normalize import GlossaryStore
 from studio.tts.timeline import has_audio
 
@@ -571,7 +572,7 @@ def build_voice_handler(
     "演练到一半改了环境变量"变成一个没人能复现的现象。
     """
     resolved = connection if connection is not None else connect(paths.db_file)
-    chosen = engine if engine is not None else SapiEngine()
+    chosen, default_voice = _pick_engine(paths, engine=engine)
     plan = fault if fault is not None else fault_plan_from_env()
     if plan.enabled:
         logger.warning("voice.fault_injected", **plan.to_dict())
@@ -579,10 +580,39 @@ def build_voice_handler(
         paths=paths,
         connection=resolved,
         engine=wrap_engine(chosen, plan),
-        voice=voice if voice is not None else _resolve_voice(),
+        voice=voice if voice is not None else default_voice,
         glossary=GlossaryStore(paths.glossary_file),
         log=log if log is not None else LogService(resolved),
     )
+
+
+def _pick_engine(
+    paths: StudioPaths,
+    *,
+    engine: SentenceEngine | None,
+) -> tuple[SentenceEngine, str | None]:
+    """装配期定一次引擎 —— 常驻服务能用就用它，否则退回 SAPI（§1.7 降级）。
+
+    判据用的是 :func:`~studio.tts.service_engine.active_resident` **那一份**（与配音
+    面板的"这个音色念得出来吗"同源）：两处各判一次，就会出现「面板说 bigbear 能念、
+    池子把它交给 SAPI」——``SelectVoice`` 直接抛 ⇒ 每句失败 3 次 ⇒ 成片没人声，
+    而库里写着换音色成功（陷阱 #154）。
+
+    返回的第二个值是**兜底音色**：作业 payload 里没有 ``voice`` 的句子用它。常驻
+    引擎下它是服务报的第一个可克隆音色（``sorted`` 保证两次启动选到同一个，不然
+    同一批句子在不同次运行里会换嗓子）；SAPI 下仍是系统语音包那一个。
+
+    ``engine`` 由调用方注入（测试 / 演练）时**不探测**：那是"就用这一个"的明确指令，
+    探测只会把注入的假件顶掉。
+    """
+    if engine is not None:
+        return engine, _resolve_voice()
+    status = active_resident(paths)
+    if status is None:
+        logger.info("voice.engine_sapi", reason="常驻推理服务不可用，按降级档用系统语音包")
+        return SapiEngine(), _resolve_voice()
+    logger.info("voice.engine_resident", base_url=status.base_url, revision=status.revision)
+    return ResidentEngine(paths=paths, status=status), status.voices[0]
 
 
 def _resolve_voice() -> str | None:

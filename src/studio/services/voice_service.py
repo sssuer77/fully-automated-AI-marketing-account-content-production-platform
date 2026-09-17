@@ -79,6 +79,7 @@ from studio.domain.enums import UnitType
 from studio.domain.task_service import TaskService
 from studio.tts.cache import TtsCache
 from studio.tts.sapi import list_voices_cached
+from studio.tts.service_engine import active_resident
 from studio.tts.timeline import (
     Timeline,
     TimelineSource,
@@ -279,6 +280,7 @@ def enqueue_sentences(
     connection: sqlite3.Connection,
     task_id: str,
     repo: SentenceRepo | None = None,
+    paths: StudioPaths | None = None,
 ) -> int:
     """把这条任务里**还没定局**的句子投进 voice 池（幂等；返回**这次真投出去**的条数）。
 
@@ -305,7 +307,7 @@ def enqueue_sentences(
     """
     store = JobStore(connection)
     rows = (repo if repo is not None else SentenceRepo(connection)).pending_for_task(task_id)
-    payloads = voice_payloads(connection=connection, task_id=task_id)
+    payloads = voice_payloads(connection=connection, task_id=task_id, paths=paths)
     queued = 0
     for row in rows:
         job_id = store.enqueue(
@@ -341,7 +343,11 @@ def usable_voices(connection: sqlite3.Connection) -> tuple[str, ...]:
     return tuple(sorted(set(from_profiles) | set(list_voices_cached())))
 
 
-def speakable_voices(connection: sqlite3.Connection) -> tuple[str, ...]:
+def speakable_voices(
+    connection: sqlite3.Connection,
+    *,
+    paths: StudioPaths | None = None,
+) -> tuple[str, ...]:
     """**当前这台引擎**真的念得出来的音色名 —— 与 :func:`usable_voices` 不是一回事。
 
     两个问题，两条答案
@@ -359,10 +365,19 @@ def speakable_voices(connection: sqlite3.Connection) -> tuple[str, ...]:
     （真机实测 2026-09-17：``synthesize(voice="bigbear")`` ⇒ ``rc=1``、
     ``SelectVoice`` 抛异常；同一个文本传 ``voice=None`` 正常出 162 KB 的 wav。）
 
-    今天只有 SAPI 一台引擎（T2.1 / E5 之前 CosyVoice 装不上）⇒ 能念的就是系统
-    语音包。T2.3 的引擎路由到位后，这里按**当前引擎**分叉（CosyVoice 那一档才把
-    ``voice_profiles`` 合进来），而不是无条件并集。
+    现在有两台引擎了（T2.3 薄片）：常驻推理服务起着 ⇒ 裁判是**它**（能念的就是
+    ``data/voice_src/`` 里那些可克隆音色，系统语音包它一个也不认识）；没起 ⇒ 还是
+    SAPI，能念的就是系统语音包。判据与配音池装配共用
+    :func:`~studio.tts.service_engine.active_resident` 那一份 —— 两处各判一次，
+    就会出现「面板说 bigbear 能念、池子把它交给 SAPI」（陷阱 #154）。
+
+    :param paths: 给了才去问常驻服务。``None`` ⇒ 按 SAPI 判 —— 那是"我不知道环境，
+        就按最保守的那台引擎算"，不是"随便挑一个"：这条规则让"忘了传 paths"的表现是
+        **没用上新引擎**（看得见），而不是"用了但用了错的"。
     """
+    status = active_resident(paths)
+    if status is not None:
+        return status.voices
     return tuple(list_voices_cached())
 
 
@@ -394,6 +409,7 @@ def voice_payloads(
     connection: sqlite3.Connection,
     task_id: str,
     available: Sequence[str] | None = None,
+    paths: StudioPaths | None = None,
 ) -> dict[str, dict[str, Any]]:
     """句子 id ⇒ 该句作业的**运行期** payload（目前只有 ``voice``）。
 
@@ -407,7 +423,7 @@ def voice_payloads(
     if not rows:
         return {}
     voice_map = TaskService(connection).get(task_id).payload.voice_map
-    voices = tuple(available) if available is not None else speakable_voices(connection)
+    voices = tuple(available) if available is not None else speakable_voices(connection, paths=paths)
     resolved: dict[str, ResolvedVoice] = {}
     payloads: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -498,7 +514,7 @@ def resynth_sentence(
             remediation="刷新面板后重试（新的一版会按改后的文本重念）",
         )
 
-    payloads = voice_payloads(connection=connection, task_id=row.task_id)
+    payloads = voice_payloads(connection=connection, task_id=row.task_id, paths=paths)
     payload = payloads.get(sentence_id)
     job_id, created = _reschedule(connection, task_id=row.task_id, sentence_id=sentence_id, payload=payload)
     progress = repo.progress(row.task_id)
@@ -600,7 +616,7 @@ def set_voice_map(
     rows = SentenceRepo(connection).list_for_task(task_id)
     submitted = {str(speaker): str(voice) for speaker, voice in voice_map.items()}
     after = {**before, **submitted}
-    voices = tuple(available) if available is not None else speakable_voices(connection)
+    voices = tuple(available) if available is not None else speakable_voices(connection, paths=paths)
 
     # 角色名写错（``bigBear``）是一个**静默无操作**：请求 200、映射多一个没人用的键、
     # 真正要换的那个角色纹丝不动。已知角色 = 现在映射里的键 ∪ 这条任务稿子里的 speaker。
@@ -666,7 +682,7 @@ def set_voice_map(
         )
 
     service.set_voice_map(task_id, after)
-    payloads = voice_payloads(connection=connection, task_id=task_id, available=voices)
+    payloads = voice_payloads(connection=connection, task_id=task_id, available=voices, paths=paths)
     repo = SentenceRepo(connection)
     invalidated: list[SentenceRow] = []
     for row in affected:

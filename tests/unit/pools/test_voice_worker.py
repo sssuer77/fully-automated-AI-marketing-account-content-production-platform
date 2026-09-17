@@ -46,6 +46,7 @@ from studio.pools.worker_base import UnitContext, _Pulse
 from studio.tts import sentence as sentence_module
 from studio.tts.cache import TtsCache
 from studio.tts.sentence import SapiEngine
+from studio.tts.service_engine import ResidentEngine, ResidentStatus
 
 WORKER_ID = "voice#1@4242"
 VOICE = "Fake Voice"
@@ -300,8 +301,60 @@ def test_build_raises_when_no_voice_is_installed(rig: Rig, monkeypatch: pytest.M
 
 
 def test_sapi_engine_is_the_default_seam() -> None:
-    """默认引擎是 SAPI（T2.3 的路由落地前，它是唯一能真出片的实现）。"""
+    """SAPI 仍是**兜底**那台引擎（常驻服务不可用时全靠它，成片照样有人声）。"""
     assert SapiEngine().name == "sapi"
+
+
+def test_the_resident_service_wins_when_it_is_up(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """★ T2.3 薄片：常驻服务起着 ⇒ 配音池用它，不再是系统语音包。
+
+    这一条就是「文案 → 配音 → 渲染」里那个"配音"换嗓子了没有的判据：引擎不是
+    SAPI，音色是参考音的名字（``bigbear``），而不是系统语音包的名字。
+    """
+    found = ResidentStatus(
+        base_url="http://127.0.0.1:8788",
+        engine="cosyvoice2",
+        revision="074ca6dc",
+        ready=True,
+        device="cuda",
+        model_state="ready",
+        sample_rate=24_000,
+        voices=("bigbear", "littlebear"),
+    )
+    monkeypatch.setattr(voice_worker, "active_resident", lambda paths, **kwargs: found)
+
+    handler = build_voice_handler(paths=rig.paths, connection=rig.connection)
+
+    assert isinstance(handler._engine, ResidentEngine)
+    assert handler._engine.name == "cosyvoice2"
+    assert handler._voice == "bigbear", "作业 payload 没带 voice 时要用服务报的第一个可克隆音色"
+
+
+def test_sapi_stays_the_fallback_when_the_service_is_down(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """服务没起 ⇒ 退回 SAPI，**不是**报错退出：整条产线不能因为配音降级就停
+    （§1.7；成片有人声优先于"用上模型"）。"""
+    monkeypatch.setattr(voice_worker, "active_resident", lambda paths, **kwargs: None)
+    monkeypatch.setattr(voice_worker, "pick_voice", lambda: VOICE)
+
+    handler = build_voice_handler(paths=rig.paths, connection=rig.connection)
+
+    assert isinstance(handler._engine, SapiEngine)
+    assert handler._voice == VOICE
+
+
+def test_an_injected_engine_is_never_probed_around(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """注入的引擎是"就用这一个"的明确指令 —— 探测只会把它顶掉。"""
+
+    def boom(paths: object, **kwargs: object) -> None:
+        raise AssertionError("注入了引擎还去探服务")
+
+    monkeypatch.setattr(voice_worker, "active_resident", boom)
+    monkeypatch.setattr(voice_worker, "pick_voice", lambda: VOICE)
+    fake = FakeEngine()
+
+    handler = build_voice_handler(paths=rig.paths, connection=rig.connection, engine=fake)
+
+    assert handler._engine is fake
 
 
 # ══════════════════════════════════════════════════════════════════════

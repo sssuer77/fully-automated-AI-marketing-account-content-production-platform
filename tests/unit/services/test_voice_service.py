@@ -38,6 +38,7 @@ from studio.services.voice_service import (
     usable_voices,
     voice_payloads,
 )
+from studio.tts.service_engine import ResidentStatus
 
 INSTALLED = ("熊大", "熊二")
 TEXTS = ("第一句。", "第二句。")
@@ -219,6 +220,60 @@ def test_a_registered_reference_voice_is_a_candidate_but_not_speakable(
     assert "bigbear" in usable_voices(connection)
     assert "bigbear" not in speakable_voices(connection)
     assert speakable_voices(connection) == SAPI_ONLY
+
+
+def test_a_reference_voice_becomes_speakable_once_the_resident_engine_is_up(
+    connection: sqlite3.Connection, paths: StudioPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """★ T2.3 薄片：常驻服务起着 ⇒ 裁判换成**它**，``bigbear`` 从"念不出来"变成"念得出来"。
+
+    这是「配音面板点一下、成片里是熊大的声」在服务层的判据。两处必须跟着一起换：
+    面板读 ``speakable``（下拉框据此显示哪个真的能用），投递出去的 payload 也跟着变
+    —— 只换一处就是"面板说能念、池子把它交给 SAPI"（陷阱 #154）。
+    """
+    monkeypatch.setattr("studio.services.voice_service.list_voices_cached", lambda: SAPI_ONLY)
+    _register(connection)
+    task_id = _task(connection, voice_map={"bigbear": "bigbear", "littlebear": "littlebear"})
+    found = ResidentStatus(
+        base_url="http://127.0.0.1:8788",
+        engine="cosyvoice2",
+        revision="074ca6dc",
+        ready=True,
+        device="cuda",
+        model_state="ready",
+        sample_rate=24_000,
+        voices=("bigbear", "littlebear"),
+    )
+    monkeypatch.setattr("studio.services.voice_service.active_resident", lambda paths, **kwargs: found)
+
+    assert speakable_voices(connection, paths=paths) == ("bigbear", "littlebear")
+
+    payloads = voice_payloads(connection=connection, task_id=task_id, paths=paths)
+    rows = SentenceRepo(connection).list_for_task(task_id)
+    assert [payloads[row.id] for row in rows] == [{"voice": "bigbear"}, {"voice": "littlebear"}]
+
+
+def test_without_paths_the_judgement_stays_on_the_safe_engine(
+    connection: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """不给 ``paths`` ⇒ 传下去的也是 ``None``：判据退回 SAPI（"我不知道环境，
+    就按最保守的那台引擎算"）。
+
+    守卫只有**一处**（``active_resident`` 收到 ``None`` 就返回 ``None``）——
+    这里钉的是"调用方没有自己编一个 paths 出来"。生产路径（面板、投递、换音色）
+    全都传了；忘了传的表现是**没用上新引擎**（看得见、能查），而不是"用了但用了错的"。
+    """
+    seen: list[StudioPaths | None] = []
+
+    def spy(paths: StudioPaths | None, **kwargs: object) -> None:
+        seen.append(paths)
+
+    monkeypatch.setattr("studio.services.voice_service.active_resident", spy)
+    monkeypatch.setattr("studio.services.voice_service.list_voices_cached", lambda: SAPI_ONLY)
+    _register(connection)
+
+    assert speakable_voices(connection) == SAPI_ONLY
+    assert seen == [None]
 
 
 def test_the_payload_never_carries_a_voice_the_engine_cannot_speak(

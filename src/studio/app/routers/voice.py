@@ -109,7 +109,7 @@ def list_voice_options(
     # 候选（`usable_voices`）与"念得出来"（`speakable_voices`）是两件事：前者回答
     # "这台机器上有什么"，后者回答"当前引擎认不认"。两个都要发给面板 —— 只发候选，
     # 用户会选中一个注定发不出声的音色；只发能念的，用户会以为"我刚入库的音色丢了"。
-    speakable = set(speakable_voices(connection))
+    speakable = set(speakable_voices(connection, paths=state.paths))
     profiles = {row.id for row in VoiceProfileRepo(connection).list_all(enabled_only=True)}
     voice_map: dict[str, str] = {}
     if task_id:

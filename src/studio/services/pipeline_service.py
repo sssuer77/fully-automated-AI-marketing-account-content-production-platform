@@ -330,7 +330,7 @@ def run_task(
             continue
 
         if status is TaskStatus.QUEUED_VOICE:
-            queued = enqueue_sentences(connection=connection, task_id=task_id)
+            queued = enqueue_sentences(connection=connection, task_id=task_id, paths=paths)
             after = tasks.transition(task_id, TaskStatus.VOICING, actor="pipeline", reason="配音作业已投递")
             record("voice", status, after.task.status, f"投递 {queued} 句到 voice 池")
             continue

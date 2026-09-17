@@ -103,7 +103,34 @@ sf.write("out.wav", audio, model.sample_rate)
 | 采样率 | 24000 |
 | 输出电平 | RMS 0.0071 / peak 0.0757（偏低是正常的 —— 交给 T3.6 的 `loudnorm` 抬） |
 
-## 四、两个已知状态（不是故障）
+## 四、配音池到底用哪台引擎（T2.3 薄片）
+
+配音有**两台**引擎，装配期定一次，之后整个进程不再改：
+
+| 引擎 | 什么时候用 | 念出来的音色 |
+| --- | --- | --- |
+| `cosyvoice2`（常驻服务） | 服务可用（连得上 + `/health` 说 `ready` + 至少一个可克隆音色） | `data/voice_src/<id>/` 里那些（`bigbear` / `littlebear`） |
+| `sapi`（系统语音包） | 上面三条缺任意一条 | Windows 装的那些（Huihui / Yaoyao…） |
+
+**「成片里的人声还是系统语音包」怎么查**：
+
+```powershell
+curl.exe -s 127.0.0.1:8788/health     # ready 是不是 true、detail 写了什么
+uv run studio service status          # tts 进程在不在
+```
+
+`ready: false` 且 `detail` 里有 `No module named 'torch'` ⇒ **这个进程不是用 `tts/.venv`
+起的**（`config/tts.yaml: python` 指错，或者它是在 T2.2 落地之前起的）。`停止.bat` →
+`启动.bat` 会用对的解释器重起。
+
+服务不可用时**不会报错、也不会让产线停**：配音退回 SAPI，成片照样有人声（§1.7）。
+代价只是这一遍不是 CosyVoice 的嗓子 —— 日志里那句 `voice.engine_sapi` 说的就是这件事。
+
+**面板上哪个音色"能用"跟着引擎走**：`cosyvoice2` 那一档只有参考音是"能用"的
+（系统语音包它一个也不认识），退回 SAPI 时反过来。两处读的是**同一份判据**，所以不会
+出现"面板说能念、片子出来没人声"。
+
+## 五、两个已知状态（不是故障）
 
 1. **onnxruntime 跑在 CPU 上**。日志里那句
    `Specified provider 'CUDAExecutionProvider' is not in available provider names`
@@ -115,7 +142,7 @@ sf.write("out.wav", audio, model.sample_rate)
    的 `text_normalize`。这正是本项目要的：T2.5 的归一化 + glossary 自己管，
    **不引入 `pynini` / `WeTextProcessing`**（Windows 装不上，见 T2.5 的施工裁定）。
 
-## 五、踩过的坑（写下来免得重踩）
+## 六、踩过的坑（写下来免得重踩）
 
 - **参考音要传路径**。这个 revision 的 `inference_zero_shot` 把第三个参数直接交给
   `load_wav(prompt_wav, 24000)`，而 `load_wav` 只认路径。传一个**已经加载好的张量**进去，

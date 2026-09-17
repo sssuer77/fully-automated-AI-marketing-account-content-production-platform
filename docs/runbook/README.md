@@ -18,6 +18,7 @@
 | 每月一次例行；或真要**回滚**数据 | [`restore_drill.md`](restore_drill.md) |
 | CosyVoice 权重没了 / 换了机器要重装 / 合成报 `No module named 'matcha'`、`No module named 'hyperpyyaml'` | [`tts_models.md`](tts_models.md) |
 | 想改 `voice.concurrency` / 怀疑并发开大了把卡拖慢 / 换了显卡要重新标定 | [`tts_concurrency.md`](tts_concurrency.md) |
+| **成片里的人声不是 CosyVoice / 还是系统语音包** | [`tts_models.md`](tts_models.md) 第四节「配音池到底用哪台引擎」 |
 | 面板上「缺密钥」、`studio llm probe` 报 `no_key`、想知道 Key 到底存在哪 | 见下「LLM 密钥存在哪」 |
 
 ## 三条通用纪律
