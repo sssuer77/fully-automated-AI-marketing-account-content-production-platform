@@ -28,7 +28,9 @@ ignore = [
 "tests/**" = ["T20", "PLR2004"]
 "scripts/**" = ["T20"]
 "src/studio/cli.py" = ["T20"]  # CLI 面向人的输出走 rich
-"src/studio/services/service_manager.py" = ["T20"]  # run_entry 是进程入口：诊断必须进 data/logs/<name>.log
+"src/studio/services/service_manager.py" = ["T20"]  # 进程编排：诊断必须进 data/logs/<name>.log
+"src/studio/core/entry.py" = ["T20"]  # run_entry 是进程入口：诊断必须进 data/logs/<name>.log
+                                      # （T2.3 收尾：tts 子环境只装推理依赖，入口不能依赖 services）
 
 [lint.flake8-tidy-imports]
 ban-relative-imports = "all"

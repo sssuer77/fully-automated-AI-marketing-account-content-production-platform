@@ -228,7 +228,7 @@
 
 ---
 
-## 5.7 高频陷阱对照表（165 条 · 实现期直接查阅）
+## 5.7 高频陷阱对照表（167 条 · 实现期直接查阅）
 
 | # | 现象 | 根因 | 正确做法 | 任务 |
 | --- | --- | --- | --- | --- |
@@ -397,6 +397,8 @@
 | 163 | **tts 进程活着、`/health` 回 200，可每个请求都报 `No module named 'studio'`** | `tts/pyproject.toml` 是 `package = false` ⇒ 子环境里**没有**本项目；启动器不前置 `PYTHONPATH` 就 import 不到 | `ServiceSpec.env_prepend` 前置 `PYTHONPATH=<仓库>/src`（**前置不覆盖**已有值）；手工起进程要自己加 | T2.2 |
 | 164 | **`mypy.ini` 里的 `[[mypy.overrides]]` 段一个字都没生效，却也不报错** | `[[...]]` 是 **TOML** 的数组表写法（`pyproject.toml` 用）；INI 里 mypy **静默忽略**整段 —— 连「未知键」都不提醒 | INI 一律写 `[mypy-<模块>]`（`[mypy-yaml.*]` 这种） | T2.2 |
 | 165 | **换了引擎 / 换了权重版本，却复用了旧引擎的缓存音频**（成片里是**别人的嗓子**，而且一切正常） | 缓存键吃 `engine` + `engine_revision`，而客户端**自己写死**了这两个字面量 —— 服务换了它自己不知道 | 引擎名与版本**从服务自述来**（`/health` 的 `engine` / `revision`），不写死在客户端 | T2.3 |
+| 166 | **`/health` 回 200，服务却是个坏实例**（`ready:false`、每次请求都报“推理环境坏了”），而守护进程**永远不修它** | 就绪判据只看 HTTP 状态码 ⇒ “端口上有人答话”被当成“服务能用”；坏实例占着端口 ⇒ 新的起不来、旧的没人管 | 就绪判据**必须吃服务自述的 `ready`**（`_default_health`）；端口上“我们自己、没就绪”的实例由编排器**接管重启**（`_takeover_unhealthy`：`ready is False` + 有 `engine` 字段 + 自报 `pid` 且活着 ⇒ terminate→kill→等端口释放）；服务不自报 `pid` 就认不出是谁，只能记 `service.port_busy_unready` 并给 hint | T2.3 |
+| 167 | **子环境进程起不来，日志看着像“推理环境坏了”**（`ModuleNotFoundError: No module named '''ulid'''`） | `workers/run_tts.py` 从 `services.service_manager` import `run_entry` ⇒ 把一个**叶子骨架函数**放进了服务层 ⇒ 拖进整个服务层依赖（`ulid` 之类不在子环境里） | 叶子进程入口放**叶子层**（`studio.core.entry.run_entry`）；`service_manager` 原样 re-export，老调用点不动 | T2.3 |
 
 ---
 

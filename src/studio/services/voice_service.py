@@ -79,7 +79,7 @@ from studio.domain.enums import UnitType
 from studio.domain.task_service import TaskService
 from studio.tts.cache import TtsCache
 from studio.tts.sapi import list_voices_cached
-from studio.tts.service_engine import active_resident
+from studio.tts.service_engine import ResidentStatus, resident_status
 from studio.tts.timeline import (
     Timeline,
     TimelineSource,
@@ -92,9 +92,13 @@ from studio.tts.timeline import (
 )
 
 __all__ = [
+    "RESIDENT_DOWN_HINT",
+    "RESIDENT_NOT_READY_HINT",
+    "SAPI_ENGINE_NAME",
     "ResolvedVoice",
     "ResynthReport",
     "VoiceChange",
+    "VoiceEngineInfo",
     "VoiceMapReport",
     "VoiceStageReport",
     "enqueue_sentences",
@@ -106,6 +110,7 @@ __all__ = [
     "settle_voice",
     "speakable_voices",
     "usable_voices",
+    "voice_engine_info",
     "voice_payloads",
 ]
 
@@ -145,6 +150,53 @@ class VoiceStageReport:
 VOICE_POOL: Final[str] = "voice"
 
 #: :attr:`ResolvedVoice.source` 的三个取值（面板据此说"这个音色到底生效了没有"）
+#: 常驻引擎不在时，这台机器上真正念句子的是**系统语音包**
+SAPI_ENGINE_NAME: Final[str] = "sapi"
+
+#: 常驻引擎起着、但没就绪（面板要说清"为什么不是那个音色"）
+RESIDENT_NOT_READY_HINT: Final[str] = (
+    "常驻配音引擎起着但没就绪（{reason}）：这次会用系统语音包「{voice}」念。"
+    "查 data/logs/tts.log，或按 docs/runbook/tts_models.md 第四节排"
+)
+
+#: 常驻引擎根本没起
+RESIDENT_DOWN_HINT: Final[str] = (
+    "常驻配音引擎没在跑：这次会用系统语音包「{voice}」念。"
+    "要 CosyVoice 的音色就跑一次 启动.bat，或按 docs/runbook/tts_models.md 第四节排"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceEngineInfo:
+    """这次出片**会**用哪台引擎念、它念得出来什么、为什么不是另一台。
+
+    与 :func:`speakable_voices` 是同一份判据的两种粒度：那个只回音色名（配音池
+    装配要的就是那个），这个连引擎名与"为什么"一起回 —— 少一样，面板上就会出现
+    「引擎：sapi」配着 CosyVoice 音色名这种自相矛盾的一行。
+    """
+
+    #: 引擎名（常驻服务**自述**的那个，见陷阱 165；退回时是 :data:`SAPI_ENGINE_NAME`）
+    name: str
+    #: 现在念得出来吗（＝至少有一个音色）
+    ready: bool
+    voices: tuple[str, ...]
+    #: 一句话说清"为什么是这台引擎"（一切正常时是 ``None`` —— 不要没事找话说）
+    hint: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "engine": self.name,
+            "ready": self.ready,
+            "voices": list(self.voices),
+            "hint": self.hint,
+        }
+
+
+def _resident_reason(status: ResidentStatus) -> str:
+    """常驻服务自报的"为什么没就绪"（``detail`` 优先，其次模型状态）。"""
+    return status.detail or status.model_state or "ready=false"
+
+
 VOICE_SOURCE_MAP: Final[str] = "voice_map"
 VOICE_SOURCE_FALLBACK: Final[str] = "fallback"
 VOICE_SOURCE_DEFAULT: Final[str] = "engine_default"
@@ -343,6 +395,38 @@ def usable_voices(connection: sqlite3.Connection) -> tuple[str, ...]:
     return tuple(sorted(set(from_profiles) | set(list_voices_cached())))
 
 
+def voice_engine_info(
+    connection: sqlite3.Connection,
+    *,
+    paths: StudioPaths | None = None,
+) -> VoiceEngineInfo:
+    """控制台（一键出片 / 渲染面板）要的那三件事 —— 判据与配音池**同一份**。
+
+    两种"用不上常驻引擎"，说法必须分开
+    ----------------------------------
+    ① 服务**没在跑** ⇒ "没起"；② 服务起着但 ``ready=false`` ⇒ 把**它自报的原因**
+    原样带出来（真机那台是子环境不对，``import torch`` 当场失败）。混成一句话的话，
+    用户会照着"没起"去重启服务 —— 重启完还是同一个现象，因为坏的不是"起没起"。
+
+    ``connection`` 现在没用到（音色只从引擎那边问），留着是为了与
+    :func:`speakable_voices` 的调用形状一致：这两个在调用点上永远成对出现。
+    """
+    status = resident_status(paths)
+    if status is not None and status.usable:
+        return VoiceEngineInfo(name=status.engine, ready=True, voices=status.voices)
+    voices = tuple(list_voices_cached())
+    if not voices:  # 连系统语音包都没有 ⇒ 这一条链路必然停在配音那一步
+        return VoiceEngineInfo(name=SAPI_ENGINE_NAME, ready=False, voices=())
+    template = RESIDENT_DOWN_HINT if status is None else RESIDENT_NOT_READY_HINT
+    reason = "" if status is None else _resident_reason(status)
+    return VoiceEngineInfo(
+        name=SAPI_ENGINE_NAME,
+        ready=True,
+        voices=voices,
+        hint=template.format(voice=voices[0], reason=reason),
+    )
+
+
 def speakable_voices(
     connection: sqlite3.Connection,
     *,
@@ -375,10 +459,7 @@ def speakable_voices(
         就按最保守的那台引擎算"，不是"随便挑一个"：这条规则让"忘了传 paths"的表现是
         **没用上新引擎**（看得见），而不是"用了但用了错的"。
     """
-    status = active_resident(paths)
-    if status is not None:
-        return status.voices
-    return tuple(list_voices_cached())
+    return voice_engine_info(connection, paths=paths).voices
 
 
 def resolve_voice(*, voice_map: Mapping[str, str], speaker: str, available: Sequence[str]) -> ResolvedVoice:

@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
@@ -94,9 +95,15 @@ STATUS_BY_CODE: Final[dict[ErrorCode, int]] = {
 
 
 class HealthResponse(BaseModel):
-    """``GET /health``。字段名与验收口径一致：``ready`` / ``device`` / ``model_state``。"""
+    """``GET /health``。字段名与验收口径一致：``ready`` / ``device`` / ``model_state``。
+
+    ``pid`` 是**给自己人看的**：编排器要能认出「8788 上那个进程是我的哪一个实例」。
+    光凭端口占用查不出来 —— 而「端口被一个坏掉的旧实例占着」正是最费时间的那类故障：
+    旧实例每句都念不出声，探活却回 200（陷阱 166）。
+    """
 
     ok: bool = True
+    pid: int
     ready: bool
     device: str
     model_state: str
@@ -461,6 +468,7 @@ class TtsService:
             detail = "模型未加载（首次 /synth 会冷加载，或调 /warmup 预热）"
         return HealthResponse(
             ok=True,
+            pid=os.getpid(),
             ready=state is EngineState.READY and self._stuck is None,
             device=self._backend.device,
             model_state=str(state),

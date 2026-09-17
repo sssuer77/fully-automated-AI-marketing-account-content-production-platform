@@ -56,6 +56,7 @@ from typing import Any, Final, Protocol
 
 from studio.core.config import load_config, load_tts_config
 from studio.core.doctor import Doctor, DoctorReport
+from studio.core.entry import run_entry
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.logging import get_logger
 from studio.core.paths import StudioPaths
@@ -65,6 +66,7 @@ __all__ = [
     "DEFAULT_READY_TIMEOUT_SEC",
     "DEFAULT_STOP_TIMEOUT_SEC",
     "SERVICE_NAMES",
+    "HealthProbe",
     "PortProbe",
     "Readiness",
     "ServiceKind",
@@ -76,6 +78,7 @@ __all__ = [
     "StopReport",
     "build_specs",
     "default_manager",
+    "probe_health",
     "probe_port",
     "run_entry",
 ]
@@ -93,6 +96,12 @@ DEFAULT_STOP_TIMEOUT_SEC: Final[float] = 10.0
 
 #: 池进程的"活着"观察窗：起完立刻死掉的 worker 不算 started
 POOL_GRACE_SEC: Final[float] = 3.0
+
+#: 接管一个未就绪的旧实例时，给它几次优雅退出的机会（秒）
+TAKEOVER_GRACE_SEC: Final[float] = 3.0
+
+#: 接管后等端口空出来的上限（秒）
+TAKEOVER_FREE_SEC: Final[float] = 5.0
 
 
 class ServiceKind(StrEnum):
@@ -361,6 +370,62 @@ def probe_port(host: str, port: int, *, timeout: float = 0.25) -> bool:
         return False
 
 
+def _json_object(body: str) -> dict[str, Any] | None:
+    """响应体是 JSON 对象 ⇒ 解析结果；不是 ⇒ ``None``（对面不是 JSON 不该算错误）。"""
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _self_report_reason(payload: Mapping[str, Any]) -> str:
+    """服务自报「为什么没就绪」：``detail`` 优先，其次模型状态与设备。
+
+    这一句话要一路带到 ``data/logs/*.log`` 与总览台上：真机上它是
+    ``ModuleNotFoundError: No module named torch`` —— 没有它，人就只能看到
+    「端口占用」这种把原因藏起来的话。
+    """
+    for key in ("detail", "model_state", "device"):
+        value = payload.get(key)
+        if value:
+            return str(value)
+    return "ready=false"
+
+
+@dataclass(frozen=True, slots=True)
+class HealthProbe:
+    """一次 HTTP 健康面探测的**原始**结论（判据由调用方自己定）。"""
+
+    #: 对面答话了吗（连不上 / 不是 HTTP ⇒ ``False``）
+    answered: bool
+    status: int | None = None
+    body: str = ""
+    payload: dict[str, Any] | None = None
+    error: str | None = None
+
+
+def probe_health(host: str, port: int | None, path: str | None, *, timeout: float = 1.5) -> HealthProbe:
+    """问一次 HTTP 健康面（**唯一一处 urlopen**；"算不算就绪"由调用方判）。
+
+    两个"没答上"要分开记：``HTTPError`` 是**答了**（只是 4xx/5xx，比如服务还在
+    启动中），``URLError``/``OSError`` 才是**连不上**。前者重试有意义，后者要先
+    看进程在不在 —— 混成一种，排障时第一步就分岔。
+    """
+    if port is None or path is None:
+        return HealthProbe(answered=True, status=None, body="no_http")
+    url = f"http://{host}:{port}{path}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:  # 本机回环
+            body = response.read(4096).decode("utf-8", "replace")
+            status = int(response.status)
+    except urllib.error.HTTPError as exc:  # 4xx/5xx 也算"答了"，只是没就绪
+        return HealthProbe(answered=True, status=int(exc.code), body="")
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return HealthProbe(answered=False, error=f"{type(exc).__name__}: {exc}")
+    return HealthProbe(answered=True, status=status, body=body, payload=_json_object(body))
+
+
 # ── 规格表 ──────────────────────────────────────────────────────────────
 
 
@@ -467,6 +532,7 @@ class ServiceManager:
     :param process_table: 进程表（默认 psutil 实现）
     :param port_probe: 端口探测（默认 TCP connect）
     :param health: HTTP 健康检查（默认 urllib）
+    :param health_probe: 健康面的**原始**探测（默认 urllib；给测试注入假件用）
     :param browser: 打开浏览器（默认 ``webbrowser.open``）
     :param doctor_factory: doctor 门禁的构造器（测试注入假件，不跑真自检）
     """
@@ -481,6 +547,7 @@ class ServiceManager:
         process_table: ProcessTable | None = None,
         port_probe: Callable[[str, int], bool] | None = None,
         health: Callable[[ServiceSpec], tuple[bool, str]] | None = None,
+        health_probe: Callable[[ServiceSpec], HealthProbe] | None = None,
         browser: Callable[[str], bool] | None = None,
         doctor_factory: Callable[[], DoctorReport] | None = None,
         host: str = "127.0.0.1",
@@ -496,6 +563,7 @@ class ServiceManager:
         self._processes: ProcessTable = process_table or _RealProcessTable()
         self._probe: Callable[[str, int], bool] = port_probe or probe_port
         self._health = health or self._default_health
+        self._health_probe = health_probe or (lambda spec: probe_health(host, spec.port, spec.health_path))
         self._browser = browser or webbrowser.open
         self._doctor_factory = doctor_factory
         self._sleep = sleep
@@ -670,21 +738,92 @@ class ServiceManager:
         return int(process.pid)
 
     def _default_health(self, spec: ServiceSpec) -> tuple[bool, str]:
-        """HTTP 就绪探针：200 + ``ok`` 不为 False。"""
-        if spec.port is None or spec.health_path is None:
-            return True, "no_http"
-        url = f"http://{self._host}:{spec.port}{spec.health_path}"
-        try:
-            with urllib.request.urlopen(url, timeout=1.5) as response:  # 本机回环
-                body = response.read(4096).decode("utf-8", "replace")
-                status = int(response.status)
-        except (urllib.error.URLError, OSError, ValueError) as exc:
-            return False, f"{type(exc).__name__}: {exc}"
-        if status != 200:
-            return False, f"HTTP {status}"
-        if '"ok": false' in body.replace(" ", "").lower():
+        """HTTP 就绪探针：200 + ``ok`` 不为 False + **服务自报的 ``ready``**。
+
+        为什么要看自报的 ``ready``（陷阱 166）
+        --------------------------------------
+        「进程活着」与「服务能用」是**两件事**：tts 起得来、``/health`` 也回 200，
+        可模型没加载成时它自报 ``ready: false``（真机那台是
+        ``ModuleNotFoundError: No module named 'torch'``）。只看状态码，一个
+        **每句都念不出声**的引擎就会被记成「已就绪」：守护进程永远不去修它，
+        配音一直悄悄退回系统语音包，而每一处日志都写着成功。
+
+        没有 ``ready`` 字段的服务（``api`` 那条）不受影响 —— 判据是「自报了才管」。
+        """
+        probe = self._health_probe(spec)
+        if not probe.answered:
+            return False, probe.error or "没有应答"
+        if probe.status is not None and probe.status != 200:
+            return False, f"HTTP {probe.status}"
+        if probe.payload is not None:
+            if probe.payload.get("ok") is False:
+                return False, "health 报 ok=false"
+            if probe.payload.get("ready") is False:
+                return False, f"自报未就绪：{_self_report_reason(probe.payload)}"
+        elif '"ok": false' in probe.body.replace(" ", "").lower():
             return False, "health 报 ok=false"
-        return True, body[:200]
+        return True, probe.body[:200]
+
+    def _takeover_unhealthy(self, spec: ServiceSpec) -> bool:
+        """端口上占着的是**我们自己的、没就绪的**实例 ⇒ 接管：杀掉，本轮用当前规格表重启。
+
+        为什么不能只报一句 ``port_busy`` 就收工
+        --------------------------------------
+        真机 8788 上跑的是 T2.2 落地**之前**起的旧实例：它用主解释器起，
+        ``import torch`` 当场失败 ⇒ ``ready: false`` ⇒ 配音每句都退回系统语音包。
+        而守护进程每几分钟看到一次「端口有人占着，不关我事」就收工，这个状态于是能
+        一直挂到人手动去关 —— 用户看到的是「配音怎么一直不是那个音色」。
+
+        三条判据缺一不可（**宁可不动手，也不能杀错**）
+        ----------------------------------------------
+        ① 对面答的是**我们的**健康面（同时自报 ``ready`` 与 ``pid`` 两个字段）；
+        ② 自报的 pid 真的活着；
+        ③ 它自报**没就绪** —— 健康的实例一律不碰（可能是用户自己起的，也可能正在干活）。
+
+        :return: 接管成功（端口已空出来）⇒ ``True``；否则 ``False``，调用方照旧记 port_busy。
+        """
+        probe = self._health_probe(spec)
+        payload = probe.payload
+        if payload is None or payload.get("ready") is not False or "engine" not in payload:
+            # 要么不是我们的服务（没有自述字段），要么它自报是**就绪的** ⇒ 不碰
+            return False
+        pid = payload.get("pid")
+        if not isinstance(pid, int) or not self._processes.alive(pid):
+            # 认得出它坏了、却认不出它是谁（T2.2 之前的版本不自报 pid）⇒ 至少把原因喊出来。
+            # 这正是真机上那一台：只回一句 port_busy，人会以为"端口冲突"，去改配置。
+            logger.warning(
+                "service.port_busy_unready",
+                service=spec.name,
+                port=spec.port,
+                reason=_self_report_reason(payload),
+                hint="端口上那个实例自报未就绪、又不肯说自己是谁：停一次服务再启动，就会用当前规格表重起",
+            )
+            return False
+        logger.warning(
+            "service.takeover",
+            service=spec.name,
+            port=spec.port,
+            pid=pid,
+            reason=_self_report_reason(payload),
+        )
+        self._processes.terminate(pid)
+        if not self._processes.wait(pid, TAKEOVER_GRACE_SEC):
+            self._processes.kill(pid)
+            self._processes.wait(pid, TAKEOVER_GRACE_SEC)
+        if not self._await_port_free(spec):
+            logger.warning("service.takeover_port_stuck", service=spec.name, port=spec.port)
+            return False
+        return True
+
+    def _await_port_free(self, spec: ServiceSpec, *, timeout_sec: float = TAKEOVER_FREE_SEC) -> bool:
+        """等端口真的空出来：杀完到 bind 之间有一段窗口，抢跑会直接 bind 失败。"""
+        assert spec.port is not None  # 只有带端口的规格会走到这里
+        deadline = self._monotonic() + timeout_sec
+        while self._probe(self._host, spec.port):
+            if self._monotonic() >= deadline:
+                return False
+            self._sleep(0.1)
+        return True
 
     def start(
         self,
@@ -738,7 +877,13 @@ class ServiceManager:
             if self._running_pid(spec.name) is not None:
                 already.append(spec.name)
                 continue
-            if spec.port is not None and self._probe(self._host, spec.port):
+            # 端口有人占着 ⇒ 先问一句"是不是**我们自己**那个没就绪的旧实例"：
+            # 是就接管（见 _takeover_unhealthy），不是才记 port_busy 收工。
+            if (
+                spec.port is not None
+                and self._probe(self._host, spec.port)
+                and not self._takeover_unhealthy(spec)
+            ):
                 busy.append(spec.name)
                 logger.warning("service.port_busy", service=spec.name, port=spec.port)
                 continue
@@ -957,33 +1102,6 @@ class ServiceManager:
                 )
             )
         return tuple(rows)
-
-
-def run_entry(name: str, runner: Callable[[], Any]) -> int:
-    """``workers/run_<name>.py`` 的公共骨架：跑 → 出错就说清 → 退出码。
-
-    退出码是**契约**：``studio service start`` 靠它判断"这个进程是不是起来就死了"。
-    失败一律落 ``stderr`` 且带错误码与修复提示 —— 子进程的 stdout/stderr 会进
-    ``data/logs/<name>.log``（裁定 106），排障时第一眼就能看到原因。
-    """
-    try:
-        result = runner()
-    except StudioError as exc:
-        # StudioError 是**预期内的诊断**（带 code + remediation），堆栈只会淹没原因。
-        logger.error(  # noqa: TRY400 -- 见上
-            "service.entry_failed", service=name, code=str(exc.code), error=exc.message
-        )
-        print(f"[{name}] 启动失败 [{exc.code}] {exc.message}", file=sys.stderr, flush=True)
-        if exc.remediation:
-            print(f"[{name}] 修复：{exc.remediation}", file=sys.stderr, flush=True)
-        return 1
-    except KeyboardInterrupt:  # 前台 Ctrl+C：优雅退出，不算失败
-        print(f"[{name}] 收到中断，已优雅退出", flush=True)
-        return 0
-    as_dict = getattr(result, "to_dict", None)
-    if callable(as_dict):
-        print(f"[{name}] {json.dumps(as_dict(), ensure_ascii=False)}", flush=True)
-    return 0
 
 
 def default_manager(paths: StudioPaths | None = None, **kwargs: Any) -> ServiceManager:

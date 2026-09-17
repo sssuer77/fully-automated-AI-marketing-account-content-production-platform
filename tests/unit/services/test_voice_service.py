@@ -27,6 +27,7 @@ from studio.db.models import SentenceRow
 from studio.db.repositories import ScriptRepo, SentenceRepo, VoiceProfileRepo
 from studio.domain.task_service import TaskService
 from studio.services.voice_service import (
+    SAPI_ENGINE_NAME,
     VOICE_SOURCE_DEFAULT,
     VOICE_SOURCE_FALLBACK,
     VOICE_SOURCE_MAP,
@@ -36,6 +37,7 @@ from studio.services.voice_service import (
     set_voice_map,
     speakable_voices,
     usable_voices,
+    voice_engine_info,
     voice_payloads,
 )
 from studio.tts.service_engine import ResidentStatus
@@ -244,7 +246,7 @@ def test_a_reference_voice_becomes_speakable_once_the_resident_engine_is_up(
         sample_rate=24_000,
         voices=("bigbear", "littlebear"),
     )
-    monkeypatch.setattr("studio.services.voice_service.active_resident", lambda paths, **kwargs: found)
+    monkeypatch.setattr("studio.services.voice_service.resident_status", lambda paths, **kwargs: found)
 
     assert speakable_voices(connection, paths=paths) == ("bigbear", "littlebear")
 
@@ -259,7 +261,7 @@ def test_without_paths_the_judgement_stays_on_the_safe_engine(
     """不给 ``paths`` ⇒ 传下去的也是 ``None``：判据退回 SAPI（"我不知道环境，
     就按最保守的那台引擎算"）。
 
-    守卫只有**一处**（``active_resident`` 收到 ``None`` 就返回 ``None``）——
+    守卫只有**一处**（``resident_status`` 收到 ``None`` 就返回 ``None``）——
     这里钉的是"调用方没有自己编一个 paths 出来"。生产路径（面板、投递、换音色）
     全都传了；忘了传的表现是**没用上新引擎**（看得见、能查），而不是"用了但用了错的"。
     """
@@ -268,12 +270,83 @@ def test_without_paths_the_judgement_stays_on_the_safe_engine(
     def spy(paths: StudioPaths | None, **kwargs: object) -> None:
         seen.append(paths)
 
-    monkeypatch.setattr("studio.services.voice_service.active_resident", spy)
+    monkeypatch.setattr("studio.services.voice_service.resident_status", spy)
     monkeypatch.setattr("studio.services.voice_service.list_voices_cached", lambda: SAPI_ONLY)
     _register(connection)
 
     assert speakable_voices(connection) == SAPI_ONLY
     assert seen == [None]
+
+
+def _resident(*, ready: bool, detail: str | None = None) -> ResidentStatus:
+    """一台"起着、但可能没就绪"的常驻引擎（只填判据用得到的那几项）。"""
+    return ResidentStatus(
+        base_url="http://127.0.0.1:8788",
+        engine="cosyvoice2",
+        revision="074ca6dc",
+        ready=ready,
+        device="cuda",
+        model_state="ready" if ready else "error",
+        sample_rate=24_000,
+        voices=("bigbear", "littlebear"),
+        detail=detail,
+    )
+
+
+def test_engine_info_names_the_engine_that_will_actually_speak(
+    connection: sqlite3.Connection, paths: StudioPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """★ 面板上那一行「引擎 X · 音色 Y」必须与配音池**同一份**判据（陷阱 #154）。
+
+    三种结局各一条：常驻可用 / 起着但没就绪 / 根本没起。第二种最要紧 —— 真机上
+    8788 上那个旧实例就是它（``import torch`` 失败），而"没起"与"起着但坏了"要
+    给出**不一样**的话：照"没起"去重启，重启完还是同一个现象。
+    """
+    monkeypatch.setattr("studio.services.voice_service.list_voices_cached", lambda: SAPI_ONLY)
+
+    monkeypatch.setattr(
+        "studio.services.voice_service.resident_status", lambda paths, **kwargs: _resident(ready=True)
+    )
+    up = voice_engine_info(connection, paths=paths)
+    assert (up.name, up.ready, up.voices, up.hint) == (
+        "cosyvoice2",
+        True,
+        ("bigbear", "littlebear"),
+        None,  # 一切正常时不要没事找话说
+    )
+
+    monkeypatch.setattr(
+        "studio.services.voice_service.resident_status",
+        lambda paths, **kwargs: _resident(ready=False, detail="ModuleNotFoundError: No module named 'torch'"),
+    )
+    broken = voice_engine_info(connection, paths=paths)
+    assert broken.name == SAPI_ENGINE_NAME
+    assert broken.ready is True  # 系统语音包念得出来 ⇒ 链路照样能出片
+    assert broken.voices == SAPI_ONLY
+    assert broken.hint is not None
+    assert "没就绪" in broken.hint and "torch" in broken.hint  # 原因原样带出来
+    assert SAPI_ONLY[0] in broken.hint  # 说清"这次用哪个声音念"
+
+    monkeypatch.setattr("studio.services.voice_service.resident_status", lambda paths, **kwargs: None)
+    down = voice_engine_info(connection, paths=paths)
+    assert down.name == SAPI_ENGINE_NAME
+    assert down.hint is not None and "没在跑" in down.hint
+
+
+def test_engine_info_says_nothing_when_no_engine_can_speak(
+    connection: sqlite3.Connection, paths: StudioPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """两台引擎都没有音色 ⇒ ``ready=False``、``voices=()``、``hint=None``。
+
+    ``hint`` 留空不是省事：那句话（"本机没有可用音色"）由**面板层**按自己的口径写
+    （``NO_VOICE_HINT``），服务层再抄一份就成了两处口径。
+    """
+    monkeypatch.setattr("studio.services.voice_service.list_voices_cached", lambda: ())
+    monkeypatch.setattr("studio.services.voice_service.resident_status", lambda paths, **kwargs: None)
+
+    info = voice_engine_info(connection, paths=paths)
+
+    assert (info.name, info.ready, info.voices, info.hint) == (SAPI_ENGINE_NAME, False, (), None)
 
 
 def test_the_payload_never_carries_a_voice_the_engine_cannot_speak(

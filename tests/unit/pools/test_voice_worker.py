@@ -21,7 +21,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -43,6 +43,7 @@ from studio.pools.voice_worker import (
     build_voice_handler,
 )
 from studio.pools.worker_base import UnitContext, _Pulse
+from studio.services.log_service import LogService
 from studio.tts import sentence as sentence_module
 from studio.tts.cache import TtsCache
 from studio.tts.sentence import SapiEngine
@@ -355,6 +356,151 @@ def test_an_injected_engine_is_never_probed_around(rig: Rig, monkeypatch: pytest
     handler = build_voice_handler(paths=rig.paths, connection=rig.connection, engine=fake)
 
     assert handler._engine is fake
+
+
+# ── 引擎选择器："每一次取用时判定"（真机坑 2026-09-18）────────────────────────
+
+
+def _resident(voices: tuple[str, ...] = ("bigbear", "littlebear")) -> ResidentStatus:
+    return ResidentStatus(
+        base_url="http://127.0.0.1:8788",
+        engine="cosyvoice2",
+        revision="074ca6dc",
+        ready=True,
+        device="cuda",
+        model_state="ready",
+        sample_rate=24_000,
+        voices=voices,
+    )
+
+
+class FakeResidentEngine(FakeEngine):
+    """常驻引擎的替身：名字得跟服务自报的一致（断言读的就是它）。"""
+
+    name = "cosyvoice2"
+
+
+def _fake_resident_engine(*, paths: object, status: object) -> FakeResidentEngine:
+    """把 `ResidentEngine` 换成替身（真实现要连 HTTP，单测不该碰网络）。"""
+    return FakeResidentEngine()
+
+
+@dataclass
+class RecordingLog:
+    """记下每一条 ``_log_line`` 的假日志（真实现要一条连接，这里只要"说了什么"）。"""
+
+    lines: list[tuple[str, str]]
+
+    def __init__(self) -> None:
+        self.lines = []
+
+    def append(self, *, level: str, message: str, **_kwargs: object) -> None:
+        self.lines.append((level, message))
+
+
+def _upgrading_pool(
+    monkeypatch: pytest.MonkeyPatch, *, resident_voices: tuple[str, ...] = ("bigbear", "littlebear")
+) -> dict[str, bool]:
+    """搭一个"装配期服务没起、之后才就绪"的池子 —— 真机启动时序就长这样。
+
+    返回的是那个开关：置 ``True`` 就当"模型加载完了"。
+    """
+    state = {"up": False}
+
+    def probe(paths: object, **kwargs: object) -> ResidentStatus | None:
+        return _resident(resident_voices) if state["up"] else None
+
+    monkeypatch.setattr(voice_worker, "active_resident", probe)
+    monkeypatch.setattr(voice_worker, "pick_voice", lambda: VOICE)
+    monkeypatch.setattr(voice_worker, "list_voices_cached", lambda: (VOICE, "Microsoft Huihui Desktop"))
+    monkeypatch.setattr(voice_worker, "ResidentEngine", _fake_resident_engine)
+    return state
+
+
+def test_the_picker_upgrades_once_the_model_has_finished_loading(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """★ 真机坑：装配期服务没起（模型要加载 22s），第一句执行时已经就绪 ⇒ **用常驻引擎**。
+
+    "装配期定一次"会把整条链路钉在 SAPI 上，而且**一直钉到 voice 进程重启**：
+    面板上写着 ``bigbear``（它问的时候服务已经就绪），池子却把 ``bigbear`` 交给 SAPI ——
+    ``SelectVoice`` 抛 ⇒ 每句失败 3 次 ⇒ 成片没人声，而库里写着"换音色成功"。
+    """
+    state = _upgrading_pool(monkeypatch)
+    handler = build_voice_handler(paths=rig.paths, connection=rig.connection)
+
+    assert isinstance(handler._engine, SapiEngine), "装配期确实还没起"
+
+    state["up"] = True
+    engine, voice, speakable = handler._current_engine()
+
+    assert isinstance(engine, FakeResidentEngine)
+    assert voice == "bigbear"
+    assert speakable == ("bigbear", "littlebear")
+
+
+def test_the_picker_never_downgrades_mid_task(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """拿到常驻引擎就固定用它：中途降回 SAPI 会让同一支片子一半 CosyVoice、
+    一半系统音色 —— 听起来只是"有几句话怪"，比如实失败难查得多。
+    """
+    state = _upgrading_pool(monkeypatch)
+    handler = build_voice_handler(paths=rig.paths, connection=rig.connection)
+
+    state["up"] = True
+    assert isinstance(handler._current_engine()[0], FakeResidentEngine)
+
+    state["up"] = False
+    assert isinstance(handler._current_engine()[0], FakeResidentEngine), "不能回头降级"
+
+
+def test_the_sapi_fallback_voice_is_resolved_only_once(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """列音色要起一次 PowerShell（1–2 秒）—— 进程生命周期内只该解析一次。"""
+    calls: list[str] = []
+    _upgrading_pool(monkeypatch)
+
+    def resolve() -> str:
+        calls.append(VOICE)
+        return VOICE
+
+    monkeypatch.setattr(voice_worker, "pick_voice", resolve)
+
+    picker = voice_worker._EnginePicker(rig.paths)
+    assert picker()[1] == VOICE
+    assert picker()[1] == VOICE
+    assert calls == [VOICE]
+
+
+def test_a_voice_this_engine_cannot_speak_falls_back(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """payload 里的音色是**面板算的时候**能念的，而引擎可能在那之后换了。
+
+    硬交给现在的引擎只会每句失败 3 次、降级成静音 —— 成片没人声，而库里写着"换音色成功"。
+    """
+    state = _upgrading_pool(monkeypatch)
+    log = RecordingLog()
+    handler = build_voice_handler(paths=rig.paths, connection=rig.connection, log=cast(LogService, log))
+    state["up"] = True
+
+    sentence_id = rig.sentence_ids[0]
+    ctx, _job_id = _claimed(rig, sentence_id, {"voice": "Microsoft Huihui Desktop"})
+    handler.run(ctx)
+
+    assert handler._engine.name == "cosyvoice2"
+    row = rig.repo.get(sentence_id)
+    assert row is not None
+    assert row.tts_status == "done", "不能因为音色对不上就失败"
+    assert row.tts_engine == "cosyvoice2"
+    assert row.tts_voice_id == "bigbear", "应该改用当前引擎的兜底音色"
+
+    levels = [level for level, _ in log.lines]
+    assert "warn" in levels, "改了音色就得说一声，否则只能靠听"
+
+
+def test_an_injected_engine_does_not_second_guess_the_voice(rig: Rig) -> None:
+    """注入引擎（测试 / 演练）时不判音色："就用这一个"是明确指令。"""
+    fake = FakeEngine()
+    handler = _handler(rig, fake)
+
+    assert handler._current_engine() == (fake, VOICE, None)
 
 
 # ══════════════════════════════════════════════════════════════════════

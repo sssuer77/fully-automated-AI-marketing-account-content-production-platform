@@ -169,7 +169,10 @@ const subtitle = computed(() =>
     <p v-else-if="renders.notice" class="alert alert--ok">{{ renders.notice }}</p>
 
     <p v-if="renders.snapshot && !renders.engineReady" class="alert alert--error">
-      **配音引擎没有可用音色**，出片这一步会直接失败。{{ renders.snapshot.engine_hint }}
+      配音引擎没有可用音色，出片这一步会直接失败。{{ renders.snapshot.engine_hint }}
+    </p>
+    <p v-else-if="renders.snapshot?.engine_hint" class="alert alert--warn">
+      {{ renders.snapshot.engine_hint }}
     </p>
 
     <p v-if="watermark" class="alert alert--warn">

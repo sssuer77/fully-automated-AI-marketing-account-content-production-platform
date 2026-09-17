@@ -92,6 +92,7 @@ function snapshot(overrides: Partial<PipelineConsole> = {}): PipelineConsole {
       { name: "Microsoft Zira Desktop", is_default: false },
     ],
     default_voice: "Microsoft Huihui Desktop",
+    engine: "cosyvoice2",
     engine_ready: true,
     engine_hint: null,
     active: null,

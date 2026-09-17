@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from studio.core.entry import run_entry
 from studio.core.errors import ErrorCode, StudioError
-from studio.services.service_manager import run_entry
 
 #: CosyVoice 常驻推理服务入口（`None` = 还没落地）。
 _serve_server: Callable[[], None] | None = None

@@ -122,13 +122,18 @@ function onSeed(event: Event): void {
     <p v-if="pipeline.snapshot && !pipeline.engineReady" class="alert alert--error">
       配音引擎没有可用音色，这一条链路会停在配音那一步。{{ pipeline.snapshot.engine_hint }}
     </p>
+    <!-- 有音色、但**不是**常驻引擎（退回系统语音包）也要说出来：用户要的是
+         "这次念的是谁"，而不是"反正有人声" —— 这句话就是那个答案。 -->
+    <p v-else-if="pipeline.snapshot?.engine_hint" class="alert alert--warn">
+      {{ pipeline.snapshot.engine_hint }}
+    </p>
 
     <PanelCard
       title="一键出片"
       :subtitle="
         pipeline.snapshot === null
           ? '还没有读到后端'
-          : `${pipeline.untilOptions.length} 个落点 · ${pipeline.voices.length} 个音色 · 登记表里最近 ${pipeline.jobs.length} 条`
+          : `${pipeline.snapshot.engine} · ${pipeline.untilOptions.length} 个落点 · ${pipeline.voices.length} 个音色 · 登记表里最近 ${pipeline.jobs.length} 条`
       "
     >
       <template #actions>

@@ -50,7 +50,7 @@ from studio.render.subtitle import resolve_font_dir
 from studio.render.watermark import plan_watermark
 from studio.services.render_job_service import RenderJob, RenderJobService, list_videos
 from studio.services.render_service import ProduceRequest
-from studio.tts.sapi import list_voices_cached
+from studio.services.voice_service import voice_engine_info
 
 __all__ = ["router"]
 
@@ -68,8 +68,9 @@ _JOB_ID = PathParam(pattern=r"^r[0-9]{4,}$")
 _VIDEO_NAME = re.compile(r"^[^/\\:*?\"<>|]+\.mp4$", re.IGNORECASE)
 
 _NO_VOICE_HINT = (
-    "本机没有可用的 SAPI 音色，配音这一步会直接失败。"
-    "在「设置 → 时间和语言 → 语音」里装一个中文语音包（如 Microsoft Huihui）后重开面板。"
+    "本机既没有可用的常驻配音引擎，也没有可用的系统语音包，配音这一步会直接失败。"
+    "装一个中文语音包（「设置 → 时间和语言 → 语音」，如 Microsoft Huihui）"
+    "或按 docs/runbook/tts_models.md 把常驻服务跑起来，然后重开面板。"
 )
 
 
@@ -108,7 +109,7 @@ def get_console(request: Request) -> RenderConsoleResponse:
     service = _service(state)
     outputs = state.outputs.current().config
 
-    voices = list_voices_cached()
+    engine = voice_engine_info(state.connections.get(), paths=state.paths)
     profile = resolve_profile(outputs)
     watermark = plan_watermark(
         outputs.watermark,
@@ -120,12 +121,12 @@ def get_console(request: Request) -> RenderConsoleResponse:
 
     return RenderConsoleResponse.model_validate(
         {
-            "engine": "sapi",
-            "engine_ready": bool(voices),
-            "engine_hint": None if voices else _NO_VOICE_HINT,
+            "engine": engine.name,
+            "engine_ready": engine.ready,
+            "engine_hint": engine.hint or (None if engine.ready else _NO_VOICE_HINT),
             "profiles": [_profile_option(outputs, name) for name in outputs.profiles],
             "default_profile": outputs.default_profile,
-            "voices": [{"name": name, "is_default": index == 0} for index, name in enumerate(voices)],
+            "voices": [{"name": name, "is_default": index == 0} for index, name in enumerate(engine.voices)],
             "running": _job_dict(service.active()),
             "jobs": [_job_dict(job) for job in service.recent(limit=10)],
             "videos": [video.to_dict() for video in list_videos(state.paths)],

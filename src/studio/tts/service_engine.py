@@ -62,6 +62,7 @@ __all__ = [
     "active_resident",
     "base_url_for",
     "probe_resident",
+    "resident_status",
     "speed_for_rate",
     "synth_timeout_for",
 ]
@@ -245,6 +246,30 @@ def _usable_voices(http: _Client, *, timeout: float, base_url: str) -> tuple[str
     )
 
 
+def resident_status(
+    paths: StudioPaths | None,
+    *,
+    client: _Client | None = None,
+) -> ResidentStatus | None:
+    """按 ``paths`` 问一次常驻服务，**把原始结论原样带回**（不替调用方下结论）。
+
+    与 :func:`active_resident` 的差别只在最后一步：那个只肯回"能用"的状态，这个连
+    "起着但没就绪"也回。面板要的正是后者 —— 「为什么这次不是那个音色」的答案就在
+    ``ready`` / ``detail`` 里；只拿到 ``None`` 的话，说得出的话只有"服务没在跑"。
+
+    ``paths is None`` ⇒ ``None``：调用方没给环境（比如只拿到一个 ``connection`` 的
+    旧调用点），就按**最保守的那台引擎**算，而不是去猜。
+    """
+    if paths is None:
+        return None
+    try:
+        config = load_tts_config(paths)
+    except StudioError as exc:  # 配置读不出来 ⇒ 这不是配音该炸的地方
+        logger.warning("tts.resident_config_unreadable", error=str(exc))
+        return None
+    return probe_resident(config.server, client=client)
+
+
 def active_resident(
     paths: StudioPaths | None,
     *,
@@ -256,14 +281,7 @@ def active_resident(
     的旧调用点），就按**最保守的那台引擎**算，而不是去猜。这条规则让"忘了传 paths"
     的表现是"没有用上新引擎"（看得见、能查），而不是"用了但用了错的"。
     """
-    if paths is None:
-        return None
-    try:
-        config = load_tts_config(paths)
-    except StudioError as exc:  # 配置读不出来 ⇒ 这不是配音该炸的地方
-        logger.warning("tts.resident_config_unreadable", error=str(exc))
-        return None
-    status = probe_resident(config.server, client=client)
+    status = resident_status(paths, client=client)
     if status is None or not status.usable:
         return None
     logger.info("tts.resident_active", base_url=status.base_url, voices=list(status.voices))

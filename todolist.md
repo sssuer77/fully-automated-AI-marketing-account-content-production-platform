@@ -612,11 +612,11 @@
   - **308** 服务自己带 `concurrency` 时，标定脚本必须在**进程内**直驱引擎：打 HTTP 测到的是**排队**，不是显卡容量。`--from-json` 支持拿上次读数重出报告 —— 改措辞不必重跑 40 秒 GPU
   - **309** **`mypy.ini` 里不能写 `[[mypy.overrides]]`**（那是 `pyproject.toml` 的写法）：写在 INI 里会被 mypy **静默忽略**，不报配置错。原文件里那段一直没生效，只因那几个包恰好都装着，所以没人发现；直到 `torch` / `soundfile` / `cosyvoice` 只在子环境里，才炸出来。改成逐段 `[mypy-<模块>]`（见陷阱 164）
 
-### T2.3 引擎适配层与路由 · **P0** 🔶 **薄片已完成（2026-09-18）· 熔断与决策表仍缺**
+### T2.3 引擎适配层与路由 · **P0** ✅ **管子已真机跑通（2026-09-18）· 熔断与决策表仍缺**
 - 依赖：T2.2 ｜ 里程碑：M2 ｜ 契约：§04.3.2 / §04.3.3
 - [x] **薄片：配音池 → 常驻服务这根管子**（`src/studio/tts/service_engine.py`）
   - [x] `ResidentEngine`：`SentenceEngine` 的服务实现（POST `/synth`，`out_path` 转成相对 `data/`）
-  - [x] 装配期选引擎（`voice_worker._pick_engine`）：服务可用 ⇒ 用它；否则 **SAPI 兜底**（§1.7，成片照样有人声）
+  - [x] 每一次取用时选引擎（`voice_worker._EnginePicker`）：服务可用 ⇒ 用它；否则 **SAPI 兜底**（§1.7，成片照样有人声）。只升不降 —— 裁定 314
   - [x] 「哪个音色念得出来」跟着换裁判（`voice_service.speakable_voices(paths=...)`）⇒ 面板与投递同时生效
   - [x] 远端错误码**原样保住**（`TTS_OOM` 仍是 `TTS_OOM` ⇒ T4.10 的自动降并发才认得出）
 - [ ] `VoiceEngine` ABC：**零样本复刻**（参考音频 + 参考文本 + 目标文本）的正式契约 —— 现在用的是 T2.6 那个最小缝（`SentenceEngine`）
@@ -630,18 +630,46 @@
   引擎 `cosyvoice2`、音色 `bigbear`；电平 mean −47.4 dB / max −23.7 dB
   （与 T2.1 的 known-good 样音 −43.0 / −22.4 同一档，**不是静音**，交给 T3.6 的 `loudnorm` 抬）。
   样音留档 `data/output/voice/_t23_resident_bigbear.wav`
-- ✅ **门禁（2026-09-18）**：`.\tasks.ps1 check` ⇒ **3747 passed / 32 skipped / 27 deselected**（159s）；
-  `web: npm run verify` ⇒ **428 passed** + `vite build` + dist 体积门禁 OK（本轮**没动前端**，`web/openapi.json` 无漂移）
+- ✅ **全链路真机出片（2026-09-18 · 你的宿主环境 · 8787/8788）**：五进程全就绪（tts 模型加载 **22640 ms**）⇒
+  `GET /pipeline/console` 与 `GET /render/console` 都报 `engine=cosyvoice2 / engine_ready=true`（不再是写死的 `sapi`）⇒
+  对任务 `01M2M9THZ1M83CT5EJH789ZVZA` 的 4 句走 `POST /sentences/{id}/resynth`（起点是 **SAPI 静音占位**）⇒
+  4 句全 `done`、`tts_engine=cosyvoice2`、`tts_voice_id=bigbear`、**`tts_attempts=0`**、`tts_sample_rate=24000`（一次成功）⇒
+  `POST /render/jobs` ⇒ **`data/output/videos/20260918-011841_01M2M9THZ1M83CT5EJH789ZVZA_final.mp4`**
+  （28.2 MB · 1080×1920@30 · h264 + aac 48k · **38.0s**），音轨 `mean -18.4 dB / max -1.1 dB`（**不是静音**，
+  静音会是 ≈−91 dB）、字幕烧进画面、水印按裁定跳过。
+  同一任务上一版静音成片是 11.8 MB —— **差距就是人声**
+- ✅ **门禁（2026-09-18）**：`.\tasks.ps1 check` ⇒ **3764 passed / 32 skipped / 27 deselected**（147s）；
+  `.\tasks.ps1 web:verify` ⇒ **428 passed / 20 文件** + `vite build` + dist **0.35 MB / 3.00 MB** OK
+  （本轮动了前端：两块面板的引擎横幅；契约已用 `web:gen` 重生成，**无漂移**）
 - ✅ **验收命令**：`pytest tests/unit/tts/test_service_engine.py -q` ⇒ **27 passed**（无 GPU）；
-  `pytest tests/unit/services/test_voice_service.py tests/unit/pools/test_voice_worker.py -q` ⇒ **42 passed**
+  `pytest tests/unit/services/test_voice_service.py tests/unit/services/test_service_manager.py -q` ⇒ **79 passed**；
+  `pytest tests/unit/pools/test_voice_worker.py -q` ⇒ **29 passed**（本轮 +5：升级时序 / 只升不降 / 音色兜底 / 只解析一次 / 注入不探测）
 - **施工裁定（本轮新增 310–311）**：
   - **310** **引擎判据只此一份**（`service_engine.active_resident`），配音池装配与 `speakable_voices` 共用：
     两处各判一次，就会出现「面板说 bigbear 能念、池子把它交给 SAPI」—— `SelectVoice` 直接抛 ⇒
     每句失败 3 次 ⇒ 成片没人声，而库里写着换音色成功（与陷阱 #154 同族）
-  - **311** 引擎选择在**装配期**定一次，且**注入引擎时不探测**：探测会把注入的假件顶掉，
-    而"每念一句重探一遍"会让"服务中途起来/挂掉"变成半个进程用新引擎、半个用旧的
+  - **311** ~~引擎选择在**装配期**定一次~~，且**注入引擎时不探测**：探测会把注入的假件顶掉。
+    前半句（"装配期定一次"）**已被裁定 314 推翻** —— 它把整条链路钉在了 SAPI 上；
+    后半句仍然成立（注入引擎 = "就用这一个"，不探测）
+  - **312** **进程活着 ≠ 服务能用**：就绪判据必须吃服务**自报的 `ready`**，
+    不能只看 HTTP 状态码。真机实例：端口上是一个 9/17 23:26 起的旧 tts（那时 `config/tts.yaml`
+    还没有 `python` 键 ⇒ 用主 venv 起 ⇒ 没 torch）：`/health` 回 200、`ready:false`，
+    守护进程因为只看状态码而认定"已就绪" ⇒ **永远不重启它** ⇒ 配音一直悄悄退回系统语音包。
+    服务不自报 `ready`（如 api）不受影响
+  - **313** 端口上占着的是**我们自己、没就绪**的实例 ⇒ 由编排器**接管重启**，而不是报 `port_busy` 让人去手动查。
+    三条判据同时成立才接管：`ready is False` + 有 `engine` 字段 + `pid` 是 int 且进程活着。
+    认不出是谁（旧版本不自报 `pid`）就**不动手**，只记 `service.port_busy_unready` 并给 hint ——
+    误杀别人的进程比多跑一次 `start` 严重得多
+  - **314** 引擎在**每一次取用时**判定（`_EnginePicker`），且**只升不降**。
+    真机实测：启动器**同时**拉五个进程，而 tts 要先把模型读进显存（真机 17–22s）
+    ⇒ 配音池的装配期必然落在那几秒里 ⇒ 判据永远是"服务不可用"。
+    只升不降是因为反过来的"中途降回 SAPI"会让同一支片子一半 CosyVoice、一半系统音色 ——
+    听起来只是"有几句话怪"，比如实失败难查得多。同时 payload 里的音色若**当前引擎念不出来** ⇒
+    改用当前引擎的兜底音色并写一行 warning（不硬交给它 ⇒ 每句失败 3 次 ⇒ 成片没人声）
 - ⚠️ 引擎替换成本 ⇒ ABC 隔离，换引擎不动业务代码
 - ⚠️ 陷阱 **165**（引擎名与版本**必须**从服务自述来，客户端写死会让旧缓存被当成新引擎的产物复用）
+- ⚠️ 陷阱 **166**（`/health` 回 200 却是坏实例；守护进程只看状态码 ⇒ 永远不重启它）
+- ⚠️ 陷阱 **167**（子环境进程入口借 `services` 的骨架函数 ⇒ 拖进整层依赖）
 
 ### T2.4 原声入库与音色注册 · **P0** 🔶 **部分完成（2026-09-17）** · 正式音色仍需 E4
 - 依赖：T2.2 ｜ 里程碑：M2 ｜ 契约：§04.3.1 / R2
@@ -1912,6 +1940,11 @@ T1.12 ✅             （一键启动）
 > （真机标定 ⇒ 并发 **1**，已回写 `pools.yaml` / `tts.yaml`）；`tts` 进程改用 `tts/.venv` 解释器 + 前置 `PYTHONPATH`
 > （裁定 305–308，陷阱 162–163）。
 > ⑳ ~~**T2.3 薄片：配音池 → 常驻服务**~~ ⇒ **已完成（2026-09-18）**：成片里念的是 CosyVoice 的 `bigbear`，不再是系统语音包（真机验过，见 T2.3 任务块）。熔断 / 决策表 / 正式 `VoiceEngine` ABC 仍缺。
+> ⑴ ~~**这根管子真的在生产路径上通了**~~ ⇒ **已完成（2026-09-18）**：全链路真机出片，4 句全 `cosyvoice2` / `bigbear` / `tts_attempts=0` / 24kHz，
+> 成片 28.2 MB、38.0s、音轨 `mean -18.4 dB`（**不是静音**）。上一版静音成片是 11.8 MB —— **差距就是人声**。
+> 过程中挖出三个**只会在真机上现形的时序坑**：旧 tts 实例占着 8788 而 `ready:false`（守护进程只看状态码 ⇒ **永远不重启它**）、
+> 子环境入口借服务层的骨架函数⇒拖进整层依赖、以及引擎在**装配期**定一次会把整条链路钉在 SAPI 上
+> （模型要加载 22s，而启动器**同时**拉五个进程）。裁定 312–314，陷阱 166–167。
 > ㉑ **下一件待你定**：①`T2.3` 剩下的部分（熔断 + §04.3.3 决策表逐条 —— 现在只有「引擎宕 ⇒ 重试 ⇒ 到线降级」那一条）；
 > ②把 `publish` 进程接进 supervisor（裁定 274 的收尾 —— 面板已落地，接进去就是「面板能看、进程能起」）；
 > ③`T5.4` 数据回收（面板「数据回流」区块现在只有时刻表、没有数字，缺的正是它）；
@@ -2084,7 +2117,9 @@ T1.12 ✅             （一键启动）
 | 163 | **tts 进程活着、`/health` 回 200，可每个请求都报 `No module named 'studio'`** | `tts/pyproject.toml` 是 `package = false` ⇒ 子环境里**没有**本项目；启动器不前置 `PYTHONPATH` 就 import 不到 | `ServiceSpec.env_prepend` 前置 `PYTHONPATH=<仓库>/src`（**前置不覆盖**已有值）；手工起进程要自己加 | T2.2 |
 | 164 | **`mypy.ini` 里的 `[[mypy.overrides]]` 段一个字都没生效，却也不报错** | `[[...]]` 是 **TOML** 的数组表写法（`pyproject.toml` 用）；INI 里 mypy **静默忽略**整段 —— 连「未知键」都不提醒 | INI 一律写 `[mypy-<模块>]`（`[mypy-yaml.*]` 这种）。判据：写完后**故意**把某个 `[mypy-<模块>]` 删掉，看那个 import-not-found 会不会**回来** —— 回来了才说明这一段真的在生效 | T2.2 |
 | 165 | **换了引擎 / 换了权重版本，却复用了旧引擎的缓存音频**（成片里是**别人的嗓子**，而且一切正常） | 缓存键吃 `engine` + `engine_revision`，而客户端**自己写死**了这两个字面量 —— 服务换了它自己不知道 | 引擎名与版本**从服务自述来**（`/health` 的 `engine` / `revision`），不写死在客户端 | T2.3 |
-> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 165 条见该处；跨文档引用按编号即可）。
+| 166 | **`/health` 回 200，服务却是个坏实例**（`ready:false`、每次请求都报“推理环境坏了”），而守护进程**永远不修它** | 就绪判据只看 HTTP 状态码 ⇒ “端口上有人答话”被当成“服务能用”；坏实例占着端口 ⇒ 新的起不来、旧的没人管 | 就绪判据**必须吃服务自述的 `ready`**（`_default_health`）；端口上“我们自己、没就绪”的实例由编排器**接管重启**（`_takeover_unhealthy`：`ready is False` + 有 `engine` 字段 + 自报 `pid` 且活着 ⇒ terminate→kill→等端口释放）；服务不自报 `pid` 就认不出是谁，只能记 `service.port_busy_unready` 并给 hint | T2.3 |
+| 167 | **子环境进程起不来，日志看着像“推理环境坏了”**（`ModuleNotFoundError: No module named '''ulid'''`） | `workers/run_tts.py` 从 `services.service_manager` import `run_entry` ⇒ 把一个**叶子骨架函数**放进了服务层 ⇒ 拖进整个服务层依赖（`ulid` 之类不在子环境里） | 叶子进程入口放**叶子层**（`studio.core.entry.run_entry`）；`service_manager` 原样 re-export，老调用点不动 | T2.3 |
+> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 167 条见该处；跨文档引用按编号即可）。
 
 ---
 

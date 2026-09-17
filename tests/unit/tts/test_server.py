@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from pathlib import Path
@@ -297,6 +298,9 @@ class TestHttp:
         assert payload["ok"] is True
         assert payload["device"] == "cuda"
         assert payload["model_state"] == "unloaded"
+        # 自报 pid：编排器靠它认出「8788 上那个进程是我的哪一个实例」——
+        # 端口被一个坏掉的旧实例占着时，光看端口占用查不出是谁（陷阱 166）
+        assert payload["pid"] == os.getpid()
 
     def test_warmup_then_synth_over_http(self, client: Any) -> None:
         assert client.post("/warmup", json={}).json()["ready"] is True

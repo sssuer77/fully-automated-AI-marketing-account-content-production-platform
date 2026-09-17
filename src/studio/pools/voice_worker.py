@@ -43,7 +43,7 @@ claim(voice/sentence, unit_ref = sentence_id)
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -63,7 +63,7 @@ from studio.pools.worker_base import UnitContext
 from studio.services.log_service import LogService
 from studio.tts.cache import TtsCache
 from studio.tts.faults import wrap_engine
-from studio.tts.sapi import pick_voice
+from studio.tts.sapi import list_voices_cached, pick_voice
 from studio.tts.sentence import (
     SapiEngine,
     SentenceEngine,
@@ -166,6 +166,7 @@ class VoiceSentenceHandler:
         connection: sqlite3.Connection,
         cache: TtsCache | None = None,
         engine: SentenceEngine | None = None,
+        engine_picker: Callable[[], tuple[SentenceEngine, str | None, tuple[str, ...]]] | None = None,
         voice: str | None = None,
         glossary: GlossaryStore | None = None,
         log: LogService | None = None,
@@ -176,6 +177,7 @@ class VoiceSentenceHandler:
         self._repo = SentenceRepo(connection)
         self._cache = cache if cache is not None else TtsCache(paths.tts_cache_dir)
         self._engine = engine if engine is not None else SapiEngine()
+        self._engine_picker = engine_picker
         self._voice = voice
         self._glossary = glossary
         self._log = log
@@ -305,6 +307,18 @@ class VoiceSentenceHandler:
             note=note,
         )
 
+    def _current_engine(self) -> tuple[SentenceEngine, str | None, tuple[str, ...] | None]:
+        """这一次用哪台引擎 + 它认的兜底音色 + 它念得出来的音色。
+
+        注入的引擎（``engine_picker is None``）⇒ 返回装配期定的那一对，音色不判
+        （"就用这一个"是明确指令，判了反而会把注入的假件顶掉，裁定 311）。
+        """
+        if self._engine_picker is None:
+            return self._engine, self._voice, None
+        engine, fallback, speakable = self._engine_picker()
+        self._engine = engine  # 报告与失败留痕读的都是它（_outcome / _on_failure）
+        return engine, fallback, speakable
+
     def _synthesize(
         self,
         sentence: SentenceRow,
@@ -314,11 +328,19 @@ class VoiceSentenceHandler:
         state: dict[str, Any],
     ) -> VoiceSentenceOutcome:
         payload = ctx.payload
-        voice = _opt_str(payload, "voice") or self._voice
+        engine, fallback_voice, speakable = self._current_engine()
+        voice = _opt_str(payload, "voice")
+        if voice is not None and speakable is not None and voice not in speakable:
+            # payload 里那个音色是**面板算的时候**能念的，而引擎可能在那之后换了
+            # （真机：模型要加载 22s，池子先起）。硬交给现在的引擎只会每句失败 3 次、
+            # 降级成静音 —— 成片没人声，而库里写着"换音色成功"（陷阱 #154 的另一半）。
+            self._log_line(ctx, "warn", f"音色 {voice} 当前引擎念不出来 ⇒ 改用 {fallback_voice}")
+            voice = None
+        voice = voice if voice is not None else fallback_voice
         seed = _opt_int(payload, "seed")
         target = self._paths.sentence_wav(ctx.task_id, int(sentence.seq))
 
-        if not self._repo.begin(sentence.id, engine=self._engine.name, voice_id=voice):
+        if not self._repo.begin(sentence.id, engine=engine.name, voice_id=voice):
             # ``begin`` 被拒只有一种可能：这一句在**读行之后**被别人做完了
             # （并发投递或人工重投）。那不是错误 —— 如实报"已定局"即可。
             fresh = self._repo.get(sentence.id)
@@ -349,7 +371,7 @@ class VoiceSentenceHandler:
                 sentence.tts_text or sentence.text,
                 out_path=target,
                 cache=self._cache,
-                engine=self._engine,
+                engine=engine,
                 voice=voice,
                 speed=sentence.speed,
                 emotion=sentence.emotion,
@@ -571,48 +593,88 @@ def build_voice_handler(
     故障是"这次进程启动时定的环境事实"，与音色同理 —— 每念一句重读一遍只会让
     "演练到一半改了环境变量"变成一个没人能复现的现象。
     """
-    resolved = connection if connection is not None else connect(paths.db_file)
-    chosen, default_voice = _pick_engine(paths, engine=engine)
     plan = fault if fault is not None else fault_plan_from_env()
     if plan.enabled:
         logger.warning("voice.fault_injected", **plan.to_dict())
+    resolved = connection if connection is not None else connect(paths.db_file)
+    if engine is not None:
+        # 注入的引擎 = "就用这一个"（测试 / 演练）⇒ 不探测（裁定 311）
+        chosen: SentenceEngine = wrap_engine(engine, plan)
+        default_voice: str | None = _resolve_voice()
+        picker: _EnginePicker | None = None
+    else:
+        # 故障壳由 picker 自己套：它中途会换引擎，套在外面就等于没套
+        # —— 换上去的那台是裸的，T2.8 的降级演练会在真机上静默失效。
+        picker = _EnginePicker(paths, plan=plan)
+        chosen, default_voice, _ = picker()
     return VoiceSentenceHandler(
         paths=paths,
         connection=resolved,
-        engine=wrap_engine(chosen, plan),
+        engine=chosen,
+        engine_picker=picker,
         voice=voice if voice is not None else default_voice,
         glossary=GlossaryStore(paths.glossary_file),
         log=log if log is not None else LogService(resolved),
     )
 
 
-def _pick_engine(
-    paths: StudioPaths,
-    *,
-    engine: SentenceEngine | None,
-) -> tuple[SentenceEngine, str | None]:
-    """装配期定一次引擎 —— 常驻服务能用就用它，否则退回 SAPI（§1.7 降级）。
+class _EnginePicker:
+    """每一次取引擎：常驻服务能用就用它，否则退回 SAPI（§1.7 降级）。
 
-    判据用的是 :func:`~studio.tts.service_engine.active_resident` **那一份**（与配音
-    面板的"这个音色念得出来吗"同源）：两处各判一次，就会出现「面板说 bigbear 能念、
-    池子把它交给 SAPI」——``SelectVoice`` 直接抛 ⇒ 每句失败 3 次 ⇒ 成片没人声，
-    而库里写着换音色成功（陷阱 #154）。
+    为什么是"每一次"而不是装配期定一次（真机实测 2026-09-18）
+    --------------------------------------------------------
+    启动器**同时**拉起五个进程，而 tts 要先把模型读进显存（真机 22s）。配音池的
+    装配期必然落在那 22s 里 ⇒ 判据永远是"服务不可用" ⇒ 整条链路退回系统语音包，
+    而且**一直退到进程重启为止**：面板上写着 ``bigbear``（它问的时候服务已经就绪），
+    池子却把 ``bigbear`` 交给 SAPI —— ``SelectVoice`` 抛 ⇒ 每句失败 3 次 ⇒ 成片
+    没人声（陷阱 #154 的第二次现身，这次的原因在**时序**上）。
 
-    返回的第二个值是**兜底音色**：作业 payload 里没有 ``voice`` 的句子用它。常驻
-    引擎下它是服务报的第一个可克隆音色（``sorted`` 保证两次启动选到同一个，不然
-    同一批句子在不同次运行里会换嗓子）；SAPI 下仍是系统语音包那一个。
+    判据用的还是 :func:`~studio.tts.service_engine.active_resident` **那一份**（与
+    配音面板"这个音色念得出来吗"同源），只是问得晚一点、多问几次。
 
-    ``engine`` 由调用方注入（测试 / 演练）时**不探测**：那是"就用这一个"的明确指令，
-    探测只会把注入的假件顶掉。
+    只升不降
+    --------
+    常驻服务一旦可用就固定用它。反过来的"中途降回 SAPI"会让同一支片子里一半
+    CosyVoice、一半系统音色 —— 那比"如实失败"更难查（听起来只是"有几句话怪"）。
+
+    返回的 ``speakable`` 是这台引擎**念得出来**的音色（SAPI 是系统语音包；常驻是
+    服务自报的可克隆音色）。要它是因为 payload 里那个音色可能是**上一次判据**下
+    算出来的 —— 同一条时序坑的另一半。
+
+    ``plan`` 传进来是因为换引擎的动作发生在**这里**：故障壳得套在每一台
+    真正上场的引擎上，而不是套在装配期那一台上（T2.8 降级演练）。
     """
-    if engine is not None:
-        return engine, _resolve_voice()
-    status = active_resident(paths)
-    if status is None:
-        logger.info("voice.engine_sapi", reason="常驻推理服务不可用，按降级档用系统语音包")
-        return SapiEngine(), _resolve_voice()
-    logger.info("voice.engine_resident", base_url=status.base_url, revision=status.revision)
-    return ResidentEngine(paths=paths, status=status), status.voices[0]
+
+    def __init__(self, paths: StudioPaths, *, plan: FaultPlan | None = None) -> None:
+        self._paths = paths
+        self._plan = plan if plan is not None else FaultPlan()
+        self._sapi = wrap_engine(SapiEngine(), self._plan)
+        self._sapi_voice: str | None = None
+        self._resident: tuple[SentenceEngine, str | None, tuple[str, ...]] | None = None
+
+    def __call__(self) -> tuple[SentenceEngine, str | None, tuple[str, ...]]:
+        """⇒ ``(引擎, 兜底音色, 念得出来的音色)``。"""
+        if self._resident is not None:
+            return self._resident
+        status = active_resident(self._paths)
+        if status is None:
+            if self._sapi_voice is None:
+                # 列音色要起一次 PowerShell（1–2 秒）⇒ 进程生命周期内只解析一次
+                self._sapi_voice = _resolve_voice()
+            logger.info("voice.engine_sapi", reason="常驻推理服务不可用，按降级档用系统语音包")
+            return self._sapi, self._sapi_voice, tuple(list_voices_cached())
+        logger.info(
+            "voice.engine_resident",
+            base_url=status.base_url,
+            revision=status.revision,
+            voices=list(status.voices),
+        )
+        self._resident = (
+            wrap_engine(ResidentEngine(paths=self._paths, status=status), self._plan),
+            status.voices[0],
+            status.voices,
+        )
+        return self._resident
 
 
 def _resolve_voice() -> str | None:

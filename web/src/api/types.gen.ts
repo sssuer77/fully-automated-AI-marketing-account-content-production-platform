@@ -3445,6 +3445,8 @@ export interface components {
             default_until: string;
             /** Default Voice */
             default_voice: string | null;
+            /** Engine */
+            engine: string;
             /** Engine Hint */
             engine_hint: string | null;
             /** Engine Ready */

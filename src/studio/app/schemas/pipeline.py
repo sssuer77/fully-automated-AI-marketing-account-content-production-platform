@@ -123,8 +123,13 @@ class PipelineConsoleResponse(BaseModel):
     until_options: list[PipelineUntilOptionModel]
     default_until: str
     voices: list[PipelineVoiceModel]
-    #: 缺省音色（本机第一个 SAPI 音色）。一个都没有时是 ``None``。
+    #: 缺省音色（当前引擎的第一个音色）。一个都没有时是 ``None``。
     default_voice: str | None
+    #: 这次出片会用哪台引擎念（常驻服务自述的名字，退回时是 ``sapi``）。
+    #:
+    #: 与 ``engine_ready`` 是两件事：``ready`` 只说"念得出来吗"，说不出"谁在念"——
+    #: 而用户要的恰恰是后者（"为什么这次不是那个音色"）。
+    engine: str
     #: 本机有没有可用音色。**没有 ⇒ 配音那一步必然失败**，面板要提前说。
     engine_ready: bool
     engine_hint: str | None

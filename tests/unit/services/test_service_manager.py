@@ -11,9 +11,11 @@
 
 from __future__ import annotations
 
+import json
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -25,6 +27,7 @@ from studio.services.service_manager import (
     DEFAULT_READY_TIMEOUT_SEC,
     DEFAULT_STOP_TIMEOUT_SEC,
     SERVICE_NAMES,
+    HealthProbe,
     Readiness,
     ServiceKind,
     ServiceManager,
@@ -752,6 +755,223 @@ class TestRealProcessTable:
             assert probe_port("127.0.0.1", port, timeout=0.5) is True
         finally:
             server.close()
+
+
+# ── 健康判据：自报的 ready 说了算（陷阱 166）─────────────────────────────
+
+
+def probe_of(
+    payload: dict[str, Any] | None,
+    *,
+    status: int = 200,
+    answered: bool = True,
+) -> HealthProbe:
+    """造一份"健康面的原始结论"（不碰网络）。"""
+    if not answered:
+        return HealthProbe(answered=False, error="URLError: 连接被拒")
+    body = "" if payload is None else json.dumps(payload, ensure_ascii=False)
+    return HealthProbe(answered=True, status=status, body=body, payload=payload)
+
+
+#: 真机那台的读数：进程活着、``/health`` 回 200，但模型根本没加载成
+BROKEN_TTS = {
+    "ok": True,
+    "pid": 4242,
+    "ready": False,
+    "engine": "cosyvoice2",
+    "model_state": "error",
+    "detail": "ModuleNotFoundError: No module named 'torch'",
+}
+
+
+class OccupiedPortRecorder(Recorder):
+    """端口上"占着"一个旧实例：**它死了端口才算空出来**（真 bind 也是这个次序）。"""
+
+    def __init__(self, occupant: int, table: FakeProcessTable) -> None:
+        super().__init__(table)
+        self.occupant = occupant
+        table.alive_pids.add(occupant)
+
+    def probe(self, host: str, port: int) -> bool:
+        del host, port
+        return self.table.alive(self.occupant)
+
+
+def make_manager_with_probe(
+    paths: StudioPaths,
+    *,
+    table: FakeProcessTable,
+    rec: Recorder,
+    probe: Callable[[ServiceSpec], HealthProbe],
+) -> ServiceManager:
+    """与 :func:`make_manager` 同构，但**不注入** ``health`` —— 于是走真的
+    :meth:`ServiceManager._default_health`（本组用例要验的正是它）。"""
+    clock = FakeClock()
+    return ServiceManager(
+        paths,
+        spawn=rec.spawn,
+        process_table=table,
+        port_probe=rec.probe,
+        health_probe=probe,
+        browser=rec.browser,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+    )
+
+
+@pytest.fixture
+def tts_ready(worker_home: StudioPaths, monkeypatch: pytest.MonkeyPatch) -> None:
+    """把 tts 的**规格层**就绪条件摆好（模块在 + 推理子环境在位）—— 剩下的只看健康面。
+
+    与用例主体分开写，是为了让每一条用例读起来只有一条主线：**健康面**怎么判。
+    """
+    monkeypatch.setattr("studio.services.service_manager.importlib.util.find_spec", lambda _name: object())
+    interpreter = tts_interpreter(worker_home)
+    interpreter.parent.mkdir(parents=True, exist_ok=True)
+    interpreter.write_text("", encoding="utf-8")
+
+
+class TestHealthJudge:
+    def test_a_service_that_reports_itself_unready_is_not_ready(
+        self, worker_home: StudioPaths, tts_ready: None
+    ) -> None:
+        """★ 「进程活着」≠「服务能用」：自报 ``ready: false`` ⇒ **不算就绪**。
+
+        修前这里只看状态码 200 ⇒ 一个每句都念不出声的引擎被记成「已就绪」，
+        守护进程永远不去修它，配音一直悄悄退回系统语音包（真机 8788 上那个旧实例）。
+        """
+        table = FakeProcessTable()
+        rec = Recorder(table)
+        manager = make_manager_with_probe(
+            worker_home, table=table, rec=rec, probe=lambda spec: probe_of(BROKEN_TTS)
+        )
+
+        report = manager.start(only=["tts"], open_browser=False, doctor_gate=False)
+
+        assert rec.spawned == ["tts"]  # 进程照起（起来才有日志可看）
+        assert report.ready == ()
+        assert report.failed == ("tts",)
+
+    def test_a_self_report_of_ready_is_enough(self, worker_home: StudioPaths, tts_ready: None) -> None:
+        table = FakeProcessTable()
+        rec = Recorder(table)
+        healthy = {**BROKEN_TTS, "ready": True, "model_state": "ready", "detail": None}
+        manager = make_manager_with_probe(
+            worker_home, table=table, rec=rec, probe=lambda spec: probe_of(healthy)
+        )
+
+        report = manager.start(only=["tts"], open_browser=False, doctor_gate=False)
+
+        assert report.ready == ("tts",) and report.failed == ()
+
+    def test_a_service_without_a_self_report_is_judged_by_the_status_code(
+        self, worker_home: StudioPaths
+    ) -> None:
+        """``api`` 的健康面没有 ``ready`` 字段 ⇒ 判据退回"200 就算就绪"（自报了才管）。"""
+        table = FakeProcessTable()
+        rec = Recorder(table)
+        manager = make_manager_with_probe(
+            worker_home, table=table, rec=rec, probe=lambda spec: probe_of({"ok": True})
+        )
+        spec = manager.spec("api")
+
+        assert manager._default_health(spec) == (True, json.dumps({"ok": True}))
+
+    def test_a_non_200_is_not_ready(self, worker_home: StudioPaths) -> None:
+        manager = make_manager(worker_home, rec=Recorder())
+        spec = manager.spec("api")
+        manager._health_probe = lambda _spec: probe_of(None, status=503)
+
+        healthy, detail = manager._default_health(spec)
+
+        assert healthy is False and "503" in detail
+
+    def test_an_unreachable_service_is_not_ready(self, worker_home: StudioPaths) -> None:
+        manager = make_manager(worker_home, rec=Recorder())
+        manager._health_probe = lambda _spec: probe_of(None, answered=False)
+
+        healthy, detail = manager._default_health(manager.spec("api"))
+
+        assert healthy is False and "连接被拒" in detail
+
+
+class TestTakeover:
+    """端口上那个**我们自己的、没就绪的**旧实例：接管重启（否则它会一直挂到人手动去关）。"""
+
+    def test_an_unready_instance_we_own_is_taken_over(
+        self, worker_home: StudioPaths, tts_ready: None
+    ) -> None:
+        table = FakeProcessTable()
+        rec = OccupiedPortRecorder(4242, table)
+        manager = make_manager_with_probe(
+            worker_home, table=table, rec=rec, probe=lambda spec: probe_of(BROKEN_TTS)
+        )
+
+        report = manager.start(only=["tts"], open_browser=False, doctor_gate=False)
+
+        assert 4242 in table.terminated  # 旧实例被请走（先 terminate，不是上来就 kill）
+        assert 4242 not in table.alive_pids
+        assert rec.spawned == ["tts"]  # 然后**用当前规格表**重新拉起
+        assert report.port_busy == ()  # 不再是"端口有人占着，不关我事"
+
+    def test_a_healthy_instance_is_left_alone(self, worker_home: StudioPaths, tts_ready: None) -> None:
+        """健康的实例一律不碰：可能是用户自己起的，也可能正在干活。"""
+        table = FakeProcessTable()
+        rec = OccupiedPortRecorder(4242, table)
+        healthy = {**BROKEN_TTS, "ready": True}
+        manager = make_manager_with_probe(
+            worker_home, table=table, rec=rec, probe=lambda spec: probe_of(healthy)
+        )
+
+        report = manager.start(only=["tts"], open_browser=False, doctor_gate=False)
+
+        assert table.terminated == [] and 4242 in table.alive_pids
+        assert rec.spawned == []
+        assert report.port_busy == ("tts",)
+
+    def test_a_foreign_service_on_the_port_is_left_alone(
+        self, worker_home: StudioPaths, tts_ready: None
+    ) -> None:
+        """没有 ``ready`` / ``pid`` 两个自述字段 ⇒ 不是我们的服务，不碰。"""
+        table = FakeProcessTable()
+        rec = Recorder(table)
+        rec.ports["8788"] = True
+        manager = make_manager_with_probe(
+            worker_home, table=table, rec=rec, probe=lambda spec: probe_of({"ok": True})
+        )
+
+        report = manager.start(only=["tts"], open_browser=False, doctor_gate=False)
+
+        assert table.terminated == [] and table.killed == []
+        assert report.port_busy == ("tts",)
+
+    def test_a_pid_that_is_already_gone_is_not_killed(
+        self, worker_home: StudioPaths, tts_ready: None
+    ) -> None:
+        """自报的 pid 已经不在 ⇒ 不认它（杀一个已经不存在的 pid 只会掩盖真问题）。"""
+        table = FakeProcessTable()  # 4242 不在 alive 里
+        rec = Recorder(table)
+        rec.ports["8788"] = True
+        manager = make_manager_with_probe(
+            worker_home, table=table, rec=rec, probe=lambda spec: probe_of(BROKEN_TTS)
+        )
+
+        report = manager.start(only=["tts"], open_browser=False, doctor_gate=False)
+
+        assert table.terminated == [] and table.killed == []
+        assert report.port_busy == ("tts",)
+
+    def test_a_stubborn_old_instance_gets_killed(self, worker_home: StudioPaths, tts_ready: None) -> None:
+        """terminate 叫不停（卡在驱动上那种）⇒ 升级到 kill，不能就这么算了。"""
+        table = FakeProcessTable(ignores_terminate={4242})
+        rec = OccupiedPortRecorder(4242, table)
+        manager = make_manager_with_probe(
+            worker_home, table=table, rec=rec, probe=lambda spec: probe_of(BROKEN_TTS)
+        )
+
+        manager.start(only=["tts"], open_browser=False, doctor_gate=False)
+
+        assert 4242 in table.killed and 4242 not in table.alive_pids
 
 
 # ── 真实文件布局 ────────────────────────────────────────────────────────

@@ -60,7 +60,7 @@ from studio.services.pipeline_job_service import (
 )
 from studio.services.pipeline_service import plan_task
 from studio.services.script_service import read_active_script
-from studio.tts.sapi import list_voices_cached
+from studio.services.voice_service import voice_engine_info
 
 __all__ = ["router"]
 
@@ -135,7 +135,10 @@ def get_console(request: Request) -> PipelineConsoleResponse:
     """面板首屏：一次拿全（可选落点 / 可选音色 / 在跑的那条 / 最近几条）。"""
     state: AppState = request.app.state.studio
     service = _service(state)
-    voices = list_voices_cached()
+    # 引擎与音色**同一个真相源**（与配音池装配那份判据同源，裁定 310）：面板上写着
+    # "引擎 cosyvoice2 / 音色 bigbear"，池子就必须拿这两个去念；两处各算一次，
+    # 就会出现「面板说 bigbear 能念、池子把它交给 SAPI」（陷阱 #154）。
+    engine = voice_engine_info(state.connections.get(), paths=state.paths)
 
     return PipelineConsoleResponse.model_validate(
         {
@@ -148,10 +151,11 @@ def get_console(request: Request) -> PipelineConsoleResponse:
                 for value in supported_until()
             ],
             "default_until": TaskStatus.COMPLETED.value,
-            "voices": [{"name": name, "is_default": index == 0} for index, name in enumerate(voices)],
-            "default_voice": voices[0] if voices else None,
-            "engine_ready": bool(voices),
-            "engine_hint": None if voices else NO_VOICE_HINT,
+            "voices": [{"name": name, "is_default": index == 0} for index, name in enumerate(engine.voices)],
+            "default_voice": engine.voices[0] if engine.voices else None,
+            "engine": engine.name,
+            "engine_ready": engine.ready,
+            "engine_hint": engine.hint or (None if engine.ready else NO_VOICE_HINT),
             "active": _job_dict(service.active()),
             "jobs": [_job_dict(job) for job in service.recent(limit=10)],
             "max_log_lines": MAX_LOG_LINES,

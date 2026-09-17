@@ -5110,6 +5110,10 @@
             ],
             "title": "Default Voice"
           },
+          "engine": {
+            "title": "Engine",
+            "type": "string"
+          },
           "engine_hint": {
             "anyOf": [
               {
@@ -5156,6 +5160,7 @@
           "default_until",
           "voices",
           "default_voice",
+          "engine",
           "engine_ready",
           "engine_hint",
           "active",
