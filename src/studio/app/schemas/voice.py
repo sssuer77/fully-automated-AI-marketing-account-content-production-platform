@@ -37,6 +37,7 @@ from studio.db.repositories.sentence_repo import SKIPPED_STATUS, SYNTHESIZING_ST
 
 __all__ = [
     "NO_VOICE_HINT",
+    "PROFILE_UNSPEAKABLE_HINT",
     "TIMELINE_HINT",
     "ResynthResponse",
     "SentenceProgressModel",
@@ -63,6 +64,18 @@ NO_VOICE_HINT: str = (
     "（如 Microsoft Huihui），参考音色走 studio assets ingest --kind voice"
 )
 
+#: 候选里有"念不出来"的参考音时的提示（R2 解耦的另一半：**能登记 ≠ 能发声**）。
+#:
+#: 参考音入库与"这台引擎念得出来"是两件事：``voice_profiles`` 里的 id 是**零样本
+#: 参考音**的名字，要 CosyVoice 才能念。权重没到位（T2.1 / E5）时它们仍然该出现在
+#: 候选里（用户要知道自己入库的东西还在），但**选了也发不出声** —— 而失败的样子是
+#: "每一句连失败 3 次、降级成静音"，成片没人声，库里却写着"换音色成功"。
+#: 所以这句话必须挂在下拉框旁边，不能只写在文档里。
+PROFILE_UNSPEAKABLE_HINT: str = (
+    "带「当前引擎念不出来」的那些是已入库的**参考音**：零样本复刻要 CosyVoice，"
+    "权重未到位前它们只能当素材留着（T2.1 / E5）；选它们配音会退回系统音色"
+)
+
 
 class SentenceProgressModel(BaseModel):
     """逐句进度（``SentenceProgress.to_dict()`` 的展示模型）。"""
@@ -83,10 +96,17 @@ class VoiceOption(BaseModel):
     ``source`` 说明它**从哪来**：``profile`` 是入库的参考音（``voice_profiles``），
     ``sapi`` 是系统装的。面板据此分组显示 —— 两者的音质与用途不一样，混在一列里
     会让人以为"这两个是同一档东西"。
+
+    ``speakable`` 说明**当前这台引擎念不念得出来** —— 它与 ``source`` 是**两件事**：
+    参考音是"素材已经在库里"，而它要 CosyVoice 才能念。权重没到位时它照旧出现在
+    候选里（用户要知道入库的东西还在），但**选了也发不出声**：SAPI 收到 ``bigbear``
+    会 ``SelectVoice`` 失败 ⇒ 这一句降级成静音 ⇒ 成片没人声。把这件事写在
+    ``source`` 里是不够的（"参考音"听起来只是"另一种音色"），得有独立的字段。
     """
 
     id: str
     source: str
+    speakable: bool
 
 
 class VoiceOptions(BaseModel):

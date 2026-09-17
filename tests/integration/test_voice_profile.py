@@ -42,7 +42,12 @@ from studio.db import connect, migrate
 from studio.db.repositories import IngestAction, VoiceProfileRepo
 from studio.domain.models import TaskPayload
 from studio.services.asset_service import AssetService, ScannedAsset
-from studio.services.voice_service import VOICE_SOURCE_MAP, resolve_voice, usable_voices
+from studio.services.voice_service import (
+    VOICE_SOURCE_FALLBACK,
+    resolve_voice,
+    speakable_voices,
+    usable_voices,
+)
 
 #: 一段参考音的默认参数：12 秒 @ 24 kHz —— 都在 §4.3.1 的区间里
 SEGMENT_SECONDS = 12.0
@@ -199,7 +204,7 @@ class TestFourRejections:
 
 
 class TestRegistration:
-    """入库之后：库里有行、面板上选得到、默认映射真的接得上。"""
+    """入库之后：库里有行、面板的下拉框里选得到。"""
 
     def test_reference_audio_becomes_a_usable_voice(
         self,
@@ -227,38 +232,76 @@ class TestRegistration:
         assert row.text_path is not None and row.proof_path is not None
         assert row.peak_db is not None and row.peak_db <= -1.0
 
-        # 「入库了」不等于「选得到」：配音面板读的是 usable_voices
+        # 「入库了」不等于「选得到」：配音面板的下拉框读的是 usable_voices
         assert "bigbear" in usable_voices(connection)
 
-    def test_default_voice_map_resolves_to_the_seeded_names(
+    def test_ingest_is_idempotent(self, service: AssetService, paths: StudioPaths) -> None:
+        _voice(paths, "bigbear")
+        assert _ingested(service).action is IngestAction.CREATED
+        assert _ingested(service).action is IngestAction.UNCHANGED
+
+
+class TestEngineSpeakability:
+    """**候选 != 念得出来** —— 2026-09-17 真机实测撞出来的那个回归。
+
+    两件事曾经被一个并集回答：``usable_voices`` 是**下拉框的候选**（"这台机器上有
+    什么"，必须全，否则用户以为入库的东西丢了），``speakable_voices`` 是**当前这台
+    引擎认不认**。占位音色改名与默认 ``voice_map`` 对齐之后，前者把 ``bigbear``
+    判成"有"，于是 ``voice=bigbear`` 被写进作业 payload、传给 SAPI，``SelectVoice``
+    直接抛 ⇒ 这一句连失败 3 次、降级成静音，**每一句都是** ⇒ 成片没人声，而库里
+    写着"换音色成功"（正是 ``set_voice_map`` 那段 docstring 里怕的那件事）。
+    """
+
+    def test_the_default_map_points_at_the_seeded_reference_audio(
         self,
         service: AssetService,
         connection: sqlite3.Connection,
         paths: StudioPaths,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """默认 ``voice_map`` 必须真的解析得到（2026-09-17 修的那个 bug）。
+        """默认 ``voice_map`` 的值必须**刚好**是占位脚本造的那两个 id。
 
-        占位脚本造的名字一旦与 ``TaskPayload.voice_map`` 的默认值对不上，症状**不是
-        报错**，而是每个角色都悄悄退回进程音色 —— 占位音色白造，只有翻 manifest 才
-        看得见。这里从**默认值**出发走完整条「入库 → 可选 → 解析」，接不上就红。
+        对不上的后果不是报错，而是每个角色都悄悄退回进程音色 —— 占位音色白造，
+        只有翻 manifest 才看得见（陷阱 #153）。这条从**默认值**出发断言。
         """
         monkeypatch.setattr("studio.services.voice_service.list_voices_cached", lambda: ())
         for voice_id in ("bigbear", "littlebear"):
             _voice(paths, voice_id)
         service.ingest(kind=AssetKind.VOICE)
 
-        voice_map = TaskPayload().voice_map
-        available = usable_voices(connection)
-        for speaker in ("bigbear", "littlebear"):
-            choice = resolve_voice(voice_map=voice_map, speaker=speaker, available=available)
-            assert choice.source == VOICE_SOURCE_MAP, f"{speaker} 退回了进程音色"
-            assert choice.voice == voice_map[speaker]
+        candidates = usable_voices(connection)
+        for speaker, voice_id in TaskPayload().voice_map.items():
+            assert voice_id in candidates, f"{speaker} 指向的 {voice_id} 没入库"
 
-    def test_ingest_is_idempotent(self, service: AssetService, paths: StudioPaths) -> None:
-        _voice(paths, "bigbear")
-        assert _ingested(service).action is IngestAction.CREATED
-        assert _ingested(service).action is IngestAction.UNCHANGED
+    def test_a_reference_voice_is_not_speakable_by_sapi(
+        self,
+        service: AssetService,
+        connection: sqlite3.Connection,
+        paths: StudioPaths,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """参考音在库里、映射也对得上，但 SAPI 念不出来 ⇒ 解析结果是 ``fallback``。
+
+        这不是"坏消息"，是**正确结论**：参考音要 CosyVoice 才能念（T2.1 / E5）。
+        退回进程音色至少出得来一支有人声的片子；不退回则是整片静音。
+        """
+        monkeypatch.setattr(
+            "studio.services.voice_service.list_voices_cached",
+            lambda: ("Microsoft Huihui Desktop",),
+        )
+        for voice_id in ("bigbear", "littlebear"):
+            _voice(paths, voice_id)
+        service.ingest(kind=AssetKind.VOICE)
+
+        assert speakable_voices(connection) == ("Microsoft Huihui Desktop",)
+        voice_map = TaskPayload().voice_map
+        for speaker in ("bigbear", "littlebear"):
+            choice = resolve_voice(
+                voice_map=voice_map, speaker=speaker, available=speakable_voices(connection)
+            )
+            assert choice.source == VOICE_SOURCE_FALLBACK
+            assert choice.voice is None  # 「不覆盖」⇒ 由池进程的系统音色念
+            assert choice.requested == voice_map[speaker]
 
 
 class TestSidecarWarnings:

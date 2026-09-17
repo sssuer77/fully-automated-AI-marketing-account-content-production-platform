@@ -43,6 +43,7 @@ from fastapi.responses import FileResponse
 from studio.app.deps import AppState
 from studio.app.schemas.voice import (
     NO_VOICE_HINT,
+    PROFILE_UNSPEAKABLE_HINT,
     ResynthResponse,
     SentenceVoiceList,
     VoiceMapRequest,
@@ -60,6 +61,7 @@ from studio.services.voice_service import (
     read_timeline_total_ms,
     resynth_sentence,
     set_voice_map,
+    speakable_voices,
     usable_voices,
 )
 
@@ -104,16 +106,36 @@ def list_voice_options(
     state: AppState = request.app.state.studio
     connection = state.connections.get()
     available = usable_voices(connection)
+    # 候选（`usable_voices`）与"念得出来"（`speakable_voices`）是两件事：前者回答
+    # "这台机器上有什么"，后者回答"当前引擎认不认"。两个都要发给面板 —— 只发候选，
+    # 用户会选中一个注定发不出声的音色；只发能念的，用户会以为"我刚入库的音色丢了"。
+    speakable = set(speakable_voices(connection))
     profiles = {row.id for row in VoiceProfileRepo(connection).list_all(enabled_only=True)}
     voice_map: dict[str, str] = {}
     if task_id:
         voice_map = dict(TaskService(connection).get(task_id).payload.voice_map)
     return VoiceOptions(
-        voices=[VoiceOption(id=name, source="profile" if name in profiles else "sapi") for name in available],
+        voices=[
+            VoiceOption(
+                id=name,
+                source="profile" if name in profiles else "sapi",
+                speakable=name in speakable,
+            )
+            for name in available
+        ],
         task_id=task_id,
         voice_map=voice_map,
-        note=None if available else NO_VOICE_HINT,
+        note=_voices_note(available, speakable),
     )
+
+
+def _voices_note(available: tuple[str, ...], speakable: set[str]) -> str | None:
+    """下拉框旁边那句话（三种情形各一句，都不说就等于把决定权藏起来）。"""
+    if not available:
+        return NO_VOICE_HINT
+    if any(name not in speakable for name in available):
+        return PROFILE_UNSPEAKABLE_HINT
+    return None
 
 
 @router.get("/api/v1/sentences", response_model=SentenceVoiceList)

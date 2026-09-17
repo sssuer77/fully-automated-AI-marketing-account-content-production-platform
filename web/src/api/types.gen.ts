@@ -4851,12 +4851,20 @@ export interface components {
          *     ``source`` 说明它**从哪来**：``profile`` 是入库的参考音（``voice_profiles``），
          *     ``sapi`` 是系统装的。面板据此分组显示 —— 两者的音质与用途不一样，混在一列里
          *     会让人以为"这两个是同一档东西"。
+         *
+         *     ``speakable`` 说明**当前这台引擎念不念得出来** —— 它与 ``source`` 是**两件事**：
+         *     参考音是"素材已经在库里"，而它要 CosyVoice 才能念。权重没到位时它照旧出现在
+         *     候选里（用户要知道入库的东西还在），但**选了也发不出声**：SAPI 收到 ``bigbear``
+         *     会 ``SelectVoice`` 失败 ⇒ 这一句降级成静音 ⇒ 成片没人声。把这件事写在
+         *     ``source`` 里是不够的（"参考音"听起来只是"另一种音色"），得有独立的字段。
          */
         VoiceOption: {
             /** Id */
             id: string;
             /** Source */
             source: string;
+            /** Speakable */
+            speakable: boolean;
         };
         /**
          * VoiceOptions

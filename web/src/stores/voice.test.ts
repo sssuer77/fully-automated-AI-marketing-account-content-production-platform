@@ -101,9 +101,9 @@ function snapshot(overrides: Partial<SentenceVoiceList> = {}): SentenceVoiceList
 function options(overrides: Partial<VoiceOptions> = {}): VoiceOptions {
   return {
     voices: [
-      { id: HUIHUI, source: "sapi" },
-      { id: ZIRA, source: "sapi" },
-      { id: "ref-voice-01", source: "profile" },
+      { id: HUIHUI, source: "sapi", speakable: true },
+      { id: ZIRA, source: "sapi", speakable: true },
+      { id: "ref-voice-01", source: "profile", speakable: false },
     ],
     task_id: TASK_ID,
     voice_map: { bigbear: HUIHUI, littlebear: ZIRA },
@@ -203,7 +203,15 @@ describe("纯函数", () => {
     expect(voiceSourceLabel("sapi")).toBe("系统音色");
     expect(voiceSourceLabel("profile")).toBe("参考音");
     expect(voiceSourceLabel("future")).toBe("future");
-    expect(voiceOptionLabel({ id: HUIHUI, source: "sapi" })).toBe(`${HUIHUI} · 系统音色`);
+    expect(voiceOptionLabel({ id: HUIHUI, source: "sapi", speakable: true })).toBe(
+      `${HUIHUI} · 系统音色`,
+    );
+  });
+
+  it("念不出来的参考音照旧列出，但那一行必须写明（否则会选中一支没人声的成片）", () => {
+    expect(voiceOptionLabel({ id: "ref-voice-01", source: "profile", speakable: false })).toBe(
+      "ref-voice-01 · 参考音 · 当前引擎念不出来",
+    );
   });
 
   it("进度行：零的那几项不出现（写一串 0 只是噪音）", () => {
@@ -269,7 +277,7 @@ describe("纯函数", () => {
   });
 
   it("音色映射行：库里记的音色本机找不到时要**说出来**，不能让下拉框空着", () => {
-    const voices = [{ id: HUIHUI, source: "sapi" }];
+    const voices = [{ id: HUIHUI, source: "sapi", speakable: true }];
     const rows = voiceMapRows(
       ["bigbear", "littlebear"],
       { bigbear: "bigbear", littlebear: HUIHUI },

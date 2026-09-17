@@ -20,10 +20,11 @@ from pathlib import Path
 
 import pytest
 
+from studio.core.errors import ErrorCode, StudioError
 from studio.core.paths import StudioPaths
 from studio.db import connect, migrate
 from studio.db.models import SentenceRow
-from studio.db.repositories import ScriptRepo, SentenceRepo
+from studio.db.repositories import ScriptRepo, SentenceRepo, VoiceProfileRepo
 from studio.domain.task_service import TaskService
 from studio.services.voice_service import (
     VOICE_SOURCE_DEFAULT,
@@ -32,6 +33,9 @@ from studio.services.voice_service import (
     preview_audio,
     read_timeline_total_ms,
     resolve_voice,
+    set_voice_map,
+    speakable_voices,
+    usable_voices,
     voice_payloads,
 )
 
@@ -179,6 +183,92 @@ def test_payloads_are_empty_when_the_task_has_no_sentences(
     task_id = TaskService(connection).create(title="还没落稿").id
 
     assert voice_payloads(connection=connection, task_id=task_id, available=INSTALLED) == {}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ②c 候选 != 念得出来（真机实测撞出来的回归，2026-09-17）
+# ══════════════════════════════════════════════════════════════════════
+
+SAPI_ONLY = ("Microsoft Huihui Desktop",)
+
+
+def _register(connection: sqlite3.Connection, voice_id: str = "bigbear") -> None:
+    """把一个参考音**只登记进库**（不碰盘：这一节判的是"念得出来吗"，不是素材）。"""
+    VoiceProfileRepo(connection).upsert(
+        voice_id=voice_id,
+        path=f"data/voice_src/{voice_id}",
+        ref_count=2,
+        total_duration_ms=30_000,
+        sample_rate=24_000,
+        peak_db=-24.1,
+    )
+    connection.commit()
+
+
+def test_a_registered_reference_voice_is_a_candidate_but_not_speakable(
+    connection: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """★ 参考音在库里 ⇒ **候选**里有它；SAPI 念不出来 ⇒ **念得出来**里没有它。
+
+    这两条必须同时成立：少了前者，用户以为刚入库的音色丢了；少了后者，
+    ``voice=bigbear`` 会被真的交给 SAPI 去 ``SelectVoice``。
+    """
+    monkeypatch.setattr("studio.services.voice_service.list_voices_cached", lambda: SAPI_ONLY)
+    _register(connection)
+
+    assert "bigbear" in usable_voices(connection)
+    assert "bigbear" not in speakable_voices(connection)
+    assert speakable_voices(connection) == SAPI_ONLY
+
+
+def test_the_payload_never_carries_a_voice_the_engine_cannot_speak(
+    connection: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """★ 默认映射指向一个"有、但念不出来"的音色 ⇒ 投递出去的 payload 是**空的**。
+
+    空 = 不覆盖 ⇒ 由池进程的系统音色念 ⇒ 片子照样有人声。修前这里是
+    ``{"voice": "bigbear"}``：SAPI ``SelectVoice`` 直接抛，每一句连失败 3 次、
+    降级成静音，而库里写着"换音色成功" —— 用户要到播放时才发现没人声。
+    """
+    monkeypatch.setattr("studio.services.voice_service.list_voices_cached", lambda: SAPI_ONLY)
+    _register(connection)
+    task_id = _task(connection, voice_map={"bigbear": "bigbear", "littlebear": "littlebear"})
+
+    payloads = voice_payloads(connection=connection, task_id=task_id)
+
+    rows = SentenceRepo(connection).list_for_task(task_id)
+    assert set(payloads) == {row.id for row in rows}  # 每句都有键
+    assert all(payload == {} for payload in payloads.values())
+
+
+def test_swapping_to_an_unspeakable_reference_voice_is_refused_and_says_which_case(
+    connection: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """★ 「本机没有」与「本机有、但这台引擎念不出来」要分开说，且**一个字节都不写**。
+
+    混成一句"本机没有"，用户会去重新入库一个已经入好的音色。真机上撞到过：
+    映射写 ``bigbear``，而当时本机只有 ``bear_da`` / ``bear_xiong``。
+    """
+    monkeypatch.setattr("studio.services.voice_service.list_voices_cached", lambda: SAPI_ONLY)
+    _register(connection)
+    task_id = _task(connection, voice_map={"bigbear": SAPI_ONLY[0], "littlebear": SAPI_ONLY[0]})
+
+    with pytest.raises(StudioError) as caught:
+        set_voice_map(
+            connection=connection,
+            task_id=task_id,
+            voice_map={"bigbear": "bigbear", "littlebear": "并不存在的音色"},
+            confirm=True,
+        )
+
+    assert caught.value.code is ErrorCode.TTS_VOICE_MISSING
+    assert caught.value.context["unspeakable"] == ["bigbear"]
+    assert caught.value.context["absent"] == ["并不存在的音色"]
+    # 拒绝了就什么都没写：映射还是原来那份
+    assert TaskService(connection).get(task_id).payload.voice_map == {
+        "bigbear": SAPI_ONLY[0],
+        "littlebear": SAPI_ONLY[0],
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════

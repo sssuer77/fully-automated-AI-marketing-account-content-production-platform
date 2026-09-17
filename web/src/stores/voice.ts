@@ -125,9 +125,16 @@ export function voiceSourceLabel(source: string): string {
   return SOURCE_LABELS[source] ?? source;
 }
 
-/** 下拉框里那一行：`Microsoft Huihui Desktop · 系统音色`。 */
+/**
+ * 下拉框里那一行：`Microsoft Huihui Desktop · 系统音色`。
+ *
+ * `speakable === false` 的照旧列出来（用户要知道自己入库的参考音还在），但**必须
+ * 写明它现在发不出声** —— 选它的后果是"每一句都降级成静音"，而成片没人声这件事
+ * 要到播放时才发现。`source` 里的"参考音"三个字不够：那听起来只是"另一种音色"。
+ */
 export function voiceOptionLabel(option: VoiceOption): string {
-  return `${option.id} · ${voiceSourceLabel(option.source)}`;
+  const base = `${option.id} · ${voiceSourceLabel(option.source)}`;
+  return option.speakable ? base : `${base} · 当前引擎念不出来`;
 }
 
 /**

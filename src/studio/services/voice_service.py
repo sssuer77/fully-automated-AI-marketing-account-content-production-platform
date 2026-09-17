@@ -103,6 +103,7 @@ __all__ = [
     "resynth_sentence",
     "set_voice_map",
     "settle_voice",
+    "speakable_voices",
     "usable_voices",
     "voice_payloads",
 ]
@@ -331,9 +332,38 @@ def usable_voices(connection: sqlite3.Connection) -> tuple[str, ...]:
     参考音"判成不存在。两处都列，用户看到的就是"这台机器现在真的能用什么"。
 
     ``sorted`` 而不是按入库顺序：下拉框两次打开的顺序必须一样，否则人会以为选项变了。
+
+    ⚠️ 这是**候选**，不是"念得出来"：要判"这次配音真的能用它吗"请用
+    :func:`speakable_voices` —— 两者在只有 SAPI 的时候差得很远（参考音的名字
+    SAPI 不认识）。
     """
     from_profiles = tuple(row.id for row in VoiceProfileRepo(connection).list_all(enabled_only=True))
     return tuple(sorted(set(from_profiles) | set(list_voices_cached())))
+
+
+def speakable_voices(connection: sqlite3.Connection) -> tuple[str, ...]:
+    """**当前这台引擎**真的念得出来的音色名 —— 与 :func:`usable_voices` 不是一回事。
+
+    两个问题，两条答案
+    ------------------
+    :func:`usable_voices` 回答"这台机器上**有什么**"（已启用参考音 ∪ 系统音色）——
+    那是**下拉框的候选**，它必须全，否则用户会以为"我刚入库的音色不见了"。
+    这里回答"**念得出来吗**"，而唯一的裁判是**当前这台引擎**。
+
+    并集为什么会让整条配音哑掉
+    --------------------------
+    ``voice_profiles`` 里的 id 是**零样本参考音**的名字，SAPI 不认识它：把
+    ``bigbear`` 交给 SAPI，``SelectVoice`` 直接抛 ⇒ 这一句连失败 3 次、降级成静音，
+    **每一句都是** ⇒ 成片没人声 —— 而库里写着"换音色成功"。这正是
+    :func:`set_voice_map` 那段 docstring 里怕的那件事，而并集让它**通过了校验**。
+    （真机实测 2026-09-17：``synthesize(voice="bigbear")`` ⇒ ``rc=1``、
+    ``SelectVoice`` 抛异常；同一个文本传 ``voice=None`` 正常出 162 KB 的 wav。）
+
+    今天只有 SAPI 一台引擎（T2.1 / E5 之前 CosyVoice 装不上）⇒ 能念的就是系统
+    语音包。T2.3 的引擎路由到位后，这里按**当前引擎**分叉（CosyVoice 那一档才把
+    ``voice_profiles`` 合进来），而不是无条件并集。
+    """
+    return tuple(list_voices_cached())
 
 
 def resolve_voice(*, voice_map: Mapping[str, str], speaker: str, available: Sequence[str]) -> ResolvedVoice:
@@ -377,7 +407,7 @@ def voice_payloads(
     if not rows:
         return {}
     voice_map = TaskService(connection).get(task_id).payload.voice_map
-    voices = tuple(available) if available is not None else usable_voices(connection)
+    voices = tuple(available) if available is not None else speakable_voices(connection)
     resolved: dict[str, ResolvedVoice] = {}
     payloads: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -570,7 +600,7 @@ def set_voice_map(
     rows = SentenceRepo(connection).list_for_task(task_id)
     submitted = {str(speaker): str(voice) for speaker, voice in voice_map.items()}
     after = {**before, **submitted}
-    voices = tuple(available) if available is not None else usable_voices(connection)
+    voices = tuple(available) if available is not None else speakable_voices(connection)
 
     # 角色名写错（``bigBear``）是一个**静默无操作**：请求 200、映射多一个没人用的键、
     # 真正要换的那个角色纹丝不动。已知角色 = 现在映射里的键 ∪ 这条任务稿子里的 speaker。
@@ -594,13 +624,26 @@ def set_voice_map(
     # （`resolve_voice` 退回进程音色并标 `fallback`，面板照实显示）。
     missing = {speaker: voice for speaker, voice in submitted.items() if voice not in voices}
     if missing:
+        # **分两句说**：「本机根本没有」与「本机有、但这台引擎念不出来」要用户做的事
+        # 完全不同 —— 混成一句"本机没有"，用户会去重新入库一个已经入好的音色。
+        # 真机上撞到过：映射写 `bigbear`，而当时本机只有 `bear_da` / `bear_xiong`。
+        registered = {row.id for row in VoiceProfileRepo(connection).list_all(enabled_only=True)}
+        unspeakable = sorted(value for value in missing.values() if value in registered)
+        absent = sorted(value for value in missing.values() if value not in registered)
         raise StudioError(
-            f"本机没有这些音色：{'、'.join(sorted(missing.values()))}",
+            f"这些音色现在念不出来：{'、'.join(sorted(missing.values()))}",
             code=ErrorCode.TTS_VOICE_MISSING,
-            context={"task_id": task_id, "missing": missing, "available": list(voices)},
+            context={
+                "task_id": task_id,
+                "missing": missing,
+                "absent": absent,
+                "unspeakable": unspeakable,
+                "available": list(voices),
+            },
             remediation=(
-                "换一个 available 里的音色；系统音色在「设置 → 时间和语言 → 语音」里装，"
-                "参考音色走 studio assets ingest --kind voice"
+                "换一个 available 里的音色；系统音色在「设置 → 时间和语言 → 语音」里装。"
+                "参考音（absent / unspeakable 里那些）要 CosyVoice 才念得出来 —— "
+                "权重未到位时它只能当素材留着，见 T2.1 / E5"
             ),
         )
 
