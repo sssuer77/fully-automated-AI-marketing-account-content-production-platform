@@ -7,6 +7,7 @@
 ```text
 ① 配音   tts.synth.synthesize_script       文本 → voice_master.wav（逐句可续传 + 逐句实测时长）
 ② 选底片 render.assets.pick_parkour_clip   随机挑一条跑酷 mp4（挑不到 ⇒ **黑屏降级**）
+         └─ 库里被**停用**的从候选里剔除（`disabled=` 注入，见下）
 ③ 定参数 render.profiles.resolve_profile   profile → 编码 argv
          render.watermark.plan_watermark    水印有就贴、没有就跳过
          render.subtitle.plan_subtitle      字幕：句级时长 → ASS；字体缺失就跳过
@@ -72,6 +73,7 @@ from studio.render.mixdown import LoudnessMeasurement, MixSettings, measure_file
 from studio.render.profiles import FALLBACK_PROFILE_NAME, resolve_profile
 from studio.render.subtitle import Cue, SubtitlePlan, build_cues, plan_subtitle
 from studio.render.watermark import plan_watermark
+from studio.services.asset_service import DisabledAssets
 from studio.tts.segmenter import split_for_tts
 from studio.tts.synth import VoiceResult, synthesize_script
 from studio.tts.timeline import TimelineSource, build_timeline
@@ -336,8 +338,17 @@ def produce_video(
     outputs: OutputsConfig | None = None,
     outputs_source: Path | None = None,
     on_progress: ProgressSink | None = None,
+    disabled: DisabledAssets | None = None,
 ) -> ProduceResult:
-    """文案 → 配音 → 合成 → ``final.mp4``（外加一份 ``manifest.json``）。"""
+    """文案 → 配音 → 合成 → ``final.mp4``（外加一份 ``manifest.json``）。
+
+    :param disabled: 库里被**停用**的素材文件名（``asset_service.disabled_assets``）。
+        面板上点了「停用」，出片就不该再挑到它 —— T4.8 的验收写着这一条，而落地点
+        在这里：调用方查库、这里转手交给 :mod:`studio.render.assets` 做集合减法。
+        ``None`` ⇒ 一个都不排除（**退回"能进目录就算数"的老口径**，CLI 与旧调用方
+        不受影响）。为什么不在这里自己开连接：这一步跑在渲染线程里，而"查库"是
+        调用方的既有职责（它本来就在读生效稿件）。
+    """
     source = outputs_source or (paths.config_dir / "outputs.yaml")
     config = outputs if outputs is not None else load_outputs_config(source)
     rng = random.Random(request.seed) if request.seed is not None else None
@@ -363,8 +374,13 @@ def produce_video(
     warnings_seed: list[str] = []
 
     # 挑不到底片不再是失败：`clip=None` 会让合成器现造一块纯黑（§04.2.8.6）。
-    clip = pick_parkour_clip(paths, rng=rng)
-    bgm = pick_bgm(paths, rng=rng) if config.bgm.enabled else None
+    # 被停用的从候选里剔除（`disabled=None` ⇒ 不排除任何东西）。
+    clip = pick_parkour_clip(paths, rng=rng, exclude=None if disabled is None else disabled.clips)
+    bgm = (
+        pick_bgm(paths, rng=rng, exclude=None if disabled is None else disabled.bgm)
+        if config.bgm.enabled
+        else None
+    )
 
     profile = resolve_profile(config, request.profile_name)
     watermark = plan_watermark(

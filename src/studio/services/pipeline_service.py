@@ -75,6 +75,7 @@ from studio.domain.models import QualityReport
 from studio.domain.task_service import TaskService
 from studio.pools.voice_worker import build_voice_handler
 from studio.pools.worker_base import PoolWorker
+from studio.services.asset_service import disabled_assets
 from studio.services.render_service import (
     ProduceRequest,
     produce_video,
@@ -375,6 +376,7 @@ def run_task(
                 outputs=outputs,
                 outputs_source=outputs_source,
                 on_progress=on_progress,
+                disabled=disabled_assets(connection),
             )
             final = result.final
             tasks.set_quality(

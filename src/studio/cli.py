@@ -84,6 +84,7 @@ from studio.services import (
     default_manager,
     read_active_script,
 )
+from studio.services.asset_service import DisabledAssets, disabled_assets
 from studio.services.pipeline_service import SUPPORTED_UNTIL, PipelineReport, run_task
 from studio.services.publish_service import (
     CoverReport,
@@ -1832,6 +1833,22 @@ def _script_text_for(
     return "".join(row.text for row in sentences)
 
 
+def _disabled_assets_for(paths: StudioPaths) -> DisabledAssets | None:
+    """库里被停用的素材（CLI 自己开一条**只读**连接查）。
+
+    库还没建 ⇒ ``None``：退回「能进目录就算数」的老口径，而不是猜一个空名单。
+    面板上点过的「停用」在 ``studio render make`` 这条路上也照样生效 —— 否则
+    「面板里停掉了、命令行还是挑到它」就是第二处「面板与出片各说各话」。
+    """
+    if not paths.db_file.is_file():
+        return None
+    connection = connect(paths.db_file, read_only=True)
+    try:
+        return disabled_assets(connection)
+    finally:
+        connection.close()
+
+
 def _render_produce_result(result: ProduceResult) -> None:
     """出片结果表（成片路径放第一行 —— 跑完最想看的就是它在哪）。"""
     table = Table(title="出片结果", show_lines=False)
@@ -1939,6 +1956,7 @@ def render_make(
             outputs=outputs,
             outputs_source=outputs_source,
             on_progress=progress,
+            disabled=_disabled_assets_for(paths),
         )
     except StudioError as exc:
         _fail(exc, json_output)

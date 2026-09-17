@@ -133,6 +133,8 @@ def get_asset_stats(request: Request) -> AssetStatsResponse:
                 "root": section.root,
                 "stats": section.stats.to_dict(),
                 "shortfall": section.shortfall,
+                "disk_total": section.disk_total,
+                "usable": section.usable,
             }
         )
         for section in library.sections

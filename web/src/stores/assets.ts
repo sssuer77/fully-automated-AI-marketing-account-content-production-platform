@@ -132,13 +132,32 @@ export function shortfallText(section: AssetSection | null): string | null {
 /** 降级横幅的文案（`degraded` 由后端判，前端不重算一遍判据）。 */
 export function degradedText(library: AssetsLibrary | null): string | null {
   if (library === null || !library.degraded) return null;
-  return library.note ?? "跑酷素材不足或全部停用 ⇒ 出片会走黑屏降级";
+  return library.note ?? "跑酷素材一条都挑不到（目录是空的或全被停用）⇒ 出片走黑屏降级";
 }
 
-/** 一条素材该用什么颜色：拒绝入库的红、停用的黄、可用的绿。 */
+/**
+ * 一条素材该用什么颜色。
+ *
+ * 三档而不是两档：**文件不在了是红的**。它比"停用"更该被看见 —— 停用是人自己点的
+ * （黄，看得懂），而"行还在、开关还亮着、文件却没了"是出片静默换底片的唯一原因。
+ */
 export function itemTone(item: AssetItem): StatusTone {
+  if (!item.on_disk) return "error";
   if (!item.enabled) return "warn";
   return "ok";
+}
+
+/**
+ * 这条素材在**出片链路**上的处境（面板上那一列状态）。
+ *
+ * 这一列回答的是"出片到底会不会用到它"，而不是"库里的开关是什么" —— 两者会不一样：
+ * 文件被挪走之后开关还是绿的，而出片再也挑不到它。面板上只画开关，用户就会看着一个
+ * 绿点、纳闷片子为什么一直用别的底片。
+ */
+export function itemStateText(item: AssetItem): string {
+  if (!item.on_disk) return item.kind === "voice" ? "目录不在了" : "文件不在了";
+  if (!item.enabled) return "已停用";
+  return item.kind === "voice" ? "配音会用" : "出片会挑到";
 }
 
 /** 扫盘报告里的一条该用什么颜色（`action === null` ⇒ 这次没写库，是红的）。 */
@@ -198,12 +217,63 @@ export function isAssetsLog(envelope: Envelope): boolean {
   return data["kind"] === "log.appended" && data["source"] === ASSETS_LOG_SOURCE;
 }
 
-/** 库里"启用了几条 / 一共几条"的进度（面板顶部那行字）。 */
+/**
+ * 一类素材的**三组数字**（每节标题右边那一行）。
+ *
+ * 三组而不是一组，是因为它们本来就会对不上，而对不上正是用户要知道的事：
+ * - ``usable`` 出片真能挑到几条（**唯一与出片同口径**的数字，后端算的）；
+ * - ``disk_total`` 盘上符合约定的有几个；
+ * - ``stats`` 库里的家底（入了库几条、其中启用几条）。
+ *
+ * 合成一个数的后果已经见过一次：盘上 58 条一条没入库时，面板说出的是"0 条"。
+ */
 export function coverageText(section: AssetSection | null): string {
   if (section === null) return "—";
-  return `${section.stats.enabled} / ${section.stats.total} 条启用 · ${formatDuration(
-    section.stats.enabled_duration_ms,
-  )}`;
+  const parts = [usableText(section), `盘上 ${section.disk_total} 条`];
+  parts.push(`已入库 ${section.stats.total} 条 / 启用 ${section.stats.enabled}`);
+  if (section.pending.length > 0) parts.push(`未入库 ${section.pending.length} 条`);
+  if (section.stats.enabled > 0) parts.push(formatDuration(section.stats.enabled_duration_ms));
+  return parts.join(" · ");
+}
+
+/**
+ * 「实际能用几条」（`usable` 的人话），**按类别说不同的话**。
+ *
+ * 跑酷 / BGM 是出片挑素材，音色是配音挑音色 —— 同一条 `usable`（后端按各自链路算的），
+ * 但对用户是两件事。说成"出片能挑到 0 个音色"会让人以为音色是拿去当画面的。
+ */
+export function usableText(section: AssetSection | null): string {
+  if (section === null) return "—";
+  return section.kind === "voice"
+    ? `配音能用 ${section.usable} 个`
+    : `出片能挑到 ${section.usable} 条`;
+}
+
+/**
+ * 「盘上有 N 条还没入库」那句话要怎么说（**按类别分叉**）。
+ *
+ * 分叉的理由是两条链路**真的不同**，不是文案口味：
+ * - 跑酷 / BGM：出片挑素材走 `render/assets.py`，它只列目录 ⇒ **未入库照样会被挑到**，
+ *   缺的只是留痕（授权、时长、缩略图）；
+ * - 音色：配音只认 `voice_profiles` 表 ⇒ 未入库的**挑不了**，得先入库。
+ *
+ * 这条分叉与后端 `AssetService._usable` 是同一件事（那边也是按 kind 分的）。
+ * 写成一句通用的话，就会在音色那一节说一个反过来的谎 —— 而这一屏的可信度正是
+ * 这一轮要修的东西。
+ */
+export function pendingNote(kind: AssetKind): string {
+  if (kind === "voice") {
+    return "入库后才能被配音用（配音只认库里的音色档案：得先知道参考音有几段、逐字文本对不对）";
+  }
+  return "出片照样会挑到它们（挑素材只列目录、不读库），缺的只是留痕：授权、时长、缩略图都还没登记";
+}
+
+/** 未入库那批的 id（面板上并排显示；太多就只显示前几个）。 */
+export function pendingText(section: AssetSection | null, limit = 12): string {
+  if (section === null || section.pending.length === 0) return "";
+  const ids = section.pending.map((item) => item.id);
+  if (ids.length <= limit) return ids.join("、");
+  return `${ids.slice(0, limit).join("、")} 等 ${ids.length} 条`;
 }
 
 // ══════════════════════════════════════════════════════════════════════

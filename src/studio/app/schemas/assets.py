@@ -47,6 +47,7 @@ __all__ = [
     "BgmItemModel",
     "BrollItemModel",
     "MediaInfoModel",
+    "PendingAssetModel",
     "ProblemModel",
     "ScanCountsModel",
     "ScanReportModel",
@@ -148,6 +149,7 @@ class BrollItemModel(_Response):
     use_count: int
     last_used_at: str | None
     enabled: bool
+    on_disk: bool
     created_at: str | None
 
 
@@ -173,6 +175,7 @@ class BgmItemModel(_Response):
     use_count: int
     last_used_at: str | None
     enabled: bool
+    on_disk: bool
     created_at: str | None
 
 
@@ -194,6 +197,7 @@ class VoiceItemModel(_Response):
     use_count: int
     last_used_at: str | None
     enabled: bool
+    on_disk: bool
     created_at: str | None
 
 
@@ -215,20 +219,51 @@ class AssetStatsModel(_Response):
     enabled_duration_ms: int
 
 
+class PendingAssetModel(_Response):
+    """盘上有、库里没有的一条素材（面板上「还没入库」那一档）。
+
+    它**照样会被出片挑到**（``render/assets.py`` 的口径是"能进目录就算数"），
+    缺的只是留痕：授权、时长、指纹、缩略图都还没登记。面板把它列出来 + 给一个
+    入库入口 —— 一个隐形但会被用到的素材，正是"面板与出片各说各话"的另一半。
+    """
+
+    kind: str
+    id: str
+    path: str
+
+
 class AssetKindSectionModel(_Response):
-    """一类素材的「库里有什么」。"""
+    """一类素材的「库里有什么 + 盘上有什么」。
+
+    两组数字**分开报**是有意的：``stats`` 是**库**的家底，``disk_total`` / ``pending``
+    是**盘**的事实。它们对不上是常态（刚丢进去还没入库、入了库又被人删了文件），
+    合成一个数就会让"到底是哪一种"再也说不清。
+
+    ``usable`` 是面板上**唯一一个与出片同口径**的数字（出片真能挑到的条数），
+    ``degraded`` / ``shortfall`` 都由它算出来。
+    """
 
     kind: str
     root: str
     stats: AssetStatsModel
     items: list[AssetItemModel]
     shortfall: str | None
+    disk_total: int
+    pending: list[PendingAssetModel]
+    strays: list[str]
+    root_missing: bool
+    usable: int
 
 
 class AssetLibraryModel(_Response):
     """素材库全貌（面板首屏就这一个请求）。
 
-    ``degraded=true`` ⇒ 跑酷素材不够/全停用，出片会走**黑屏降级**（``note`` 说清原因）。
+    ``degraded=true`` ⇒ 跑酷素材**一条都挑不到**（目录是空的 / 全被停用），出片会走
+    **黑屏降级**（``note`` 说清原因）。
+
+    它**只**回答"出片会不会真的黑屏"，不回答"素材够不够多" —— 后者是 ``shortfall``。
+    两者混在一起的后果是面板上写着"当前为黑屏降级模式"，而片子里正放着跑酷：同一句
+    谎话换了个说法（裁定：判据与建议分开）。
     """
 
     degraded: bool
@@ -237,12 +272,18 @@ class AssetLibraryModel(_Response):
 
 
 class AssetKindStatsModel(_Response):
-    """一类素材的家底（**不带条目**：总览台只要数字，不该为了几行数把整库拖过来）。"""
+    """一类素材的家底（**不带条目**：总览台只要数字，不该为了几行数把整库拖过来）。
+
+    ``usable`` / ``disk_total`` 与 ``GET /assets`` 是同一套口径（出片真能挑到几条、
+    盘上共有几条），总览台的「素材够不够」小卡片据此上色。
+    """
 
     kind: str
     root: str
     stats: AssetStatsModel
     shortfall: str | None
+    disk_total: int
+    usable: int
 
 
 class AssetStatsResponse(_Response):

@@ -60,6 +60,7 @@ from studio.domain.enums import UnitType
 from studio.domain.errors import TaskNotFound
 from studio.domain.task_service import TaskService
 from studio.pools.worker_base import UnitContext
+from studio.services.asset_service import disabled_assets
 from studio.services.log_service import LogService
 from studio.services.render_service import (
     ProduceRequest,
@@ -233,6 +234,7 @@ class RenderFinalHandler:
                 paths=self._paths,
                 outputs_source=self._outputs_source,
                 on_progress=progress,
+                disabled=disabled_assets(self._connection),
             )
         except StudioError as exc:
             # 把 `remediation` 一起写进进度现场：`jobs` 表**没有**这一列，而面板要显示

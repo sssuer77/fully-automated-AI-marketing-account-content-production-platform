@@ -28,7 +28,7 @@ from studio.db import connect, migrate
 from studio.db.models import BgmTrackRow, BrollClipRow, VoiceProfileRow
 from studio.db.repositories import IngestAction
 from studio.db.repositories.audit_repo import AuditRepo
-from studio.services.asset_service import AssetService
+from studio.services.asset_service import AssetService, DisabledAssets, disabled_assets
 
 
 class _Log:
@@ -604,15 +604,25 @@ class TestLibrary:
         assert broll.stats.total == 0
         assert broll.shortfall is not None and "60" in broll.shortfall
 
-    def test_one_clip_is_still_not_enough(
+    def test_one_clip_is_enough_to_render_but_still_short(
         self, service: AssetService, paths: StudioPaths, tools: _Tools
     ) -> None:
+        """★ 1 条素材 ⇒ **不算降级**（出片真的会挑到它），但仍然"不够多"。
+
+        这两件事曾经合成一个 ``degraded``，后果是面板上写着"当前为黑屏降级模式"，
+        而片子里正放着这条跑酷 —— 同一句谎话换了个说法。现在 ``degraded`` 只回答
+        "会不会真的黑屏"，"够不够多"归 ``shortfall``。
+        """
         target = _clip(paths)
         tools.info[target.name] = _video(target.name)
         service.ingest(license="cc0")
         snapshot = service.library()
-        assert snapshot.degraded is True
-        assert snapshot.section(AssetKind.BROLL).stats.enabled == 1
+        assert snapshot.degraded is False
+        assert snapshot.note is None
+        broll = snapshot.section(AssetKind.BROLL)
+        assert broll.stats.enabled == 1
+        assert broll.usable == 1
+        assert broll.shortfall is not None and "60" in broll.shortfall
 
     def test_sections_serialize_with_stats_and_items(
         self, service: AssetService, paths: StudioPaths, tools: _Tools
@@ -626,9 +636,172 @@ class TestLibrary:
         broll = payload["sections"][0]
         assert broll["items"][0]["id"] == "parkour_001"
         assert broll["items"][0]["license"] == "cc0"
+        assert broll["items"][0]["on_disk"] is True
         assert broll["stats"]["enabled"] == 1
-        assert payload["degraded"] is True
+        # 盘 / 库两组数字分开报：入了库的 1 条也就是盘上那 1 条，所以没有 pending
+        assert broll["disk_total"] == 1
+        assert broll["usable"] == 1
+        assert broll["pending"] == []
+        assert broll["strays"] == []
+        assert broll["root_missing"] is False
+        assert payload["degraded"] is False
+
+    def test_pending_lists_what_the_renderer_will_still_pick(
+        self, service: AssetService, paths: StudioPaths
+    ) -> None:
+        """★ 盘上有、库里没有 ⇒ 报成 ``pending``，而且**算进 usable**。
+
+        这是本屏最重要的一条口径：出片挑素材走的是 ``render/assets.py``，它只列目录、
+        不读库（"能进目录就默认可用"）。所以"还没入库"**不等于**"挑不到" ——
+        面板把盘上 58 条说成"0 条"，用户从此不再相信这一屏上的任何数字。
+        """
+        for index in range(3):
+            _clip(paths, f"parkour_{index:03d}.mp4")
+        broll = service.library().section(AssetKind.BROLL)
+        assert broll.stats.total == 0
+        assert broll.disk_total == 3
+        assert broll.usable == 3
+        assert [item.id for item in broll.pending] == [
+            "parkour_000",
+            "parkour_001",
+            "parkour_002",
+        ]
+        assert broll.pending[0].to_dict() == {
+            "kind": "broll",
+            "id": "parkour_000",
+            "path": str(paths.mc_parkour_dir / "parkour_000.mp4"),
+        }
+
+    def test_ingested_files_are_not_pending_any_more(
+        self, service: AssetService, paths: StudioPaths, tools: _Tools
+    ) -> None:
+        target = _clip(paths)
+        tools.info[target.name] = _video(target.name)
+        service.ingest(license="cc0")
+        broll = service.library().section(AssetKind.BROLL)
+        assert broll.pending == ()
+        assert broll.disk_total == 1
+        assert broll.usable == 1
+
+    def test_degraded_means_black_screen_not_just_short(
+        self, service: AssetService, paths: StudioPaths, tools: _Tools
+    ) -> None:
+        """★ ``degraded`` 只回答"出片会不会真的黑屏"，不回答"够不够多"。"""
+        target = _clip(paths)
+        tools.info[target.name] = _video(target.name)
+        service.ingest(license="cc0")
+        assert service.library().degraded is False
+
+        service.set_enabled(AssetKind.BROLL, "parkour_001", False)
+        snapshot = service.library()
+        assert snapshot.degraded is True
+        assert snapshot.note is not None and "黑屏降级" in snapshot.note
+        assert snapshot.section(AssetKind.BROLL).usable == 0
+
+    def test_disabling_drops_the_clip_from_usable(
+        self, service: AssetService, paths: StudioPaths, tools: _Tools
+    ) -> None:
+        """★ 停用 ⇒ 出片挑不到它，面板上的"能挑到几条"跟着减一（T4.8 验收）。"""
+        for index in (1, 2):
+            target = _clip(paths, f"parkour_{index:03d}.mp4")
+            tools.info[target.name] = _video(target.name)
+        service.ingest(license="cc0")
+        assert service.library().section(AssetKind.BROLL).usable == 2
+        service.set_enabled(AssetKind.BROLL, "parkour_001", False)
+        assert service.library().section(AssetKind.BROLL).usable == 1
+
+    def test_on_disk_goes_false_when_the_file_is_gone(
+        self, service: AssetService, paths: StudioPaths, tools: _Tools
+    ) -> None:
+        """★ 文件被挪走之后行还在、开关还是绿的，而出片再也挑不到它 —— 分开显示。"""
+        target = _clip(paths)
+        tools.info[target.name] = _video(target.name)
+        service.ingest(license="cc0")
+        assert service.library().to_dict()["sections"][0]["items"][0]["on_disk"] is True
+        target.unlink()
+        snapshot = service.library()
+        assert snapshot.to_dict()["sections"][0]["items"][0]["on_disk"] is False
+        assert snapshot.section(AssetKind.BROLL).usable == 0
+        assert snapshot.degraded is True
+
+    def test_voice_usable_comes_from_the_table_not_the_disk(
+        self, service: AssetService, paths: StudioPaths, tools: _Tools
+    ) -> None:
+        """★ 音色与跑酷**口径不同**，而且这个不同是如实的。
+
+        配音只认 ``voice_profiles``：盘上一个还没入库的音色目录挑不了（得先知道参考音
+        有几段、逐字文本对不对）。把它写成和跑酷一样，面板就会开始说第二种谎。
+        """
+        _voice(paths, "bigbear")
+        section = service.library().section(AssetKind.VOICE)
+        assert section.disk_total == 1
+        assert section.pending[0].id == "bigbear"
+        assert section.usable == 0
+        assert section.shortfall is not None and "配音无法开始" in section.shortfall
+
+    def test_broll_shortfall_counts_what_the_renderer_can_pick(
+        self, service: AssetService, paths: StudioPaths
+    ) -> None:
+        """一条没入库 ⇒ 缺口那句话说的也必须是"能挑到几条"，不是"库里有几条"。"""
+        for index in range(2):
+            _clip(paths, f"parkour_{index:03d}.mp4")
+        section = service.library().section(AssetKind.BROLL)
+        assert section.shortfall is not None and "只有 2 条" in section.shortfall
+
+
+class TestDisabledAssets:
+    """库 → 渲染器的**唯一**一样东西：一串文件名（见 ``render/assets.py``）。"""
+
+    def test_returns_file_names_of_disabled_rows(
+        self, service: AssetService, paths: StudioPaths, tools: _Tools, connection: sqlite3.Connection
+    ) -> None:
+        for index in (1, 2):
+            target = _clip(paths, f"parkour_{index:03d}.mp4")
+            tools.info[target.name] = _video(target.name)
+        track = _track(paths)
+        tools.info[track.name] = _audio(track.name)
+        service.ingest(license="cc0")
+
+        assert disabled_assets(connection) == DisabledAssets()
+        service.set_enabled(AssetKind.BROLL, "parkour_001", False)
+        service.set_enabled(AssetKind.BGM, "bgm_001", False)
+
+        found = disabled_assets(connection)
+        assert found.clips == frozenset({"parkour_001.mp4"})
+        assert found.bgm == frozenset({"bgm_001.mp3"})
+        assert found.for_kind(AssetKind.BROLL) == frozenset({"parkour_001.mp4"})
+        assert found.for_kind(AssetKind.VOICE) == frozenset()
+
+    def test_uses_the_file_name_not_the_stored_path(
+        self, service: AssetService, paths: StudioPaths, tools: _Tools, connection: sqlite3.Connection
+    ) -> None:
+        """库里存的是绝对路径（换台机器前缀就不同），渲染器只认目录 ⇒ 只能对文件名。"""
+        target = _clip(paths)
+        tools.info[target.name] = _video(target.name)
+        service.ingest(license="cc0")
+        service.set_enabled(AssetKind.BROLL, "parkour_001", False)
+        assert disabled_assets(connection).clips == frozenset({"parkour_001.mp4"})
+
+    def test_unreadable_table_means_nothing_is_excluded(self, tmp_path: Path) -> None:
+        """读不出停用名单 ⇒ 空集合，**不抛**：查不到不该让出片失败。"""
+        empty = connect(tmp_path / "empty.db")
+        try:
+            assert disabled_assets(empty) == DisabledAssets()
+        finally:
+            empty.close()
 
     def test_bgm_without_tracks_says_what_happens(self, service: AssetService) -> None:
         section = service.library().section(AssetKind.BGM)
         assert section.shortfall is not None and "单轨人声" in section.shortfall
+
+    def test_voice_shortfall_does_not_talk_about_the_picture(self, service: AssetService) -> None:
+        """★ 音色不进画面 —— 缺口那句话不能说"出片挑不到"。
+
+        同一条 ``usable``，对用户却是两件事：跑酷/BGM 是出片挑素材，音色是配音挑音色。
+        说成"出片一条都挑不到"会让人以为音色是拿去当底片的。
+        """
+        section = service.library().section(AssetKind.VOICE)
+        assert section.shortfall is not None
+        assert "配音一条都用不了" in section.shortfall
+        assert "配音无法开始" in section.shortfall
+        assert "出片" not in section.shortfall

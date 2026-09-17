@@ -35,8 +35,10 @@ from studio.app.main import create_app
 from studio.core.clock import now_iso
 from studio.core.paths import StudioPaths
 from studio.db.migrate import migrate
+from studio.db.repositories.asset_repo import BrollClipRepo
 from studio.render.composite import CompositeResult
 from studio.render.subtitle import SubtitlePlan
+from studio.services.asset_service import DisabledAssets
 from studio.services.metrics_service import ResourceSnapshot
 from studio.services.render_service import ProduceRequest, ProduceResult
 from studio.ws.hub import HubSettings
@@ -360,6 +362,48 @@ def test_submit_poll_and_play(
     assert [item["name"] for item in console["videos"]] == [name]
     assert console["running"] is None
     assert [item["id"] for item in console["jobs"]] == [job["id"]]
+
+
+def test_panel_render_honours_the_disabled_asset_list(
+    client: TestClient, paths: StudioPaths, state: AppState, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """★ 面板上点过「停用」的素材，出片不再挑到它（T4.8 验收：禁用 ⇒ 随机化不再选中）。
+
+    这一条**必须走面板那条路**（``RenderJobService._produce``），而不是直接调
+    ``produce_video``：停用名单要在工作线程里、用**那个线程自己的**连接查出来
+    （sqlite 连接是线程亲和的），所以"查库那一步到底接上了没有"只有在这里才验得到。
+    直接调 ``produce_video`` 的用例验不了这件事 —— 它把 ``disabled=`` 当参数收下了。
+    """
+    clip = paths.mc_parkour_dir / "parkour_001.mp4"
+    clip.parent.mkdir(parents=True, exist_ok=True)
+    clip.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 256)
+    repo = BrollClipRepo(state.connections.get())
+    repo.upsert(
+        clip_id="parkour_001",
+        path=clip,
+        sha256="a" * 64,
+        duration_ms=30_000,
+        license="cc0",
+    )
+    assert repo.set_enabled("parkour_001", False) is True
+
+    seen: list[dict[str, Any]] = []
+
+    def producer(request: ProduceRequest, **kwargs: Any) -> ProduceResult:
+        seen.append(kwargs)
+        return _result(paths, request)
+
+    _install_producer(monkeypatch, producer)
+
+    created = client.post(JOBS_URL, json={"task_id": "api-disabled", "text": SPEECH})
+    assert created.status_code == 200, created.text
+    done = _wait_for(client, created.json()["id"], {"succeeded", "failed", "canceled"})
+    assert done["status"] == "succeeded", done
+
+    assert seen, "出片服务没被调到"
+    disabled = seen[0]["disabled"]
+    assert isinstance(disabled, DisabledAssets)
+    assert disabled.clips == frozenset({"parkour_001.mp4"})
 
 
 def test_empty_text_falls_back_to_the_stored_script(

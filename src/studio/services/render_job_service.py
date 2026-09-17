@@ -42,6 +42,7 @@ from studio.core.logging import get_logger
 from studio.core.paths import StudioPaths
 from studio.domain.errors import TaskNotFound
 from studio.domain.task_service import TaskService
+from studio.services.asset_service import DisabledAssets, disabled_assets
 from studio.services.render_service import (
     ProduceRequest,
     ProduceResult,
@@ -462,7 +463,19 @@ class RenderJobService:
             outputs=self._outputs,
             outputs_source=self._paths.config_dir / "outputs.yaml",
             on_progress=on_progress,
+            disabled=self._disabled(),
         )
+
+    def _disabled(self) -> DisabledAssets | None:
+        """库里被停用的素材（面板上点过「停用」的那些 ⇒ 出片不再挑到它们）。
+
+        没有连接工厂 ⇒ ``None``：**退回「能进目录就算数」的老口径**，而不是猜一个
+        空名单（猜错的后果是「停用静默失效」，那正是这一条要修的）。``disabled_assets``
+        自己吞掉读库失败，所以这里不必再包一层。
+        """
+        if self._connection_factory is None:
+            return None
+        return disabled_assets(self._connection_factory())
 
     def _script_text(self, task_id: str) -> str:
         """库里那一版生效稿件的正文（**逐句拼接**，与配音要读的东西一致）。"""

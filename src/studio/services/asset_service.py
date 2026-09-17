@@ -37,6 +37,7 @@ from studio.assets import validate
 from studio.assets.layout import (
     AssetCandidate,
     AssetKind,
+    Discovery,
     discover,
     root_for,
     voice_profile,
@@ -75,9 +76,12 @@ __all__ = [
     "AssetKindSection",
     "AssetLibrary",
     "AssetService",
+    "DisabledAssets",
+    "PendingAsset",
     "ScanReport",
     "ScanSection",
     "ScannedAsset",
+    "disabled_assets",
     "row_to_dict",
 ]
 
@@ -95,6 +99,57 @@ LICENSES: frozenset[str] = frozenset({"self_recorded", "authorized", "cc0", "pur
 
 _AssetRow = BrollClipRow | BgmTrackRow | VoiceProfileRow
 type _AnyRepo = BrollClipRepo | BgmTrackRepo | VoiceProfileRepo
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 库 → 渲染器：唯一一样流过去的东西
+# ══════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class DisabledAssets:
+    """库里被**停用**的素材文件名（按类别分）。
+
+    这是这条链路上从库流向渲染器的**全部**信息（见 ``render/assets.py`` 的模块
+    docstring）。渲染器不认识素材 id、不碰数据库；它只做一次集合减法。
+    """
+
+    clips: frozenset[str] = frozenset()
+    bgm: frozenset[str] = frozenset()
+
+    def for_kind(self, kind: AssetKind) -> frozenset[str]:
+        """某一类要剔除的文件名（音色不在其中：配音那条路读的是 ``voice_profiles`` 表）。"""
+        if kind is AssetKind.BROLL:
+            return self.clips
+        if kind is AssetKind.BGM:
+            return self.bgm
+        return frozenset()
+
+
+def disabled_assets(connection: sqlite3.Connection) -> DisabledAssets:
+    """查出"被停用的素材文件名"（跑酷 / BGM 两类）。
+
+    为什么是**文件名**而不是 id、也不是整条路径：渲染器只列目录，库里存的是绝对
+    路径（换台机器前缀就不同），能稳定对上的只有文件名。
+
+    为什么取反 ``enabled`` 而不是用 ``list_all(enabled_only=True)``：那个参数问的是
+    "启用的有哪些"，这里问的是"**被人明确关掉的有哪些**"，语义相反 —— 少读一条的
+    后果是"停用没生效"，那正是这个函数存在的原因。
+
+    读不出来（表还没建 / 连接只读打不开）⇒ 空集合，**不抛**：一个查不到的停用名单
+    不该让出片失败，代价只是退回到"能进目录就算数"的老口径。
+    """
+    try:
+        clips = frozenset(
+            Path(str(row.path)).name for row in BrollClipRepo(connection).list_all() if not row.enabled
+        )
+        bgm = frozenset(
+            Path(str(row.path)).name for row in BgmTrackRepo(connection).list_all() if not row.enabled
+        )
+    except sqlite3.Error:
+        logger.warning("读停用素材名单失败，本次按「全部可用」处理")
+        return DisabledAssets()
+    return DisabledAssets(clips=clips, bgm=bgm)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -222,14 +277,47 @@ class ScanReport:
 
 
 @dataclass(frozen=True, slots=True)
+class PendingAsset:
+    """盘上有、库里没有的一条素材（面板上「还没入库」那一档）。
+
+    它**不是错误**，也**不是不可用**：出片照样会挑到它（``render/assets.py`` 的口径
+    是"能进目录就算数"）。它缺的是**留痕** —— 授权、时长、指纹、缩略图都还没登记。
+    所以面板要把它显眼地列出来 + 给一个「入库」入口，而不是让它隐形：一个隐形但
+    会被出片用到的素材，是"面板与出片各说各话"的另一半。
+    """
+
+    kind: AssetKind
+    id: str
+    path: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"kind": str(self.kind), "id": self.id, "path": self.path}
+
+
+@dataclass(frozen=True, slots=True)
 class AssetKindSection:
-    """一类素材的"库里有什么"（含够不够用的判定）。"""
+    """一类素材的"库里有什么 + 盘上有什么"（含够不够用的判定）。
+
+    两组数字**分开报**是有意的：``stats`` 是**库**的家底（入了库、开了开关），
+    ``disk_total`` / ``pending`` 是**盘**的事实。它们对不上是常态（刚丢进去还没入库、
+    入了库又被人从资源管理器删了），而把两者合成一个数就会让"到底是哪一种"再也说不清。
+
+    :param usable: 出片真能挑到的条数 —— 面板上唯一一个"与出片同口径"的数字。
+    :param pending: 盘上有、库里没有的那些（**出片照样会挑到它们**）。
+    :param strays: 目录里命名不合规、没被认出来的路径（如实报出，绝不静默忽略）。
+    :param root_missing: 素材根目录不在（全新机器 / 还没跑过 ``ensure_runtime_dirs``）。
+    """
 
     kind: AssetKind
     root: str
     stats: AssetStats
     items: tuple[_AssetRow, ...]
     shortfall: str | None = None
+    disk_total: int = 0
+    pending: tuple[PendingAsset, ...] = ()
+    strays: tuple[str, ...] = ()
+    root_missing: bool = False
+    usable: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -238,6 +326,11 @@ class AssetKindSection:
             "stats": self.stats.to_dict(),
             "items": [row_to_dict(item) for item in self.items],
             "shortfall": self.shortfall,
+            "disk_total": self.disk_total,
+            "pending": [item.to_dict() for item in self.pending],
+            "strays": list(self.strays),
+            "root_missing": self.root_missing,
+            "usable": self.usable,
         }
 
 
@@ -263,12 +356,24 @@ class AssetLibrary:
         }
 
 
+def _on_disk(row: _AssetRow) -> bool:
+    """这条素材的文件（音色是**目录**）还在不在盘上。
+
+    "启用"是一个**库里的标记**，"出片会不会挑到它"是另一个问题：文件被挪走之后，
+    行还留在库里、开关还是绿的，而出片再也挑不到它。多一次 ``stat`` 就能让这两件事
+    在面板上分开显示 —— 这正是"面板与出片看到同一个真相"的一半。
+    """
+    path = Path(str(row.path))
+    return path.is_dir() if isinstance(row, VoiceProfileRow) else path.is_file()
+
+
 def row_to_dict(row: _AssetRow) -> dict[str, Any]:
     """行 → JSON（``dataclasses.asdict`` 会把 ``Path`` 与枚举一起翻掉，这里显式写）。
 
     手写而不是 ``asdict``：面板要的是**稳定字段名**，而 ``asdict`` 会跟着 dataclass
     的字段改名一起变 —— 那正是前端契约测试要防的漂移。
     """
+    on_disk = _on_disk(row)
     if isinstance(row, BrollClipRow):
         return {
             "kind": "broll",
@@ -290,6 +395,7 @@ def row_to_dict(row: _AssetRow) -> dict[str, Any]:
             "use_count": row.use_count,
             "last_used_at": row.last_used_at,
             "enabled": row.enabled,
+            "on_disk": on_disk,
             "created_at": row.created_at,
         }
     if isinstance(row, BgmTrackRow):
@@ -313,6 +419,7 @@ def row_to_dict(row: _AssetRow) -> dict[str, Any]:
             "use_count": row.use_count,
             "last_used_at": row.last_used_at,
             "enabled": row.enabled,
+            "on_disk": on_disk,
             "created_at": row.created_at,
         }
     return {
@@ -331,6 +438,7 @@ def row_to_dict(row: _AssetRow) -> dict[str, Any]:
         "use_count": row.use_count,
         "last_used_at": row.last_used_at,
         "enabled": row.enabled,
+        "on_disk": on_disk,
         "created_at": row.created_at,
     }
 
@@ -375,26 +483,59 @@ class AssetService:
     # ── 读 ──────────────────────────────────────────────────────────
 
     def library(self) -> AssetLibrary:
-        """库里有什么（三类分节 + 够不够用）。"""
+        """库里有什么 + **盘上有什么**（两者必须一起看，否则面板会说谎）。
+
+        为什么把"盘上有什么"合进这一屏：出片挑素材走的是 ``render/assets.py``，它
+        **只列目录、不读库**（"能进目录就默认可用"）。一个只看库的面板于是会说出最坏
+        的那句话 ——「跑酷素材 0 条」，而片子里正放着跑酷；用户从此不再相信这一屏上的
+        任何数字。合并之后口径只有一句：**出片能挑到的条数**（``usable``）。库里有什么、
+        盘上有什么照旧分开报，但结论（``degraded`` / ``shortfall``）只认 ``usable``。
+
+        代价是这一屏多两次 ``iterdir`` 与每条一次 ``stat``。素材目录是人工维护的平铺
+        目录（几十条），这个量级不值得为它做缓存，也不值得为它加一层"资产索引"。
+        """
+        disabled = disabled_assets(self._connection)
         sections: list[AssetKindSection] = []
         for kind in AssetKind:
             repo = self._repo(kind)
+            stats = repo.stats()
+            items: tuple[_AssetRow, ...] = tuple(repo.list_all())
+            discovery = discover(self._paths, kind)
+            known = {row.id for row in items}
+            pending = tuple(
+                PendingAsset(kind=kind, id=candidate.id, path=str(candidate.path))
+                for candidate in discovery.candidates
+                if candidate.id not in known
+            )
+            usable = self._usable(kind, discovery=discovery, stats=stats, disabled=disabled)
             sections.append(
                 AssetKindSection(
                     kind=kind,
                     root=str(root_for(self._paths, kind)),
-                    stats=repo.stats(),
-                    items=tuple(repo.list_all()),
-                    shortfall=self._shortfall(kind, repo.stats()),
+                    stats=stats,
+                    items=items,
+                    shortfall=self._shortfall(kind, stats, usable=usable, pending=len(pending)),
+                    disk_total=len(discovery.candidates),
+                    pending=pending,
+                    strays=tuple(str(item) for item in discovery.strays),
+                    root_missing=discovery.root_missing,
+                    usable=usable,
                 )
             )
-        broll = sections[0].stats
-        degraded = broll.enabled < BROLL_LIBRARY_MIN_CLIPS or broll.enabled_duration_ms < BROLL_LIBRARY_MIN_MS
+        broll = sections[0]
+        # `degraded` 只回答一个问题：**出片会不会真的黑屏**。
+        #
+        # 它曾经是"条数或时长不够"（也就是现在的 `shortfall`），后果是 note 上写着
+        # "当前为黑屏降级模式"，而片子里明明放着一条跑酷 —— 同一句谎话换了个说法。
+        # "不够多"是建议，"一条都挑不到"才是降级；两者混在一起，面板就再也说不清
+        # "我到底该不该去补素材"。
+        degraded = broll.usable == 0
         return AssetLibrary(
             sections=tuple(sections),
             degraded=degraded,
             note=(
-                "跑酷素材不足：当前为黑屏降级模式（片头片尾仍可出片，画面只有水印与字幕）"
+                "跑酷素材一条都挑不到（目录是空的，或者全被停用了）：当前为黑屏降级模式"
+                "（片头片尾仍可出片，画面只有水印与字幕）"
                 if degraded
                 else None
             ),
@@ -734,20 +875,52 @@ class AssetService:
             return self._bgm
         return self._voice
 
-    def _shortfall(self, kind: AssetKind, stats: AssetStats) -> str | None:
+    def _usable(
+        self,
+        kind: AssetKind,
+        *,
+        discovery: Discovery,
+        stats: AssetStats,
+        disabled: DisabledAssets,
+    ) -> int:
+        """出片真能挑到的条数（**与渲染器同一条口径**，见 ``render/assets.py``）。
+
+        - 跑酷 / BGM：盘上候选 − 其中被停用的。渲染器只认目录，库里没有行的也算
+          （"能进目录就算数"）；
+        - 音色：库里启用的。配音**只认** ``voice_profiles`` —— 它与跑酷不同，得先入库
+          才知道参考音有几段、逐字文本对不对，所以盘上一个没入库的目录还挑不了。
+
+        这两条口径不一致是**如实**的：不是"设计不统一"，而是两条链路本来就读不同的东西。
+        把它们写成一样，面板就会开始说第二种谎。
+        """
+        if kind is AssetKind.VOICE:
+            return stats.enabled
+        excluded = disabled.for_kind(kind)
+        return sum(1 for candidate in discovery.candidates if candidate.path.name not in excluded)
+
+    def _shortfall(self, kind: AssetKind, stats: AssetStats, *, usable: int, pending: int) -> str | None:
+        """还差多少（**建议值**，不是出片的门禁）。
+
+        判据只认 ``usable``，不认库里的家底 —— 否则"盘上 58 条、一条没入库"会被报成
+        "0 条"，而那句话与事实正好相反。
+        """
         if kind is AssetKind.BROLL:
-            if stats.enabled < BROLL_LIBRARY_MIN_CLIPS:
-                return f"启用的跑酷素材只有 {stats.enabled} 条（建议 ≥ {BROLL_LIBRARY_MIN_CLIPS}）"
+            if usable < BROLL_LIBRARY_MIN_CLIPS:
+                return f"出片能挑到的跑酷素材只有 {usable} 条（建议 ≥ {BROLL_LIBRARY_MIN_CLIPS}）"
             if stats.enabled_duration_ms < BROLL_LIBRARY_MIN_MS:
                 minutes = stats.enabled_duration_ms / 60_000
-                return f"启用的跑酷素材共 {minutes:.1f} 分钟（建议 ≥ {BROLL_LIBRARY_MIN_MS // 60_000} 分钟）"
+                tail = f"；另有 {pending} 条还没入库，入库后才知道它们的时长" if pending else ""
+                return (
+                    f"已入库的跑酷素材共 {minutes:.1f} 分钟"
+                    f"（建议 ≥ {BROLL_LIBRARY_MIN_MS // 60_000} 分钟）{tail}"
+                )
             return None
-        if stats.enabled == 0:
-            return (
-                "一条都没有启用（"
-                + ("没有 BGM ⇒ 出片走单轨人声" if kind is AssetKind.BGM else "没有音色 ⇒ 配音无法开始")
-                + "）"
-            )
+        if usable == 0:
+            if kind is AssetKind.BGM:
+                return "出片一条都挑不到（盘上没有 BGM，或者全被停用了）⇒ 走单轨人声"
+            # 音色不是"出片挑不到"：它压根不进画面，配音只认 ``voice_profiles`` 表。
+            # 说成"出片挑不到"会让人以为音色是拿去当底片的（面板上那句话是要给人看的）。
+            return "配音一条都用不了（盘上还没有音色入库，或者全被停用了）⇒ 配音无法开始"
         return None
 
     def _record(

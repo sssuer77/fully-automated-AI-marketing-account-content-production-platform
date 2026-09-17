@@ -1,18 +1,31 @@
 <script setup lang="ts">
 // ⑦ 素材库面板（T4.8 · §3.3.14 / §4.3.1 / §04.5.12）。
 //
-// 这一屏要回答四个问题，缺一个都会让人不再信任它：
-// ① "库里有什么、够不够用" —— 三类分节 + 家底 + 缺口（后端算的判据线）；
-// ② "盘上还有没入库的、坏在哪" —— 扫盘报告（逐条问题 + strays 如实列出）；
-// ③ "这条启用还是停用" —— 标记（**只有启用/停用，没有删除**：误删不可逆）；
-// ④ "素材长什么样、听着对不对" —— 缩略图 + 试听（URL 直接交给 img/audio）。
+// 这一屏要回答五个问题，缺一个都会让人不再信任它：
+// ① "**出片到底会不会用到它**" —— 每节一行三组数字 + 每行一个状态（`usable` 由后端算）；
+// ② "盘上还有没入库的" —— 未入库那批显式列出 + 一个入库入口（它们**照样会被出片挑到**）；
+// ③ "够不够用、缺多少" —— 缺口那句话（后端算的判据线，前端不抄第二份）；
+// ④ "这条启用还是停用" —— 标记（**只有启用/停用，没有删除**：误删不可逆）；
+// ⑤ "素材长什么样、听着对不对" —— 缩略图 + 试听（URL 直接交给 img/audio）。
 //
-// 三个容易踩的点，面板上直接写清楚
-// -------------------------------
+// 为什么要有 ①：出片挑素材走的是 `render/assets.py`，它**只列目录、不读库**。
+// 所以"库里有什么"和"出片会挑到什么"是**两个真相**，而面板只能说一个。曾经它说的是
+// 库里那个 —— 于是盘上 58 条一条没入库时，面板写着"跑酷素材 0 条"，而片子里正放着跑酷。
+// 用户看到这个之后，这一屏上的任何数字他都不会再信。
+//
+// 三态必须分开画（这是"清晰操作"的全部意思）
+// ------------------------------------------
+// ① **出片会挑到**（绿）—— 盘上有文件、库里启用着；
+// ② **已停用**（黄）—— 人自己点的，随时能点回来，出片不再挑它；
+// ③ **文件不在了**（红）—— 行还在、开关还亮着，而文件被人挪走了。
+// 第 ③ 种是最阴的：面板上只画开关的话，用户会看着一个绿点，纳闷片子为什么一直用别的底片。
+//
+// 另外三个容易踩的点
+// ------------------
 // ① **目录路径常驻**：素材是"人往目录里丢文件"的，面板不写清往哪放，用户就只能去翻文档；
 // ② **占位素材标黄**：`origin=generated` 的占位件能播、但一眼要看出它只是占位；
-// ③ **空态说清往哪放**：空列表有两种原因（还没放 / 命名不合规进了 strays），两种提示
-//    必须分开说，否则"命名写错了"会被读成"素材没放进去"。
+// ③ **空态说清往哪放**：空列表有三种原因（还没放 / 命名不合规进了 strays / 盘上有但没入库），
+//    三种提示必须分开说，否则"命名写错了"会被读成"素材没放进去"。
 
 import { onBeforeUnmount, onMounted, ref } from "vue";
 
@@ -21,6 +34,7 @@ import EmptyState from "@/components/EmptyState.vue";
 import PanelCard from "@/components/PanelCard.vue";
 import StatusDot from "@/components/StatusDot.vue";
 import type { AssetItem, AssetKind, IngestSection, ScannedAsset } from "@/api/endpoints/assets";
+import type { StatusTone } from "@/components/tone";
 import {
   ACTION_LABELS,
   ASSET_KINDS,
@@ -30,10 +44,14 @@ import {
   coverageText,
   formatDuration,
   isPlaceholder,
+  itemStateText,
   itemTone,
   mediaUrlOf,
+  pendingNote,
+  pendingText,
   scannedTone,
   thumbUrlOf,
+  usableText,
   useAssetsStore,
 } from "@/stores/assets";
 
@@ -116,7 +134,34 @@ function scannedOf(kind: AssetKind): ScannedAsset[] {
 }
 
 function straysOf(kind: AssetKind): string[] {
-  return reportSection(kind)?.strays ?? [];
+  return sectionFor(kind)?.strays ?? [];
+}
+
+/**
+ * 空列表时该说往哪放 —— **分三种原因**，说混了会把"命名写错了"读成"素材没放进去"。
+ *
+ * ① 盘上已经有了、只是没入库；② 目录里放的东西命名不合规（上面会列出来）；
+ * ③ 确实什么都没放。第一种最容易被误读，所以它单独一句话。
+ */
+function emptyHint(kind: AssetKind): string {
+  const section = sectionFor(kind);
+  if ((section?.pending.length ?? 0) > 0) {
+    return `盘上那 ${section?.pending.length} 条已经在等着了 —— 点上面的「把这一类入库」登记它们（授权、时长、缩略图）。`;
+  }
+  if ((section?.strays.length ?? 0) > 0) {
+    return `目录里有文件，但命名不合规（上面列出来了）。改成 ${KIND_HINTS[kind]} 这个形状再扫一次。`;
+  }
+  return `把文件放进 ${KIND_HINTS[kind]}，再点「扫描并入库」。`;
+}
+
+/** 这一节的灯：目录不在 / 出片挑不到 / 还差一些 ⇒ 黄；否则绿。 */
+function sectionTone(kind: AssetKind): StatusTone {
+  const section = sectionFor(kind);
+  if (section === null) return "warn";
+  if (section.root_missing) return "warn";
+  if (section.usable === 0) return "warn";
+  if (section.shortfall !== null) return "warn";
+  return "ok";
 }
 </script>
 
@@ -125,7 +170,7 @@ function straysOf(kind: AssetKind): string[] {
     fill
     dense
     title="素材库"
-    :subtitle="`${assets.sections.length} 类 · 跑酷 ${coverageText(sectionFor('broll'))} · 音色 ${coverageText(sectionFor('voice'))}`"
+    :subtitle="`${assets.sections.length} 类 · 跑酷 ${usableText(sectionFor('broll'))} · 音色 ${usableText(sectionFor('voice'))}`"
   >
     <template #actions>
       <select class="field mono" :value="assets.license" title="新入库素材的授权类型" @change="onLicenseChange">
@@ -152,27 +197,43 @@ function straysOf(kind: AssetKind): string[] {
       <section v-for="kind in ASSET_KINDS" :key="kind" class="block">
         <header class="block__head">
           <h3 class="block__title">
-            <StatusDot :tone="assets.degraded && kind === 'broll' ? 'warn' : 'ok'" :label="KIND_LABELS[kind]" />
+            <StatusDot :tone="sectionTone(kind)" :label="KIND_LABELS[kind]" />
           </h3>
           <span class="mono muted">{{ coverageText(sectionFor(kind)) }}</span>
           <AppButton size="sm" :disabled="assets.busy" @click="onScan(kind)">只扫这一类</AppButton>
         </header>
 
-        <p class="hint mono">
-          目录：{{ assets.sections.find((s) => s.kind === kind)?.root ?? KIND_HINTS[kind] }}
-        </p>
+        <p class="hint mono">目录：{{ sectionFor(kind)?.root ?? KIND_HINTS[kind] }}</p>
         <p class="hint">放这里：{{ KIND_HINTS[kind] }}</p>
-        <p
-          v-if="(sectionFor(kind))?.shortfall"
-          class="alert alert--warn"
-        >
-          {{ (sectionFor(kind))?.shortfall }}
+
+        <p v-if="sectionFor(kind)?.root_missing" class="alert alert--warn">
+          目录还没建 —— 点「扫描并入库」会把它建出来。
+        </p>
+        <p v-if="sectionFor(kind)?.shortfall" class="alert alert--warn">
+          {{ sectionFor(kind)?.shortfall }}
+        </p>
+
+        <div v-if="(sectionFor(kind)?.pending.length ?? 0) > 0" class="alert alert--info">
+          <p>盘上有 {{ sectionFor(kind)?.pending.length }} 条还没入库 —— {{ pendingNote(kind) }}。</p>
+          <p class="mono pending">{{ pendingText(sectionFor(kind)) }}</p>
+          <AppButton size="sm" :disabled="assets.busy" @click="onScan(kind)">
+            {{ assets.dryRun ? "扫一遍（不写库）" : "把这一类入库" }}
+          </AppButton>
+        </div>
+
+        <p v-if="straysOf(kind).length > 0" class="alert alert--warn">
+          目录里有 {{ straysOf(kind).length }} 个文件没被认出来（命名不合规，<strong>没有</strong>入库）：
+          <span class="mono">{{ straysOf(kind).join("、") }}</span>
         </p>
 
         <EmptyState
-          v-if="(sectionFor(kind))?.items.length === 0"
-          title="这一类还没有素材入库"
-          :hint="`把文件放进 ${KIND_HINTS[kind]}，再点「扫描并入库」。命名不合规的文件不会被认出来，扫盘报告里会列在 strays 下。`"
+          v-if="(sectionFor(kind)?.items.length ?? 0) === 0"
+          :title="
+            (sectionFor(kind)?.pending.length ?? 0) > 0
+              ? `盘上那 ${sectionFor(kind)?.pending.length} 条还没进库`
+              : '这一类还没有素材'
+          "
+          :hint="emptyHint(kind)"
         />
 
         <table v-else class="table">
@@ -232,7 +293,7 @@ function straysOf(kind: AssetKind): string[] {
               </td>
               <td class="mono muted">{{ item.use_count }} 次</td>
               <td>
-                <StatusDot :tone="itemTone(item)" :label="item.enabled ? '启用' : '停用'" />
+                <StatusDot :tone="itemTone(item)" :label="itemStateText(item)" />
                 <label class="toggle">
                   <input
                     type="checkbox"
@@ -247,11 +308,6 @@ function straysOf(kind: AssetKind): string[] {
             </tr>
           </tbody>
         </table>
-
-        <p v-if="straysOf(kind).length > 0" class="alert alert--warn">
-          目录里有 {{ straysOf(kind).length }} 个文件没被认出来（命名不合规，**没有**入库）：
-          <span class="mono">{{ straysOf(kind).join("、") }}</span>
-        </p>
       </section>
 
       <section v-if="assets.report" class="block">
@@ -349,6 +405,23 @@ function straysOf(kind: AssetKind): string[] {
 .alert--warn {
   color: var(--warn);
   background: rgba(229, 181, 103, 0.1);
+}
+
+.alert--info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+  color: var(--text-secondary);
+  background: rgba(120, 170, 255, 0.1);
+}
+
+.pending {
+  max-height: 72px;
+  overflow: auto;
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  word-break: break-all;
 }
 
 .bad {
