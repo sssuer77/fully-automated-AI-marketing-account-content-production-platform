@@ -1,7 +1,13 @@
 // 发布面板 REST 面（T5.5 · §06.11 / §06.12）。
 //
-// 九个端点对应面板上的九件事：看板、待人工队列、投递、人工处置三连、交付包预览 / 导出、
-// R2 合规留档。
+// 十二个端点对应面板上的十二件事：看板、待人工队列、投递、人工处置三连、交付包预览 / 导出、
+// R2 合规留档、数据回收三连（跑一轮 / 采这一条 / 沉淀这一条）。
+//
+// 为什么「数据回收」是三个端点而不是一个
+// --------------------------------------
+// §4.6.2 把它们分成两个入口，加上"整轮"就是三件不同的事：**轮询**（谁到点了）、
+// **采一条**（现在就要这个数）、**沉淀一条**（让下一轮选题吃得到）。合并成一个的代价是
+// "我想再沉淀一次"必须连带再采一次数，而那次采集可能正好撞上平台限流。
 //
 // 为什么「待人工」单独一个端点
 // --------------------------
@@ -41,6 +47,11 @@ export type HandoffItem = NonNullable<HandoffPreview["items"]>[number];
 export type HandoffResult = OkJson<"/api/v1/publish/handoff/{task_id}", "post">;
 export type ComplianceView = OkJson<"/api/v1/publish/compliance", "get">;
 export type ComplianceItem = NonNullable<ComplianceView["items"]>[number];
+export type MetricsTickResult = OkJson<"/api/v1/publish/metrics/tick", "post">;
+export type MemorySinkResult = OkJson<
+  "/api/v1/publish/publications/{publication_id}/sink",
+  "post"
+>;
 
 const PUBLISH_PATH = "/api/v1/publish";
 
@@ -141,4 +152,33 @@ export function pushHandoff(
 /** R2 来源登记留档（**发布面板与素材库共用这一份**）。 */
 export function fetchCompliance(signal?: AbortSignal): Promise<ComplianceView> {
   return apiGet<ComplianceView>(`${PUBLISH_PATH}/compliance`, { signal });
+}
+
+/**
+ * 立刻跑一轮数据回收（T5.4 · §06.6）。
+ *
+ * 后台本来每 60s 自己拍一次；这个端点是**给人按的** —— "我刚发完想现在看一眼数据"，
+ * 或者"上一轮看着没动静，手动催一下"。发布池正忙时它会整拍让路（``yielded``），
+ * 那不是失败：两个浏览器抢同一个 profile 会让**发布**失败。
+ */
+export function runMetricsTick(signal?: AbortSignal): Promise<MetricsTickResult> {
+  return apiPost<MetricsTickResult>(`${PUBLISH_PATH}/metrics/tick`, undefined, { signal });
+}
+
+/** 采**这一条**（不看 ``next_metric_at``：人按的就是"现在采"）。 */
+export function collectMetrics(publicationId: string, signal?: AbortSignal): Promise<Publication> {
+  return apiPost<Publication>(
+    `${PUBLISH_PATH}/publications/${encodeURIComponent(publicationId)}/collect`,
+    undefined,
+    { signal },
+  );
+}
+
+/** 把这一条的数据**沉淀成记忆**（§06.8：回流 feedback + 汇总文件 + 低互动降权）。 */
+export function sinkMemory(publicationId: string, signal?: AbortSignal): Promise<MemorySinkResult> {
+  return apiPost<MemorySinkResult>(
+    `${PUBLISH_PATH}/publications/${encodeURIComponent(publicationId)}/sink`,
+    undefined,
+    { signal },
+  );
 }

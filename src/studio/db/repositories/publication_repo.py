@@ -37,6 +37,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+from studio.core.clock import now_iso
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.ids import new_ulid, publication_idempotency_key
 from studio.db.engine import transaction
@@ -45,6 +46,7 @@ __all__ = [
     "CANCELED",
     "FAILED",
     "MANUAL_REQUIRED",
+    "METRICS_HISTORY_LIMIT",
     "PUBLICATION_STATUSES",
     "PUBLISHED",
     "QUEUED",
@@ -74,10 +76,13 @@ PUBLICATION_STATUSES: Final[tuple[str, ...]] = (
 #: **必须一致**（那边是限频守卫的口径，这里是面板的口径）。
 COUNTED_STATUSES: Final[tuple[str, ...]] = (UPLOADING, PUBLISHED)
 
+#: ``metrics_history_json`` 的**截断长度**（见 :meth:`PublicationRepo.record_metrics`）。
+METRICS_HISTORY_LIMIT: Final[int] = 48
+
 _COLUMNS: Final[str] = (
     "id, task_id, platform, account_id, profile_key, video_path, video_sha256, cover_path, "
     "title, caption, tags_json, status, dry_run, url, platform_post_id, published_at, "
-    "scheduled_at, next_metric_at, attempt_count, max_attempts, error_code, error_message, "
+    "scheduled_at, next_metric_at, metric_attempts, attempt_count, max_attempts, error_code, error_message, "
     "evidence_json, metrics_json, metrics_history_json, idempotency_key, created_at, "
     "updated_at, finished_at"
 )
@@ -105,6 +110,8 @@ class PublicationRow:
     published_at: str | None = None
     scheduled_at: str | None = None
     next_metric_at: str | None = None
+    #: 当前时点**失败**了几次（0007 的 `consecutive_oom` 同款计数器 · T5.4）。
+    metric_attempts: int = 0
     attempt_count: int = 0
     max_attempts: int = 3
     error_code: str | None = None
@@ -148,6 +155,9 @@ class PublicationRow:
             "published_at": self.published_at,
             "scheduled_at": self.scheduled_at,
             "next_metric_at": self.next_metric_at,
+            "metric_attempts": self.metric_attempts,
+            "metrics": dict(self.metrics),
+            "metrics_history": [dict(item) for item in self.metrics_history],
             "attempt_count": self.attempt_count,
             "max_attempts": self.max_attempts,
             "error_code": self.error_code,
@@ -179,6 +189,7 @@ class PublicationRow:
             published_at=_opt(row, "published_at"),
             scheduled_at=_opt(row, "scheduled_at"),
             next_metric_at=_opt(row, "next_metric_at"),
+            metric_attempts=int(row["metric_attempts"]),
             attempt_count=int(row["attempt_count"]),
             max_attempts=int(row["max_attempts"]),
             error_code=_opt(row, "error_code"),
@@ -487,6 +498,81 @@ class PublicationRepo:
         )
         return self._require(pub_id)
 
+    # ── 数据回收（T5.4 · §06.6）──────────────────────────────────
+
+    def record_metrics(
+        self,
+        pub_id: str,
+        metrics: Mapping[str, Any],
+        *,
+        next_metric_at: str | None,
+        history_limit: int = METRICS_HISTORY_LIMIT,
+    ) -> PublicationRow:
+        """落一次成功读数：``metrics_json``（最新）+ 追加 ``metrics_history_json``。
+
+        为什么"最新"与"历史"两列都要写
+        ------------------------------
+        面板要一眼看到"现在多少播放"（读 ``metrics_json``），趋势图要一串点
+        （读 ``metrics_history_json``）。只留历史 ⇒ 每次读最新都要 ``json_extract``
+        最后一项；只留最新 ⇒ 趋势图没有数据源（§06.6 的落库那一行明写两列）。
+
+        为什么历史要**截断**（而不是无限追加）
+        ------------------------------------
+        四个时点（T+1h/6h/24h/72h）× 每条作品 = 4 个点，48 条已经足够覆盖
+        "重试顺延导致的重复采集"（最多 3 次/时点）。不截断的话，一条被反复
+        重试的记录会让这一行的 JSON 无限长，而它每次读取都要整段反序列化。
+
+        ``metric_attempts`` 归 0：一次成功读数就是"这个时点办完了"，
+        下一个时点重新计数（见 0010 迁移的注释）。
+        """
+        row = self._require(pub_id)
+        history = [dict(item) for item in row.metrics_history]
+        history.append(_history_entry(metrics))
+        if history_limit > 0:
+            history = history[-history_limit:]
+        self._connection.execute(
+            """
+            UPDATE publications
+               SET metrics_json = ?, metrics_history_json = ?,
+                   next_metric_at = ?, metric_attempts = 0
+             WHERE id = ?
+            """,
+            (json.dumps(dict(metrics), ensure_ascii=False), _dump_list(history), next_metric_at, pub_id),
+        )
+        return self._require(pub_id)
+
+    def defer_metrics(self, pub_id: str, *, next_metric_at: str | None) -> PublicationRow:
+        """落一次失败：计数 +1，并把下一个时点顺延（``None`` ⇒ 停止采集这一条）。
+
+        **不写 ``error_code`` / ``error_message``**：那两列说的是"这条作品发出去
+        这件事出了什么事"，而数据回收失败时作品是**好好发着**的。把采集失败写进
+        去，面板上的红色错误会指向一次并不存在的发布故障。
+        """
+        self._connection.execute(
+            "UPDATE publications SET metric_attempts = metric_attempts + 1, next_metric_at = ? WHERE id = ?",
+            (next_metric_at, pub_id),
+        )
+        return self._require(pub_id)
+
+    def list_due_metrics(self, *, now: str | None = None, limit: int = 20) -> tuple[PublicationRow, ...]:
+        """到点该采数的记录（``status='published'`` 且 ``next_metric_at <= now``）。
+
+        排序按 ``next_metric_at`` 升序：一个积压了很久的时点该**先**被采，
+        否则"晚了 3 天的 T+1h"会排在"刚到点的 T+72h"后面，趋势图上的点会乱序。
+
+        为什么不用 ``next_metric_at IS NOT NULL`` 之外的过滤
+        --------------------------------------------------
+        ``dry_run`` 的演练记录**不在**这个集合里 —— 它们的 ``status`` 是 ``queued``，
+        没有 ``platform_post_id``，去平台上采不到任何东西。
+        """
+        rows = self._connection.execute(
+            f"SELECT {_COLUMNS} FROM publications "
+            "WHERE status = ? AND next_metric_at IS NOT NULL AND next_metric_at <= ? "
+            "ORDER BY next_metric_at LIMIT ?",
+            (PUBLISHED, now or now_iso(), limit),
+        ).fetchall()
+        return tuple(PublicationRow.from_row(row) for row in rows)
+
     # ── 内部 ─────────────────────────────────────────────────────
 
     def _require(self, pub_id: str) -> PublicationRow:
@@ -539,3 +625,23 @@ def _json_list(raw: Any) -> list[Any]:
 
 def _dump(value: Mapping[str, Any] | None) -> str:
     return json.dumps(dict(value or {}), ensure_ascii=False)
+
+
+def _dump_list(value: Sequence[Mapping[str, Any]]) -> str:
+    return json.dumps([dict(item) for item in value], ensure_ascii=False)
+
+
+def _history_entry(metrics: Mapping[str, Any]) -> dict[str, Any]:
+    """最新读数 ⇒ 时间序列的一项（``{at, views, likes, comments, shares}`` · 0004 的列注释）。
+
+    为什么**不原样**把 ``metrics_json`` 追加进去：那一份还带 ``source``（"这个数是谁
+    给的"），而它是**当前**口径 —— 将来接了平台开放接口，历史里会出现"前半段浏览器读的、
+    后半段 API 拿的"，那是好事，但趋势图的每个点只需要"什么时候、多少"。
+    """
+    return {
+        "at": metrics.get("collected_at") or now_iso(),
+        "views": metrics.get("views"),
+        "likes": metrics.get("likes"),
+        "comments": metrics.get("comments"),
+        "shares": metrics.get("shares"),
+    }

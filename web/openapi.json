@@ -3983,6 +3983,45 @@
         "title": "MediaInfoModel",
         "type": "object"
       },
+      "MemorySinkView": {
+        "description": "记忆沉淀的结论（§4.6.2 的 ``MemorySinkResult``）。",
+        "properties": {
+          "comments_seen": {
+            "default": 0,
+            "title": "Comments Seen",
+            "type": "integer"
+          },
+          "digest_path": {
+            "title": "Digest Path",
+            "type": "string"
+          },
+          "feedback_items_created": {
+            "title": "Feedback Items Created",
+            "type": "integer"
+          },
+          "low_engagement": {
+            "default": false,
+            "title": "Low Engagement",
+            "type": "boolean"
+          },
+          "planner_consumable": {
+            "title": "Planner Consumable",
+            "type": "boolean"
+          },
+          "topics_demoted": {
+            "title": "Topics Demoted",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "feedback_items_created",
+          "topics_demoted",
+          "digest_path",
+          "planner_consumable"
+        ],
+        "title": "MemorySinkView",
+        "type": "object"
+      },
       "MetricsResponse": {
         "description": "`GET /api/v1/metrics` —— 一次拿全（只读，没有任何写动作）。",
         "properties": {
@@ -4065,6 +4104,51 @@
           "storage"
         ],
         "title": "MetricsResponse",
+        "type": "object"
+      },
+      "MetricsTickView": {
+        "description": "跑一轮数据回收的结论（T5.4 · §06.6）。",
+        "properties": {
+          "collected": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Collected",
+            "type": "array"
+          },
+          "deferred": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Deferred",
+            "type": "array"
+          },
+          "pending": {
+            "default": 0,
+            "title": "Pending",
+            "type": "integer"
+          },
+          "schedule_hours": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Schedule Hours",
+            "type": "array"
+          },
+          "stopped": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Stopped",
+            "type": "array"
+          },
+          "yielded": {
+            "default": false,
+            "title": "Yielded",
+            "type": "boolean"
+          }
+        },
+        "title": "MetricsTickView",
         "type": "object"
       },
       "OutputsLimitsModel": {
@@ -6453,10 +6537,23 @@
             "title": "Max Attempts",
             "type": "integer"
           },
+          "metric_attempts": {
+            "default": 0,
+            "title": "Metric Attempts",
+            "type": "integer"
+          },
           "metrics": {
             "additionalProperties": true,
             "title": "Metrics",
             "type": "object"
+          },
+          "metrics_history": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Metrics History",
+            "type": "array"
           },
           "next_metric_at": {
             "anyOf": [
@@ -12179,6 +12276,28 @@
         ]
       }
     },
+    "/api/v1/publish/metrics/tick": {
+      "post": {
+        "description": "**立刻**跑一轮数据回收（T5.4 · §06.6）。\n\n后台本来每 60s 自己拍一次（``app/recycle.py``）；这个端点是给人按的 ——\n\"我刚发完，想现在看一眼数据\"，或者\"上一轮看着没动静，手动催一下\"。\n\n失败**不抛**：一轮里某一条采不到是常态（登录态掉了、平台还没出数），\n它已经体现在返回的 ``deferred`` / ``stopped`` 里。让整个请求 500 会得到\n\"点一下就报错\"，而操作员真正需要看到的是\"哪几条没采到\"。",
+        "operationId": "run_metrics_tick_api_v1_publish_metrics_tick_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsTickView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Run Metrics Tick",
+        "tags": [
+          "publish"
+        ]
+      }
+    },
     "/api/v1/publish/publications": {
       "get": {
         "description": "发布看板（六状态各若干条 + 全量计数）。\n\n带上 ``task_id`` ⇒ 只回这条任务的记录，``counts`` 也**只算这条任务的**：\n任务详情页里显示\"这条片子发了 1 条、失败 2 次\"，而全站计数放在那里会让人以为\n整个系统只有这几条。",
@@ -12240,6 +12359,94 @@
           }
         },
         "summary": "List Publications",
+        "tags": [
+          "publish"
+        ]
+      }
+    },
+    "/api/v1/publish/publications/{publication_id}/collect": {
+      "post": {
+        "description": "采**这一条**（不看 ``next_metric_at``，人按的就是\"现在采\"）。",
+        "operationId": "collect_one_api_v1_publish_publications__publication_id__collect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "publication_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9A-Za-z]{1,64}$",
+              "title": "Publication Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicationView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Collect One",
+        "tags": [
+          "publish"
+        ]
+      }
+    },
+    "/api/v1/publish/publications/{publication_id}/sink": {
+      "post": {
+        "description": "把这一条的数据**沉淀成记忆**（T5.4 · §06.8：回流 feedback + 汇总 + 降权）。\n\n与 ``collect`` 分开是 §4.6.2 的两个入口：采数是\"读回来\"，沉淀是\"让下一轮\n选题吃得到\"。合并成一个端点之后，\"我想再沉淀一次\"就得连带再采一次数\n（而那一次采集可能正好撞上平台的限流）。",
+        "operationId": "sink_one_api_v1_publish_publications__publication_id__sink_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "publication_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9A-Za-z]{1,64}$",
+              "title": "Publication Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemorySinkView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sink One",
         "tags": [
           "publish"
         ]

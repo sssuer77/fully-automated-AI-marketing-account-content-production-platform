@@ -500,6 +500,38 @@ def _topic_payload(*, direction_id: str, topic: TopicSpec, seq: int, dedup: Dedu
     }
 
 
+#: 文本比对的最短长度。太短的引文（"好" / "沙发"）会在任何一条反馈里命中 ——
+#: 那会把人工录入的依据误标成自动回流，而"这条依据是谁给的"正是这个字段的全部意义。
+MIN_QUOTE_MATCH: Final[int] = 6
+
+
+def _auto_texts(rows: Sequence[FeedbackItemRow]) -> set[str]:
+    """自动回流反馈的原文（§06.8 ① 落进 ``feedback_items`` 的那些）。"""
+    return {row.content.strip() for row in rows if row.is_auto and row.content.strip()}
+
+
+def _mark_auto_refs(directions: Sequence[DirectionSpec], auto_texts: set[str]) -> int:
+    """引用了自动回流反馈的方向 ⇒ 把那一条 ``grounded_on`` 标 ``source="auto"``（§06.8）。
+
+    为什么是**文本比对**而不是让模型自己声明：模型分不清"这条反馈是人写的还是系统
+    回流的"（喂给它的摘要里两类混在一起），而它一旦猜错，面板上的"依据"就会
+    把一条自动数据画成人工结论。判据在我们手里（``is_auto`` 就在库那一行上），
+    交给模型只是把一件确定的事变成一次抽奖。
+    """
+    marked = 0
+    for direction in directions:
+        for ref in direction.grounded_on:
+            if ref.type != "feedback":
+                continue
+            quote = (ref.quote or "").strip()
+            if len(quote) < MIN_QUOTE_MATCH:
+                continue
+            if any(quote in text or text in quote for text in auto_texts):
+                ref.source = "auto"
+                marked += 1
+    return marked
+
+
 def _digest_specs(
     rows: Sequence[FeedbackItemRow], classified: Mapping[str, ClassifiedItem]
 ) -> list[FeedbackItemSpec]:
@@ -547,6 +579,7 @@ class TopicService:
         paths: StudioPaths | None = None,
         log: LogSink | None = None,
         input_service: InputService | None = None,
+        include_auto_feedback: bool = True,
     ) -> None:
         self._planner = planner
         self._ideator = ideator
@@ -554,6 +587,8 @@ class TopicService:
         self._paths = paths or StudioPaths.from_env()
         self._log = log
         self._input = input_service or InputService(connection, paths=self._paths, log=log)
+        #: 发布回流自动写入的反馈要不要喂给 Planner（§06.8 安全阀 ①）。
+        self._include_auto = include_auto_feedback
         self._hot = HotItemRepo(connection)
         self._feedback = FeedbackItemRepo(connection)
         self._directions = DirectionRepo(connection)
@@ -580,7 +615,15 @@ class TopicService:
         classified = await self._classify_feedback(
             persona=persona, rows=feedback_rows, trace_id=trace, warnings=warnings
         )
-        digest = build_feedback_digest(_digest_specs(feedback_rows, classified), top_n=DIGEST_TOP_N)
+        auto_texts = _auto_texts(feedback_rows)
+        specs = _digest_specs(feedback_rows, classified)
+        if not self._include_auto and auto_texts:
+            specs = [item for item in specs if not item.is_auto]
+            warnings.append(
+                f"llm.yaml 关掉了 planner.include_auto_feedback："
+                f"{len(auto_texts)} 条自动回流反馈没喂给 Planner（数据仍在库里）"
+            )
+        digest = build_feedback_digest(specs, top_n=DIGEST_TOP_N)
 
         result = await self._planner.run(
             AgentContext(persona=persona, trace_id=trace),
@@ -625,6 +668,9 @@ class TopicService:
                 feedback_classified=len(classified),
             )
 
+        # §06.8 闭环：把"这条依据来自发布回流"确定性地标回 grounded_on。
+        auto_refs = _mark_auto_refs(directions, auto_texts)
+
         batch = batch_id or DirectionRepo.new_batch_id()
         ids = self._directions.insert_batch(
             batch_id=batch,
@@ -657,6 +703,7 @@ class TopicService:
                 ],
                 "hot_consumed": consumed,
                 "archived": archived,
+                "auto_refs": auto_refs,
                 "warnings": warnings[:10],
             },
             event_kind=EventKind.DIRECTION_BATCH_READY,

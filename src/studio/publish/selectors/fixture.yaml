@@ -5,7 +5,7 @@
 # ⚠️ 代号 ``fixture`` 不在 §06.2.1 的平台矩阵里，也**不在** publications.platform 的
 #    CHECK 约束里 ⇒ 它永远不可能被落库成一条真实发布记录（见 platforms/fixture.py）。
 platform: fixture
-version: "2026-09-16"
+version: "2026-09-18"
 
 urls:
   # 占位：真地址由 FixturePublisher 在装配期替换成 fixtures/upload_form.html 的 file:// URL。
@@ -24,6 +24,16 @@ selectors:
   publish_button: "#publish"
   success_marker: "#result"
   reject_marker: "#reject"
+
+  # ── 数据回收（T5.4 · §06.6）───────────────────────────────────────────
+  # ⚠️ 与上面那批一样是**未实测初稿**。`metric_row` 里的 `{post_id}` 会被换成
+  #    `publications.platform_post_id`；四个计数是**相对它**的后代选择器。
+  #    真机校准时最常改的就是这四个 —— 平台的数字元素没有稳定的类名。
+  metric_row: "[data-post-id=\"{post_id}\"]"
+  metric_views: ".metric-views, span[data-metric=views]"
+  metric_likes: ".metric-likes, span[data-metric=likes]"
+  metric_comments: ".metric-comments, span[data-metric=comments]"
+  metric_shares: ".metric-shares, span[data-metric=shares]"
 
 readback:
   title: value

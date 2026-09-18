@@ -31,6 +31,8 @@ from studio.core.errors import ErrorCode, PublishError
 
 __all__ = [
     "DEFAULT_READBACK",
+    "METRIC_KEYS",
+    "POST_ID_PLACEHOLDER",
     "READBACK_KINDS",
     "REQUIRED_SELECTORS",
     "SELECTOR_KEY_GROUPS",
@@ -60,7 +62,26 @@ OPTIONAL_SELECTORS: Final[tuple[str, ...]] = (
     "cover_input",  # 弹层里的图片输入框（第 ④ 步）
     "success_marker",  # 结果页标志（第 ⑦ 步）
     "reject_marker",  # 审核不通过的标志（§06.10 的 PUBLISH_REVIEW_REJECTED）
+    # ── 数据回收（T5.4 · §06.6）───────────────────────────────────────
+    # 这一组**全是可选**：采不到数只是"这条作品的趋势图空着"，不该让发布链路
+    # 或整条回收循环挂掉（§06.6「不阻塞其他发布」）。四个计数各占一个键而不是
+    # 一个"容器选择器"，是因为平台把它们放在**四个兄弟节点**里（没有共同父节点
+    # 能一次读全），而"读一个节点"这件事已经有现成的 `text_content` 了。
+    "metric_row",  # 管理页上**这一条作品**的那一行（内含 `{post_id}` 占位符）
+    "metric_views",  # 播放量（**相对** metric_row 的后代选择器）
+    "metric_likes",  # 点赞
+    "metric_comments",  # 评论
+    "metric_shares",  # 分享
 )
+
+#: ``metric_row`` 里的作品号占位符（T5.4）。用 ``str.replace`` 而不是 ``str.format``：
+#: 选择器里本来就全是 ``{}``（CSS 属性选择器、``:has-text()``），拿 ``format`` 去填
+#: 一个占位符会把其余的 ``{}`` 当成字段名 —— 报错还算好的，改坏成静默的空串才要命。
+POST_ID_PLACEHOLDER: Final[str] = "{post_id}"
+
+#: 四个计数的键（顺序 = 面板上的列顺序）。**`parse_metric_count` 按它遍历**，
+#: 于是"加一个计数维度"（比如收藏）只改这一行。
+METRIC_KEYS: Final[tuple[str, ...]] = ("views", "likes", "comments", "shares")
 
 #: 回读方式的取值（§06.5.3 第 ⑤ 步）。**为什么这是数据不是常量**：标题框在四个平台
 #: 上都是 ``<input>``（读 ``input_value``），而文案框有的是 ``<textarea>``（也是

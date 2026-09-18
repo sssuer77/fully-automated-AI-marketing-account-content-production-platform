@@ -39,6 +39,8 @@ __all__ = [
     "HandoffItemView",
     "HandoffPreview",
     "HandoffResponse",
+    "MemorySinkView",
+    "MetricsTickView",
     "PublicationList",
     "PublicationView",
     "PublishActionRequest",
@@ -85,6 +87,10 @@ class PublicationView(BaseModel):
     error_message: str | None = None
     evidence: dict[str, Any] = Field(default_factory=dict)
     metrics: dict[str, Any] = Field(default_factory=dict)
+    #: 时间序列 ``[{at, views, likes, comments, shares}]``（面板画趋势图用 · T5.4）。
+    metrics_history: list[dict[str, Any]] = Field(default_factory=list)
+    #: 当前时点**失败**了几次（§06.6：顺延重试 ≤3，用尽即停止采集这一条）。
+    metric_attempts: int = 0
     created_at: str | None = None
     updated_at: str | None = None
     finished_at: str | None = None
@@ -92,6 +98,31 @@ class PublicationView(BaseModel):
     can_retry: bool = False
     can_cancel: bool = False
     can_mark_done: bool = False
+
+
+class MetricsTickView(BaseModel):
+    """跑一轮数据回收的结论（T5.4 · §06.6）。"""
+
+    collected: list[str] = Field(default_factory=list)
+    deferred: list[str] = Field(default_factory=list)
+    stopped: list[str] = Field(default_factory=list)
+    #: 发布池正忙 ⇒ 这一拍什么都没做（**不是失败**，下一拍照跑）。
+    yielded: bool = False
+    #: 配置里的时点（面板要显示"什么时候会去采"）。
+    schedule_hours: list[int] = Field(default_factory=list)
+    #: 这一轮之后还有几条到点未采（``yielded`` 时不算 —— 那一条都没动）。
+    pending: int = 0
+
+
+class MemorySinkView(BaseModel):
+    """记忆沉淀的结论（§4.6.2 的 ``MemorySinkResult``）。"""
+
+    feedback_items_created: int
+    topics_demoted: int
+    digest_path: str
+    planner_consumable: bool
+    comments_seen: int = 0
+    low_engagement: bool = False
 
 
 def publication_view(row: PublicationRow) -> PublicationView:

@@ -150,6 +150,27 @@ class TopicRepo:
             )
             return self._connection.total_changes > before
 
+    def demote_candidates(self, *, direction_id: str, factor: float) -> int:
+        """把一个方向下**待选**的选题降权（T5.4 · §06.8 ②）。
+
+        只动 ``status='candidate'``：已经被人选中的（``selected``/``queued``）不该被
+        事后改分 —— 那会让"我当初为什么选它"变得无法复盘。``score IS NULL`` 的也不动
+        （没有分数可降，乘出来还是 NULL，白白产生一次写）。
+
+        ``factor`` 由**调用方**夹好上限（§06.8 的"幅度上限 20%"），这里只做形状校验：
+        把业务上限写进仓储，等于让"上限是多少"有两个出处。
+        """
+        if not 0.0 < factor < 1.0:
+            raise ValueError(f"降权系数必须在 (0, 1) 之间：{factor}")
+        with transaction(self._connection, immediate=True):
+            before = self._connection.total_changes
+            self._connection.execute(
+                "UPDATE topic_candidates SET score = score * ? "
+                "WHERE direction_id = ? AND status = 'candidate' AND score IS NOT NULL",
+                (factor, direction_id),
+            )
+            return self._connection.total_changes - before
+
     def count_by_direction(self) -> dict[str, dict[str, int]]:
         """每个方向下各状态的条数 ⇒ ``{direction_id: {status: n}}``。
 

@@ -37,7 +37,10 @@ from studio.app.schemas.publish import (
     ComplianceView,
     HandoffPreview,
     HandoffResponse,
+    MemorySinkView,
+    MetricsTickView,
     PublicationList,
+    PublicationView,
     PublishActionRequest,
     PublishActionResponse,
     PublishEnqueueRequest,
@@ -51,6 +54,8 @@ from studio.db.repositories.audit_repo import AuditRepo
 from studio.db.repositories.publication_repo import PublicationRepo, PublicationRow
 from studio.publish.compliance import compliance_snapshot
 from studio.publish.handoff import build_package, handoff_adapter
+from studio.publish.memory import sink_memory
+from studio.services.publish_metrics_service import PublishMetricsService
 from studio.services.publish_service import (
     build_board,
     cancel_publication,
@@ -103,6 +108,87 @@ def list_publications(
         },
         manual_required=manual,
         hint=None if sum(board.counts.values()) else NO_PUBLICATION_HINT,
+    )
+
+
+@router.post("/api/v1/publish/metrics/tick", response_model=MetricsTickView)
+async def run_metrics_tick(request: Request) -> MetricsTickView:
+    """**立刻**跑一轮数据回收（T5.4 · §06.6）。
+
+    后台本来每 60s 自己拍一次（``app/recycle.py``）；这个端点是给人按的 ——
+    "我刚发完，想现在看一眼数据"，或者"上一轮看着没动静，手动催一下"。
+
+    失败**不抛**：一轮里某一条采不到是常态（登录态掉了、平台还没出数），
+    它已经体现在返回的 ``deferred`` / ``stopped`` 里。让整个请求 500 会得到
+    "点一下就报错"，而操作员真正需要看到的是"哪几条没采到"。
+    """
+    state: AppState = request.app.state.studio
+    service = PublishMetricsService(
+        connection=state.connections.get(),
+        paths=state.paths,
+        config=publish_config_for(state),
+        log=state.logs.append,
+    )
+    report = await service.tick()
+    return MetricsTickView(
+        collected=list(report.collected),
+        deferred=list(report.deferred),
+        stopped=list(report.stopped),
+        yielded=report.yielded,
+        schedule_hours=[int(hour) for hour in publish_config_for(state).metrics_schedule_hours],
+        pending=len(service.due()),
+    )
+
+
+@router.post("/api/v1/publish/publications/{publication_id}/collect", response_model=PublicationView)
+async def collect_one(
+    request: Request,
+    publication_id: Annotated[str, _PUBLICATION_ID],
+) -> PublicationView:
+    """采**这一条**（不看 ``next_metric_at``，人按的就是"现在采"）。"""
+    state: AppState = request.app.state.studio
+    connection = state.connections.get()
+    config = publish_config_for(state)
+    service = PublishMetricsService(
+        connection=connection, paths=state.paths, config=config, log=state.logs.append
+    )
+    row = PublicationRepo(connection).get(publication_id)
+    if row is None:
+        raise StudioError(
+            f"发布记录不存在：{publication_id}",
+            code=ErrorCode.VALIDATION_FAILED,
+            context={"publication_id": publication_id},
+        )
+    await service.collect_one(row)
+    fresh = PublicationRepo(connection).get(publication_id)
+    return publication_view(fresh if fresh is not None else row)
+
+
+@router.post("/api/v1/publish/publications/{publication_id}/sink", response_model=MemorySinkView)
+async def sink_one(
+    request: Request,
+    publication_id: Annotated[str, _PUBLICATION_ID],
+) -> MemorySinkView:
+    """把这一条的数据**沉淀成记忆**（T5.4 · §06.8：回流 feedback + 汇总 + 降权）。
+
+    与 ``collect`` 分开是 §4.6.2 的两个入口：采数是"读回来"，沉淀是"让下一轮
+    选题吃得到"。合并成一个端点之后，"我想再沉淀一次"就得连带再采一次数
+    （而那一次采集可能正好撞上平台的限流）。
+    """
+    state: AppState = request.app.state.studio
+    result = await sink_memory(
+        publication_id,
+        connection=state.connections.get(),
+        paths=state.paths,
+        config=publish_config_for(state),
+    )
+    return MemorySinkView(
+        feedback_items_created=result.feedback_items_created,
+        topics_demoted=result.topics_demoted,
+        digest_path=str(result.digest_path),
+        planner_consumable=result.planner_consumable,
+        comments_seen=result.comments_seen,
+        low_engagement=result.low_engagement,
     )
 
 

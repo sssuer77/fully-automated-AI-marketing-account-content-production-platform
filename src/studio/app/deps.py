@@ -29,6 +29,7 @@ from studio.agents.prompts import PromptLibrary
 from studio.agents.writer import WriterAgent
 from studio.app.metrics import MetricsPump
 from studio.app.persona_events import PersonaBroadcaster
+from studio.app.recycle import MetricsRecyclePump
 from studio.app.watchdog import WatchdogPump
 from studio.core.config import (
     HandoffConfig,
@@ -155,6 +156,9 @@ class AppState:
     settings: RuntimeSettings
     metrics: MetricsService
     pump: MetricsPump
+    #: 数据回收的周期循环（T5.4 · §06.6）。**进程内单例**：它持有 asyncio 任务，
+    #: 每次请求现造一份等于每来一个请求就多起一条循环。`runnable=False` ⇒ 不起跳。
+    metrics_recycle: MetricsRecyclePump
     #: 无人值守守护（T4.11）。**进程内单例**：它的重启计数是内存状态，现造一份
     #: 等于每次请求都从零开始 ⇒ "超限停止重启"永远触发不了。REST 面读的也是它。
     watchdog: WatchdogService
@@ -213,6 +217,14 @@ def build_state(
     hub = Hub(logs=logs, snapshots=snapshots, settings=hub_settings)
     logs.attach_waker(hub.wake)
     pump = MetricsPump(hub=hub, connections=pool, metrics=metrics)
+    # 配置**每拍现读**：`metrics_schedule_hours` 是 §06.6 写着"可配"的那一项，
+    # 在这里存一份快照就等于"改完要重启 API"（见 `MetricsRecyclePump` 的注释）。
+    metrics_recycle = MetricsRecyclePump(
+        connections=pool,
+        paths=paths,
+        config_provider=lambda: load_config(paths).bundle.publish,
+        log=logs,
+    )
     persona = PersonaStore(paths)
     outputs = OutputsStore(paths)
     watchdog = WatchdogService(
@@ -241,6 +253,7 @@ def build_state(
         settings=settings,
         metrics=metrics,
         pump=pump,
+        metrics_recycle=metrics_recycle,
         watchdog=watchdog,
         watchdog_pump=WatchdogPump(watchdog=watchdog),
         # `outputs=None` 是**故意的**：出片每次现读 `config/outputs.yaml`，于是
@@ -473,6 +486,7 @@ def topic_service_for(state: AppState) -> TopicService:
         classifier=FeedbackClassifierAgent(gateway, prompts),
         paths=state.paths,
         log=state.logs.append,
+        include_auto_feedback=loaded.bundle.llm.planner.include_auto_feedback,
     )
 
 

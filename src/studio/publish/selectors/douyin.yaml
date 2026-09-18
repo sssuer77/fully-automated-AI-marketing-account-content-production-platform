@@ -5,7 +5,7 @@
 #    改完顺手把 version 改掉：它会被写进 publications.evidence_json，
 #    事后靠它回答"这条是哪个版本的选择器发的"。
 platform: douyin
-version: "2026-09-13"
+version: "2026-09-18"
 
 urls:
   upload: "https://creator.douyin.com/creator-micro/content/upload"
@@ -23,6 +23,16 @@ selectors:
   publish_button: "button:has-text('发布')"
   success_marker: "div.success-page, text=发布成功"
   reject_marker: "div.audit-reject, text=审核不通过"
+
+  # ── 数据回收（T5.4 · §06.6）───────────────────────────────────────────
+  # ⚠️ 与上面那批一样是**未实测初稿**。`metric_row` 里的 `{post_id}` 会被换成
+  #    `publications.platform_post_id`；四个计数是**相对它**的后代选择器。
+  #    真机校准时最常改的就是这四个 —— 平台的数字元素没有稳定的类名。
+  metric_row: "tr:has([data-id=\"{post_id}\"]), div[data-post-id=\"{post_id}\"]"
+  metric_views: ".metric-views, span[data-metric=views]"
+  metric_likes: ".metric-likes, span[data-metric=likes]"
+  metric_comments: ".metric-comments, span[data-metric=comments]"
+  metric_shares: ".metric-shares, span[data-metric=shares]"
 
 readback:
   title: value

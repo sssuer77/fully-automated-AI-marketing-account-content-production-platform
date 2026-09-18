@@ -34,7 +34,7 @@ platforms:
     daily_limit: 3
     min_gap_min: 30
     cover_required: true
-    selectors_version: "2026-09-13"
+    selectors_version: "2026-09-18"
   kuaishou:
     publisher: kuaishou
     profile: douyin_1080x1920_30fps_v1
@@ -46,7 +46,7 @@ platforms:
     daily_limit: 3
     min_gap_min: 30
     cover_required: false
-    selectors_version: "2026-09-13"
+    selectors_version: "2026-09-18"
   shipinhao:
     publisher: shipinhao
     profile: douyin_1080x1920_30fps_v1
@@ -58,7 +58,7 @@ platforms:
     daily_limit: 3
     min_gap_min: 30
     cover_required: false
-    selectors_version: "2026-09-13"
+    selectors_version: "2026-09-18"
 
 # 二线平台（保留接口与 profile，一期 enabled=false · Q9）
   xiaohongshu:

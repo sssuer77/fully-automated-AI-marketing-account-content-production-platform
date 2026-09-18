@@ -1583,6 +1583,7 @@ def _build_topic_service(paths: StudioPaths, connection: sqlite3.Connection) -> 
         classifier=FeedbackClassifierAgent(gateway, prompts),
         paths=paths,
         log=log.append,
+        include_auto_feedback=loaded.bundle.llm.planner.include_auto_feedback,
     )
 
 

@@ -37,6 +37,7 @@ EXPECTED_MIGRATIONS = (
     "0007_pool_autodegrade",
     "0008_observability",
     "0009_assets",
+    "0010_metrics",
 )
 EXPECTED_VERSIONS = tuple(label.split("_", 1)[0] for label in EXPECTED_MIGRATIONS)
 EXPECTED_MIGRATION_NAMES = tuple(label.split("_", 1)[1] for label in EXPECTED_MIGRATIONS)

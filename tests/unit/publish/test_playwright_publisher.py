@@ -40,6 +40,11 @@ PUBLISH = "#publish"
 SUCCESS = "#success"
 REJECT = "#reject"
 POST_LINK = "#post-link"
+METRIC_ROW = '[data-post-id="{post_id}"]'
+METRIC_VIEWS = ".m-views"
+METRIC_LIKES = ".m-likes"
+METRIC_COMMENTS = ".m-comments"
+METRIC_SHARES = ".m-shares"
 
 
 class FakePage:
@@ -65,6 +70,7 @@ class FakePage:
         missing: frozenset[str] = frozenset(),
         caption_is_textarea: bool = False,
         post_url: str | None = None,
+        metric_text: dict[str, str] | None = None,
     ) -> None:
         self.visited: list[str] = []
         self.clicks: list[str] = []
@@ -81,6 +87,9 @@ class FakePage:
         self._caption_readback = caption_readback
         self._caption_is_textarea = caption_is_textarea
         self._post_url = post_url
+        #: 管理页上"这一行作品的四个数字"（键 = 后代选择器，值 = 页面上的原文）。
+        #: 原文原样给（``1.2万`` 这种缩写也照给）：缩写解析正是要验的东西之一。
+        self._metric_text = dict(metric_text or {})
         self.title = ""
         self.caption = ""
 
@@ -155,6 +164,9 @@ class FakePage:
             REJECT: "审核不通过",
             SUCCESS: "发布成功",
         }
+        for suffix, text in self._metric_text.items():
+            if selector.endswith(suffix):
+                return text
         return values.get(selector, "")
 
     async def text_content(self, selector: str) -> str | None:
@@ -242,6 +254,11 @@ def _pack(**overrides: Any) -> SelectorPack:
         "success_marker": SUCCESS,
         "reject_marker": REJECT,
         "post_link": POST_LINK,
+        "metric_row": METRIC_ROW,
+        "metric_views": METRIC_VIEWS,
+        "metric_likes": METRIC_LIKES,
+        "metric_comments": METRIC_COMMENTS,
+        "metric_shares": METRIC_SHARES,
     }
     selectors.update(overrides.pop("selectors", {}))
     markers: dict[str, tuple[str, ...]] = {
@@ -627,13 +644,70 @@ class TestHealth:
 # ── 其余约定 ─────────────────────────────────────────────────────────
 
 
-class TestConventions:
-    async def test_fetch_metrics_raises_until_t54(self, tmp_paths: StudioPaths) -> None:
-        publisher, _ = _publisher(tmp_paths, FakePage())
+class TestFetchMetrics:
+    """数据回收（T5.4 · §06.6）：打管理页、在列表里找这一行、读四个计数。"""
+
+    async def test_opens_the_manage_url_and_reads_the_four_counts(self, tmp_paths: StudioPaths) -> None:
+        page = FakePage(
+            metric_text={
+                METRIC_VIEWS: "1.2万",
+                METRIC_LIKES: "340",
+                METRIC_COMMENTS: "12",
+                METRIC_SHARES: "3",
+            }
+        )
+        publisher, _ = _publisher(tmp_paths, page)
+        metrics = await publisher.fetch_metrics("741")
+        assert page.visited == ["https://example.invalid/manage"]
+        assert (metrics.views, metrics.likes, metrics.comments, metrics.shares) == (
+            12000,
+            340,
+            12,
+            3,
+        )
+        assert metrics.collected_at.endswith("Z")
+
+    async def test_login_expired_is_reported_not_silently_empty(self, tmp_paths: StudioPaths) -> None:
+        """登录态没了 ⇒ 抛 ``PUBLISH_LOGIN_EXPIRED``（轮询层据此顺延重试）。"""
+        publisher, _ = _publisher(tmp_paths, FakePage(logged_in=False))
         with pytest.raises(PublishError) as info:
-            await publisher.fetch_metrics("12345")
+            await publisher.fetch_metrics("741")
+        assert info.value.code == ErrorCode.PUBLISH_LOGIN_EXPIRED
+
+    async def test_missing_row_is_a_selector_miss(self, tmp_paths: StudioPaths) -> None:
+        page = FakePage(missing=frozenset({METRIC_ROW.replace("{post_id}", "741")}))
+        publisher, _ = _publisher(tmp_paths, page)
+        with pytest.raises(PublishError) as info:
+            await publisher.fetch_metrics("741")
+        assert info.value.code == ErrorCode.PUBLISH_SELECTOR_MISS
+
+    async def test_no_data_yet_is_not_a_failure(self, tmp_paths: StudioPaths) -> None:
+        """四个数都是 ``—`` ⇒ 一条**有效读数**（全 ``None``），不是失败。
+
+        刚发出去的作品就是这样；把它当失败会让这条记录连试三次之后**永久停止采集**，
+        而它恰恰是最该在 T+1h/6h/24h 被回头看的那一条。
+        """
+        page = FakePage(
+            metric_text=dict.fromkeys([METRIC_VIEWS, METRIC_LIKES, METRIC_COMMENTS, METRIC_SHARES], "—")
+        )
+        publisher, _ = _publisher(tmp_paths, page)
+        metrics = await publisher.fetch_metrics("741")
+        assert (metrics.views, metrics.likes, metrics.comments, metrics.shares) == (
+            None,
+            None,
+            None,
+            None,
+        )
+
+    async def test_pack_without_metric_row_says_so(self, tmp_paths: StudioPaths) -> None:
+        pack = _pack(selectors={"metric_row": ""})
+        publisher, _ = _publisher(tmp_paths, FakePage(), pack=pack)
+        with pytest.raises(PublishError) as info:
+            await publisher.fetch_metrics("741")
         assert info.value.code == ErrorCode.PUBLISH_NOT_IMPLEMENTED
 
+
+class TestConventions:
     async def test_selectors_version_comes_from_the_pack_not_the_class(self, tmp_paths: StudioPaths) -> None:
         """版本住在 yaml 里（可热修）。写成 ``ClassVar`` 会得到一个**永远不变**的版本号。"""
         publisher, _ = _publisher(tmp_paths, FakePage(), pack=_pack())

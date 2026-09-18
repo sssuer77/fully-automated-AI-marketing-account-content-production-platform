@@ -237,6 +237,17 @@ class LlmBudgetConfig(_Base):
     on_exceed: BudgetOnExceed = "switch_to_local"
 
 
+class LlmPlannerConfig(_Base):
+    """选题 Planner 的输入开关（T5.4 · §06.8 安全阀 ①）。
+
+    为什么这条开关在 ``llm.yaml`` 而不是 ``app.yaml``：它管的是**喂给模型什么**，
+    与"用哪个通道、烧多少钱"是同一类事；放到 ``app.yaml`` 会变成"模型输入散在两处"。
+    """
+
+    #: 发布回流自动写入的反馈要不要参与选题（``feedback_items.is_auto=1``）。
+    include_auto_feedback: bool = True
+
+
 class LlmConfig(_FileConfig):
     """LLM 双通道（§01.2.4）。"""
 
@@ -245,6 +256,7 @@ class LlmConfig(_FileConfig):
     routing: dict[str, LlmRoutingItem] = Field(min_length=1)
     budget: LlmBudgetConfig = Field(default_factory=LlmBudgetConfig)
     probe_local_on_start: bool = True
+    planner: LlmPlannerConfig = Field(default_factory=LlmPlannerConfig)
 
     @model_validator(mode="after")
     def _references_resolve(self) -> LlmConfig:

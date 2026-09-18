@@ -36,6 +36,7 @@ import {
   rowsOf,
   statusLabel,
   statusTone,
+  tickText,
   usePublishStore,
 } from "@/stores/publish";
 
@@ -77,6 +78,8 @@ const statusBlocks = computed<Block[]>(() => {
 const endedRows = computed(() => publish.endedRows);
 const manualRows = computed(() => publish.manualRows);
 const metricsRows = computed(() => publish.metrics);
+/** 上一轮回收的结论（没跑过 ⇒ 空串，不占屏）。 */
+const lastTick = computed(() => tickText(publish.metricsTick));
 const compliance = computed(() => publish.compliance);
 const preview = computed(() => publish.handoffPreview);
 const result = computed(() => publish.handoffResult);
@@ -292,13 +295,40 @@ function onCancelReason(publication: Publication): void {
     <!-- ⑦ 数据回流 -->
     <PanelCard
       title="数据回流"
-      :subtitle="`${metricsRows.length} 条有回流信息`"
+      :subtitle="`${metricsRows.length} 条有回流信息 · 后台每 60s 自己拍一次`"
     >
+      <template #actions>
+        <AppButton size="sm" :loading="publish.metricsBusy" @click="publish.tickMetrics()">
+          跑一轮
+        </AppButton>
+      </template>
+
+      <p v-if="lastTick" class="row__sub">上一轮：{{ lastTick }}</p>
+
       <ul v-if="metricsRows.length > 0" class="rows">
         <li v-for="row in metricsRows" :key="row.id" class="row row--stack">
           <div class="row__head">
             <StatusDot tone="ok" :label="row.platform" />
             <span class="row__title">{{ row.title }}</span>
+            <span class="row__spacer" />
+            <span class="row__mono mono">
+              下一次 {{ row.next_metric_at ? formatStamp(row.next_metric_at) : "已停止" }}
+              <template v-if="row.metric_attempts > 0"> · 失败 {{ row.metric_attempts }} 次</template>
+            </span>
+            <AppButton
+              size="sm"
+              :disabled="publish.metricsBusy"
+              @click="publish.collectOne(row)"
+            >
+              采数
+            </AppButton>
+            <AppButton
+              size="sm"
+              :disabled="publish.metricsBusy"
+              @click="publish.sinkOne(row)"
+            >
+              沉淀
+            </AppButton>
           </div>
           <p class="row__sub">{{ metricsText(row) }}</p>
         </li>
@@ -306,7 +336,7 @@ function onCancelReason(publication: Publication): void {
       <EmptyState
         v-else
         title="还没有可回流的数字"
-        hint="回流时刻表在发布成功那一刻就写好了（T+1h 起）；真正去平台上取数字的作业还没施工，所以这里目前只有时刻表，没有数字。"
+        hint="回流时刻表在发布成功那一刻就写好了（T+1h 起，依次 1/6/24/72 小时）。到点之后后台自己会去采；想现在就要，按右上角「跑一轮」。"
       />
     </PanelCard>
 

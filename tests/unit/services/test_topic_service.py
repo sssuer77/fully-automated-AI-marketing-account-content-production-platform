@@ -21,8 +21,10 @@ import pytest
 
 from studio.agents.base import AgentContext, AgentResult
 from studio.core.errors import ErrorCode, StudioError
+from studio.core.ids import new_ulid
 from studio.core.paths import StudioPaths
 from studio.db import connect, migrate
+from studio.db.models import FeedbackItemRow
 from studio.db.repositories import DirectionRepo, FeedbackItemRepo
 from studio.domain.topics import (
     DirectionSpec,
@@ -36,7 +38,7 @@ from studio.domain.topics import (
     TopicSpec,
 )
 from studio.services import InputService, TopicService
-from studio.services.topic_service import classify_by_keywords, db_sentiment
+from studio.services.topic_service import _mark_auto_refs, classify_by_keywords, db_sentiment
 from tests.unit.agents.fakes import persona
 
 FEEDBACK_TEXT = """想看MC跑酷新手教程，求更新
@@ -254,3 +256,115 @@ async def test_ideator_unknown_direction_id_is_an_empty_selection(ctx: Ctx) -> N
             persona=persona(), batch_id=planned.batch_id, direction_ids=["not-a-direction"]
         )
     assert excinfo.value.code == ErrorCode.TOPIC_DIRECTION_EMPTY
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 发布回流闭环（T5.4 · §06.8）
+# ══════════════════════════════════════════════════════════════════════
+
+AUTO_TEXT = "这个跑酷太帅了，求教程"
+
+
+class _RefPlanner(FakePlanner):
+    """方向里带一条 ``type='feedback'`` 的依据（引文可指定）。"""
+
+    def __init__(self, quote: str) -> None:
+        super().__init__()
+        self._quote = quote
+
+    async def run(self, ctx: AgentContext, payload: PlannerInput) -> AgentResult[PlannerOutput]:
+        self.inputs.append(payload)
+        directions = [
+            DirectionSpec(
+                title=title,
+                rationale="依据",
+                grounded_on=[
+                    GroundingRef(type="persona"),
+                    GroundingRef(type="feedback", kind="want", quote=self._quote),
+                ],
+                priority=100,
+                fit_score=8,
+            )
+            for title in self.titles
+        ]
+        return AgentResult[PlannerOutput](ok=True, data=PlannerOutput(directions=directions))
+
+
+def _auto_row(ctx: Ctx) -> None:
+    """一条**发布回流**写入的反馈（``is_auto=1`` + 来源发布记录）。"""
+    FeedbackItemRepo(ctx.connection).insert_many(
+        [
+            FeedbackItemRow(
+                id=new_ulid(),
+                source_file="auto_202609.md",
+                platform="douyin",
+                occurred_on="2026-09-18",
+                content=AUTO_TEXT,
+                is_auto=True,
+                source_publication_id="01PUB00000000000000000000",
+            )
+        ]
+    )
+
+
+def _service_with(ctx: Ctx, *, planner: Any, include_auto: bool) -> TopicService:
+    return TopicService(
+        ctx.connection,
+        planner=planner,
+        ideator=FakeIdeator(),
+        paths=ctx.paths,
+        input_service=InputService(ctx.connection, paths=ctx.paths),
+        include_auto_feedback=include_auto,
+    )
+
+
+async def test_grounded_on_gets_source_auto(ctx: Ctx) -> None:
+    """§6.8 闭环验收：引用了自动回流反馈的方向 ⇒ ``grounded_on`` 里出现 ``source='auto'``。"""
+    _auto_row(ctx)
+    planner = _RefPlanner(AUTO_TEXT)
+    report = await _service_with(ctx, planner=planner, include_auto=True).run_planner(persona=persona())
+    assert report.ok is True
+    assert report.batch_id is not None
+
+    rows = DirectionRepo(ctx.connection).list_batch(report.batch_id)
+    refs = [ref for row in rows for ref in row.grounded_on if ref["type"] == "feedback"]
+    assert refs and all(ref["source"] == "auto" for ref in refs)
+
+
+async def test_manual_feedback_is_not_marked_auto(ctx: Ctx) -> None:
+    """引文对不上任何自动回流数据 ⇒ 不标（``None`` 而不是 ``'manual'``：我们只知道"不是自动的"）。"""
+    _auto_row(ctx)
+    planner = _RefPlanner("这个标题太吵了")  # 来自 0913.md 的人工反馈
+    report = await _service_with(ctx, planner=planner, include_auto=True).run_planner(persona=persona())
+    assert report.batch_id is not None
+
+    rows = DirectionRepo(ctx.connection).list_batch(report.batch_id)
+    refs = [ref for row in rows for ref in row.grounded_on if ref["type"] == "feedback"]
+    assert refs and all(ref["source"] is None for ref in refs)
+
+
+async def test_include_auto_feedback_off_keeps_them_out_of_the_prompt(ctx: Ctx) -> None:
+    """§06.8 安全阀 ①：关掉开关 ⇒ 自动回流**不进摘要**，但数据仍在库里。"""
+    _auto_row(ctx)
+    planner = _RefPlanner(AUTO_TEXT)
+    report = await _service_with(ctx, planner=planner, include_auto=False).run_planner(persona=persona())
+
+    digest = planner.inputs[0].feedback_digest
+    assert digest is not None
+    assert all(not item.is_auto for item in (*digest.wants, *digest.complaints, *digest.trends))
+    assert any("include_auto_feedback" in warning for warning in report.warnings)
+    # 0913.md 的 2 条人工 + 1 条自动：**一条都没删**，只是没进摘要。
+    assert FeedbackItemRepo(ctx.connection).count() == 3
+
+
+def test_mark_auto_refs_ignores_short_quotes() -> None:
+    """太短的引文（"好"）会在任何一条反馈里命中 ⇒ 不标，免得把人工依据画成自动的。"""
+    direction = DirectionSpec(
+        title="方向",
+        rationale="理由",
+        grounded_on=[GroundingRef(type="feedback", kind="want", quote="好")],
+        priority=100,
+        fit_score=8,
+    )
+    assert _mark_auto_refs([direction], {"这个跑酷太帅了，求教程"}) == 0
+    assert direction.grounded_on[0].source is None

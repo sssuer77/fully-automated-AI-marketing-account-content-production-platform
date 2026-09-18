@@ -796,6 +796,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/publish/metrics/tick": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Metrics Tick
+         * @description **立刻**跑一轮数据回收（T5.4 · §06.6）。
+         *
+         *     后台本来每 60s 自己拍一次（``app/recycle.py``）；这个端点是给人按的 ——
+         *     "我刚发完，想现在看一眼数据"，或者"上一轮看着没动静，手动催一下"。
+         *
+         *     失败**不抛**：一轮里某一条采不到是常态（登录态掉了、平台还没出数），
+         *     它已经体现在返回的 ``deferred`` / ``stopped`` 里。让整个请求 500 会得到
+         *     "点一下就报错"，而操作员真正需要看到的是"哪几条没采到"。
+         */
+        post: operations["run_metrics_tick_api_v1_publish_metrics_tick_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/publish/publications": {
         parameters: {
             query?: never;
@@ -814,6 +841,50 @@ export interface paths {
         get: operations["list_publications_api_v1_publish_publications_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/publish/publications/{publication_id}/collect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Collect One
+         * @description 采**这一条**（不看 ``next_metric_at``，人按的就是"现在采"）。
+         */
+        post: operations["collect_one_api_v1_publish_publications__publication_id__collect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/publish/publications/{publication_id}/sink": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sink One
+         * @description 把这一条的数据**沉淀成记忆**（T5.4 · §06.8：回流 feedback + 汇总 + 降权）。
+         *
+         *     与 ``collect`` 分开是 §4.6.2 的两个入口：采数是"读回来"，沉淀是"让下一轮
+         *     选题吃得到"。合并成一个端点之后，"我想再沉淀一次"就得连带再采一次数
+         *     （而那一次采集可能正好撞上平台的限流）。
+         */
+        post: operations["sink_one_api_v1_publish_publications__publication_id__sink_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3059,6 +3130,30 @@ export interface components {
             width: number | null;
         };
         /**
+         * MemorySinkView
+         * @description 记忆沉淀的结论（§4.6.2 的 ``MemorySinkResult``）。
+         */
+        MemorySinkView: {
+            /**
+             * Comments Seen
+             * @default 0
+             */
+            comments_seen: number;
+            /** Digest Path */
+            digest_path: string;
+            /** Feedback Items Created */
+            feedback_items_created: number;
+            /**
+             * Low Engagement
+             * @default false
+             */
+            low_engagement: boolean;
+            /** Planner Consumable */
+            planner_consumable: boolean;
+            /** Topics Demoted */
+            topics_demoted: number;
+        };
+        /**
          * MetricsResponse
          * @description `GET /api/v1/metrics` —— 一次拿全（只读，没有任何写动作）。
          */
@@ -3081,6 +3176,30 @@ export interface components {
             worker_alive: number;
             /** Worker Total */
             worker_total: number;
+        };
+        /**
+         * MetricsTickView
+         * @description 跑一轮数据回收的结论（T5.4 · §06.6）。
+         */
+        MetricsTickView: {
+            /** Collected */
+            collected?: string[];
+            /** Deferred */
+            deferred?: string[];
+            /**
+             * Pending
+             * @default 0
+             */
+            pending: number;
+            /** Schedule Hours */
+            schedule_hours?: number[];
+            /** Stopped */
+            stopped?: string[];
+            /**
+             * Yielded
+             * @default false
+             */
+            yielded: boolean;
         };
         /**
          * OutputsLimitsModel
@@ -3949,10 +4068,19 @@ export interface components {
              * @default 3
              */
             max_attempts: number;
+            /**
+             * Metric Attempts
+             * @default 0
+             */
+            metric_attempts: number;
             /** Metrics */
             metrics?: {
                 [key: string]: unknown;
             };
+            /** Metrics History */
+            metrics_history?: {
+                [key: string]: unknown;
+            }[];
             /** Next Metric At */
             next_metric_at?: string | null;
             /** Platform */
@@ -6644,6 +6772,26 @@ export interface operations {
             };
         };
     };
+    run_metrics_tick_api_v1_publish_metrics_tick_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricsTickView"];
+                };
+            };
+        };
+    };
     list_publications_api_v1_publish_publications_get: {
         parameters: {
             query?: {
@@ -6665,6 +6813,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PublicationList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    collect_one_api_v1_publish_publications__publication_id__collect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sink_one_api_v1_publish_publications__publication_id__sink_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemorySinkView"];
                 };
             };
             /** @description Validation Error */

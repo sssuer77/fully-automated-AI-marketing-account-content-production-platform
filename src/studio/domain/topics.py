@@ -92,6 +92,8 @@ Sentiment = Literal["pos", "neu", "neg", "unknown"]
 FeedbackKind = Literal["want", "complaint", "trend", "other"]
 HookType = Literal["conflict", "suspense", "contrast", "number", "other"]
 GroundingType = Literal["persona", "hot", "feedback"]
+#: 依据的来源（T5.4 · §06.8）：人工录入 / 发布回流。
+GroundingSource = Literal["manual", "auto"]
 RuleName = Literal["positioning", "want", "hot"]
 
 #: 简写 → ``feedback_items.sentiment`` 的 CHECK 取值（**落库口径**，裁定 66）
@@ -341,6 +343,11 @@ class GroundingRef(BaseModel):
     ref_id: str | None = None
     kind: str | None = None  # feedback 用：'want' | 'complaint' | 'trend'
     quote: str | None = None
+    #: 这条依据来自**人工录入**还是**发布回流**（T5.4 · §06.8 的闭环验收）。
+    #: ``None`` = 模型没标 / 判不出来。由服务层按**文本比对**确定性回填，
+    #: 不指望模型自己声明"这条是自动回流的"（它分不出来，而分错会让面板上的
+    #: "依据"看起来像人写的）。
+    source: GroundingSource | None = None
 
 
 class DirectionSpec(BaseModel):

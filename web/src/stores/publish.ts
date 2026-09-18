@@ -4,7 +4,8 @@
 // --------------------
 // ① 现在有什么在等着发 / 正在发 / 已经发出去了？—— 六状态看板 + 顶部计数；
 // ② 有没有**需要我做决定**的？—— 待人工队列（重试 / 取消 / 标记已处理三连）；
-// ③ 发出去的片子数据回来了吗？—— 回流时刻表与已回流的数字；
+// ③ 发出去的片子数据回来了吗？—— 回流时刻表与已回流的数字，以及三个动作
+//    （跑一轮 / 采这一条 / 沉淀这一条）；
 // ④ 我要发的东西，来源登记齐了吗？—— R2 合规留档（常驻提示 + 缺口逐条）；
 // ⑤ 怎么把一支成片连同它的证据交给别人？—— 交付包预览 + 导出。
 //
@@ -26,6 +27,7 @@ import { computed, ref } from "vue";
 
 import {
   cancelPublication,
+  collectMetrics,
   fetchCompliance,
   fetchHandoff,
   fetchManualQueue,
@@ -33,9 +35,13 @@ import {
   markManualDone,
   pushHandoff,
   retryPublication,
+  runMetricsTick,
+  sinkMemory,
   type ComplianceView,
   type HandoffPreview,
   type HandoffResult,
+  type MemorySinkResult,
+  type MetricsTickResult,
   type Publication,
   type PublicationList,
   type PublishActionBody,
@@ -69,6 +75,9 @@ export interface PublishApi {
   fetchHandoff: typeof fetchHandoff;
   pushHandoff: typeof pushHandoff;
   fetchCompliance: typeof fetchCompliance;
+  runMetricsTick: typeof runMetricsTick;
+  collectMetrics: typeof collectMetrics;
+  sinkMemory: typeof sinkMemory;
 }
 
 let api: PublishApi = {
@@ -80,6 +89,9 @@ let api: PublishApi = {
   fetchHandoff,
   pushHandoff,
   fetchCompliance,
+  runMetricsTick,
+  collectMetrics,
+  sinkMemory,
 };
 
 /** 换掉部分实现（**只用于测试**：生产代码不调用它）。 */
@@ -209,6 +221,38 @@ export function actionBody(reason: string | null): PublishActionBody {
   return body;
 }
 
+/** 一轮数据回收的结论 → 一行人话。`yielded` 是**让路**，不是失败（见 `recycle.py`）。 */
+export function tickText(report: MetricsTickResult | null): string {
+  if (report === null) return "";
+  if (report.yielded) {
+    return "发布池正忙，这一拍整拍让路（两个浏览器抢同一个 profile 会让发布失败）—— 下一拍照跑。";
+  }
+  const parts = [
+    `采到 ${report.collected?.length ?? 0} 条`,
+    `顺延 ${report.deferred?.length ?? 0} 条`,
+    `停止 ${report.stopped?.length ?? 0} 条`,
+    `还有 ${report.pending ?? 0} 条到点未采`,
+  ];
+  return parts.join(" · ");
+}
+
+/**
+ * 沉淀的结论 → 一行人话。
+ *
+ * 评论采样那一条**明说没接线**（各平台评论页的选择器还没写）：不说的话，
+ * "评论 0 条"会被读成"这条作品没人评论"，而真实情况是"我们还没去读"。
+ */
+export function sinkText(result: MemorySinkResult): string {
+  const parts = [
+    `新增反馈 ${result.feedback_items_created} 条`,
+    `降权方向 ${result.topics_demoted} 个`,
+    `汇总 ${result.digest_path.split(/[\\/]/).pop() ?? result.digest_path}`,
+  ];
+  if (result.planner_consumable) parts.push("下一轮选题可直接吃");
+  if (result.comments_seen === 0) parts.push("评论采样还没接线（只回流了数字）");
+  return parts.join(" · ");
+}
+
 // ══════════════════════════════════════════════════════════════════════
 // store
 // ══════════════════════════════════════════════════════════════════════
@@ -224,12 +268,77 @@ export const usePublishStore = defineStore("publish", () => {
   const error = ref<string | null>(null);
   const notice = ref<string | null>(null);
 
+  // ── 数据回收三连（§06.6 采数 / §06.8 沉淀）───────────────────────────
+
+  /**
+   * 跑一轮数据回收（**给人按的**：后台本来每 60s 自己拍一次）。
+   *
+   * 一条都没采到**不算错**：可能只是还没到点（`pending` 会说清有几条到点未采），
+   * 也可能发布池正忙让路了。所以结论走 `notice` 而不是 `error`。
+   */
+  async function tickMetrics(): Promise<boolean> {
+    metricsBusy.value = true;
+    clearMessages();
+    try {
+      const report = await api.runMetricsTick();
+      metricsTick.value = report;
+      notice.value = tickText(report);
+      await refresh();
+      return true;
+    } catch (failure) {
+      error.value = describeError(failure);
+      return false;
+    } finally {
+      metricsBusy.value = false;
+    }
+  }
+
+  /** 采这一条（不看 `next_metric_at`：人按的就是"现在采"）。 */
+  async function collectOne(publication: Publication): Promise<boolean> {
+    metricsBusy.value = true;
+    clearMessages();
+    try {
+      const fresh = await api.collectMetrics(publication.id);
+      notice.value = `「${fresh.title}」${metricsText(fresh)}`;
+      await refresh();
+      return true;
+    } catch (failure) {
+      error.value = describeError(failure);
+      return false;
+    } finally {
+      metricsBusy.value = false;
+    }
+  }
+
+  /** 沉淀这一条（写 feedback + 汇总文件 + 低互动降权）。 */
+  async function sinkOne(publication: Publication): Promise<boolean> {
+    metricsBusy.value = true;
+    clearMessages();
+    try {
+      const result = await api.sinkMemory(publication.id);
+      notice.value = sinkText(result);
+      await refresh();
+      return true;
+    } catch (failure) {
+      error.value = describeError(failure);
+      return false;
+    } finally {
+      metricsBusy.value = false;
+    }
+  }
+
   // ── 交付包 ──────────────────────────────────────────────────────────
   const handoffTaskId = ref("");
   const handoffPreview = ref<HandoffPreview | null>(null);
   const handoffResult = ref<HandoffResult | null>(null);
   const handoffError = ref<string | null>(null);
   const handoffBusy = ref(false);
+
+  // ── 数据回收（T5.4 · §06.6）──────────────────────────────────────────
+  /** 上一轮回收的结论（`null` = 本次会话还没跑过）。 */
+  const metricsTick = ref<MetricsTickResult | null>(null);
+  /** 有没有一条采数 / 沉淀在途（三个按钮共用一个忙碌位）。 */
+  const metricsBusy = ref(false);
 
   // ── 中间态（一次编辑的东西，不进持久状态）─────────────────────────────
   /** 「标记已处理」的理由草稿（按 publication id 存）。 */
@@ -468,6 +577,12 @@ export const usePublishStore = defineStore("publish", () => {
     metrics,
     endedRows,
     complianceOk,
+    // 数据回收
+    metricsTick,
+    metricsBusy,
+    tickMetrics,
+    collectOne,
+    sinkOne,
     // 动作
     busy,
     error,

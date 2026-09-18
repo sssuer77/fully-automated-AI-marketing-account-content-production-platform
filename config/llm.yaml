@@ -40,6 +40,13 @@ routing:
   editor:   { profile: cloud, fallback: local }
   cover:    { profile: local, fallback: cloud }
 
+# 选题侧的输入开关（§06.8 安全阀 ①）
+planner:
+  # 发布回流自动写入的反馈（feedback_items.is_auto=1）要不要喂给 Planner。
+  # ★ 默认 true：回流的全部意义就是让下一轮选题吃到数据；关掉它的场合是
+  #   "这批自动数据看着不对，先别影响选题"——那时改这一行，不用删数据。
+  include_auto_feedback: true
+
 # R16 成本闸门
 budget:
   per_task_token_limit: 60000

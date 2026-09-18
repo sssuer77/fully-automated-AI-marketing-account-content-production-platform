@@ -27,6 +27,11 @@
     ?eat=newlines   走回读比对的 whitespace_only 分支
     ?reject=1       点下发布后走 PUBLISH_REVIEW_REJECTED 分支
 
+  数据回收（T5.4）用的那一块在同一页上：`?post=<作品号>` 会渲染出**一行**计数，
+  四个数字由 `views` / `likes` / `comments` / `shares` 给（默认写 `1.2万` 这种缩写，
+  好让 `parse_metric_count` 的缩写解析也被真跑一遍）。不给 `post` 就一行都没有 ——
+  "管理页上找不到这条作品"那条分支靠它。
+
   被 http 打开时，点下"发布"会 POST 一次 /__published（见脚本末尾的注释）。
 
   ★ 演练**成功**的判据之一是 window.__published 仍为 false —— 见页面底部的按钮处理。
@@ -83,6 +88,14 @@
     <button type="button" id="publish">发布</button>
   </div>
 
+<div class="card" id="metrics-card">
+    <h2 style="font-size:14px;margin:0 0 4px">数据（T5.4 演练用）</h2>
+    <p class="muted">平台管理页上的"这一行作品 + 四个计数"。查询串 `?post=` 决定有没有这一行。</p>
+    <table id="metrics-table" style="border-collapse:collapse">
+      <tbody></tbody>
+    </table>
+  </div>
+
 <script>
 (function () {
   "use strict";
@@ -134,6 +147,24 @@
     var cleaned = mode === "emoji" ? text.replace(EMOJI, "") : text.replace(/\s*\n\s*/g, " ");
     if (cleaned !== text) { caption.innerText = cleaned; }
   });
+
+  // ④ 数据回收的靶子：`?post=<作品号>` ⇒ 渲染一行计数。
+  //    刻意**不**做任何格式化（"1.2万" 原样写进去）：缩写解析正是要验的东西之一。
+  (function () {
+    var postId = params.get("post");
+    var tbody = document.querySelector("#metrics-table tbody");
+    if (!postId || !tbody) { return; }
+    var row = document.createElement("tr");
+    row.setAttribute("data-post-id", postId);
+    [["views", "播放"], ["likes", "点赞"], ["comments", "评论"], ["shares", "分享"]].forEach(function (pair) {
+      var cell = document.createElement("td");
+      cell.className = "metric-" + pair[0];
+      cell.style.padding = "2px 12px 2px 0";
+      cell.textContent = params.get(pair[0]) || "—";
+      row.appendChild(cell);
+    });
+    tbody.appendChild(row);
+  })();
 
   // ② 结果标志点下按钮才被创建（静态存在会让"发布成功了没"永远为真）。
   document.getElementById("publish").addEventListener("click", function () {

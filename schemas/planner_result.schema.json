@@ -69,6 +69,17 @@
                     "string",
                     "null"
                   ]
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "manual",
+                    "auto",
+                    null
+                  ]
                 }
               }
             }

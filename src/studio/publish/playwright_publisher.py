@@ -24,6 +24,13 @@
 不是回读判据。失败时把 ``reason`` 原样报出来（``emoji_stripped`` / ``whitespace_only``…），
 让操作员一眼知道是哪种吞法。
 
+数据回收（第 ⑨ 步）不在八步里
+------------------------------
+:meth:`PlaywrightPublisher.fetch_metrics` 走的是**同一个** Publisher、同一份登录态，
+但它不属于发布流程（§06.6 明写"不用队列"）：它是发布**之后**按 ``next_metric_at``
+定时回头读一次数。放在这个类里，是因为"这个平台的页面怎么读"与"怎么发"是同一份
+平台知识，拆到两个文件只会让选择器包被读两遍。
+
 dry-run 停在哪
 --------------
 停在第 ⑥ 步**之前**（§06.5.3 第 ⑥ 步的括号里写的就是"在此停止 + 截图 + 返回
@@ -52,7 +59,8 @@ from studio.publish.base import (
     PublishResult,
 )
 from studio.publish.browser import NAV_TIMEOUT_MS, PageLike, SessionFactory, open_session
-from studio.publish.selectors import SelectorPack, load_selector_pack
+from studio.publish.metrics import parse_metric_count
+from studio.publish.selectors import METRIC_KEYS, POST_ID_PLACEHOLDER, SelectorPack, load_selector_pack
 
 __all__ = [
     "POLL_SEC",
@@ -171,13 +179,77 @@ class PlaywrightPublisher(Publisher):
             )
 
     async def fetch_metrics(self, platform_post_id: str) -> PublishMetrics:
-        """数据回收是 T5.4（§06.6）。现在抛，比返回一堆 ``None`` 诚实。"""
-        raise PublishError(
-            "数据回收尚未实现（T5.4）",
-            code=ErrorCode.PUBLISH_NOT_IMPLEMENTED,
-            context={"platform_post_id": platform_post_id},
-            remediation="等 T5.4 的 publish/metrics.py 落地",
-        )
+        """读一条作品的数据（T5.4 · §06.6）：打**管理页**，在列表里找这一条。
+
+        为什么走管理页而不是作品详情页
+        ----------------------------
+        详情页每个平台都不一样（有的压根没有），而"列表里一行、四个数字"是四个平台
+        共同的结构。选择器因此只需要一组：``metric_row``（怎么定位那一行）+
+        四个 ``metric_*``（数字在哪）。
+
+        读不出来**抛**而不是返回一堆 ``None``
+        ------------------------------------
+        这一层答不上来（登录态没了 / 那一行不在 / 选择器过期）与"平台说这条还没数据"
+        是两件事：前者要顺延重试（§06.6 的失败处置），后者是一个**有效的读数**。
+        把它们都压成 ``None``，"选择器失效"就会以"播放量一直是空"的形式安静地烂在库里。
+        """
+        url = self._pack.urls.get("manage") or self._pack.url("upload")
+        async with self._session_factory(self._ctx) as page:
+            await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            if not await self._logged_in(page):
+                health = await self._not_logged_in(page)
+                raise PublishError(
+                    f"登录态不过，采不到数据：{health.hint}",
+                    code=ErrorCode.PUBLISH_LOGIN_EXPIRED,
+                    context={"platform_post_id": platform_post_id, "platform": self.platform},
+                    remediation="人工扫码登录之后再等下一次回收（**不自动登录** · R13）",
+                )
+            return await self._read_metrics(page, platform_post_id)
+
+    async def _read_metrics(self, page: PageLike, platform_post_id: str) -> PublishMetrics:
+        """在管理页上定位这一行并读四个计数（见 :meth:`fetch_metrics` 的两条边界）。"""
+        template = self._pack.selectors.get("metric_row", "")
+        if not template:
+            raise PublishError(
+                f"{self.platform} 的选择器包里没有 metric_row",
+                code=ErrorCode.PUBLISH_NOT_IMPLEMENTED,
+                context={"platform": self.platform, "version": self.selectors_version},
+                remediation="在 selectors/<platform>.yaml 里补上数据回收那一组键（T5.4）",
+            )
+        row = template.replace(POST_ID_PLACEHOLDER, platform_post_id)
+        if await page.query_selector(row) is None:
+            raise PublishError(
+                f"管理页上找不到作品 {platform_post_id}",
+                code=ErrorCode.PUBLISH_SELECTOR_MISS,
+                context={"platform": self.platform, "selector": row, "version": self.selectors_version},
+                remediation=(
+                    "两种可能，都要看一眼：① 这条作品被删了；② 选择器过期了"
+                    "（见 docs/runbook/publish_selector.md）"
+                ),
+            )
+
+        values: dict[str, int | None] = {}
+        for key in METRIC_KEYS:
+            selector = self._pack.selectors.get(f"metric_{key}", "")
+            if not selector:
+                values[key] = None
+                continue
+            # 后代组合器而不是"再查一次"：`text_content` 只收一个选择器，
+            # 而"这一行里的那个数字"正好是 CSS 能表达的事。
+            text = await self._optional_text(page, f"{row} {selector}")
+            values[key] = parse_metric_count(text)
+
+        if all(value is None for value in values.values()):
+            # **不是失败**：刚发出去的作品四个数都可能是"—"（平台还没开始统计）。
+            # 记一条 warn 是为了"四个选择器同时过期"时有人在日志里看得见 ——
+            # 只把它当成功的话，那种坏法在面板上表现为"趋势图一直是空的"。
+            logger.warning(
+                "metrics.all_empty",
+                platform=self.platform,
+                platform_post_id=platform_post_id,
+                selector_version=self.selectors_version,
+            )
+        return PublishMetrics(collected_at=now_iso(), **values)
 
     # ── 八步 ────────────────────────────────────────────────────────
 
