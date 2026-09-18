@@ -315,7 +315,7 @@ async function onAutoToggle(): Promise<void> {
       <p v-if="!resources" class="muted">还没采过样（API 起来后 5s 内会有一拍）。</p>
     </PanelCard>
 
-    <PanelCard title="五进程" :subtitle="`api / tts / draft / voice / render · 启动要过 doctor 门禁`">
+    <PanelCard title="六进程" :subtitle="`api / tts / draft / voice / render / publish · 启动要过 doctor 门禁`">
       <template #actions>
         <AppButton size="sm" variant="primary" :loading="overview.busy" @click="onStart()">启动</AppButton>
       </template>

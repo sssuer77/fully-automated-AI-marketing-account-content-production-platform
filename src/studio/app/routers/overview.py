@@ -80,7 +80,7 @@ _START_GUARD = _StartGuard()
 
 
 def _service_manager(paths: StudioPaths) -> ServiceManager:
-    """五进程编排器的构造点（单测 monkeypatch 它就能不碰真进程）。"""
+    """六进程编排器的构造点（单测 monkeypatch 它就能不碰真进程）。"""
     return ServiceManager(paths)
 
 
@@ -136,7 +136,7 @@ def set_auto_approve_policy(request: Request, body: PolicyRequest) -> PolicyResp
 
 @router.post("/api/v1/overview/start", response_model=StartResponse)
 def start_services(request: Request) -> StartResponse:
-    """拉起五进程（**不**开浏览器、**要**过 doctor 门禁 · 裁定 137）。
+    """拉起六进程（**不**开浏览器、**要**过 doctor 门禁 · 裁定 137）。
 
     这是**同步阻塞**调用：`ServiceManager.start()` 要等各进程就绪（上限 60s）。
     路由是 ``def`` ⇒ 跑在 Starlette 线程池里，不占事件循环；前端把超时放宽到 90s。

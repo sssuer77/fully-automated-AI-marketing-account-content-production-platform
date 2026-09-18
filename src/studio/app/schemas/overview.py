@@ -48,7 +48,7 @@ __all__ = [
 #: 池名（与 `pool_settings.pool` 的 CHECK 同源）
 PoolName = Literal["draft", "voice", "render", "publish"]
 
-#: 五进程名（与 `service_manager.SERVICE_NAMES` 同源）
+#: 六进程名（与 `service_manager.SERVICE_NAMES` 同源）
 ServiceName = Literal["api", "tts", "draft", "voice", "render"]
 
 #: 放行策略（与 `config/app.yaml → approval.auto_approve_policy` 同源）

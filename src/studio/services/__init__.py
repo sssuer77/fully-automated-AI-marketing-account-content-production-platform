@@ -7,7 +7,7 @@
 - ``topic_service``：选题流水线（Planner → 方向 → Ideator → 选题池，T1.9）；
 - ``script_service``：写稿流水线（Director → Writer → 逐句落库，T1.10）；
 - ``review_service``：审稿/改稿/分级放行（Reviewer → 评分 → 四路去向，T1.11）；
-- ``service_manager``：五进程编排（启动 / 优雅关停 / 查看，T1.12）。
+- ``service_manager``：六进程编排（启动 / 优雅关停 / 查看，T1.12 + T5.5）。
 
 其余服务按任务落点逐步补齐：``voice_service``(T2.x) / ``render_service``(T3.x) /
 ``publish_service``(T5.x) ……

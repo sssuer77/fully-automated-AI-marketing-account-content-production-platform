@@ -463,7 +463,7 @@ export interface paths {
         put?: never;
         /**
          * Start Services
-         * @description 拉起五进程（**不**开浏览器、**要**过 doctor 门禁 · 裁定 137）。
+         * @description 拉起六进程（**不**开浏览器、**要**过 doctor 门禁 · 裁定 137）。
          *
          *     这是**同步阻塞**调用：`ServiceManager.start()` 要等各进程就绪（上限 60s）。
          *     路由是 ``def`` ⇒ 跑在 Starlette 线程池里，不占事件循环；前端把超时放宽到 90s。

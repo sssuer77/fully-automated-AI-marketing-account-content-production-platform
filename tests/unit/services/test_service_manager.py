@@ -163,7 +163,7 @@ def tts_interpreter(paths: StudioPaths) -> Path:
 
 @pytest.fixture
 def worker_home(tmp_paths: StudioPaths) -> StudioPaths:
-    """临时 home 里造出 5 个入口脚本 + 运行期目录。
+    """临时 home 里按 ``SERVICE_NAMES`` 造出全部入口脚本 + 运行期目录。
 
     入口脚本不在 ⇒ readiness 全是 ``entry_missing``；``logs/`` 不在 ⇒
     写 PID 台账会直接 ``FileNotFoundError``。
@@ -178,7 +178,7 @@ def worker_home(tmp_paths: StudioPaths) -> StudioPaths:
 
 @pytest.fixture
 def pooled(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """给三个池注册假 handler（否则 readiness 恒为 ``handler_missing``）。
+    """给四个池注册假 handler（否则 readiness 恒为 ``handler_missing``）。
 
     直接改 ``runner.HANDLERS`` 再还原：``register_handler`` 是模块级注册表，
     没有"注销"接口 —— 测试自己负责把现场收拾干净。
@@ -188,7 +188,7 @@ def pooled(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         unit_types = frozenset({"fake"})
 
     saved = dict(pool_runner.HANDLERS)
-    for name in ("draft", "voice", "render"):
+    for name in ("draft", "voice", "render", "publish"):
         pool_runner.HANDLERS[name] = _Handler()  # type: ignore[assignment]
     yield
     pool_runner.HANDLERS.clear()
@@ -272,7 +272,14 @@ class TestSpecs:
 
     def test_ports_match_the_contract(self, tmp_paths: StudioPaths) -> None:
         ports = {spec.name: spec.port for spec in build_specs(tmp_paths)}
-        assert ports == {"api": 8787, "tts": 8788, "draft": None, "voice": None, "render": None}
+        assert ports == {
+            "api": 8787,
+            "tts": 8788,
+            "draft": None,
+            "voice": None,
+            "render": None,
+            "publish": None,
+        }
 
     def test_pool_specs_poll_the_stop_flag_http_specs_do_not(self, tmp_paths: StudioPaths) -> None:
         """裁定 107：uvicorn 没有 1s tick ⇒ 对它走信号，别白等一个不会发生的优雅退出。"""
@@ -289,7 +296,7 @@ class TestSpecs:
 
     def test_unknown_service_name_is_refused(self, tmp_paths: StudioPaths) -> None:
         with pytest.raises(StudioError) as excinfo:
-            make_manager(tmp_paths).spec("publish")
+            make_manager(tmp_paths).spec("nope")
         assert excinfo.value.code is ErrorCode.CONFIG_INVALID
         assert excinfo.value.context["valid"] == list(SERVICE_NAMES)
 
@@ -347,12 +354,9 @@ class TestReadiness:
     ) -> None:
         """**不静默起一个空转 worker**：handler 未注册 ⇒ 不拉起。
 
-        四个池的 handler 现在**都已落地**（publish 是 T5.3 补上的最后一个），而
-        ``publish`` 仍然不在 ``SERVICE_NAMES`` 里 —— 发布进程要等发布面板（T5.5）
-        一起接进 supervisor（出厂 ``publish.enabled=false``，一个常驻发布 worker
-        在开关关着时唯一会做的事是把投递进来的作业标成 ``PUBLISH_DISABLED``）。
-        所以这里**模拟**"某个池还没落地"：把 ``voice`` 从声明表里摘掉，判据必须立刻
-        翻回 ``handler_missing`` —— 这也让这条护栏不依赖任务进度。
+        四个池的 handler 与进程**都已接进 supervisor**（``publish`` 是最后补上的，
+        T5.5 面板落地之后）。所以这里**模拟**"某个池还没落地"：把 ``voice`` 从声明表
+        里摘掉，判据必须立刻翻回 ``handler_missing`` —— 这也让这条护栏不依赖任务进度。
         """
         monkeypatch.delitem(pool_runner.HANDLER_MODULES, "voice")
         manager = make_manager(worker_home)
@@ -445,15 +449,15 @@ class TestStart:
         table, rec = ready_pair()
         manager = make_manager(worker_home, table=table, rec=rec, doctor=blocked_doctor())
         report = manager.start(open_browser=False, doctor_gate=False)
-        assert report.ok and rec.spawned == ["api", "draft", "voice", "render"]
+        assert report.ok and rec.spawned == ["api", "draft", "voice", "render", "publish"]
 
     def test_only_the_ready_processes_are_spawned(self, worker_home: StudioPaths) -> None:
-        """现状：api / draft / voice / render 就绪，tts 报降级 —— **降级不算失败**。"""
+        """现状：api / draft / voice / render / publish 就绪，tts 报降级 —— **降级不算失败**。"""
         table, rec = ready_pair()
         manager = make_manager(worker_home, table=table, rec=rec, doctor=ok_doctor())
         report = manager.start(open_browser=False)
-        assert rec.spawned == ["api", "draft", "voice", "render"]
-        assert report.ready == ("api", "draft", "voice", "render")
+        assert rec.spawned == ["api", "draft", "voice", "render", "publish"]
+        assert report.ready == ("api", "draft", "voice", "render", "publish")
         assert set(report.degraded) == {"tts"}
         assert report.failed == ()
         assert report.ok
@@ -487,8 +491,8 @@ class TestStart:
         rec.ports["8787"] = True
         manager = make_manager(worker_home, rec=rec, doctor=ok_doctor())
         report = manager.start(open_browser=False)
-        # 端口冲突只挡 api；三个池照起（本用例的 Recorder 自带空表 ⇒ 它们随即被判"起完就死"）
-        assert rec.spawned == ["draft", "voice", "render"]
+        # 端口冲突只挡 api；四个池照起（本用例的 Recorder 自带空表 ⇒ 它们随即被判"起完就死"）
+        assert rec.spawned == ["draft", "voice", "render", "publish"]
         assert report.port_busy == ("api",)
         assert report.ready == ()
 
@@ -498,7 +502,7 @@ class TestStart:
         manager = make_manager(worker_home, table=table, rec=rec, doctor=ok_doctor())
         worker_home.pid_file("api").write_text("4242", encoding="utf-8")
         report = manager.start(open_browser=False)
-        assert rec.spawned == ["draft", "voice", "render"]  # api 已在跑 ⇒ 只补拉没跑的池
+        assert rec.spawned == ["draft", "voice", "render", "publish"]  # api 已在跑 ⇒ 只补拉没跑的池
         assert report.already_running == ("api",)
         assert report.ready == ("api",)
 
@@ -527,7 +531,7 @@ class TestStart:
         table = FakeProcessTable()  # 管理器看的是这张空表
         manager = make_manager(worker_home, table=table, rec=rec, doctor=ok_doctor())
         report = manager.start(open_browser=False)
-        assert report.failed == ("api", "draft", "voice", "render")  # 四个就绪进程都没挺过就绪探测
+        assert report.failed == ("api", "draft", "voice", "render", "publish")  # 就绪进程都没挺过探测
         assert not report.ok
 
     def test_the_browser_opens_only_when_the_api_is_ready(self, worker_home: StudioPaths) -> None:
@@ -549,7 +553,7 @@ class TestStart:
         rec = Recorder()
         manager = make_manager(worker_home, rec=rec, doctor=ok_doctor())
         with pytest.raises(StudioError):
-            manager.start(open_browser=False, only=["publish"])
+            manager.start(open_browser=False, only=["nope"])
         assert rec.spawned == []
 
 
@@ -659,7 +663,7 @@ class TestStop:
 
     def test_unknown_service_in_only_is_refused(self, worker_home: StudioPaths) -> None:
         with pytest.raises(StudioError):
-            make_manager(worker_home).stop(only=["publish"])
+            make_manager(worker_home).stop(only=["nope"])
 
     def test_the_default_budget_is_the_acceptance_number(self) -> None:
         """验收口径：``停止.bat`` ⇒ 10s 内全部退出。"""

@@ -1,12 +1,17 @@
 """制片台进程编排（T1.12 · 原文附2 / §7.4 / ADR-002）。
 
-五个进程
+六个进程
 --------
 | 进程 | 端口 | 就绪判据 | 未就绪时 |
 | --- | --- | --- | --- |
 | ``api`` | 8787 | ``GET /api/v1/health`` 回 200 且 ``ok=true`` | **硬失败**（WebUI 是唯一入口） |
 | ``tts`` | 8788 | ``GET /health`` 回 200 | **降级**：其余照常启动（§1.7） |
-| ``draft`` / ``voice`` / ``render`` | — | 池 handler 已注册 + 进程活着 | **降级**：跳过，不拉起 |
+| ``draft`` / ``voice`` / ``render`` / ``publish`` | — | 池 handler 已注册 + 进程活着 | **降级**：不拉起 |
+
+``publish`` 是最后一个进来的（T5.5 面板落地之后）：在那之前它是唯一「面板能看、
+进程起不来」的池 —— 发布作业投进去没人消化。出厂 ``publish.enabled=false`` 时它
+照常活着，只是把作业如实标成 ``PUBLISH_DISABLED``（转人工），这是**要的**行为：
+开关一开就立刻能发，不必先重启服务。
 
 为什么核心是 Python 而不是 PowerShell（裁定 104）
 --------------------------------------------------
@@ -86,8 +91,10 @@ __all__ = [
 
 logger = get_logger("studio.services.service_manager")
 
-#: 五个进程（原文附2：任务队列 + CosyVoice 服务 + Web 服务 ⇒ 一期细化为 5 个）
-SERVICE_NAMES: Final[tuple[str, ...]] = ("api", "tts", "draft", "voice", "render")
+#: 六个进程（原文附2：任务队列 + CosyVoice 服务 + Web 服务 ⇒ 一期细化为 5 个；
+#: T5.5 发布面板落地后把 ``publish`` 补成第 6 个 —— 在那之前它是唯一「面板能看、
+#: 进程起不来」的池）。
+SERVICE_NAMES: Final[tuple[str, ...]] = ("api", "tts", "draft", "voice", "render", "publish")
 
 #: 启动后等就绪的总预算（验收：60s 内 5 进程 ready）
 DEFAULT_READY_TIMEOUT_SEC: Final[float] = 60.0
@@ -474,7 +481,7 @@ def tts_python_for(paths: StudioPaths) -> Path | None:
 
 
 def build_specs(paths: StudioPaths, *, python: str | None = None) -> tuple[ServiceSpec, ...]:
-    """构造五进程规格表（命令行 = ``<python> workers/run_<name>.py``）。
+    """构造六进程规格表（命令行 = ``<python> workers/run_<name>.py``）。
 
     用**脚本路径**而不是 ``python -m studio.cli``：worker 进程的日志第一行就能
     看出"是哪个入口"，排障时少一次推理。
@@ -492,6 +499,7 @@ def build_specs(paths: StudioPaths, *, python: str | None = None) -> tuple[Servi
     draft_entry, draft_argv = entry("draft")
     voice_entry, voice_argv = entry("voice")
     render_entry, render_argv = entry("render")
+    publish_entry, publish_argv = entry("publish")
     if tts_python is not None:
         tts_argv = (str(tts_python), str(tts_entry))
 
@@ -539,6 +547,14 @@ def build_specs(paths: StudioPaths, *, python: str | None = None) -> tuple[Servi
             pool="render",
             polls_stop_flag=True,
         ),
+        ServiceSpec(
+            name="publish",
+            kind=ServiceKind.POOL,
+            entry=publish_entry,
+            argv=publish_argv,
+            pool="publish",
+            polls_stop_flag=True,
+        ),
     )
 
 
@@ -546,7 +562,7 @@ def build_specs(paths: StudioPaths, *, python: str | None = None) -> tuple[Servi
 
 
 class ServiceManager:
-    """五进程的启动 / 关停 / 查看（§7.4 · 原文附2）。
+    """六个进程的启动 / 关停 / 查看（§7.4 · 原文附2 + T5.5 补 publish）。
 
     :param paths: 路径契约
     :param env: 传给子进程的环境变量快照（默认 ``os.environ``）

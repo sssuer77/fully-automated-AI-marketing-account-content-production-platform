@@ -418,7 +418,7 @@ class DeadLetterConfig(_Base):
 
 #: 无人值守守护**允许**守护的进程名（与 `service_manager.SERVICE_NAMES` 同源）。
 #: 写在这里而不是 import 那个常量：`core` 是最底层，不能反向 import `services`。
-WATCHDOG_SERVICES: Final[tuple[str, ...]] = ("api", "tts", "draft", "voice", "render")
+WATCHDOG_SERVICES: Final[tuple[str, ...]] = ("api", "tts", "draft", "voice", "render", "publish")
 
 
 class WatchdogConfig(_Base):

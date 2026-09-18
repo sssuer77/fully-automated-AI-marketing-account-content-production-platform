@@ -255,7 +255,7 @@ class WatchdogService:
 
     :param connection_factory: 按线程取连接（与 `LogService` 同一手法）。守护跑在
         线程池里，每次可能是不同线程，而 `sqlite3` 连接线程亲和。
-    :param manager: 五进程编排器（PID 台账 + 就绪判定 + 拉起）
+    :param manager: 六进程编排器（PID 台账 + 就绪判定 + 拉起）
     :param metrics: 采样器（磁盘水位与显存读数的**唯一**来源；`None` ⇒ 两道门禁都跳过）
     :param settings: 运行期配置（`pause_pools_on_low` 是门禁的**总开关**）
     :param pools_config: `config/pools.yaml`；`None` ⇒ 守护整体停用（并如实说明原因）

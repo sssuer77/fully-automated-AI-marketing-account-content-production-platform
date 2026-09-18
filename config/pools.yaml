@@ -74,7 +74,7 @@ dead_letter:
 watchdog:
   enabled: true
   tick_sec: 5.0                    # 判死靠 PID 台账（不是 15s 心跳）⇒ 15s 内重启
-  guard_services: [api, tts, draft, voice, render]   # 守护者守不了自己所在的那个进程
+  guard_services: [api, tts, draft, voice, render, publish]   # 守护者守不了自己所在的那个进程
   restart_base_ms: 5000            # 指数退避 5s → 10s → 20s … 封顶 300s
   restart_max_ms: 300000
   restart_limit: 20                # 10 分钟窗口内最多重启 20 次；超限停手 + 告警

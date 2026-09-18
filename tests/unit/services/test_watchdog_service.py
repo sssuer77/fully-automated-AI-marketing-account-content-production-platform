@@ -72,7 +72,7 @@ from studio.services.watchdog_service import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SERVICE_NAMES = ("api", "tts", "draft", "voice", "render")
+SERVICE_NAMES = ("api", "tts", "draft", "voice", "render", "publish")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -424,7 +424,7 @@ class TestProcessGuard:
         self, paths: StudioPaths, connection: sqlite3.Connection, logs: LogService
     ) -> None:
         """杀任一 worker ⇒ 这一拍就发现并拉起（判死靠 PID 台账，**不是** 15s 心跳）。"""
-        manager = FakeManager(alive=("api", "tts", "draft", "render"))
+        manager = FakeManager(alive=("api", "tts", "draft", "render", "publish"))
         watchdog = make_watchdog(paths, connection, logs, manager=manager)
 
         tick = watchdog.tick()
@@ -439,7 +439,7 @@ class TestProcessGuard:
         self, paths: StudioPaths, connection: sqlite3.Connection, logs: LogService
     ) -> None:
         """`api` 死了没有任何进程内机制能救它 ⇒ **如实标不守**，不画绿灯。"""
-        manager = FakeManager(alive=("tts", "draft", "voice", "render"))
+        manager = FakeManager(alive=("tts", "draft", "voice", "render", "publish"))
         watchdog = make_watchdog(paths, connection, logs, manager=manager)
 
         tick = watchdog.tick()
@@ -455,7 +455,7 @@ class TestProcessGuard:
         self, paths: StudioPaths, connection: sqlite3.Connection, logs: LogService
     ) -> None:
         """守护名单里有、进程表里却没有 ⇒ 报出来（**不硬拉**：那多半是配置/台账不一致）。"""
-        manager = FakeManager(reported=("api", "tts", "draft", "render"))
+        manager = FakeManager(reported=("api", "tts", "draft", "render", "publish"))
         watchdog = make_watchdog(paths, connection, logs, manager=manager)
 
         tick = watchdog.tick()
@@ -470,7 +470,7 @@ class TestProcessGuard:
     ) -> None:
         """拉起失败 ⇒ 记一次 + 写下退避落点；**下一拍不重复拉**（退避中）。"""
         manager = FakeManager(
-            alive=("api", "tts", "draft", "render"),
+            alive=("api", "tts", "draft", "render", "publish"),
             start_error=StudioError("端口被占", code=ErrorCode.SERVICE_START_BUSY),
         )
         watchdog = make_watchdog(paths, connection, logs, manager=manager)
@@ -493,7 +493,7 @@ class TestProcessGuard:
         pools = with_watchdog(
             load_pools_config(paths), restart_limit=2, restart_base_ms=100, restart_max_ms=200
         )
-        manager = FakeManager(alive=("api", "tts", "draft", "render"), landed=False)
+        manager = FakeManager(alive=("api", "tts", "draft", "render", "publish"), landed=False)
         watchdog = make_watchdog(paths, connection, logs, manager=manager, pools=pools)
 
         base = datetime(2026, 9, 14, 0, 0, 0, tzinfo=UTC)
@@ -510,7 +510,7 @@ class TestProcessGuard:
         """ "十分钟前崩过"不该压死现在：窗口外的重启次数**不再算数**。"""
         pools = with_watchdog(load_pools_config(paths), restart_base_ms=100, restart_max_ms=200)
         manager = FakeManager(
-            alive=("api", "tts", "draft", "render"),
+            alive=("api", "tts", "draft", "render", "publish"),
             start_error=StudioError("起不来", code=ErrorCode.CONFIG_INVALID),
         )
         watchdog = make_watchdog(paths, connection, logs, manager=manager, pools=pools)
@@ -537,7 +537,7 @@ class TestProcessGuard:
                 payload={"code": RESTARTED_CODE, "service": "voice"},
             )
         pools = with_watchdog(load_pools_config(paths), restart_limit=2)
-        manager = FakeManager(alive=("api", "tts", "draft", "render"))
+        manager = FakeManager(alive=("api", "tts", "draft", "render", "publish"))
         watchdog = make_watchdog(paths, connection, logs, manager=manager, pools=pools)
 
         tick = watchdog.tick()
@@ -549,7 +549,7 @@ class TestProcessGuard:
         self, paths: StudioPaths, connection: sqlite3.Connection, logs: LogService
     ) -> None:
         """**不静默起一个空转 worker**（裁定 103）：未就绪 ⇒ 记在报告里，不拉。"""
-        manager = FakeManager(alive=("api", "tts", "draft", "render"), ready=False)
+        manager = FakeManager(alive=("api", "tts", "draft", "render", "publish"), ready=False)
         watchdog = make_watchdog(paths, connection, logs, manager=manager)
 
         tick = watchdog.tick()
@@ -923,7 +923,7 @@ class TestManualTick:
         self, paths: StudioPaths, connection: sqlite3.Connection, logs: LogService
     ) -> None:
         """跑的是**同一个** `tick()`，且留痕（`actor=user` / `source=webui`）。"""
-        manager = FakeManager(alive=("api", "tts", "draft", "render"))
+        manager = FakeManager(alive=("api", "tts", "draft", "render", "publish"))
         watchdog = make_watchdog(paths, connection, logs, manager=manager)
 
         outcome = watchdog.manual_tick(reason="手工验证守护")

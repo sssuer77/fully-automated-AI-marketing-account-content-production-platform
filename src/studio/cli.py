@@ -127,7 +127,7 @@ script_app = typer.Typer(
 )
 service_app = typer.Typer(
     name="service",
-    help="五进程编排：一键启动 / 优雅关停 / 查看（T1.12）",
+    help="六进程编排：一键启动 / 优雅关停 / 查看（T1.12 + T5.5）",
     no_args_is_help=True,
 )
 gc_app = typer.Typer(
@@ -2075,7 +2075,7 @@ def service_start(
     ] = 60.0,
     json_output: Annotated[bool, typer.Option("--json", help="输出机读 JSON")] = False,
 ) -> None:
-    """一键拉起五进程（API / TTS / draft / voice / render）并等就绪（T1.12 · 原文附2）。
+    """一键拉起六进程（API / TTS / draft / voice / render / publish）并等就绪（T1.12 · 原文附2）。
 
     顺序固定：**doctor 门禁 ⇒ 清理陈旧台账与残留关停标志 ⇒ 逐进程拉起 ⇒ 等就绪 ⇒ 开浏览器**。
     未就绪的进程（池 handler 未注册 / TTS 服务未落地）报 `degraded` 并**不阻塞**其余进程。
@@ -2127,7 +2127,7 @@ def service_stop(
 def service_status(
     json_output: Annotated[bool, typer.Option("--json", help="输出机读 JSON")] = False,
 ) -> None:
-    """查看五进程的台账 / 存活 / 端口（T1.12）。"""
+    """查看六进程的台账 / 存活 / 端口（T1.12）。"""
     paths = StudioPaths.from_env()
     manager = default_manager(paths)
     rows = manager.status()

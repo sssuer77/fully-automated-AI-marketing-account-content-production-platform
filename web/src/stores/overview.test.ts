@@ -340,7 +340,7 @@ describe("纯函数", () => {
   });
 
   it("summarizeStart 成功与失败都要出现", () => {
-    expect(summarizeStart(startResult())).toBe("五进程就绪（3.2s）：已在跑 api · 新拉起 tts");
+    expect(summarizeStart(startResult())).toBe("六进程就绪（3.2s）：已在跑 api · 新拉起 tts");
     const bad = summarizeStart(
       startResult({ ok: false, failed: ["render"], port_busy: ["voice"], degraded: ["tts"] }),
     );
@@ -483,10 +483,10 @@ describe("useOverviewStore", () => {
     expect(store.notice).toBe("放行策略：grade_a → grade_ab（已写盘 config/app.yaml）");
   });
 
-  it("启动五进程：成功与失败都如实报", async () => {
+  it("启动六进程：成功与失败都如实报", async () => {
     const store = useOverviewStore();
     expect(await store.startServices()).toBe(true);
-    expect(store.notice).toContain("五进程就绪");
+    expect(store.notice).toContain("六进程就绪");
 
     configureOverviewApi({
       startServices: vi.fn(async () => startResult({ ok: false, failed: ["render"] })),

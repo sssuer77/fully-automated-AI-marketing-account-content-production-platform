@@ -53,7 +53,7 @@ OVERVIEW_URL = "/api/v1/overview"
 #: `config/pools.yaml` 的出厂值（改 YAML 要同步改这里）
 YAML_TICK_SEC = 5.0
 YAML_MANUAL_POOL_AFTER = 3
-YAML_GUARDED = ("api", "tts", "draft", "voice", "render")
+YAML_GUARDED = ("api", "tts", "draft", "voice", "render", "publish")
 
 
 # ══════════════════════════════════════════════════════════════════════

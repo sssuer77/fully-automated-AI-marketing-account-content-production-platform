@@ -1,7 +1,7 @@
 // 总览台 REST 面（T4.2 · §04.4.5 第 1 行）。
 //
 // 四个端点对应面板上的四件事：看（GET /overview）、暂停/恢复一个池、
-// 切自动放行策略（一键全自动）、拉起五进程。
+// 切自动放行策略（一键全自动）、拉起六进程。
 //
 // 为什么"启动"要单独给 90s 超时
 // ----------------------------
@@ -18,7 +18,7 @@
 import { apiGet, apiPost, type OkJson } from "../http";
 import type { paths } from "../types.gen";
 
-/** "启动五进程"的超时：后端逐进程等就绪（上限 60s），给足余量。 */
+/** "启动六进程"的超时：后端逐进程等就绪（上限 60s），给足余量。 */
 export const START_TIMEOUT_MS = 90_000;
 
 /** 某个操作的**请求体**类型（同样从生成的契约里取，不手写形状）。 */
@@ -59,7 +59,7 @@ export function setAutoPolicy(body: PolicyBody, signal?: AbortSignal): Promise<P
   return apiPost<PolicyResult>("/api/v1/overview/auto", body, { signal });
 }
 
-/** 拉起五进程（后端**不**开浏览器、**要**过 doctor 门禁 · 裁定 137）。 */
+/** 拉起六进程（后端**不**开浏览器、**要**过 doctor 门禁 · 裁定 137）。 */
 export function startServices(signal?: AbortSignal): Promise<StartResult> {
   return apiPost<StartResult>("/api/v1/overview/start", {}, { timeoutMs: START_TIMEOUT_MS, signal });
 }

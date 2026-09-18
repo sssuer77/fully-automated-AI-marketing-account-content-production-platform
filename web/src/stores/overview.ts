@@ -216,7 +216,7 @@ export function summarizeStart(result: StartResult): string {
   if (result.failed.length > 0) parts.push(`失败 ${result.failed.join("/")}`);
   if (result.port_busy.length > 0) parts.push(`端口被占 ${result.port_busy.join("/")}`);
   if (result.degraded.length > 0) parts.push(`降级 ${result.degraded.join("/")}`);
-  const head = result.ok ? "五进程就绪" : "没全部就绪";
+  const head = result.ok ? "六进程就绪" : "没全部就绪";
   const elapsed = `${(result.elapsed_ms / 1000).toFixed(1)}s`;
   return parts.length > 0 ? `${head}（${elapsed}）：${parts.join(" · ")}` : `${head}（${elapsed}）`;
 }
@@ -420,7 +420,7 @@ export const useOverviewStore = defineStore("overview", () => {
     }
   }
 
-  /** 拉起五进程（**同步等就绪**，所以超时给到 90s）。 */
+  /** 拉起六进程（**同步等就绪**，所以超时给到 90s）。 */
   async function startServices(): Promise<boolean> {
     busy.value = true;
     clearMessages();
