@@ -167,6 +167,13 @@ class ErrorCode(StrEnum):
     PRECHECK_BANNED = "PRECHECK_BANNED"
     COVER_FAILED = "COVER_FAILED"
 
+    # ── 定时发布调度（T5.6 · §04.6.5.1）─────────────────────
+    #: 计划参数非法（窗口不是 HH:MM、start >= end、抖动越界、at_time 不带时区…）。
+    #: 与 ``VALIDATION_FAILED`` 分开：规格书写的是 **400**（请求本身写错了），
+    #: 而 422 在本项目里留给表单字段校验，前端据此把红字标到输入框上。
+    SCHEDULE_INVALID = "SCHEDULE_INVALID"
+    SCHEDULE_NOT_FOUND = "SCHEDULE_NOT_FOUND"
+
     # ── 输入源与选题池（T1.9 · §04.1.2 / §04.1.3 / §04.1.7）─────
     INPUT_SOURCE_EMPTY = "INPUT_SOURCE_EMPTY"
     INPUT_PARSE_FAILED = "INPUT_PARSE_FAILED"

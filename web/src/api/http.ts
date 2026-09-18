@@ -122,7 +122,7 @@ export async function apiGet<T>(path: string, options: RequestOptions = {}): Pro
  * PATCH 只显示 '请求失败'"。
  */
 async function sendJson<T>(
-  method: "POST" | "PUT" | "PATCH",
+  method: "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
   body: unknown,
   options: RequestOptions = {},
@@ -188,6 +188,19 @@ export function apiPut<T>(path: string, body?: unknown, options: RequestOptions 
  */
 export function apiPatch<T>(path: string, body?: unknown, options: RequestOptions = {}): Promise<T> {
   return sendJson<T>("PATCH", path, body, options);
+}
+
+/**
+ * DELETE 一个 JSON 端点（T5.6：删掉一条定时计划）。
+ *
+ * 为什么不是 `POST .../delete`：删除是 HTTP 本来就有的动词，而 `POST /x/delete`
+ * 这种写法会让「谁都没接住的 DELETE」在网关那一层静默变成 405，
+ * 排查时看到的是「接口不存在」而不是「方法写错了」。
+ * 响应体仍然解析（后端回了 `{deleted, message}`）—— 只回 204 的话，
+ * 面板就答不上「它本来就不在」和「刚被我删掉」这两件事的区别。
+ */
+export function apiDelete<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  return sendJson<T>("DELETE", path, undefined, options);
 }
 
 /**

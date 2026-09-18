@@ -56,6 +56,11 @@ class AlertCode(StrEnum):
     PUBLISH_LOGIN_EXPIRED = "PUBLISH_LOGIN_EXPIRED"
     DUP_AUDIT_WARN = "DUP_AUDIT_WARN"
     BROLL_EMPTY = "BROLL_EMPTY"
+    #: 定时计划连续失败（T5.6 · §04.6.5.1：「连续失败 ≥5 次 ⇒ system.alert」）。
+    #: 为什么不复用 JOB_DEAD：那一条说的是「某条作业进了死信」，而这里是
+    #: 「这个计划连着 5 拍都没能把作业建出来」—— 前者的处置是重投那一条作业，
+    #: 后者是去查这个计划的平台/账号/配置。合成一个码，两种处置就分不出来了。
+    SCHEDULE_FAILING = "SCHEDULE_FAILING"
 
 
 #: 告警码 → 落 ``system_logs.level`` 的级别（一处定义，禁止各处硬编码）。
@@ -68,6 +73,7 @@ ALERT_SEVERITY: Final[Mapping[AlertCode, AlertSeverity]] = {
     AlertCode.PUBLISH_LOGIN_EXPIRED: "warn",
     AlertCode.DUP_AUDIT_WARN: "warn",
     AlertCode.BROLL_EMPTY: "warn",
+    AlertCode.SCHEDULE_FAILING: "error",
 }
 
 
@@ -106,6 +112,8 @@ class EventKind(StrEnum):
     PUBLISH_FAILED = "publish.failed"
     PUBLISH_MANUAL_REQUIRED = "publish.manual_required"
     METRICS_UPDATED = "metrics.updated"
+    PUBLISH_SCHEDULED = "publish.scheduled"
+    PUBLISH_SCHEDULE_FIRED = "publish.schedule_fired"
     # logs / pools / metrics / system / control
     LOG_APPENDED = "log.appended"
     POOL_STATS = "pool.stats"

@@ -266,7 +266,7 @@ CosyVoice 类模型 fp16 常驻 ≈ 1.5–2.5 GB（含声学+声码器+说话人
 | --- | --- |
 | 单池连续 2 次 `TTS_OOM` | 该池并发 −1（下限 1）并写 `warn` |
 | 连续 5 分钟无 OOM 且 `gpu_mem_used < 60%` | 逐级恢复到配置值（每 5 分钟 +1） |
-| 触发降并发 | 写 `system_logs` + WS `system.alert(code='POOL_AUTODEGRADED')`（**以 §4.5.2 的 8 值枚举为准**，本表原写的 `POOL_CONCURRENCY_REDUCED` 作废） |
+| 触发降并发 | 写 `system_logs` + WS `system.alert(code='POOL_AUTODEGRADED')`（**以 §4.5.2 的枚举为准**，本表原写的 `POOL_CONCURRENCY_REDUCED` 作废） |
 
 **其它约束**
 

@@ -44,6 +44,11 @@ _SELECT_TASK: Final[str] = "SELECT * FROM tasks WHERE id = ?"
 _SELECT_TASK_BY_KEY: Final[str] = "SELECT * FROM tasks WHERE idempotency_key = ?"
 _SELECT_EVENT: Final[str] = "SELECT * FROM task_events WHERE id = ?"
 
+#: 「待发布池」的查询（T5.6）：出片完成、还没被发布计划挑走过的那些。
+_SELECT_COMPLETED: Final[str] = (
+    "SELECT * FROM tasks WHERE status = ? ORDER BY created_at DESC, id DESC LIMIT ?"
+)
+
 _INSERT_TASK: Final[str] = """
 INSERT INTO tasks(
     id, kind, title, topic, status, pool, priority,
@@ -177,6 +182,17 @@ class TaskService:
         """
         row = self._connection.execute(_SELECT_TASK_BY_KEY, (idempotency_key,)).fetchone()
         return None if row is None else TaskRead.from_row(row)
+
+    def list_completed(self, *, limit: int = 50) -> list[TaskRead]:
+        """出片完成的任务（新的在前）。
+
+        给 T5.6 的「待发布池」用：没钉 ``task_id`` 的定时计划要挑一条来发。
+        只按状态取、不做任何筛选 —— 挑哪一条是调度器的口径（见
+        ``scheduler_service.SchedulerService._resolve_task``），
+        把口径塞进这个查询会让「为什么发的是这一条」再也查不清。
+        """
+        rows = self._connection.execute(_SELECT_COMPLETED, (TaskStatus.COMPLETED.value, limit)).fetchall()
+        return [TaskRead.from_row(row) for row in rows]
 
     def _row(self, task_id: str) -> sqlite3.Row:
         row = self._connection.execute(_SELECT_TASK, (task_id,)).fetchone()

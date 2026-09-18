@@ -12,8 +12,9 @@
 // 1. **R2 提示是常驻的**，不是可关的横幅：复刻他人声音可能同时触及声音权与著作权，
 //    而"是否可商用"只有人能判断 —— 工具只负责把"缺哪一份"摆出来。
 // 2. **待人工计数在顶部**：那是这一屏唯一"要求人做决定"的地方，其余都是"看"。
-// 3. **定时计划与报告还没施工**：后端没有对应端点，所以这两块**不画任何数字**。
-//    画一个看着像真的时刻表，比空着更糟 —— 用户会按它去安排发布。
+// 3. **定时计划是真接线**（T5.6）：能建、能改、能停、能立刻跑一次；每条上写着下一次
+//    什么时候触发、上一次跑成什么样。**报告那块还没施工**（T5.7）—— 它一个数字都不画，
+//    因为画一个看着像真的统计，比空着更糟。
 //
 // 为什么交付包要"先预览再导出"
 // ----------------------------
@@ -27,6 +28,17 @@ import EmptyState from "@/components/EmptyState.vue";
 import PanelCard from "@/components/PanelCard.vue";
 import StatusDot from "@/components/StatusDot.vue";
 import type { Publication } from "@/api/endpoints/publish";
+import {
+  MAX_JITTER_MIN,
+  SCHEDULE_MODES,
+  modeLabel as scheduleModeLabel,
+  nextRunText,
+  resultLabel as scheduleResultLabel,
+  resultTone as scheduleResultTone,
+  scheduleSummary,
+  stampText as scheduleStampText,
+  useSchedulesStore,
+} from "@/stores/schedules";
 import {
   BOARD_STATUSES,
   enqueueText,
@@ -45,12 +57,20 @@ import {
 
 const publish = usePublishStore();
 
+// 定时计划单独一个 store：它的轮询节奏与发布看板**不是一回事**（15s vs 2s，见 store 注释）。
+const schedules = useSchedulesStore();
+
 onMounted(() => {
   // 进面板即接线：一次拉齐看板 + 待人工 + 合规；有活在跑时 store 自己按
   // `PUBLISH_POLL_MS` 轮询，离开面板必须停 —— 否则切走之后还在每两秒问一次后端。
   publish.start();
+  // 定时计划慢轮询（15s）：它看的是**时间**，不是某个进程在忙 —— 到点了才需要重画。
+  schedules.start();
 });
-onUnmounted(() => publish.stop());
+onUnmounted(() => {
+  publish.stop();
+  schedules.stop();
+});
 
 /** 一块看板（区块名 + 那几条 + 空态那句话）。 */
 interface Block {
@@ -111,6 +131,34 @@ function onEnqueueTask(event: Event): void {
 
 function onReason(publicationId: string, event: Event): void {
   publish.setReason(publicationId, (event.target as HTMLInputElement).value);
+}
+
+// ── 定时计划（T5.6）────────────────────────────────────────────
+
+const scheduleItems = computed(() => schedules.items);
+const scheduleDraft = computed(() => schedules.draft);
+const scheduleSubtitle = computed(() => {
+  if (schedules.loading && scheduleItems.value.length === 0) return "读取中";
+  const counts = schedules.counts;
+  return `共 ${counts.total ?? 0} 条 · 启用 ${counts.enabled ?? 0} 条` +
+    ((counts.failing ?? 0) > 0 ? ` · 连续失败 ${counts.failing} 条` : "");
+});
+const scheduleTickSec = computed(() => Math.round(schedules.tickSec));
+
+function scheduleBusy(scheduleId: string): boolean {
+  return schedules.busyId === scheduleId;
+}
+
+/** 表单里任意一个输入框 -> store（`checkbox` 取 `checked`，数字框转成数字）。 */
+function onDraft(event: Event, key: string): void {
+  const target = event.target as HTMLInputElement;
+  const raw = target.type === "checkbox" ? target.checked : target.value;
+  const value = key === "jitterMin" || key === "intervalHours" ? Number(raw) : raw;
+  schedules.setDraft({ [key]: value } as never);
+}
+
+function onDraftPlatform(event: Event): void {
+  schedules.setDraft({ platform: (event.target as HTMLSelectElement).value });
 }
 
 function onCancelReason(publication: Publication): void {
@@ -533,12 +581,183 @@ function onCancelReason(publication: Publication): void {
       />
     </PanelCard>
 
-    <!-- ⑪⑫ 两块**尚未施工**：后端没有端点，所以一个数字都不画 -->
-    <PanelCard title="定时计划" subtitle="T5.6 · 尚未施工">
+    <!-- ⑪ 定时计划（T5.6）：能建、能改、能停、能立刻跑一次 -->
+    <PanelCard
+      title="定时计划"
+      :subtitle="`${scheduleSubtitle}；后台每 ${scheduleTickSec} 秒拍一次`"
+    >
+      <template #actions>
+        <AppButton size="sm" :loading="schedules.loading" @click="schedules.refresh()">
+          刷新
+        </AppButton>
+      </template>
+
+      <p v-if="schedules.error" class="alert alert--error">{{ schedules.error }}</p>
+      <p v-else-if="schedules.notice" class="alert alert--ok">{{ schedules.notice }}</p>
+
+      <ul v-if="scheduleItems.length > 0" class="rows">
+        <li v-for="row in scheduleItems" :key="row.id" class="row row--stack">
+          <div class="row__head">
+            <StatusDot
+              :tone="scheduleResultTone(row.last_result)"
+              :label="scheduleResultLabel(row.last_result)"
+            />
+            <span class="row__title">{{ scheduleModeLabel(row.mode) }}</span>
+            <span class="row__spacer" />
+            <span class="row__mono mono">{{ row.platforms.join(" / ") }}</span>
+            <span v-if="!row.enabled" class="row__note">已停用</span>
+          </div>
+          <p class="row__sub">{{ scheduleSummary(row) }}</p>
+          <p class="row__sub">
+            下一次 <span class="mono">{{ nextRunText(row) }}</span> ·
+            上次 <span class="mono">{{ scheduleStampText(row.last_run_at) }}</span> ·
+            已跑 {{ row.run_count }} 次
+            <template v-if="row.fail_streak > 0">
+              · <strong>连续失败 {{ row.fail_streak }} 次</strong>
+            </template>
+          </p>
+          <p v-if="row.task_id" class="row__sub">
+            钉住任务 <span class="mono">{{ row.task_id }}</span>
+          </p>
+          <div class="row__actions">
+            <AppButton size="sm" :disabled="scheduleBusy(row.id)" @click="schedules.run(row)">
+              立即执行一次
+            </AppButton>
+            <AppButton size="sm" :disabled="scheduleBusy(row.id)" @click="schedules.toggle(row)">
+              {{ row.enabled ? "停用" : "启用" }}
+            </AppButton>
+            <AppButton
+              size="sm"
+              variant="danger"
+              :disabled="scheduleBusy(row.id)"
+              @click="schedules.remove(row)"
+            >
+              删除
+            </AppButton>
+          </div>
+        </li>
+      </ul>
       <EmptyState
-        title="这块还没接线"
-        hint="后端目前没有定时计划相关的端点（tests/integration/test_scheduler.py 也不存在）。投递接口上虽然留了 scheduled_at 字段，但没有东西会去读它 —— 所以这里不画任何时刻表：画一个看着像真的表，比空着更糟。"
+        v-else
+        title="还没有定时计划"
+        hint="下面那行就是建一条的地方。到点之后它只做一件事：往发布池投作业 —— 发不发得出去仍由发布池与总开关说了算。"
       />
+
+      <div class="form">
+        <label class="f">
+          <span class="f__key">平台</span>
+          <select class="field" :value="scheduleDraft.platform" @change="onDraftPlatform">
+            <option v-for="option in schedules.selectable" :key="option.code" :value="option.code">
+              {{ option.code }}{{ option.rehearsal ? "（本地演练台）" : "" }}
+            </option>
+          </select>
+        </label>
+        <label class="f">
+          <span class="f__key">模式</span>
+          <select
+            class="field"
+            :value="scheduleDraft.mode"
+            @change="onDraft($event, 'mode')"
+          >
+            <option v-for="mode in SCHEDULE_MODES" :key="mode" :value="mode">
+              {{ scheduleModeLabel(mode) }}
+            </option>
+          </select>
+        </label>
+
+        <template v-if="scheduleDraft.mode === 'daily_window'">
+          <label class="f">
+            <span class="f__key">窗口开始</span>
+            <input
+              class="field mono"
+              type="time"
+              :value="scheduleDraft.windowStart"
+              @change="onDraft($event, 'windowStart')"
+            />
+          </label>
+          <label class="f">
+            <span class="f__key">窗口结束</span>
+            <input
+              class="field mono"
+              type="time"
+              :value="scheduleDraft.windowEnd"
+              @change="onDraft($event, 'windowEnd')"
+            />
+          </label>
+        </template>
+
+        <label v-else-if="scheduleDraft.mode === 'at_time'" class="f">
+          <span class="f__key">时刻</span>
+          <input
+            class="field mono"
+            type="datetime-local"
+            :value="scheduleDraft.atTime"
+            @change="onDraft($event, 'atTime')"
+          />
+        </label>
+
+        <label v-else class="f">
+          <span class="f__key">间隔（小时）</span>
+          <input
+            class="field mono"
+            type="number"
+            min="1"
+            max="720"
+            :value="scheduleDraft.intervalHours"
+            @change="onDraft($event, 'intervalHours')"
+          />
+        </label>
+
+        <label class="f">
+          <span class="f__key">抖动（分钟）</span>
+          <input
+            class="field mono"
+            type="number"
+            min="0"
+            :max="MAX_JITTER_MIN"
+            :value="scheduleDraft.jitterMin"
+            @change="onDraft($event, 'jitterMin')"
+          />
+        </label>
+
+        <label class="f f--task">
+          <span class="f__key">任务号（可空）</span>
+          <input
+            class="field mono"
+            type="text"
+            placeholder="空 = 到点从待发布池挑一条"
+            :value="scheduleDraft.taskId"
+            @change="onDraft($event, 'taskId')"
+          />
+        </label>
+
+        <label class="check">
+          <input
+            type="checkbox"
+            :checked="scheduleDraft.enabled"
+            @change="onDraft($event, 'enabled')"
+          />
+          <span>建好就启用</span>
+        </label>
+
+        <AppButton
+          size="sm"
+          variant="primary"
+          :loading="schedules.saving"
+          :disabled="schedules.selectable.length === 0"
+          @click="schedules.create()"
+        >
+          建这条计划
+        </AppButton>
+      </div>
+
+      <p class="hint">
+        到点只做一件事：<strong>往发布池投作业</strong>（认领 / 重试 / 转人工全走队列那一套）。
+        定时**不等于**免限频 —— 到点撞上额度就用 <span class="mono">skipped_ratelimit</span>
+        顺延，那不是失败。窗口内取的时刻是 <span class="mono">HMAC(计划号, 日期)</span>
+        算出来的：同一天怎么算都是同一个时刻，重启也不会漂。总开关关着时它照拍照记
+        <span class="mono">skipped_disabled</span>，好让你确认调度器是活的。
+      </p>
     </PanelCard>
 
     <PanelCard title="报告" subtitle="T5.7 · 尚未施工">

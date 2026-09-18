@@ -168,6 +168,8 @@ KIND_POLICY: Final[Mapping[EventKind, KindPolicy]] = {
     EventKind.PUBLISH_FAILED: KindPolicy(Channel.PUBLISH, merge_field="publication_id"),
     EventKind.PUBLISH_MANUAL_REQUIRED: KindPolicy(Channel.PUBLISH, merge_field="publication_id"),
     EventKind.METRICS_UPDATED: KindPolicy(Channel.PUBLISH, merge_field="publication_id"),
+    EventKind.PUBLISH_SCHEDULED: KindPolicy(Channel.PUBLISH, merge_field="schedule_id"),
+    EventKind.PUBLISH_SCHEDULE_FIRED: KindPolicy(Channel.PUBLISH, merge_field="schedule_id"),
     EventKind.LOG_APPENDED: KindPolicy(Channel.LOGS, rate_hz=2.0),
     EventKind.POOL_STATS: KindPolicy(Channel.POOLS, merge_field="pool", rate_hz=1.0),
     EventKind.POOL_WORKER_STATUS: KindPolicy(Channel.POOLS, merge_field="worker_id", rate_hz=1.0),

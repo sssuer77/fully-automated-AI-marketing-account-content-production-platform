@@ -17,7 +17,7 @@
 ----------------------------------------------
 §04.5.2 把 ``system.alert.code`` 锁死为 8 个值（T1.5 施工裁定 31），
 所以 worker 猝死落 ``system_logs`` 的 ``error`` 行 + ``payload_json.code='WORKER_DEAD'``；
-T1.7 的 WS 层按"不在 8 值内 ⇒ 走 ``log.append``（level=error）"处理，不升格为 alert。
+T1.7 的 WS 层按"不在枚举内 ⇒ 走 ``log.append``（level=error）"处理，不升格为 alert。
 """
 
 from __future__ import annotations

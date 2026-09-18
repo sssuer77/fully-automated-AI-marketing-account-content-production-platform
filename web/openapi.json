@@ -6912,6 +6912,247 @@
         "title": "PublishPlatformsView",
         "type": "object"
       },
+      "PublishSchedulePatch": {
+        "additionalProperties": false,
+        "description": "改一条计划（**部分字段**：只给 ``enabled`` 就是启停）。\n\n每个字段都可缺省 —— 缺省 = \"别动这一项\"。让面板每次提交整份表单的话，\n\"我只想停用它\"会连带把别的字段按面板那一刻的旧值写回去。",
+        "properties": {
+          "account_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Ids"
+          },
+          "at_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At Time"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "interval_hours": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Hours"
+          },
+          "jitter_min": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jitter Min"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "at_time",
+                  "daily_window",
+                  "interval"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "platforms": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platforms"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window"
+          }
+        },
+        "title": "PublishSchedulePatch",
+        "type": "object"
+      },
+      "PublishScheduleSpec": {
+        "additionalProperties": false,
+        "description": "新建一条计划（§04.6.5.1 的 ``PublishScheduleSpec``）。\n\n``task_id=None`` ⇒ 到点从\"待发布池\"取一条（出片完成、还没发过的）。\n钉死 ``task_id`` 的用法是\"这条片子我要在明天 19 点发\"。",
+        "properties": {
+          "account_ids": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Account Ids",
+            "type": "array"
+          },
+          "at_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At Time"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "interval_hours": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Hours"
+          },
+          "jitter_min": {
+            "default": 15,
+            "title": "Jitter Min",
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "at_time",
+              "daily_window",
+              "interval"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "platforms": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Platforms",
+            "type": "array"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window"
+          }
+        },
+        "required": [
+          "platforms",
+          "account_ids",
+          "mode"
+        ],
+        "title": "PublishScheduleSpec",
+        "type": "object"
+      },
       "RejectBody": {
         "additionalProperties": false,
         "description": "退回改稿（``awaiting_approval → editing``）。``comment`` **必填**。\n\n这里的 ``min_length=1`` 只挡\"完全没填\"这个最常见的错；\"只填了空格\"由服务层\n的 ``APPROVAL_COMMENT_REQUIRED`` 拒绝 —— 业务不变量只有一个权威落点，\nREST 层不抄第二遍语义（§04.4.4 不变量 3）。",
@@ -8014,6 +8255,322 @@
           "check"
         ],
         "title": "ScannedAssetModel",
+        "type": "object"
+      },
+      "ScheduleDeleteResponse": {
+        "description": "删除的结论（``deleted=False`` ⇒ 这个 id 本来就不在，**不是错误**）。",
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "schedule_id": {
+            "title": "Schedule Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schedule_id",
+          "deleted",
+          "message"
+        ],
+        "title": "ScheduleDeleteResponse",
+        "type": "object"
+      },
+      "ScheduleList": {
+        "description": "``GET /api/v1/schedules`` —— 全部计划 + 计数。\n\n``counts`` 里带 ``failing``（``fail_streak > 0``）：面板要一眼看出\n\"有几个计划正在连续失败\"，而那一条藏在每条记录的 ``last_result`` 里时，\n没人会一条条点开看。",
+        "properties": {
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "enabled_platforms": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Enabled Platforms",
+            "type": "array"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ScheduleView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "tick_sec": {
+            "title": "Tick Sec",
+            "type": "number"
+          }
+        },
+        "required": [
+          "items",
+          "counts",
+          "enabled_platforms",
+          "tick_sec"
+        ],
+        "title": "ScheduleList",
+        "type": "object"
+      },
+      "ScheduleRunRequest": {
+        "additionalProperties": false,
+        "description": "立刻执行一次（``reason`` 进日志，便于事后对上\"我按那一下是为了什么\"）。",
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "ScheduleRunRequest",
+        "type": "object"
+      },
+      "ScheduleRunResponse": {
+        "description": "``POST .../run_now`` 的结论（``ScheduleFireResult.to_dict()``）。",
+        "properties": {
+          "job_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Job Ids",
+            "type": "array"
+          },
+          "next_run_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run At"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "queued": {
+            "title": "Queued",
+            "type": "integer"
+          },
+          "result": {
+            "title": "Result",
+            "type": "string"
+          },
+          "schedule_id": {
+            "title": "Schedule Id",
+            "type": "string"
+          },
+          "skipped": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Skipped",
+            "type": "array"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          }
+        },
+        "required": [
+          "schedule_id",
+          "result",
+          "job_ids",
+          "queued",
+          "skipped"
+        ],
+        "title": "ScheduleRunResponse",
+        "type": "object"
+      },
+      "ScheduleView": {
+        "description": "一条计划（``ScheduleRow.to_dict()`` 原样）。",
+        "properties": {
+          "account_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Account Ids",
+            "type": "array"
+          },
+          "at_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At Time"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "fail_streak": {
+            "title": "Fail Streak",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "interval_hours": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Hours"
+          },
+          "jitter_min": {
+            "title": "Jitter Min",
+            "type": "integer"
+          },
+          "last_result": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Result"
+          },
+          "last_run_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run At"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "next_run_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run At"
+          },
+          "platforms": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Platforms",
+            "type": "array"
+          },
+          "run_count": {
+            "title": "Run Count",
+            "type": "integer"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window"
+          }
+        },
+        "required": [
+          "id",
+          "platforms",
+          "account_ids",
+          "mode",
+          "jitter_min",
+          "enabled",
+          "run_count",
+          "fail_streak",
+          "created_by"
+        ],
+        "title": "ScheduleView",
         "type": "object"
       },
       "ScriptBody": {
@@ -13033,6 +13590,225 @@
         "summary": "Get Video",
         "tags": [
           "render"
+        ]
+      }
+    },
+    "/api/v1/schedules": {
+      "get": {
+        "description": "全部计划 + 计数（**启用的排前面**，同组内按下次触发时刻升序）。",
+        "operationId": "list_schedules_api_v1_schedules_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Schedules",
+        "tags": [
+          "schedules"
+        ]
+      },
+      "post": {
+        "description": "新建一条计划（``next_run_at`` 当场算好落库 · 陷阱 #30）。",
+        "operationId": "create_api_v1_schedules_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublishScheduleSpec"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create",
+        "tags": [
+          "schedules"
+        ]
+      }
+    },
+    "/api/v1/schedules/{schedule_id}": {
+      "delete": {
+        "description": "删一条计划（**写留痕**；不存在的 id 回 ``deleted=false`` 而不是 404）。",
+        "operationId": "remove_api_v1_schedules__schedule_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9A-Za-z]{1,64}$",
+              "title": "Schedule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleDeleteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove",
+        "tags": [
+          "schedules"
+        ]
+      },
+      "patch": {
+        "description": "改一条计划（部分字段）。\n\n``exclude_unset=True`` 是这一层的**关键**：只有请求里真出现过的键才会被写下去。\n少了它，\"我只想停用它\"会连带把面板那一刻的旧值（可能已经被别人改过）\n一起写回库里 —— 那是并发编辑的经典坑，而表现出来是\"我的改动莫名其妙被回滚了\"。",
+        "operationId": "patch_api_v1_schedules__schedule_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9A-Za-z]{1,64}$",
+              "title": "Schedule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublishSchedulePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch",
+        "tags": [
+          "schedules"
+        ]
+      }
+    },
+    "/api/v1/schedules/{schedule_id}/run_now": {
+      "post": {
+        "description": "立刻执行一次（调试用；**仍走限频、仍看开关**）。",
+        "operationId": "run_api_v1_schedules__schedule_id__run_now_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9A-Za-z]{1,64}$",
+              "title": "Schedule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ScheduleRunRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run",
+        "tags": [
+          "schedules"
         ]
       }
     },

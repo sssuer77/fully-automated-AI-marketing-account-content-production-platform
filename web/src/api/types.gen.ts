@@ -1132,6 +1132,78 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/schedules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Schedules
+         * @description 全部计划 + 计数（**启用的排前面**，同组内按下次触发时刻升序）。
+         */
+        get: operations["list_schedules_api_v1_schedules_get"];
+        put?: never;
+        /**
+         * Create
+         * @description 新建一条计划（``next_run_at`` 当场算好落库 · 陷阱 #30）。
+         */
+        post: operations["create_api_v1_schedules_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/schedules/{schedule_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove
+         * @description 删一条计划（**写留痕**；不存在的 id 回 ``deleted=false`` 而不是 404）。
+         */
+        delete: operations["remove_api_v1_schedules__schedule_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Patch
+         * @description 改一条计划（部分字段）。
+         *
+         *     ``exclude_unset=True`` 是这一层的**关键**：只有请求里真出现过的键才会被写下去。
+         *     少了它，"我只想停用它"会连带把面板那一刻的旧值（可能已经被别人改过）
+         *     一起写回库里 —— 那是并发编辑的经典坑，而表现出来是"我的改动莫名其妙被回滚了"。
+         */
+        patch: operations["patch_api_v1_schedules__schedule_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/schedules/{schedule_id}/run_now": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run
+         * @description 立刻执行一次（调试用；**仍走限频、仍看开关**）。
+         */
+        post: operations["run_api_v1_schedules__schedule_id__run_now_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/scripts/{task_id}": {
         parameters: {
             query?: never;
@@ -4274,6 +4346,77 @@ export interface components {
             publish_enabled: boolean;
         };
         /**
+         * PublishSchedulePatch
+         * @description 改一条计划（**部分字段**：只给 ``enabled`` 就是启停）。
+         *
+         *     每个字段都可缺省 —— 缺省 = "别动这一项"。让面板每次提交整份表单的话，
+         *     "我只想停用它"会连带把别的字段按面板那一刻的旧值写回去。
+         */
+        PublishSchedulePatch: {
+            /** Account Ids */
+            account_ids?: string[] | null;
+            /** At Time */
+            at_time?: string | null;
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Interval Hours */
+            interval_hours?: number | null;
+            /** Jitter Min */
+            jitter_min?: number | null;
+            /** Mode */
+            mode?: ("at_time" | "daily_window" | "interval") | null;
+            /** Platforms */
+            platforms?: string[] | null;
+            /** Reason */
+            reason?: string | null;
+            /** Task Id */
+            task_id?: string | null;
+            /** Window */
+            window?: [
+                string,
+                string
+            ] | null;
+        };
+        /**
+         * PublishScheduleSpec
+         * @description 新建一条计划（§04.6.5.1 的 ``PublishScheduleSpec``）。
+         *
+         *     ``task_id=None`` ⇒ 到点从"待发布池"取一条（出片完成、还没发过的）。
+         *     钉死 ``task_id`` 的用法是"这条片子我要在明天 19 点发"。
+         */
+        PublishScheduleSpec: {
+            /** Account Ids */
+            account_ids: string[];
+            /** At Time */
+            at_time?: string | null;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Interval Hours */
+            interval_hours?: number | null;
+            /**
+             * Jitter Min
+             * @default 15
+             */
+            jitter_min: number;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "at_time" | "daily_window" | "interval";
+            /** Platforms */
+            platforms: string[];
+            /** Task Id */
+            task_id?: string | null;
+            /** Window */
+            window?: [
+                string,
+                string
+            ] | null;
+        };
+        /**
          * RejectBody
          * @description 退回改稿（``awaiting_approval → editing``）。``comment`` **必填**。
          *
@@ -4695,6 +4838,110 @@ export interface components {
             thumb_path: string | null;
             /** Usable */
             usable: boolean;
+        };
+        /**
+         * ScheduleDeleteResponse
+         * @description 删除的结论（``deleted=False`` ⇒ 这个 id 本来就不在，**不是错误**）。
+         */
+        ScheduleDeleteResponse: {
+            /** Deleted */
+            deleted: boolean;
+            /** Message */
+            message: string;
+            /** Schedule Id */
+            schedule_id: string;
+        };
+        /**
+         * ScheduleList
+         * @description ``GET /api/v1/schedules`` —— 全部计划 + 计数。
+         *
+         *     ``counts`` 里带 ``failing``（``fail_streak > 0``）：面板要一眼看出
+         *     "有几个计划正在连续失败"，而那一条藏在每条记录的 ``last_result`` 里时，
+         *     没人会一条条点开看。
+         */
+        ScheduleList: {
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Enabled Platforms */
+            enabled_platforms: string[];
+            /** Items */
+            items: components["schemas"]["ScheduleView"][];
+            /** Tick Sec */
+            tick_sec: number;
+        };
+        /**
+         * ScheduleRunRequest
+         * @description 立刻执行一次（``reason`` 进日志，便于事后对上"我按那一下是为了什么"）。
+         */
+        ScheduleRunRequest: {
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
+         * ScheduleRunResponse
+         * @description ``POST .../run_now`` 的结论（``ScheduleFireResult.to_dict()``）。
+         */
+        ScheduleRunResponse: {
+            /** Job Ids */
+            job_ids: string[];
+            /** Next Run At */
+            next_run_at?: string | null;
+            /** Note */
+            note?: string | null;
+            /** Queued */
+            queued: number;
+            /** Result */
+            result: string;
+            /** Schedule Id */
+            schedule_id: string;
+            /** Skipped */
+            skipped: string[];
+            /** Task Id */
+            task_id?: string | null;
+        };
+        /**
+         * ScheduleView
+         * @description 一条计划（``ScheduleRow.to_dict()`` 原样）。
+         */
+        ScheduleView: {
+            /** Account Ids */
+            account_ids: string[];
+            /** At Time */
+            at_time?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /** Created By */
+            created_by: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Fail Streak */
+            fail_streak: number;
+            /** Id */
+            id: string;
+            /** Interval Hours */
+            interval_hours?: number | null;
+            /** Jitter Min */
+            jitter_min: number;
+            /** Last Result */
+            last_result?: string | null;
+            /** Last Run At */
+            last_run_at?: string | null;
+            /** Mode */
+            mode: string;
+            /** Next Run At */
+            next_run_at?: string | null;
+            /** Platforms */
+            platforms: string[];
+            /** Run Count */
+            run_count: number;
+            /** Task Id */
+            task_id?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Window */
+            window?: string[] | null;
         };
         /**
          * ScriptBody
@@ -7293,6 +7540,160 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_schedules_api_v1_schedules_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleList"];
+                };
+            };
+        };
+    };
+    create_api_v1_schedules_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublishScheduleSpec"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_api_v1_schedules__schedule_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                schedule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleDeleteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_api_v1_schedules__schedule_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                schedule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublishSchedulePatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_api_v1_schedules__schedule_id__run_now_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                schedule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ScheduleRunRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleRunResponse"];
                 };
             };
             /** @description Validation Error */

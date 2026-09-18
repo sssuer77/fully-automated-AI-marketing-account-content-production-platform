@@ -29,6 +29,7 @@ from studio.db.repositories.direction_repo import DirectionRepo
 from studio.db.repositories.feedback_repo import FeedbackItemRepo
 from studio.db.repositories.hot_repo import HotItemRepo
 from studio.db.repositories.review_repo import ReviewRepo
+from studio.db.repositories.schedule_repo import SCHEDULE_MODES, ScheduleRepo, ScheduleRow
 from studio.db.repositories.script_repo import SENTENCE_COLUMNS, SavedScript, ScriptRepo
 from studio.db.repositories.sentence_repo import SentenceProgress, SentenceRepo, TimelineSpan
 from studio.db.repositories.stats_repo import StatsRepo, TodayOutput, local_day_window
@@ -36,6 +37,7 @@ from studio.db.repositories.topic_repo import TopicRepo
 
 __all__ = [
     "ARTIFACT_COLUMNS",
+    "SCHEDULE_MODES",
     "SENTENCE_COLUMNS",
     "ApprovalRepo",
     "ArtifactRepo",
@@ -50,6 +52,8 @@ __all__ = [
     "IngestAction",
     "ReviewRepo",
     "SavedScript",
+    "ScheduleRepo",
+    "ScheduleRow",
     "ScriptRepo",
     "SentenceProgress",
     "SentenceRepo",

@@ -16,7 +16,7 @@ CLOSED ──连续失败 ≥ fail_threshold──▶ OPEN ──open_sec 到点
 - ``OPEN`` 期间 :meth:`CircuitBreaker.allow` 返回 ``False`` ⇒ 网关直接走 fallback。
 - ``HALF_OPEN`` 只放**一次**探针通过；探针成功 ⇒ 回 ``CLOSED``，失败 ⇒ 重新 ``OPEN``。
 - 熔断是**每通道**的（云端独立于本地），且**不落告警码**：§04.5.2 把
-  ``system.alert.code`` 锁死 8 值（T1.5 裁定 31），故熔断只写 ``system_logs`` 的
+  ``system.alert.code`` 是枚举（T1.5 裁定 31，T5.6 起 9 值），故熔断只写 ``system_logs`` 的
   ``warn``/``error`` 行 + ``payload_json.code='LLM_CIRCUIT_OPEN'``。
 """
 

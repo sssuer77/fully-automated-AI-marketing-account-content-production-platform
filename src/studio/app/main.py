@@ -35,6 +35,7 @@ from studio.app.routers.pipeline import router as pipeline_router
 from studio.app.routers.pools import router as pools_router
 from studio.app.routers.publish import router as publish_router
 from studio.app.routers.render import router as render_router
+from studio.app.routers.schedules import router as schedules_router
 from studio.app.routers.scripts import router as scripts_router
 from studio.app.routers.settings import router as settings_router
 from studio.app.routers.topics import router as topics_router
@@ -95,6 +96,7 @@ def create_app(
     application.include_router(pipeline_router)
     application.include_router(voice_router)
     application.include_router(publish_router)
+    application.include_router(schedules_router)
     application.include_router(settings_router)
     application.include_router(ws_router)
     mount_web_ui(application, resolved.paths)

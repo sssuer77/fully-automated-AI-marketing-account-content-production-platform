@@ -98,12 +98,12 @@ def test_worker_dead_is_not_a_system_alert_code() -> None:
 
     §04.5.2 把 ``system.alert.code`` 锁死为 8 个值（T1.5 施工裁定 31）；
     worker 猝死走的是 ``system_logs`` 的 ``error`` 行 + ``payload_json.code``。
-    一旦有人把 ``WORKER_DEAD`` 加进 ``AlertCode``，WS 层的"不在 8 值内 ⇒ 走 log.append" 分支就会静默失效。
+    一旦有人把 ``WORKER_DEAD`` 加进 ``AlertCode``，WS 层的"不在枚举内 ⇒ 走 log.append" 分支就会静默失效。
     """
     assert WORKER_DEAD_CODE == "WORKER_DEAD"
     assert ErrorCode.WORKER_DEAD.value == WORKER_DEAD_CODE
     assert WORKER_DEAD_CODE not in {code.value for code in AlertCode}
-    assert len(AlertCode) == 8, "§04.5.2 锁死为 8 个值"
+    assert len(AlertCode) == 9, "§04.5.2 的告警码枚举（T5.6 起 9 个）"
 
     heartbeat = (SRC_ROOT / "pools" / "heartbeat.py").read_text(encoding="utf-8")
     assert '"code": WORKER_DEAD_CODE' in heartbeat, "猝死必须落 payload_json.code"

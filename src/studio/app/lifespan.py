@@ -38,6 +38,8 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     state.pump.start()
     # 数据回收（T5.4）：`runnable=False`（临时家目录 / 测试）⇒ 不起跳。
     state.metrics_recycle.start()
+    # 定时发布（T5.6）：同一条判据。30s 一拍，与采数互不拖累（见 `SchedulePump`）。
+    state.schedule_pump.start()
     # 无人值守守护（T4.11）：`workers/` 不在 ⇒ 一个池都拉不起来 ⇒ 不起跳。
     # 这条判据让集成测试的临时家目录天然"不被打扰"，同时生产家目录照常守护。
     if state.watchdog_pump.runnable:
@@ -52,6 +54,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await state.schedule_pump.stop()
         await state.metrics_recycle.stop()
         await state.pump.stop()
         await state.watchdog_pump.stop()

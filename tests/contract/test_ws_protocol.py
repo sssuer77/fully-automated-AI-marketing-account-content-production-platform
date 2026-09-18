@@ -100,7 +100,7 @@ def test_alert_codes_match_spec() -> None:
     line = next(line for line in _spec().splitlines() if "system.alert.code" in line and "`DISK_LOW`" in line)
     documented = set(re.findall(r"`([A-Z_]+)`", line))
     assert documented == {code.value for code in AlertCode}
-    assert len(AlertCode) == 8
+    assert len(AlertCode) == 9
 
 
 def test_alert_is_never_merged_never_dropped_never_rate_limited() -> None:

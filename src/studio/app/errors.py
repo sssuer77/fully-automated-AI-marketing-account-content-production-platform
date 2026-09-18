@@ -90,6 +90,11 @@ HTTP_STATUS_BY_CODE: Final[Mapping[ErrorCode, int]] = {
     # 「会重配 N 句」是**状态**问题而不是入参问题：请求一个字都没写错，缺的是
     # "你确认过这个代价了" ⇒ 409，与 `PERSONA_EXISTS` 的「覆盖 / 换个 id」同一条。
     ErrorCode.VOICE_MAP_CONFIRM_REQUIRED: 409,
+    # 定时发布（T5.6）：规格书 §04.6.5.1 明写「非法参数 ⇒ **400** 且不落库」。
+    # 用 400 而不是 422，是因为这里没有单个表单字段可标 —— 真正的判据是
+    # 「start < end」这种跨字段关系，422 只会让人去猜哪个框是红的。
+    ErrorCode.SCHEDULE_INVALID: 400,
+    ErrorCode.SCHEDULE_NOT_FOUND: 404,
 }
 
 

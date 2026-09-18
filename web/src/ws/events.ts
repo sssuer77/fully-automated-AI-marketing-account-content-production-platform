@@ -49,6 +49,8 @@ export const EVENT_KINDS = [
   "publish.failed",
   "publish.manual_required",
   "metrics.updated",
+  "publish.scheduled",
+  "publish.schedule_fired",
   "log.appended",
   "pool.stats",
   "pool.worker_status",
@@ -69,6 +71,7 @@ export const ALERT_CODES = [
   "PUBLISH_LOGIN_EXPIRED",
   "DUP_AUDIT_WARN",
   "BROLL_EMPTY",
+  "SCHEDULE_FAILING",
 ] as const;
 export type AlertCode = (typeof ALERT_CODES)[number];
 
@@ -96,6 +99,8 @@ export const KIND_CHANNEL: Record<EventKind, Channel> = {
   "publish.failed": "publish",
   "publish.manual_required": "publish",
   "metrics.updated": "publish",
+  "publish.scheduled": "publish",
+  "publish.schedule_fired": "publish",
   "log.appended": "logs",
   "pool.stats": "pools",
   "pool.worker_status": "pools",

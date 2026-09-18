@@ -1779,6 +1779,8 @@ class Envelope(BaseModel):
 | publish | `publish.failed` | `publication_id,error_code,message,evidence_path` | 发布失败 | 事件驱动 |
 | publish | `publish.manual_required` | `publication_id,reason` | 转"待人工发布" | 事件驱动 |
 | publish | `metrics.updated` | `publication_id,views,likes,comments,shares` | 数据回收 | 事件驱动 |
+| publish | `publish.scheduled` | `schedule_id,next_run_at,task_id,platforms` | 定时计划排定/改期（T5.6） | 事件驱动 |
+| publish | `publish.schedule_fired` | `schedule_id,job_ids` | 定时计划到点建作业（T5.6） | 事件驱动 |
 | logs | `log.appended` | `log_id,level,source,message,task_id,payload` | 任意日志写入（**先落库再广播**） | **2 Hz** + `debug` 不落库 |
 | pools | `pool.stats` | `pool,pending,blocked,claimed,succeeded,failed,dead,concurrency,running,paused,workers[]` | 5s 周期 + 变化触发 | 1 Hz |
 | pools | `pool.worker_status` | `worker_id,pool,status,current_job_id,gpu_mem_mb` | 心跳变化 | 1 Hz |
@@ -1795,7 +1797,9 @@ class Envelope(BaseModel):
 - `log_id` 是 `system_logs.id`（**不要复用 `id`**）：业务事件（`task.updated` 等）的 `id` 是实体主键，
   混用会让前端的去重/合并逻辑误伤正常事件。
 - 所有时间戳为 UTC ISO8601（`2026-09-13T04:12:33.412Z`），前端负责本地时区展示。
-- `system.alert.code` 枚举：`DISK_LOW` / `DISK_CRITICAL` / `TTS_CIRCUIT_OPEN` / `JOB_DEAD` / `POOL_AUTODEGRADED` / `PUBLISH_LOGIN_EXPIRED` / `DUP_AUDIT_WARN` / `BROLL_EMPTY`。
+- `system.alert.code` 枚举：`DISK_LOW` / `DISK_CRITICAL` / `TTS_CIRCUIT_OPEN` / `JOB_DEAD` / `POOL_AUTODEGRADED` / `PUBLISH_LOGIN_EXPIRED` / `DUP_AUDIT_WARN` / `BROLL_EMPTY` / `SCHEDULE_FAILING`。
+  （T5.6 新增 `SCHEDULE_FAILING`：定时计划连续 5 次建不出作业。T1.5 裁定 31「锁死 8 值」随之改成 9 值 ——
+  那条裁定的**目的**是让「不在枚举内 ⇒ 走 `log.appended`」这条分流成立，加第 9 个不影响它。）
 
 ### 4.4.4 确认闸契约（原文 §2.2⑦ / §7.3③ · 全流程唯一人工节点）
 
@@ -1913,7 +1917,7 @@ class ApprovalDecision(StrEnum):
 - WebUI 池监控直接消费 `pools` 通道的心跳数据。
 - **不变式：行存在 ⇔ 该进程应当在跑**（T1.6 施工裁定 33）。优雅退出（`draining` 跑完当前单元）时 worker **删掉自己那行**（`HeartbeatStore.forget`）⇒ "行还在但 15s 没动静"就一定是猝死，不误报。
 - 写心跳与续 job 租约是**同一个后台脉冲线程**（T1.6 施工裁定 34）：心跳 5s、续租 `lease/3`、判超时共用一条 1s tick；**tick 异常一律吞掉继续** —— 脉冲线程死了就"看着还活着但不再续租"，比直接崩更危险。
-- `WORKER_DEAD` **不是** `system.alert.code`（§4.5.2 把告警码锁死为 8 值）：判死落 `system_logs` 的 `error` 行 + `payload_json.code='WORKER_DEAD'`，WS 层按"不在 8 值内 ⇒ 走 `log.append`"处理（T1.6 施工裁定 39）。
+- `WORKER_DEAD` **不是** `system.alert.code`（§4.5.2 的告警码是**枚举**，T5.6 起为 9 值）：判死落 `system_logs` 的 `error` 行 + `payload_json.code='WORKER_DEAD'`，WS 层按"不在枚举内 ⇒ 走 `log.append`"处理（T1.6 施工裁定 39）。
 
 ### 4.5.2 日志事件规范（`source` 命名空间）
 
@@ -2185,7 +2189,7 @@ structlog 的第一个位置参数就叫 `event`，`logger.info(msg, **payload)`
 降级后**不会自动回升**（`recover_after_min` 留给 T4.11）：面板必须把这句话写出来，
 否则用户会一直等它自己涨回去 —— 等到发现不会涨，故障已经多烧了一晚上。降级动作本身留痕在
 `audit_ops(action='pool.autodegrade', actor='auto', source='worker')`，告警走
-`system.alert(POOL_AUTODEGRADED)`（`warn`，§04.5.2 的 8 值枚举之内）。
+`system.alert(POOL_AUTODEGRADED)`（`warn`，§04.5.2 的枚举之内）。
 
 **前端两个取舍**（与 §04.5.6 同源）
 

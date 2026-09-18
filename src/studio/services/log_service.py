@@ -15,7 +15,7 @@ API 进程里的 Hub。让 Hub 以表为真相源，跨进程日志自动到前�
 ----------
 `alert()` 沿用 `db.queue.JobStore._alert()` 的载荷约定：
 `payload_json = {code, severity, message, hint}` ⇒ Hub 依此识别为 `system.alert`。
-`code` 必须是 §04.5.2 的 8 个 `AlertCode` 之一；`WORKER_DEAD` 这类**不在 8 值内**的码
+`code` 必须是 §04.5.2 的 `AlertCode` 之一；`WORKER_DEAD` 这类**不在枚举内**的码
 走普通 `append(level="error", payload={"code": ...})` ⇒ 只会是 `log.appended`（裁定 39）。
 """
 
@@ -87,7 +87,7 @@ class LogSink(Protocol):
 
 
 def is_alert_code(code: str | None) -> bool:
-    """`payload_json.code` 是否是 §04.5.2 的 8 个告警码之一。"""
+    """`payload_json.code` 是否是 §04.5.2 的告警码之一。"""
     if not code:
         return False
     return code in {item.value for item in AlertCode}
@@ -149,7 +149,7 @@ class SystemLog:
 
     @property
     def is_alert(self) -> bool:
-        """是否升格为 `system.alert`（§04.5.2 的 8 值枚举）。"""
+        """是否升格为 `system.alert`（§04.5.2 的告警码枚举）。"""
         return is_alert_code(self.alert_code)
 
     @property

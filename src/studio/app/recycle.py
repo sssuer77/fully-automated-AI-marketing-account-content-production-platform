@@ -31,8 +31,13 @@ from studio.services.publish_metrics_service import (
     MetricsTickReport,
     PublishMetricsService,
 )
+from studio.services.scheduler_service import (
+    SCHEDULER_TICK_INTERVAL_SEC,
+    SchedulerService,
+    ScheduleTickReport,
+)
 
-__all__ = ["MetricsRecyclePump"]
+__all__ = ["MetricsRecyclePump", "SchedulePump"]
 
 logger = get_logger("studio.app.recycle")
 
@@ -116,3 +121,79 @@ class MetricsRecyclePump:
 
     def __repr__(self) -> str:  # pragma: no cover - 排障用
         return f"MetricsRecyclePump(runnable={self.runnable}, interval_sec={self._interval})"
+
+
+class SchedulePump:
+    """定时发布的一拍（T5.6 · §04.6.5.1「30s tick」；测试直接调 ``tick()``）。
+
+    为什么与 ``MetricsRecyclePump`` 分成两个泵而不是一个泵里两件事
+    ------------------------------------------------------------
+    它们的**节奏与代价**完全不同：采数是 60s 一拍、要起浏览器、可能跑几十秒；
+    排期是 30s 一拍、纯 SQL + 一次入队（毫秒级）。合成一个之后，
+    一次采数会把排期推迟到几十秒后 —— 而排期的精度要求是**分钟**，
+    推迟本身没事，但"排期被采数拖住"会让"到点没发"变成一个查不清的问题。
+
+    两道安全闸与另一个泵一致：``runnable``（``workers/`` 不在 ⇒ 不起跳）+
+    **先睡再拍**（起服务时不会立刻摸一次库）。
+    """
+
+    def __init__(
+        self,
+        *,
+        connections: ThreadLocalConnections,
+        paths: StudioPaths,
+        config_provider: Callable[[], PublishConfig],
+        log: LogService | None = None,
+        interval_sec: float = SCHEDULER_TICK_INTERVAL_SEC,
+    ) -> None:
+        self._connections = connections
+        self._paths = paths
+        self._config_provider = config_provider
+        self._log = None if log is None else log.append
+        self._interval = float(interval_sec)
+        self._task: asyncio.Task[None] | None = None
+        self._stopping = False
+
+    @property
+    def runnable(self) -> bool:
+        """``workers/`` 在 ⇒ 这是生产家目录（与 ``MetricsRecyclePump`` 同一条判据）。"""
+        return self._paths.workers_dir.is_dir()
+
+    def tick(self, *, now: str | None = None) -> ScheduleTickReport:
+        """跑一轮（**同步等完**：一轮最多 ``SCHEDULER_BATCH_LIMIT`` 条到点计划）。"""
+        service = SchedulerService(
+            connection=self._connections.get(),
+            paths=self._paths,
+            config=self._config_provider(),
+            log=self._log,
+        )
+        return service.tick(now=now)
+
+    async def run(self) -> None:
+        while not self._stopping:
+            await asyncio.sleep(self._interval)
+            try:
+                self.tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # 一轮失败绝不能把泵掀翻（下一拍照跑）
+                logger.warning("schedule.tick_failed", error=str(exc))
+
+    def start(self) -> None:
+        if self._task is not None or not self.runnable:
+            return
+        self._stopping = False
+        self._task = asyncio.create_task(self.run(), name="publish-schedule")
+        logger.info("schedule.pump_started", interval_sec=self._interval)
+
+    async def stop(self) -> None:
+        self._stopping = True
+        task, self._task = self._task, None
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        logger.info("schedule.pump_stopped")
+
+    def __repr__(self) -> str:  # pragma: no cover - 排障用
+        return f"SchedulePump(runnable={self.runnable}, interval_sec={self._interval})"
