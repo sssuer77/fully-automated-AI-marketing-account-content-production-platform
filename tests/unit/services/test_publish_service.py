@@ -23,7 +23,13 @@ from typing import Any
 import pytest
 
 from studio.agents.base import AgentResult
-from studio.core.config import PersonaConfig, PrecheckConfig
+from studio.core.config import (
+    AccountConfig,
+    PersonaConfig,
+    PlatformConfig,
+    PrecheckConfig,
+    PublishConfig,
+)
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.paths import StudioPaths
 from studio.db import connect, migrate
@@ -37,6 +43,8 @@ from studio.services.publish_service import (
     COVER_KIND,
     CoverRequest,
     PublishService,
+    default_platforms,
+    platform_options,
     resolve_final_video,
 )
 
@@ -506,3 +514,190 @@ def _persona(**overrides: Any) -> PersonaConfig:
     }
     data.update(overrides)
     return PersonaConfig.model_validate(data)
+
+
+class TestDefaultPlatforms:
+    """投递的默认目标平台（T5.9 起要**跳过演练台**）。"""
+
+    @staticmethod
+    def _config() -> PublishConfig:
+        return PublishConfig(
+            accounts=[
+                AccountConfig(
+                    account_id="acc_main",
+                    platform="douyin",
+                    profile_dir=Path("data/browser_profile/acc_main"),
+                ),
+                AccountConfig(
+                    account_id="_rehearsal",
+                    platform="other",
+                    profile_dir=Path("data/browser_profile/_rehearsal"),
+                ),
+            ],
+            platforms={
+                "douyin": PlatformConfig(
+                    publisher="douyin",
+                    profile="douyin_1080x1920_30fps_v1",
+                    enabled=True,
+                    title_max=55,
+                    caption_max=1000,
+                ),
+                "other": PlatformConfig(
+                    publisher="fixture",
+                    profile="douyin_1080x1920_30fps_v1",
+                    enabled=True,
+                    title_max=55,
+                    caption_max=1000,
+                ),
+            },
+        )
+
+    def test_rehearsal_target_is_not_a_default(self) -> None:
+        """演练台**不在**默认目标里：否则每条任务投递完都会顺手多出一条"演练发布"。
+
+        那条记录在面板上与真发布长得一样（只差平台代号），而"我没让它发，它自己发了
+        一条"是最难解释的一类问题。要演练就显式点名 ``platforms=("other",)``。
+        """
+        assert default_platforms(self._config()) == ("douyin",)
+
+
+class TestPlatformOptions:
+    """投递面板的选项清单（T5.10 · §06.5.4）。
+
+    面板不许自己列平台：那样等于把 ``config/publish.yaml`` 抄第二遍，加一个平台要改
+    两处，而漏改的那一处表现为"这个平台在面板上不存在"。这里验的就是"清单与判据都
+    从配置来"，外加两条最容易做错的：
+    **演练台必须列出来**（没真账号时的唯一通路）、**点不动的要写清为什么**。
+    """
+
+    def _config(self) -> PublishConfig:
+        return PublishConfig(
+            enabled=True,
+            accounts=[
+                AccountConfig(
+                    account_id="acc_main",
+                    platform="douyin",
+                    profile_dir=Path("data/browser_profile/acc_main"),
+                ),
+                AccountConfig(
+                    account_id="_rehearsal",
+                    platform="other",
+                    profile_dir=Path("data/browser_profile/_rehearsal"),
+                ),
+            ],
+            platforms={
+                "douyin": PlatformConfig(
+                    publisher="douyin",
+                    profile="douyin_1080x1920_30fps_v1",
+                    enabled=True,
+                    title_max=55,
+                    caption_max=1000,
+                ),
+                "other": PlatformConfig(
+                    publisher="fixture",
+                    profile="douyin_1080x1920_30fps_v1",
+                    enabled=True,
+                    title_max=55,
+                    caption_max=1000,
+                ),
+                "xiaohongshu": PlatformConfig(
+                    publisher="xiaohongshu",
+                    profile="douyin_1080x1920_30fps_v1",
+                    enabled=False,
+                    title_max=20,
+                    caption_max=1000,
+                ),
+            },
+        )
+
+    def test_order_follows_the_config_file(self) -> None:
+        """顺序 = ``platforms`` 的书写顺序（面板上按这个顺序排）。"""
+        codes = [option.code for option in platform_options(self._config())]
+        assert codes == ["douyin", "other", "xiaohongshu"]
+
+    def test_rehearsal_is_listed_and_marked(self) -> None:
+        """演练台**列出来**且带上记号：它是没有真账号时的唯一通路。"""
+        by_code = {option.code: option for option in platform_options(self._config())}
+        rehearsal = by_code["other"]
+        assert rehearsal.rehearsal is True
+        assert rehearsal.selectable is True
+        assert rehearsal.accounts == ("_rehearsal",)
+        assert "靶页" in rehearsal.note
+
+    def test_disabled_platform_is_listed_but_not_selectable(self) -> None:
+        """二线平台（``enabled=false`` · Q9）照旧列出来，但**点不动**，且说清为什么。"""
+        by_code = {option.code: option for option in platform_options(self._config())}
+        second = by_code["xiaohongshu"]
+        assert second.selectable is False
+        assert second.enabled is False
+        assert "未启用" in second.note
+
+    def test_enabled_platform_without_account_is_not_selectable(self) -> None:
+        """平台启用、但没有启用的账号 ⇒ 也点不动。
+
+        这一条是**投递期**的真实行为（``resolve_account`` 会拒），面板显示"点得动"
+        而投出去被跳过就是骗人 —— 所以判据必须同一套。
+        """
+        config = self._config()
+        config.platforms["kuaishou"] = PlatformConfig(
+            publisher="kuaishou",
+            profile="douyin_1080x1920_30fps_v1",
+            enabled=True,
+            title_max=60,
+            caption_max=1000,
+        )
+        by_code = {option.code: option for option in platform_options(config)}
+        assert by_code["kuaishou"].selectable is False
+        assert by_code["kuaishou"].accounts == ()
+        assert "账号" in by_code["kuaishou"].note
+
+    def test_real_platform_says_it_is_irreversible(self) -> None:
+        """开关**打开**时，真平台那一句必须说"不可撤销"（R14）。"""
+        by_code = {option.code: option for option in platform_options(self._config())}
+        assert by_code["douyin"].rehearsal is False
+        assert by_code["douyin"].selectable is True
+        assert "不可撤销" in by_code["douyin"].note
+
+    def test_real_platform_says_dead_letter_while_the_switch_is_off(self) -> None:
+        """开关**关着**（出厂）时，真平台那一条必须说"直接死信、面板上不会出现记录"。
+
+        这一条是**用户第一眼会撞上的那一档**：出厂 ``enabled: false``，操作员在面板上
+        勾了 douyin、按了投递 ⇒ 作业在 worker 侧被守卫挡下，``publications`` 那一行
+        根本不会建 ⇒ 发布面板上"什么都没发生"。说成"转人工"会让人去「待人工」区块里
+        找一个永远不会出现的记录（陷阱：三处文案写的是转人工，代码做的是死信）。
+        """
+        # 配置是**冻结**的（`_Base`）⇒ 用 `model_copy` 换一个字段，而不是就地改
+        config = self._config().model_copy(update={"enabled": False})
+        by_code = {option.code: option for option in platform_options(config)}
+        note = by_code["douyin"].note
+        assert "死信" in note
+        assert "四池调度" in note
+        assert "转人工" not in note
+        # 演练台**不受开关影响**（它发的是本地靶页）⇒ 那句提示不该出现
+        assert "死信" not in by_code["other"].note
+
+    def test_real_platforms_keep_their_order(self) -> None:
+        """真平台照旧：按 ``accounts`` 的书写顺序，去重。"""
+        config = self._config()
+        config.accounts.append(
+            AccountConfig(
+                account_id="acc_kuaishou",
+                platform="kuaishou",
+                profile_dir=Path("data/browser_profile/acc_kuaishou"),
+            )
+        )
+        config.accounts.append(
+            AccountConfig(
+                account_id="acc_main_2",
+                platform="douyin",
+                profile_dir=Path("data/browser_profile/acc_main_2"),
+            )
+        )
+        config.platforms["kuaishou"] = PlatformConfig(
+            publisher="kuaishou",
+            profile="douyin_1080x1920_30fps_v1",
+            enabled=True,
+            title_max=60,
+            caption_max=1000,
+        )
+        assert default_platforms(config) == ("douyin", "kuaishou")

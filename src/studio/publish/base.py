@@ -29,7 +29,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Final
 
 from studio.core.clock import now_iso
 from studio.core.config import AccountConfig, PlatformConfig
@@ -38,6 +38,7 @@ from studio.core.paths import StudioPaths
 
 __all__ = [
     "PUBLISHERS",
+    "REHEARSAL_PUBLISHER",
     "PublishEvidence",
     "PublishHealth",
     "PublishMetrics",
@@ -207,13 +208,27 @@ class PublishResult:
 
 @dataclass(frozen=True, slots=True)
 class PublishMetrics:
-    """一条作品的数据读数（§06.6 · T5.4 采集）。"""
+    """一条作品的数据读数（§06.6 · T5.4 采集）。
+
+    ★ 增补 ``completion_rate``（完播率）
+    ---------------------------------
+    §4.6.1 那张字段表只有四个**计数**，而"这条片子留不留得住人"是完播率回答的 ——
+    播放量高、完播率低，说明标题骗进来了、内容没接住，这两条给选题的指令正好相反。
+    计数与比率在这里**分成两类**：计数走 :func:`~studio.publish.metrics.parse_metric_count`
+    （认 ``1.2万``），比率走 :func:`~studio.publish.metrics.parse_metric_ratio`（认 ``42.3%``），
+    两类各有各的解析器，混用会让 ``42.3%`` 被读成 42（差 100 倍）。
+
+    ``None`` 一律表示"我们不知道"（平台没公开 / 还没统计出来），**不是 0**。
+    """
 
     collected_at: str
     views: int | None = None
     likes: int | None = None
     comments: int | None = None
     shares: int | None = None
+    #: 完播率，**0–1 的比值**（``0.423`` = 42.3%）。存比值而不是百分数：百分数
+    #: 一旦在某个环节被当成比值用（或反过来），误差是 100 倍，而两者都是"看着正常"的数。
+    completion_rate: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +293,12 @@ PublisherFactory = Callable[[PublisherContext], Publisher]
 
 #: 平台实现注册表（§4.6.1）。由 ``publish/platforms/*.py`` 在导入时登记。
 PUBLISHERS: dict[str, type[Publisher]] = {}
+
+#: 演练台发布器的代号（T5.9）。它**不是平台**：
+#: :class:`~studio.publish.platforms.fixture.FixturePublisher` 只打本地靶页，发不出去任何东西。
+#: 放这里是因为有三处要认它（投递的默认目标、池的开关守卫、契约测试），
+#: 而三处各写一遍字面量会在改名时漏掉一处 —— 漏掉的那处表现为"任务发完顺手多了一条演练发布"。
+REHEARSAL_PUBLISHER: Final[str] = "fixture"
 
 
 def register_publisher(cls: type[Publisher]) -> type[Publisher]:

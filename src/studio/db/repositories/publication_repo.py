@@ -632,7 +632,7 @@ def _dump_list(value: Sequence[Mapping[str, Any]]) -> str:
 
 
 def _history_entry(metrics: Mapping[str, Any]) -> dict[str, Any]:
-    """最新读数 ⇒ 时间序列的一项（``{at, views, likes, comments, shares}`` · 0004 的列注释）。
+    """最新读数 ⇒ 时间序列的一项（0004 的列注释：``at`` + 各计数 + ``completion_rate``）。
 
     为什么**不原样**把 ``metrics_json`` 追加进去：那一份还带 ``source``（"这个数是谁
     给的"），而它是**当前**口径 —— 将来接了平台开放接口，历史里会出现"前半段浏览器读的、
@@ -644,4 +644,5 @@ def _history_entry(metrics: Mapping[str, Any]) -> dict[str, Any]:
         "likes": metrics.get("likes"),
         "comments": metrics.get("comments"),
         "shares": metrics.get("shares"),
+        "completion_rate": metrics.get("completion_rate"),
     }

@@ -9,6 +9,8 @@ import type {
   MetricsTickResult,
   Publication,
   PublicationList,
+  PublishEnqueueResponse,
+  PublishPlatformsView,
 } from "@/api/endpoints/publish";
 import { ApiError } from "@/api/http";
 import {
@@ -16,12 +18,16 @@ import {
   actionBody,
   activeWork,
   configurePublishApi,
+  enqueueText,
   formatStamp,
   manualCount,
   metricsRows,
   metricsText,
   missingText,
+  optionText,
   plainText,
+  platformLabel,
+  rateText,
   reasonProblem,
   rowsOf,
   sinkText,
@@ -133,6 +139,48 @@ function tickReport(overrides: Partial<MetricsTickResult> = {}): MetricsTickResu
   };
 }
 
+function platforms(overrides: Partial<PublishPlatformsView> = {}): PublishPlatformsView {
+  return {
+    items: [
+      {
+        code: "douyin",
+        publisher: "douyin",
+        enabled: true,
+        rehearsal: false,
+        accounts: ["acc_main"],
+        selectable: true,
+        note: "真平台：要登录态，发出去不可撤销",
+      },
+      {
+        code: "other",
+        publisher: "fixture",
+        enabled: true,
+        rehearsal: true,
+        accounts: ["_rehearsal"],
+        selectable: true,
+        note: "本地演练台：发到本机靶页，不是真平台（发完照样能采数、沉淀）",
+      },
+      {
+        code: "xiaohongshu",
+        publisher: "xiaohongshu",
+        enabled: false,
+        rehearsal: false,
+        accounts: [],
+        selectable: false,
+        note: "平台未启用（§06.2.1 · Q9）⇒ 投了会被跳过",
+      },
+    ],
+    default_platforms: ["douyin"],
+    publish_enabled: true,
+    dry_run: false,
+    ...overrides,
+  };
+}
+
+function enqueueReport(overrides: Partial<PublishEnqueueResponse> = {}): PublishEnqueueResponse {
+  return { task_id: TASK, platforms: ["other"], queued: 1, skipped: [], missing: false, ...overrides };
+}
+
 function sinkResult(overrides: Partial<MemorySinkResult> = {}): MemorySinkResult {
   return {
     feedback_items_created: 1,
@@ -159,6 +207,8 @@ beforeEach(() => {
     runMetricsTick: vi.fn(async () => tickReport()),
     collectMetrics: vi.fn(async () => publication({ status: "published", metrics: { views: 1 } })),
     sinkMemory: vi.fn(async () => sinkResult()),
+    enqueueTask: vi.fn(async () => enqueueReport()),
+    fetchPlatforms: vi.fn(async () => platforms()),
   });
 });
 
@@ -226,6 +276,23 @@ describe("纯函数", () => {
     expect(metricsRows(rows).map((row) => row.id)).toEqual(["b", "c"]);
   });
 
+  it("完播率：比值进库、百分数上屏（乘 100 只在这一处发生）", () => {
+    expect(rateText(0.423)).toBe("42.3%");
+    expect(rateText(0.5)).toBe("50.0%");
+    // 与计数混在一起时**单独一段**：混进循环会被显示成"播放 0.42"。
+    expect(metricsText(publication({ metrics: { views: 120, completion_rate: 0.423 } }))).toBe(
+      "播放 120 · 完播 42.3%",
+    );
+    // 后端给 null（我们不知道）⇒ 一个字都不显示，不写"完播 0%"
+    expect(metricsText(publication({ metrics: { views: 120 } }))).toBe("播放 120");
+  });
+
+  it("平台代号：只翻 other（演练台），其余原样", () => {
+    expect(platformLabel("other")).toBe("本地演练台");
+    expect(platformLabel("douyin")).toBe("douyin");
+    expect(platformLabel("brand_new")).toBe("brand_new");
+  });
+
   it("回流的数字：认得出的翻成中文；一个都没有时说清「下一次什么时候」", () => {
     expect(metricsText(publication({ metrics: { views: 120, likes: 8 } }))).toBe("播放 120 · 赞 8");
     expect(metricsText(publication({ next_metric_at: "2026-09-17T13:00:00.000Z" }))).toBe(
@@ -265,13 +332,42 @@ describe("纯函数", () => {
     );
   });
 
-  it("沉淀的结论：数字 + 汇总文件名；评论 0 条时**明说没接线**", () => {
-    const text = sinkText(sinkResult({ comments_seen: 0 }));
-    expect(text).toContain("新增反馈 1 条");
+  it("沉淀的结论：数字 + 汇总文件名；评论 0 条时**明说没接线，并说清 0 条是预期**", () => {
+    // 评论没接线 ⇒ §06.8① 的输入缺 ⇒ 新增反馈 0 条。这一句原来写的是"只回流了数字"，
+    // 而数字并**没有**进记忆（它们只走 ② 的降权与 §6.7 的报告）—— 面板说"回流了"
+    // 而库里什么都没有，是最难查的一类不一致。
+    const text = sinkText(sinkResult({ feedback_items_created: 0, comments_seen: 0 }));
+    expect(text).toContain("新增反馈 0 条");
     expect(text).toContain("auto_202609.md");
     expect(text).toContain("下一轮选题可直接吃");
     expect(text).toContain("评论采样还没接线");
+    expect(text).toContain("预期");
     expect(sinkText(sinkResult({ comments_seen: 5 }))).not.toContain("评论采样还没接线");
+  });
+
+  it("平台选项那行字：带上账号与理由（点不动的要说清为什么）", () => {
+    const [douyin, rehearsal, disabled] = platforms().items ?? [];
+    expect(optionText(douyin)).toContain("账号 acc_main");
+    expect(optionText(douyin)).toContain("不可撤销");
+    expect(optionText(rehearsal)).toContain("本地演练台");
+    expect(optionText(rehearsal)).toContain("_rehearsal");
+    // 一个账号都没有 ⇒ 不写"账号 "空着，而是把话说清楚
+    expect(optionText({ ...disabled, accounts: [] })).toContain("没有启用的账号");
+  });
+
+  it("投递的结论：投出几条 + 目标；跳过的那几条必须点名（0 条不等于按钮坏了）", () => {
+    expect(enqueueText(enqueueReport())).toBe("投出 1 条 · 目标 other");
+    const skipped = enqueueText(
+      enqueueReport({
+        platforms: ["douyin", "xiaohongshu"],
+        queued: 1,
+        skipped: ["xiaohongshu：平台未启用（§06.2.1 · Q9）"],
+      }),
+    );
+    expect(skipped).toContain("投出 1 条");
+    expect(skipped).toContain("目标 douyin / xiaohongshu");
+    expect(skipped).toContain("跳过：xiaohongshu：平台未启用");
+    expect(enqueueText(enqueueReport({ platforms: [], queued: 0 }))).toContain("目标 无");
   });
 });
 
@@ -490,5 +586,156 @@ describe("usePublishStore", () => {
     expect(sinkMemory).toHaveBeenCalledWith("pub-1");
     expect(store.notice).toContain("新增反馈 2 条");
     expect(store.notice).toContain("降权方向 1 个");
+  });
+
+  // ── 投递（T5.10）────────────────────────────────────────────────────
+
+  it("首屏会读一次平台清单（进面板就有得勾）", async () => {
+    const fetchPlatforms = vi.fn(async () => platforms());
+    configurePublishApi({ fetchPlatforms });
+    const store = usePublishStore();
+
+    store.start();
+    await vi.waitFor(() => expect(store.platformItems.length).toBeGreaterThan(0));
+
+    expect(fetchPlatforms).toHaveBeenCalled();
+    expect(store.platformItems.map((item) => item.code)).toEqual(["douyin", "other", "xiaohongshu"]);
+    expect(store.defaultTargets).toEqual(["douyin"]);
+    store.stop();
+  });
+
+  it("读不到平台清单 ⇒ 一个勾选框都不画（不猜一份自己列的）", async () => {
+    configurePublishApi({
+      fetchPlatforms: vi.fn(async () => {
+        throw new ApiError("清单炸了", 500, null);
+      }),
+    });
+    const store = usePublishStore();
+
+    await store.loadPlatforms();
+
+    expect(store.platformItems).toEqual([]);
+    expect(store.loadError).toContain("清单炸了");
+  });
+
+  it("不勾任何平台 ⇒ 请求体**不带** platforms（那是「投缺省目标」，不是「都不发」）", async () => {
+    const enqueueTask = vi.fn(async () => enqueueReport({ platforms: ["douyin"] }));
+    configurePublishApi({ enqueueTask });
+    const store = usePublishStore();
+
+    store.setEnqueueTaskId(TASK);
+    expect(await store.enqueue()).toBe(true);
+
+    expect(enqueueTask).toHaveBeenCalledWith(TASK, {});
+    expect(store.notice).toContain("投出 1 条");
+    expect(store.notice).toContain("目标 douyin");
+  });
+
+  it("勾了平台 ⇒ 带上那串；任务号先去空白", async () => {
+    const enqueueTask = vi.fn(async () => enqueueReport());
+    configurePublishApi({ enqueueTask });
+    const store = usePublishStore();
+
+    store.setEnqueueTaskId(`  ${TASK}  `);
+    store.toggleEnqueuePlatform("other");
+    expect(await store.enqueue()).toBe(true);
+
+    expect(enqueueTask).toHaveBeenCalledWith(TASK, { platforms: ["other"] });
+  });
+
+  it("勾选可切换：再点一次就取消（顺序按点的先后）", () => {
+    const store = usePublishStore();
+
+    store.toggleEnqueuePlatform("other");
+    store.toggleEnqueuePlatform("douyin");
+    expect(store.enqueuePick).toEqual(["other", "douyin"]);
+
+    store.toggleEnqueuePlatform("other");
+    expect(store.enqueuePick).toEqual(["douyin"]);
+  });
+
+  it("没填任务号 ⇒ 一个请求都不发，并给出那句话", async () => {
+    const enqueueTask = vi.fn(async () => enqueueReport());
+    configurePublishApi({ enqueueTask });
+    const store = usePublishStore();
+
+    expect(await store.enqueue()).toBe(false);
+
+    expect(enqueueTask).not.toHaveBeenCalled();
+    expect(store.enqueueError).toContain("先填一个任务号");
+  });
+
+  it("投递失败 ⇒ 报后端那句话（走 enqueueError，不冒充成功）", async () => {
+    configurePublishApi({
+      enqueueTask: vi.fn(async () => {
+        throw new ApiError("任务不存在：x", 404, null);
+      }),
+    });
+    const store = usePublishStore();
+
+    store.setEnqueueTaskId("x");
+    expect(await store.enqueue()).toBe(false);
+
+    expect(store.enqueueError).toContain("任务不存在");
+    expect(store.enqueueResult).toBeNull();
+  });
+
+  it("勾了真平台而开关是关的 ⇒ 给一句显眼的警告（说「直接死信」，不说「转人工」）", async () => {
+    // 出厂就是这一档：作业在 worker 侧被守卫挡下、publications 那一行根本不建
+    // ⇒ 发布面板上"什么都没发生"。不说这句，操作员只会以为按钮坏了。
+    configurePublishApi({
+      fetchPlatforms: vi.fn(async () => platforms({ publish_enabled: false })),
+    });
+    const store = usePublishStore();
+    await store.loadPlatforms();
+
+    expect(store.enqueueWarning).toBeNull();
+
+    store.toggleEnqueuePlatform("douyin");
+    const warning = store.enqueueWarning;
+    expect(warning).toContain("直接死信");
+    expect(warning).toContain("四池调度");
+    expect(warning).not.toContain("转人工");
+  });
+
+  it("勾的是演练台 ⇒ 没有那句警告（它发的是本地靶页，与开关无关）", async () => {
+    configurePublishApi({
+      fetchPlatforms: vi.fn(async () => platforms({ publish_enabled: false })),
+    });
+    const store = usePublishStore();
+    await store.loadPlatforms();
+
+    store.toggleEnqueuePlatform("other");
+
+    expect(store.enqueueWarning).toBeNull();
+  });
+
+  it("开关是开的 ⇒ 没有那句警告", async () => {
+    configurePublishApi({ fetchPlatforms: vi.fn(async () => platforms()) });
+    const store = usePublishStore();
+    await store.loadPlatforms();
+
+    store.toggleEnqueuePlatform("douyin");
+
+    expect(store.enqueueWarning).toBeNull();
+  });
+
+  it("读不到平台清单 ⇒ 也不警告（清单都没有，警告会指着一堆不存在的选项）", async () => {
+    const store = usePublishStore();
+
+    store.toggleEnqueuePlatform("douyin");
+
+    expect(store.enqueueWarning).toBeNull();
+  });
+
+  it("换任务号 ⇒ 上一条结论清掉（它说的是**另一个任务号**的事）", async () => {
+    const store = usePublishStore();
+    store.setEnqueueTaskId(TASK);
+    await store.enqueue();
+    expect(store.enqueueResult).not.toBeNull();
+
+    store.setEnqueueTaskId("another-task");
+    expect(store.enqueueResult).toBeNull();
+    expect(store.enqueueError).toBeNull();
   });
 });

@@ -24,6 +24,9 @@ selectors:
   publish_button: "#publish"
   success_marker: "#result"
   reject_marker: "#reject"
+  # 结果块里那个指向作品的链接（T5.9 真发布用）。`fetch_metrics` 从它的 `href`
+  # 末段取作品号 —— 与真平台同一条代码路径（`_read_post_link`）。
+  post_link: "#post-link"
 
   # ── 数据回收（T5.4 · §06.6）───────────────────────────────────────────
   # ⚠️ 与上面那批一样是**未实测初稿**。`metric_row` 里的 `{post_id}` 会被换成
@@ -34,6 +37,9 @@ selectors:
   metric_likes: ".metric-likes, span[data-metric=likes]"
   metric_comments: ".metric-comments, span[data-metric=comments]"
   metric_shares: ".metric-shares, span[data-metric=shares]"
+  # 完播率：靶页给的是 ``42.3%`` 这种带百分号的写法（真平台上那个 % 常常
+  # 在旁边的标签里，所以解析器两种都认，见 `parse_metric_ratio`）。
+  metric_completion_rate: ".metric-completion_rate, span[data-metric=completion_rate]"
 
 readback:
   title: value

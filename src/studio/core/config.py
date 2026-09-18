@@ -993,7 +993,13 @@ class RandomizationConfig(_FileConfig):
 # 7. publish.yaml —— 平台 / 账号 / 限频 / 发布前校验
 # ══════════════════════════════════════════════════════════════════════
 
-PlatformCode = Literal["douyin", "kuaishou", "shipinhao", "xiaohongshu", "bilibili", "xigua", "weibo"]
+#: ``config/publish.yaml → platforms`` 的键。七行是 §06.2.1 的平台矩阵；
+#: ``other`` 是 §03.3.15 的 CHECK 里本来就有的那一档 —— T5.9 起它承接**本地演练台**
+#: （``publisher: fixture``，发到本地靶页、不需要账号与网络）。
+#: 它**不在** ``REAL_PLATFORMS`` 里：那个清单是"真平台"，演练台不是。
+PlatformCode = Literal[
+    "douyin", "kuaishou", "shipinhao", "xiaohongshu", "bilibili", "xigua", "weibo", "other"
+]
 
 
 class PublishHandoffConfig(_Base):

@@ -44,6 +44,7 @@ import asyncio
 import time
 from pathlib import Path
 from typing import Any, ClassVar, Final
+from urllib.parse import quote
 
 from studio.core.clock import file_stamp, now_iso
 from studio.core.errors import ErrorCode, PublishError
@@ -59,8 +60,14 @@ from studio.publish.base import (
     PublishResult,
 )
 from studio.publish.browser import NAV_TIMEOUT_MS, PageLike, SessionFactory, open_session
-from studio.publish.metrics import parse_metric_count
-from studio.publish.selectors import METRIC_KEYS, POST_ID_PLACEHOLDER, SelectorPack, load_selector_pack
+from studio.publish.metrics import parse_metric_count, parse_metric_ratio
+from studio.publish.selectors import (
+    METRIC_KEYS,
+    POST_ID_PLACEHOLDER,
+    RATIO_METRIC_KEYS,
+    SelectorPack,
+    load_selector_pack,
+)
 
 __all__ = [
     "POLL_SEC",
@@ -194,6 +201,11 @@ class PlaywrightPublisher(Publisher):
         把它们都压成 ``None``，"选择器失效"就会以"播放量一直是空"的形式安静地烂在库里。
         """
         url = self._pack.urls.get("manage") or self._pack.url("upload")
+        # ``manage`` 里可以带 ``{post_id}`` 占位符：真平台的管理页是"列出全部作品"
+        # （不需要占位符），而本地靶页没有后端、只能把"有哪些作品"写在地址里。
+        # 引用之前先转义：作品号将来可能带 ``?`` / ``&``（平台改 ID 格式时），
+        # 不转义会让后面半截变成另一个查询参数 —— 一个安静的错地址。
+        url = url.replace(POST_ID_PLACEHOLDER, quote(platform_post_id, safe=""))
         async with self._session_factory(self._ctx) as page:
             await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
             if not await self._logged_in(page):
@@ -228,8 +240,10 @@ class PlaywrightPublisher(Publisher):
                 ),
             )
 
-        values: dict[str, int | None] = {}
-        for key in METRIC_KEYS:
+        values: dict[str, float | int | None] = {}
+        # 计数与比率**分开遍历**：两者的解析器不同（`1.2万` vs `42.3%`），
+        # 而混用会让完播率被读成 42 —— 一个看着正常的错值（见 RATIO_METRIC_KEYS）。
+        for key in (*METRIC_KEYS, *RATIO_METRIC_KEYS):
             selector = self._pack.selectors.get(f"metric_{key}", "")
             if not selector:
                 values[key] = None
@@ -237,7 +251,7 @@ class PlaywrightPublisher(Publisher):
             # 后代组合器而不是"再查一次"：`text_content` 只收一个选择器，
             # 而"这一行里的那个数字"正好是 CSS 能表达的事。
             text = await self._optional_text(page, f"{row} {selector}")
-            values[key] = parse_metric_count(text)
+            values[key] = parse_metric_ratio(text) if key in RATIO_METRIC_KEYS else parse_metric_count(text)
 
         if all(value is None for value in values.values()):
             # **不是失败**：刚发出去的作品四个数都可能是"—"（平台还没开始统计）。
@@ -249,7 +263,10 @@ class PlaywrightPublisher(Publisher):
                 platform_post_id=platform_post_id,
                 selector_version=self.selectors_version,
             )
-        return PublishMetrics(collected_at=now_iso(), **values)
+        # 值是按 :data:`METRIC_KEYS` / :data:`RATIO_METRIC_KEYS` **两组动态拼**出来的，
+        # 而静态类型表达不了"这组键恰好等于那几个字段名"。加一个"加一个维度只改一处"
+        # 的取舍放在这里，比把那五个键名在这里再抄一遍好 —— 抄一遍就又多了一处会过期的地方。
+        return PublishMetrics(collected_at=now_iso(), **values)  # type: ignore[arg-type]
 
     # ── 八步 ────────────────────────────────────────────────────────
 

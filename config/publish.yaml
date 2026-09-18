@@ -21,6 +21,16 @@ accounts:
     daily_limit: 3
     min_gap_min: 30
 
+  # 本地演练台的账号（T5.9）。它不是任何平台的账号：登录态目录与真账号**物理隔离**，
+  # 发的也是本地靶页。daily_limit 拉满、间隔为 0 —— 演练要能连着跑好几遍。
+  - account_id: _rehearsal
+    platform: other
+    display_name: 本地演练台
+    profile_dir: data/browser_profile/_rehearsal
+    enabled: true
+    daily_limit: 100
+    min_gap_min: 0
+
 # 一线平台（一期必做）
 platforms:
   douyin:
@@ -57,6 +67,30 @@ platforms:
     tag_max: 3
     daily_limit: 3
     min_gap_min: 30
+    cover_required: false
+    selectors_version: "2026-09-18"
+
+# 本地演练台（T5.9）——**把整条链路在没有账号、没有网络的情况下真跑一遍**：
+# 发布 → 数据回收 → 记忆沉淀。它填的是 §03.3.15 里本来就有的 `other` 那一档，
+# 因此**不会**出现在 §06.2.1 的七行平台矩阵上（`REAL_PLATFORMS` 仍只有七个）。
+#
+# 为什么要有它：链路最后两段（发布 / 数据回收）此前只能靠 `dry-run` 验到"停在第 ⑥ 步
+# 之前"，而"播放量 / 点赞量 / 完播率真的回到库里、面板上真的出现数字"这件事，
+# 在没有真账号时**没有任何办法验**。演练台把这件事解耦：同一个 `PlaywrightPublisher`、
+# 同一份流程代码、同一套选择器机制，只是打本地 file:// 靶页。
+#
+# ⚠️ 它发不出去任何东西：`FixturePublisher` 只认本地靶页（见 `platforms/fixture.py`），
+#    且 `publications.platform` 的 CHECK 里**没有** `fixture`（纵深防御仍在）。
+  other:
+    publisher: fixture
+    profile: douyin_1080x1920_30fps_v1
+    enabled: true
+    title_max: 55
+    caption_max: 1000
+    tag_syntax: "#{tag}"
+    tag_max: 5
+    daily_limit: 100
+    min_gap_min: 0
     cover_required: false
     selectors_version: "2026-09-18"
 

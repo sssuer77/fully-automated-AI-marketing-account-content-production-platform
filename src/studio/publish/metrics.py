@@ -52,6 +52,7 @@ __all__ = [
     "metrics_payload",
     "next_metric_at",
     "parse_metric_count",
+    "parse_metric_ratio",
 ]
 
 logger = get_logger("studio.publish.metrics")
@@ -79,6 +80,21 @@ _UNITS: Final[dict[str, float]] = {
 }
 
 
+#: 负号（``-`` 与 Unicode 的 ``−`` U+2212）。平台上的 ``-`` 更常见的意思是
+#: "无数据"（``-`` / ``--``），而**数字前面**的那个减号只有一个意思：这是个负数。
+_MINUS: Final[tuple[str, ...]] = ("-", "\u2212")
+
+
+def _is_negative(raw: str, end: int) -> bool:
+    """匹配到的数字**紧前面**是不是负号。
+
+    为什么不能靠 ``value < 0``：:data:`_NUMBER` 只抓 ``\\d``，减号根本不在匹配里 ——
+    于是 ``-3%`` 会被读成 ``3%``。那是一个**安静的符号翻转**：库里的完播率从"负的"
+    变成"正的"，而两者都是看着正常的数。计数那边同理（``-1.2万`` 曾会变成 12000）。
+    """
+    return end > 0 and raw[end - 1] in _MINUS
+
+
 def parse_metric_count(text: str | None) -> int | None:
     """平台上的计数文本 ⇒ 整数；**读不出来 ⇒ ``None``**（绝不返回 0）。
 
@@ -97,6 +113,8 @@ def parse_metric_count(text: str | None) -> int | None:
     match = _NUMBER.search(raw)
     if match is None:
         return None
+    if _is_negative(raw, match.start()):
+        return None
     value = float(match.group(0))
     # 单位只看**数字紧后面那一个字符**：``1.2万`` 的 ``万`` 在 ``1.2`` 之后。
     # 放宽成"整串里有没有万"会把 ``2026-09-18 万`` 这种混进来的日期也乘一万。
@@ -104,9 +122,42 @@ def parse_metric_count(text: str | None) -> int | None:
     multiplier = _UNITS.get(unit)
     if multiplier is not None:
         value *= multiplier
-    if value < 0:
-        return None
     return int(value)
+
+
+def parse_metric_ratio(text: str | None) -> float | None:
+    """平台上的**比率**文本 ⇒ 0–1 的比值；读不出来 ⇒ ``None``。
+
+    ``42.3%`` ⇒ 0.423、``42.3`` ⇒ 0.423、``0.423`` ⇒ 0.423、
+    ``—`` / 空串 / 负数 / 超过 100% ⇒ ``None``。
+
+    三条口径，都是为了让"42.3"这个裸数字只有一个答案：
+
+    ① **带 ``%`` ⇒ 一定按百分数**（``42.3%`` ⇒ 0.423）；
+    ② **不带且 ≤ 1 ⇒ 已经是比值**（``0.42`` ⇒ 0.42）—— 有的平台直接给小数；
+    ③ **不带且 > 1 ⇒ 按百分数**（``42.3`` ⇒ 0.423）—— 中文平台的界面上写的就是
+       "42.3"，那个 ``%`` 在旁边的标签里，抓不到。
+
+    读不出来返回 ``None`` 的理由与 :func:`parse_metric_count` 完全一样：``0`` 是
+    "没人看完"，``None`` 是"我们不知道"，而"完播率 0%"会让选题去砍掉一个其实没问题的题材。
+    """
+    if text is None:
+        return None
+    raw = str(text).strip().replace(",", "").replace(" ", "").replace("\u00a0", "")
+    if not raw:
+        return None
+    match = _NUMBER.search(raw)
+    if match is None:
+        return None
+    if _is_negative(raw, match.start()):
+        return None
+    value = float(match.group(0))
+    percent = "%" in raw or value > 1.0
+    ratio = value / 100.0 if percent else value
+    if ratio > 1.0:
+        # 101% 这种要么是平台算错了，要么是我们抓到了别的数字 —— 两者都不该进库。
+        return None
+    return ratio
 
 
 def metrics_payload(metrics: PublishMetrics) -> dict[str, Any]:
@@ -121,6 +172,7 @@ def metrics_payload(metrics: PublishMetrics) -> dict[str, Any]:
         "likes": metrics.likes,
         "comments": metrics.comments,
         "shares": metrics.shares,
+        "completion_rate": metrics.completion_rate,
         "collected_at": metrics.collected_at,
         "source": METRICS_SOURCE,
     }

@@ -42,6 +42,8 @@ export type PublishActionBody = BodyJson<"/api/v1/publish/{publication_id}/retry
 export type PublishActionResponse = OkJson<"/api/v1/publish/{publication_id}/retry", "post">;
 export type PublishEnqueueBody = BodyJson<"/api/v1/publish/tasks/{task_id}/enqueue", "post">;
 export type PublishEnqueueResponse = OkJson<"/api/v1/publish/tasks/{task_id}/enqueue", "post">;
+export type PublishPlatformsView = OkJson<"/api/v1/publish/platforms", "get">;
+export type PublishPlatformOption = NonNullable<PublishPlatformsView["items"]>[number];
 export type HandoffPreview = OkJson<"/api/v1/publish/handoff/{task_id}", "get">;
 export type HandoffItem = NonNullable<HandoffPreview["items"]>[number];
 export type HandoffResult = OkJson<"/api/v1/publish/handoff/{task_id}", "post">;
@@ -129,6 +131,17 @@ export function enqueueTask(
     body,
     { signal },
   );
+}
+
+/**
+ * 投递面板的选项清单（**来自配置，不是面板自己列的**）。
+ *
+ * 面板列一份平台清单 = 把 `config/publish.yaml` 抄第二遍：加一个平台要改两处，而漏改
+ * 的那一处表现为"这个平台在面板上不存在" —— 没人会去报这个 bug。连"点了会怎样"
+ * （`selectable` / `note`）也一起给，判据与投递期是同一套。
+ */
+export function fetchPlatforms(signal?: AbortSignal): Promise<PublishPlatformsView> {
+  return apiGet<PublishPlatformsView>(`${PUBLISH_PATH}/platforms`, { signal });
 }
 
 /** 交付包**预览**：会打进去哪几件、缺哪件（后端保证一个字节都不写）。 */

@@ -54,6 +54,7 @@ from studio.domain.publish import build_caption, fit_text, render_tags
 from studio.domain.script import find_forbidden
 from studio.domain.task_service import TaskService
 from studio.publish.base import (
+    REHEARSAL_PUBLISHER,
     PublisherContext,
     PublishHealth,
     PublishRequest,
@@ -83,12 +84,15 @@ __all__ = [
     "DryRunReport",
     "DryRunRequest",
     "EnqueueReport",
+    "PlatformOption",
     "PublicationBoard",
     "PublishService",
     "build_board",
     "cancel_publication",
+    "default_platforms",
     "enqueue_publications",
     "mark_manual_done",
+    "platform_options",
     "resolve_account",
     "resolve_final_video",
     "resolve_platform",
@@ -817,7 +821,7 @@ def enqueue_publications(
         return EnqueueReport(task_id=task_id, platforms=(), queued=0, missing=True)
 
     wanted: list[str] = []
-    for platform in platforms if platforms is not None else _default_platforms(config):
+    for platform in platforms if platforms is not None else default_platforms(config):
         if platform not in wanted:
             wanted.append(platform)
 
@@ -855,12 +859,103 @@ def enqueue_publications(
     return EnqueueReport(task_id=task_id, platforms=tuple(wanted), queued=queued, skipped=tuple(skipped))
 
 
-def _default_platforms(config: PublishConfig) -> tuple[str, ...]:
-    """出厂口径的目标平台 = 启用账号所在的平台（顺序按 ``accounts`` 的书写顺序）。"""
+# ── 投递面板的选项清单（T5.10）─────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class PlatformOption:
+    """投递面板上的一个平台选项（**面板要的那份真相**）。"""
+
+    code: str
+    publisher: str
+    enabled: bool
+    rehearsal: bool
+    accounts: tuple[str, ...]
+    #: 点得动吗 —— 判据与投递期**同一套**（平台启用 且 有启用的账号）。
+    selectable: bool
+    #: 一句人话：点了会怎样 / 为什么点不动。
+    note: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "publisher": self.publisher,
+            "enabled": self.enabled,
+            "rehearsal": self.rehearsal,
+            "accounts": list(self.accounts),
+            "selectable": self.selectable,
+            "note": self.note,
+        }
+
+
+def platform_options(config: PublishConfig) -> tuple[PlatformOption, ...]:
+    """能投到哪儿、投了会怎样 —— 面板的选项清单（顺序 = ``config/publish.yaml`` 的书写顺序）。
+
+    **为什么这份清单从服务端来**：面板自己列一遍平台，等于把 ``config/publish.yaml``
+    抄了第二份 —— 加一个平台要改两处，而漏改的那一处表现为"这个平台在面板上不存在"，
+    没有人会去报这个 bug。这里连"点了会怎样"也一起算出来（``selectable`` / ``note``），
+    因为"平台未启用"与"这个平台没有启用的账号"正是投递期会**跳过**它的那两条判据
+    （见 :func:`enqueue_publications`）—— 面板显示"点得动"而投递期默默跳过，就是骗人。
+
+    **演练台照旧列出来**（T5.9）：它是默认目标之外唯一能"真发一条"的通道，面板上
+    藏起来的话，没有真账号的操作员就只能去命令行。
+    """
+    by_platform: dict[str, list[str]] = {}
+    for account in config.enabled_accounts:
+        by_platform.setdefault(account.platform, []).append(account.account_id)
+
+    out: list[PlatformOption] = []
+    for code, platform_cfg in config.platforms.items():
+        accounts = tuple(by_platform.get(code, ()))
+        rehearsal = platform_cfg.publisher == REHEARSAL_PUBLISHER
+        if not platform_cfg.enabled:
+            note = "平台未启用（§06.2.1 · Q9）⇒ 投了会被跳过"
+        elif not accounts:
+            note = "这个平台没有启用的账号 ⇒ 投了会被跳过"
+        elif rehearsal:
+            note = "本地演练台：发到本机靶页，不是真平台（发完照样能采数、沉淀）"
+        elif not config.enabled:
+            # 出厂就是这一档（R14）。**必须说"死信"而不是"转人工"**：worker 的开关守卫
+            # 抛的是不可重试的 PUBLISH_DISABLED ⇒ 作业直接进死信，`publications` 那一行
+            # 根本不会建 ⇒ 发布面板上什么都不出现（§04-contracts ① 的开关守卫那条）。
+            # 说成"转人工"会让人去「待人工」区块里找一个永远不会出现的记录。
+            note = (
+                "真平台：发布开关是关的（config/publish.yaml → enabled: false）"
+                "⇒ 投了会直接死信（在「四池调度」的死信里能看到），发布面板上不会出现记录"
+            )
+        else:
+            note = "真平台：要登录态，发出去不可撤销"
+        out.append(
+            PlatformOption(
+                code=str(code),
+                publisher=platform_cfg.publisher,
+                enabled=platform_cfg.enabled,
+                rehearsal=rehearsal,
+                accounts=accounts,
+                selectable=platform_cfg.enabled and bool(accounts),
+                note=note,
+            )
+        )
+    return tuple(out)
+
+
+def default_platforms(config: PublishConfig) -> tuple[str, ...]:
+    """出厂口径的目标平台 = 启用账号所在的平台（顺序按 ``accounts`` 的书写顺序）。
+
+    **演练台不在默认目标里**（T5.9）：``platforms.other`` 的发布器是
+    :data:`~studio.publish.base.REHEARSAL_PUBLISHER`，它发的是本地靶页。把它算进默认
+    目标，每一条任务投递完都会**顺手多出一条"演练发布"** —— 那条记录在面板上与真发布
+    长得一样（只差平台代号），而"我没让它发，它自己发了一条"是最难解释的一类问题。
+    要演练就显式点名（``platforms=("other",)``），见 ``docs/runbook`` 与 T5.9 的说明。
+    """
     out: list[str] = []
     for account in config.enabled_accounts:
-        if account.platform not in out:
-            out.append(account.platform)
+        if account.platform in out:
+            continue
+        platform_cfg = config.platforms.get(account.platform)
+        if platform_cfg is not None and platform_cfg.publisher == REHEARSAL_PUBLISHER:
+            continue
+        out.append(account.platform)
     return tuple(out)
 
 

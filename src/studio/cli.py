@@ -2534,7 +2534,7 @@ def publish_enqueue(
     + 人工再点一遍"不会发两次，第二次会出现在 ``skipped`` 里。
 
     这条命令**只投作业**，不发布、不看 ``publish.enabled``：开关关着时作业照样进队列，
-    由 worker 那一侧带 ``PUBLISH_DISABLED`` 转人工（R14：不可逆的动作必须有人点头）。
+    由 worker 那一侧带 ``PUBLISH_DISABLED`` 进死信（R14：不可逆的动作必须有人点头）。
     要看"投进去之后发生了什么"跑 ``studio publish queue``。
     """
     paths = StudioPaths.from_env()

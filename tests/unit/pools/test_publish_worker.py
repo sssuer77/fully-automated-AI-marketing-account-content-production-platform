@@ -32,6 +32,7 @@ from studio.core.clock import parse_iso
 from studio.core.config import (
     CONFIG_FILE_NAMES,
     AccountConfig,
+    PlatformCode,
     PlatformConfig,
     PoolConfig,
     PublishConfig,
@@ -108,9 +109,16 @@ DEFAULT_ACCOUNTS: tuple[tuple[str, str], ...] = (("acc_main", "douyin"),)
 
 
 def _config(
-    *, enabled: bool = True, accounts: tuple[tuple[str, str], ...] = DEFAULT_ACCOUNTS
+    *,
+    enabled: bool = True,
+    accounts: tuple[tuple[str, str], ...] = DEFAULT_ACCOUNTS,
+    extra_platforms: Mapping[PlatformCode, PlatformConfig] | None = None,
 ) -> PublishConfig:
-    """一份够用的发布配置（默认**打开**开关：单测要验的是链路，不是出厂状态）。"""
+    """一份够用的发布配置（默认**打开**开关：单测要验的是链路，不是出厂状态）。
+
+    :param extra_platforms: 追加的平台段。**必须在这里给**而不是构造完之后再塞：
+    ``PublishConfig`` 的校验器在**构造那一刻**就要求"启用账号的平台必须在 platforms 里"。
+    """
     return PublishConfig(
         enabled=enabled,
         accounts=[
@@ -139,6 +147,7 @@ def _config(
                 title_max=20,
                 caption_max=1000,
             ),
+            **dict(extra_platforms or {}),
         },
     )
 
@@ -361,6 +370,39 @@ def test_disabled_switch_blocks_a_real_publish(rig: Rig) -> None:
     assert excinfo.value.code is ErrorCode.PUBLISH_DISABLED
     assert _publish_rows(rig) == []
     assert CALLS == []
+
+
+def test_rehearsal_platform_passes_while_the_switch_is_off(rig: Rig) -> None:
+    """本地演练台**不看**开关：它发到本地靶页，发不出去任何东西（T5.9）。
+
+    拿 ``enabled`` 去挡它的话，"验证链路是不是通的"就变成了"先把真发布开关打开" ——
+    那正是 R14 要防的事。判据是"会不会发到真实平台"，而不是"是不是 dry-run"。
+    """
+    FakePublisher.results = [
+        PublishResult.published(url="file:///rehearsal/1", platform_post_id="rehearsal-1")
+    ]
+    config = _config(
+        enabled=False,
+        accounts=(("_rehearsal", "other"),),
+        extra_platforms={
+            "other": PlatformConfig(
+                publisher="fixture",
+                profile="douyin_1080x1920_30fps_v1",
+                enabled=True,
+                title_max=55,
+                caption_max=1000,
+            )
+        },
+    )
+    ctx, _ = _claimed(rig, platform="other")
+
+    result = _handler(rig, config=config).run(ctx)
+
+    rows = _publish_rows(rig)
+    assert result["stage"] == "published"
+    assert [row["platform"] for row in rows] == ["other"]
+    assert rows[0]["account_id"] == "_rehearsal"
+    assert rows[0]["status"] == "published"
 
 
 def test_dry_run_passes_while_the_switch_is_off(rig: Rig) -> None:

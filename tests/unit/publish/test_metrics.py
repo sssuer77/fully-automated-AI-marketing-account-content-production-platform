@@ -29,6 +29,7 @@ from studio.publish.metrics import (
     metrics_payload,
     next_metric_at,
     parse_metric_count,
+    parse_metric_ratio,
 )
 from studio.services.publish_metrics_service import PublishMetricsService
 
@@ -129,6 +130,40 @@ def test_parse_metric_count(text: str | None, expected: int | None) -> None:
     assert parse_metric_count(text) == expected
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("42.3%", 0.423),
+        ("42.3", 0.423),
+        ("0.423", 0.423),
+        ("100%", 1.0),
+        ("1", 1.0),
+        ("0%", 0.0),
+        ("0", 0.0),
+        ("68%", 0.68),
+        ("—", None),
+        ("暂无", None),
+        ("", None),
+        (None, None),
+        ("完播率 42.3%", 0.423),
+        # 101% / 负数：要么平台算错了，要么我们抓到了别的数字 —— 都不该进库。
+        ("101%", None),
+        ("-3%", None),
+    ],
+)
+def test_parse_metric_ratio(text: str | None, expected: float | None) -> None:
+    assert parse_metric_ratio(text) == expected
+
+
+def test_parse_metric_ratio_never_confuses_ratio_and_percent() -> None:
+    """``42.3`` 与 ``0.423`` 必须落到**同一个**值上。
+
+    这一条是完播率唯一真正危险的错法：42 与 0.42 都是"看着正常"的数，
+    混起来不会报错、不会崩，只会在选题那边悄悄把"完播率低"当成"完播率高"。
+    """
+    assert parse_metric_ratio("42.3") == parse_metric_ratio("42.3%") == parse_metric_ratio("0.423")
+
+
 def test_parse_metric_count_never_fakes_a_zero() -> None:
     """读不出来 ⇒ ``None``。**0 与"不知道"在选题决策里含义相反**（§06.6 平台限制）。"""
     assert parse_metric_count("—") is None
@@ -186,6 +221,7 @@ def test_metrics_payload_carries_the_source() -> None:
         "likes": None,
         "comments": None,
         "shares": None,
+        "completion_rate": None,
         "collected_at": "2026-09-18T01:00:00.000Z",
         "source": "publisher",
     }

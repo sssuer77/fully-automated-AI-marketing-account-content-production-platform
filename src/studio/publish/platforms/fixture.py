@@ -9,18 +9,34 @@
 靶页把这件事解耦：同一个 ``PlaywrightPublisher``，同一份流程代码，打
 ``file://`` 上的本地表单。**真浏览器、真截图、真回读**，但不需要账号。
 
-★ 它**不能**真的发布
---------------------
-``platform = "fixture"`` 不在 §06.2.1 的平台矩阵里，也不在
-``publications.platform`` 的 CHECK 约束里 ⇒ 就算有人把它接进发布池，落库那一步
-也会被数据库挡下（纵深防御）。此外本类自己就拒绝 ``dry_run=False``。
+★ 它从 T5.9 起能"真发布"到本地靶页 —— 但仍然发不到任何真平台
+-----------------------------------------------------------
+改这一条的理由是**链路的最后两段此前没法验**：``dry-run`` 只能验到"停在第 ⑥ 步
+之前"，而"点下发布 → 作品号回到库里 → 播放量/点赞量/完播率真的采回来 → 面板上
+真的出现数字"这件事，在没有真账号时**没有任何办法验**。演练台把它解耦：同一个
+:class:`~studio.publish.playwright_publisher.PlaywrightPublisher`、同一份八步代码、
+同一套选择器机制，只是打本地 ``file://`` 靶页。
+
+三道保护，替代原来那条"拒绝 ``dry_run=False``"：
+
+① **只认本地靶页**。页面地址由 :data:`FIXTURE_PAGE` 决定（``file://`` 或测试挂的
+   本地 http），配置里没有第二个地方能改它 —— 它发不到 ``https://`` 上的任何东西；
+② **只服务演练台**。真发布（``dry_run=False``）时 ``req.platform`` 必须是
+   :data:`REHEARSAL_PLATFORMS` 里的代号；有人把 ``platforms.douyin.publisher``
+   改成 ``fixture`` 想"发抖音"，这里会直接拒 —— 否则库里会出现一条
+   ``platform='douyin'`` 而其实什么都没发的记录；
+③ **数据库那道仍然在**。``publications.platform`` 的 CHECK 里**没有** ``fixture``，
+   所以演练台落库时用的是 ``other``（§03.3.15 本来就有的那一档）。
+
+``dry-run`` 演练（``--target fixture``）不受 ② 约束：那时候 ``req.platform`` 是
+**被演练的那个真平台**（``douyin``），而这一步根本不会点发布按钮。
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Final
 
 from studio.core.errors import ErrorCode
 from studio.publish.base import (
@@ -31,12 +47,21 @@ from studio.publish.base import (
 )
 from studio.publish.browser import SessionFactory
 from studio.publish.playwright_publisher import PlaywrightPublisher
-from studio.publish.selectors import SelectorPack, load_selector_pack
+from studio.publish.selectors import (
+    POST_ID_PLACEHOLDER,
+    SelectorPack,
+    load_selector_pack,
+)
 
-__all__ = ["FIXTURE_PAGE", "FixturePublisher"]
+__all__ = ["FIXTURE_PAGE", "REHEARSAL_PLATFORMS", "FixturePublisher"]
 
 #: 靶页文件（随包走）。
 FIXTURE_PAGE: Path = Path(__file__).resolve().parent.parent / "fixtures" / "upload_form.html"
+
+#: 允许**真发布**到靶页的平台代号（见模块 docstring 的保护 ②）。
+#: ``other`` 是演练台落库用的那一档（§03.3.15）；``fixture`` 留着是因为测试里会直接
+#: 拿它当平台代号造请求 —— 两条都指向同一个靶页，多认一个不会放宽任何边界。
+REHEARSAL_PLATFORMS: Final[frozenset[str]] = frozenset({"other", "fixture"})
 
 
 @register_publisher
@@ -61,16 +86,21 @@ class FixturePublisher(PlaywrightPublisher):
         # 查询串从 ``ctx.probe`` 来（见 PublisherContext.probe 的注释）：靶页靠它
         # 制造"未登录 / 吞字 / 审核不通过"，好让演练能验到失败分支。
         url = page_url + (ctx.probe or "")
+        # 管理页要**指明看哪一条作品**：真平台的管理页会列出全部作品，而靶页没有
+        # 后端，只能把"有哪些作品"写在地址里（`{post_id}` 由 `fetch_metrics` 填）。
+        separator = "&" if "?" in url else "?"
+        manage = f"{url}{separator}post={POST_ID_PLACEHOLDER}"
         super().__init__(
             ctx,
-            pack=replace(base, urls={**base.urls, "upload": url, "manage": url}),
+            pack=replace(base, urls={**base.urls, "upload": url, "manage": manage}),
             session_factory=session_factory,
         )
 
     async def publish(self, req: PublishRequest) -> PublishResult:
-        if not req.dry_run:
+        """八步照跑，**真发布也只打到本地靶页**（见模块 docstring 的三道保护）。"""
+        if not req.dry_run and req.platform not in REHEARSAL_PLATFORMS:
             return PublishResult.failure(
                 ErrorCode.PUBLISH_NOT_IMPLEMENTED,
-                "本地靶页只用于演练（dry_run），不发布任何东西",
+                f"本地靶页只服务演练台（{'/'.join(sorted(REHEARSAL_PLATFORMS))}），不发 {req.platform}",
             )
         return await super().publish(req)

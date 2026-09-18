@@ -52,6 +52,7 @@ from studio.core.errors import ErrorCode
 from studio.core.paths import StudioPaths
 from studio.db import connect
 from studio.db.migrate import migrate
+from studio.db.queue import JobStore
 from studio.db.repositories import AuditRepo
 from studio.db.repositories.publication_repo import MANUAL_REQUIRED, PUBLISHED
 from studio.domain.enums import TaskStatus
@@ -74,6 +75,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 PUBLICATIONS_URL = "/api/v1/publish/publications"
 QUEUE_URL = "/api/v1/publish/queue"
+PLATFORMS_URL = "/api/v1/publish/platforms"
 
 #: 任务状态机的「一路出片」路径（建任务 → 成片完成）
 TO_COMPLETED: tuple[TaskStatus, ...] = (
@@ -248,6 +250,22 @@ def fast_pool(rig: Rig) -> PoolConfig:
     params: dict[str, Any] = load_pools_config(rig.paths).pools["publish"].model_dump()
     params.update({"poll_ms": 50, "backoff_base_ms": 50, "backoff_max_ms": 100, "min_gap_min": 0})
     return PoolConfig(**params)
+
+
+def _set_switch(paths: StudioPaths, *, enabled: bool) -> None:
+    """把临时配置里的**顶格** ``enabled`` 翻成想要的值（其余一个字节不动）。
+
+    ``paths`` 夹具出厂把开关翻成 ``true``（那几条用例要连着发三条才撞得到日额度）；
+    验"开关关着会怎样"的那两条要把它翻回去。读的是**文件**而不是某个内存对象，
+    与 ``publish_config_for`` / ``build_publish_handler`` 的真实读法一致
+    （两处都是"用的时候现读"）。
+    """
+    publish = paths.config_dir / "publish.yaml"
+    text = publish.read_text(encoding="utf-8")
+    wanted = "\nenabled: true" if enabled else "\nenabled: false"
+    current = "\nenabled: false" if enabled else "\nenabled: true"
+    assert current in text, "顶格那一行不是预期的值 —— 夹具改了？"
+    publish.write_text(text.replace(current, wanted), encoding="utf-8")
 
 
 @contextmanager
@@ -443,3 +461,94 @@ def test_the_manual_queue_endpoint_lists_what_needs_a_human(
     board = client.get(PUBLICATIONS_URL).json()
     assert board["counts"]["manual_required"] == 1
     assert board["manual_required"][0]["id"] == item["id"]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ⑤ 投递面板的选项清单（T5.10）
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestPlatformOptions:
+    """``GET /api/v1/publish/platforms`` —— 面板的选项清单。
+
+    清单**来自配置**（不是面板自己列的），连"点了会怎样"也由服务端算：判据与投递期
+    跳过它的那两条（平台未启用 / 这个平台没有启用账号）是同一套。三条最容易做错的：
+    **演练台必须在**（没有真账号时的唯一通路）、**演练台不在默认目标里**（T5.9）、
+    **点不动的要说清为什么**。
+    """
+
+    def test_lists_real_platforms_and_the_rehearsal_stage(self, client: TestClient) -> None:
+        body = client.get(PLATFORMS_URL).json()
+        codes = [item["code"] for item in body["items"]]
+        assert "douyin" in codes
+        assert "other" in codes, "演练台不列出来，没有真账号的操作员就只能去命令行"
+        # 不选任何平台时后端会投的那几个 —— 面板要把这句话显示出来，
+        # 否则"不选"看起来像"都不发"。
+        assert body["default_platforms"] == ["douyin"]
+        assert "other" not in body["default_platforms"]
+
+    def test_the_rehearsal_option_says_it_is_not_a_real_platform(self, client: TestClient) -> None:
+        items = {item["code"]: item for item in client.get(PLATFORMS_URL).json()["items"]}
+        rehearsal = items["other"]
+        assert rehearsal["rehearsal"] is True
+        assert rehearsal["selectable"] is True
+        assert rehearsal["accounts"] == ["_rehearsal"]
+        assert "靶页" in rehearsal["note"]
+
+    def test_a_disabled_platform_is_listed_but_not_selectable(self, client: TestClient) -> None:
+        """二线平台（出厂 ``enabled=false`` · Q9）列出来，但点不动，且说清为什么。"""
+        items = {item["code"]: item for item in client.get(PLATFORMS_URL).json()["items"]}
+        second = items["xiaohongshu"]
+        assert second["selectable"] is False
+        assert "未启用" in second["note"]
+
+    def test_the_real_platform_says_dead_letter_while_the_switch_is_off(
+        self, rig: Rig, client: TestClient
+    ) -> None:
+        """**出厂配置**（``enabled=false``）下真平台那一条说"直接死信"。
+
+        这一条是操作员第一眼会撞上的：勾 douyin → 投递 → 作业被守卫挡下、``publications``
+        那一行根本不建 ⇒ 发布面板上什么都没发生。面板必须**事先**说清这一档去哪看
+        （「四池调度」的死信），否则"什么都没发生"只会被读成"按钮坏了"。
+        """
+        _set_switch(rig.paths, enabled=False)
+        body = client.get(PLATFORMS_URL).json()
+        assert body["publish_enabled"] is False
+        items = {item["code"]: item for item in body["items"]}
+        assert "死信" in items["douyin"]["note"]
+        assert "四池调度" in items["douyin"]["note"]
+        assert "死信" not in items["other"]["note"], "演练台发的是本地靶页，与开关无关"
+
+    def test_enqueue_to_a_real_platform_while_the_switch_is_off_leaves_no_record(
+        self, rig: Rig, fast_pool: PoolConfig, client: TestClient
+    ) -> None:
+        """投真平台 ⇒ 作业死信、**一条发布记录都不落**（R14 守卫的真实落点）。
+
+        这条用例把"面板上不会出现记录"这句话钉住：面板的提示语就是按它写的。
+        守卫抛在 ``create`` **之前**，所以死信而不是待人工 —— 文案说错一个词，
+        操作员就会去「待人工」区块里找一个永远不存在的记录。
+        """
+        _set_switch(rig.paths, enabled=False)
+        task_id = _seed_task(rig.connection, rig.paths, title="跑酷合集")
+        enqueued = client.post(f"/api/v1/publish/tasks/{task_id}/enqueue", json={"platforms": ["douyin"]})
+        assert enqueued.status_code == 200, enqueued.text
+        assert enqueued.json()["queued"] == 1
+
+        with _worker(rig.paths, pool_config=fast_pool) as worker:
+            result = worker.run(max_units=1, max_empty_rounds=1)
+        # `units_done` 是"经手过几条"（含失败那一条），判据要看 `units_failed`
+        assert result.units_failed == 1, "守卫抛的是不可重试的 PUBLISH_DISABLED"
+
+        jobs = [
+            job
+            for job in JobStore(rig.connection).list_jobs(pool="publish", task_id=task_id, limit=10)
+            if job.unit_ref == "douyin"
+        ]
+        assert len(jobs) == 1
+        assert jobs[0].status == "dead"
+
+        # 发布面板与待人工队列**都是空的** —— 面板那句"不会出现记录"就是这一行。
+        board = client.get(PUBLICATIONS_URL).json()
+        assert board["counts"]["manual_required"] == 0
+        assert board["counts"]["queued"] == 0
+        assert client.get(QUEUE_URL).json()["counts"]["manual_required"] == 0

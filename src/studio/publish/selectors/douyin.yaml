@@ -33,6 +33,10 @@ selectors:
   metric_likes: ".metric-likes, span[data-metric=likes]"
   metric_comments: ".metric-comments, span[data-metric=comments]"
   metric_shares: ".metric-shares, span[data-metric=shares]"
+  # 完播率（T5.9）。**未实测初稿**：真机校准时常改的就是这一类数字元素。
+  # 平台可能写 `42.3%`、也可能把 % 放在旁边的标签里（只给 `42.3`）——
+  # 两种写法 `parse_metric_ratio` 都认。
+  metric_completion_rate: ""
 
 readback:
   title: value

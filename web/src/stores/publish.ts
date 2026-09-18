@@ -28,9 +28,11 @@ import { computed, ref } from "vue";
 import {
   cancelPublication,
   collectMetrics,
+  enqueueTask,
   fetchCompliance,
   fetchHandoff,
   fetchManualQueue,
+  fetchPlatforms,
   fetchPublications,
   markManualDone,
   pushHandoff,
@@ -45,6 +47,9 @@ import {
   type Publication,
   type PublicationList,
   type PublishActionBody,
+  type PublishEnqueueResponse,
+  type PublishPlatformOption,
+  type PublishPlatformsView,
 } from "@/api/endpoints/publish";
 import { describeError } from "@/stores/overview";
 import type { StatusTone } from "@/components/tone";
@@ -78,6 +83,8 @@ export interface PublishApi {
   runMetricsTick: typeof runMetricsTick;
   collectMetrics: typeof collectMetrics;
   sinkMemory: typeof sinkMemory;
+  enqueueTask: typeof enqueueTask;
+  fetchPlatforms: typeof fetchPlatforms;
 }
 
 let api: PublishApi = {
@@ -92,6 +99,8 @@ let api: PublishApi = {
   runMetricsTick,
   collectMetrics,
   sinkMemory,
+  enqueueTask,
+  fetchPlatforms,
 };
 
 /** 换掉部分实现（**只用于测试**：生产代码不调用它）。 */
@@ -111,6 +120,21 @@ const STATUS_LABELS: Record<string, string> = {
   manual_required: "待人工",
   canceled: "已取消",
 };
+
+/**
+ * 平台代号 → 中文。**只翻一个**：`other`（T5.9 的本地演练台）。
+ *
+ * 其余七个平台代号是品牌名，翻成中文反而认不出来（"抖音"和"douyin"哪个是库里的值？），
+ * 所以照原样显示 —— 与状态词那条规矩一致：认不出的原样显示，别把未知吞掉。
+ */
+const PLATFORM_LABELS: Record<string, string> = {
+  other: "本地演练台",
+};
+
+/** 平台 → 中文（只翻 `other`，其余原样）。 */
+export function platformLabel(platform: string): string {
+  return PLATFORM_LABELS[platform] ?? platform;
+}
 
 /** 状态 → 中文。不认识的**原样显示**：后端加了新状态而前端没跟上时，
  *  屏上出现一个 `some_new_state` 也好过什么都不说（后者会被读成"这条没了"）。 */
@@ -163,6 +187,17 @@ export function metricsRows(list: PublicationList | null): Publication[] {
   );
 }
 
+/**
+ * 完播率（0–1 的比值）→ `42.3%`。
+ *
+ * 比值而不是百分数进库，是为了让"百分数被当成比值用"这种 100 倍的错**不可能**
+ * 悄悄发生（见后端 `PublishMetrics.completion_rate`）。显示这一侧要做的事正好相反：
+ * 人看的是百分数，所以只在这一处乘 100。
+ */
+export function rateText(ratio: number): string {
+  return `${(ratio * 100).toFixed(1)}%`;
+}
+
 /** 一条记录的数字 → 一行人话（键名不固定 ⇒ 只列认得出的那几个，其余原样给出）。 */
 export function metricsText(row: Publication): string {
   const parts: string[] = [];
@@ -177,6 +212,9 @@ export function metricsText(row: Publication): string {
     const value = (row.metrics ?? {})[key];
     if (typeof value === "number") parts.push(`${label} ${value}`);
   }
+  // 完播率**单独一段**：它是比值不是计数，混在上面的循环里会被当成"播放 0.42"。
+  const rate = (row.metrics ?? {}).completion_rate;
+  if (typeof rate === "number") parts.push(`完播 ${rateText(rate)}`);
   if (parts.length === 0) {
     return row.next_metric_at == null
       ? "还没有回流时刻表"
@@ -241,6 +279,11 @@ export function tickText(report: MetricsTickResult | null): string {
  *
  * 评论采样那一条**明说没接线**（各平台评论页的选择器还没写）：不说的话，
  * "评论 0 条"会被读成"这条作品没人评论"，而真实情况是"我们还没去读"。
+ *
+ * 而且要说清**后果**：§06.8 ① 的输入就是评论 ⇒ 没有评论时"新增反馈 0 条"是
+ * **预期**，不是坏了。这里原来写的是"只回流了数字" —— 那句话是错的：播放量点赞量
+ * 并**没有**进记忆（它们只走 §6.8 ② 的降权与 §6.7 的报告）。面板说"回流了"而库里
+ * 什么都没有，是最难查的一类不一致。
  */
 export function sinkText(result: MemorySinkResult): string {
   const parts = [
@@ -249,7 +292,40 @@ export function sinkText(result: MemorySinkResult): string {
     `汇总 ${result.digest_path.split(/[\\/]/).pop() ?? result.digest_path}`,
   ];
   if (result.planner_consumable) parts.push("下一轮选题可直接吃");
-  if (result.comments_seen === 0) parts.push("评论采样还没接线（只回流了数字）");
+  if (result.comments_seen === 0) {
+    parts.push("评论采样还没接线（§06.8① 的输入就是评论 ⇒ 新增反馈 0 条是预期）");
+  }
+  return parts.join(" · ");
+}
+
+/**
+ * 一个平台选项 → 一行人话（勾选框旁边那行小字）。
+ *
+ * 把"投到哪几个账号"也写出来：同一个平台可能挂多个账号（T5.8），而"投给谁"是操作员
+ * 真正在决定的事 —— 只显示平台名的话，他没法知道这一下会落到哪个账号。
+ */
+export function optionText(option: PublishPlatformOption): string {
+  // 生成的契约里这几个列表是**可选**的（后端给了默认值，OpenAPI 就不标 required）——
+  // 缺字段时按"没有"读，而不是让整屏炸掉。
+  const accounts = option.accounts ?? [];
+  const who = accounts.length > 0 ? accounts.join(" / ") : "没有启用的账号";
+  return `${platformLabel(option.code)} · 账号 ${who} · ${option.note}`;
+}
+
+/**
+ * 投递的结论 → 一行人话。
+ *
+ * `queued: 0` 与"按钮坏了"是两件事：幂等命中（已经投过）也会是 0，而 `skipped` 里
+ * 写着每一条**为什么**没投。只说"投出 0 条"，操作员只能去翻日志。
+ */
+export function enqueueText(result: PublishEnqueueResponse): string {
+  const wanted = result.platforms ?? [];
+  const skipped = result.skipped ?? [];
+  const parts = [
+    `投出 ${result.queued} 条`,
+    `目标 ${wanted.length > 0 ? wanted.join(" / ") : "无"}`,
+  ];
+  if (skipped.length > 0) parts.push(`跳过：${skipped.join("；")}`);
   return parts.join(" · ");
 }
 
@@ -327,6 +403,21 @@ export const usePublishStore = defineStore("publish", () => {
     }
   }
 
+  // ── 投递（T5.10 · §06.5.4）──────────────────────────────────────────
+  /**
+   * 能投到哪儿、投了会怎样（**来自配置**）。
+   *
+   * `null` = 还没读到。这一份读不到时面板**不画任何勾选框** —— 列一份自己猜的
+   * 平台清单，等于把 `config/publish.yaml` 抄第二遍（加平台漏一处，就没人报这个 bug）。
+   */
+  const platformOptions = ref<PublishPlatformsView | null>(null);
+  const enqueueTaskId = ref("");
+  /** 勾中的平台（**空 = 投后端给的缺省目标**，不是"都不发"）。 */
+  const enqueuePick = ref<string[]>([]);
+  const enqueueBusy = ref(false);
+  const enqueueResult = ref<PublishEnqueueResponse | null>(null);
+  const enqueueError = ref<string | null>(null);
+
   // ── 交付包 ──────────────────────────────────────────────────────────
   const handoffTaskId = ref("");
   const handoffPreview = ref<HandoffPreview | null>(null);
@@ -359,6 +450,34 @@ export const usePublishStore = defineStore("publish", () => {
   const complianceOk = computed(() => compliance.value?.ok ?? true);
   const canPreviewHandoff = computed(() => {
     const wanted = handoffTaskId.value.trim();
+    return wanted !== "" && wanted.length <= MAX_TASK_ID_CHARS;
+  });
+  /** 勾选框那一列（读不到 ⇒ 空数组，面板画空态而不是猜一份）。 */
+  const platformItems = computed<PublishPlatformOption[]>(() => platformOptions.value?.items ?? []);
+  /** 不选平台时后端会投的那几个（**演练台不在里面**，见后端 `default_platforms`）。 */
+  const defaultTargets = computed<string[]>(() => platformOptions.value?.default_platforms ?? []);
+  /**
+   * 勾了"真平台"而发布开关是关的 ⇒ 一句必须显眼说出来的话。
+   *
+   * 这一档是**出厂默认**，而它的真实后果是"作业直接死信、发布面板上什么都不出现"
+   * （不是转人工）。不说这句，操作员按一次投递会得到"什么都没发生" —— 最容易被读成
+   * "按钮坏了"的一种。返回 `null` = 没有这句话要说。
+   */
+  const enqueueWarning = computed<string | null>(() => {
+    const view = platformOptions.value;
+    if (view === null || view.publish_enabled) return null;
+    const picked = platformItems.value.filter(
+      (item) => enqueuePick.value.includes(item.code) && !item.rehearsal,
+    );
+    if (picked.length === 0) return null;
+    const names = picked.map((item) => platformLabel(item.code)).join(" / ");
+    return (
+      `发布开关是关的（config/publish.yaml → enabled: false）：${names} 投出去会**直接死信**，` +
+      "发布面板上不会出现记录（去「四池调度」看死信）。只验证链路请勾「本地演练台」。"
+    );
+  });
+  const canEnqueue = computed(() => {
+    const wanted = enqueueTaskId.value.trim();
     return wanted !== "" && wanted.length <= MAX_TASK_ID_CHARS;
   });
 
@@ -550,12 +669,73 @@ export const usePublishStore = defineStore("publish", () => {
     }
   }
 
+  // ── 投递（T5.10）────────────────────────────────────────────────────
+
+  /** 读一次平台清单（进面板与「重读选项」都走这条）。 */
+  async function loadPlatforms(): Promise<void> {
+    try {
+      platformOptions.value = await api.fetchPlatforms();
+    } catch (failure) {
+      // 旧清单**留着**：一屏勾选框不因一次抖动变空白（与其余面板同一条）。
+      loadError.value = describeError(failure);
+    }
+  }
+
+  function setEnqueueTaskId(value: string): void {
+    enqueueTaskId.value = value;
+    // 换了任务号 ⇒ 上一条结论说的是**另一个任务号**的事，留着比没有更糟。
+    enqueueResult.value = null;
+    enqueueError.value = null;
+  }
+
+  /** 勾 / 取消勾一个平台。 */
+  function toggleEnqueuePlatform(code: string): void {
+    const picked = enqueuePick.value;
+    enqueuePick.value = picked.includes(code)
+      ? picked.filter((item) => item !== code)
+      : [...picked, code];
+    enqueueResult.value = null;
+    enqueueError.value = null;
+  }
+
+  /**
+   * 投进发布池。
+   *
+   * 一个平台都不勾 ⇒ **不发 `platforms`**（让后端用它自己的缺省目标），而不是发一个
+   * 空数组 —— 空数组在服务端的意思是"一个都不投"，两者差得很远。
+   */
+  async function enqueue(): Promise<boolean> {
+    const wanted = enqueueTaskId.value.trim();
+    if (wanted === "") {
+      enqueueError.value = "先填一个任务号。";
+      return false;
+    }
+    enqueueBusy.value = true;
+    enqueueError.value = null;
+    clearMessages();
+    try {
+      const body = enqueuePick.value.length > 0 ? { platforms: [...enqueuePick.value] } : {};
+      enqueueResult.value = await api.enqueueTask(wanted, body);
+      notice.value = enqueueText(enqueueResult.value);
+      await refresh();
+      return true;
+    } catch (failure) {
+      enqueueResult.value = null;
+      enqueueError.value = describeError(failure);
+      return false;
+    } finally {
+      enqueueBusy.value = false;
+    }
+  }
+
   // ── 生命周期 ────────────────────────────────────────────────────────
 
   /** 幂等：重复调用只会有一次在途请求、一份轮询。 */
   function start(): void {
     polling = true;
     void refreshAll();
+    // 平台清单是**静态配置**（改配置要重启服务），所以只读一次，不进轮询。
+    void loadPlatforms();
   }
 
   function stop(): void {
@@ -600,6 +780,21 @@ export const usePublishStore = defineStore("publish", () => {
     openReason,
     closeReason,
     setReason,
+    // 投递
+    platformOptions,
+    platformItems,
+    defaultTargets,
+    enqueueWarning,
+    enqueueTaskId,
+    enqueuePick,
+    enqueueBusy,
+    enqueueResult,
+    enqueueError,
+    canEnqueue,
+    loadPlatforms,
+    setEnqueueTaskId,
+    toggleEnqueuePlatform,
+    enqueue,
     // 交付包
     handoffTaskId,
     handoffPreview,

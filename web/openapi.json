@@ -6835,6 +6835,83 @@
         "title": "PublishEnqueueResponse",
         "type": "object"
       },
+      "PublishPlatformOption": {
+        "description": "投递面板上的一个平台选项（T5.10）。\n\n``selectable`` 与 ``note`` **由服务端算**：判据（平台启用 / 这个平台有没有启用账号）\n与投递期跳过它的那两条是同一套。面板自己再判一遍的代价是\"显示点得动、点了被跳过\"。",
+        "properties": {
+          "accounts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Accounts",
+            "type": "array"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "publisher": {
+            "title": "Publisher",
+            "type": "string"
+          },
+          "rehearsal": {
+            "default": false,
+            "title": "Rehearsal",
+            "type": "boolean"
+          },
+          "selectable": {
+            "default": false,
+            "title": "Selectable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "publisher",
+          "enabled"
+        ],
+        "title": "PublishPlatformOption",
+        "type": "object"
+      },
+      "PublishPlatformsView": {
+        "description": "投递面板的选项清单（T5.10）。",
+        "properties": {
+          "default_platforms": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Default Platforms",
+            "type": "array"
+          },
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PublishPlatformOption"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "publish_enabled": {
+            "default": false,
+            "title": "Publish Enabled",
+            "type": "boolean"
+          }
+        },
+        "title": "PublishPlatformsView",
+        "type": "object"
+      },
       "RejectBody": {
         "additionalProperties": false,
         "description": "退回改稿（``awaiting_approval → editing``）。``comment`` **必填**。\n\n这里的 ``min_length=1`` 只挡\"完全没填\"这个最常见的错；\"只填了空格\"由服务层\n的 ``APPROVAL_COMMENT_REQUIRED`` 拒绝 —— 业务不变量只有一个权威落点，\nREST 层不抄第二遍语义（§04.4.4 不变量 3）。",
@@ -12298,6 +12375,28 @@
         ]
       }
     },
+    "/api/v1/publish/platforms": {
+      "get": {
+        "description": "投递面板能选哪些平台（T5.10 · **清单来自配置，不是面板自己列的**）。\n\n面板列一份平台清单 = 把 ``config/publish.yaml`` 抄第二遍：加一个平台要改两处，\n而漏改的那一处表现为\"这个平台在面板上不存在\" —— 没人会去报这个 bug。\n\n连\"点了会怎样\"也一起给（``selectable`` / ``note``）：判据与投递期**同一套**，\n所以不会出现\"面板显示点得动、投出去被跳过\"。``default_platforms`` 是\"一个都不选\"\n时后端会投的那几个 —— 面板必须把它显示出来，否则\"不选\"看起来像\"都不发\"。",
+        "operationId": "list_platforms_api_v1_publish_platforms_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublishPlatformsView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Platforms",
+        "tags": [
+          "publish"
+        ]
+      }
+    },
     "/api/v1/publish/publications": {
       "get": {
         "description": "发布看板（六状态各若干条 + 全量计数）。\n\n带上 ``task_id`` ⇒ 只回这条任务的记录，``counts`` 也**只算这条任务的**：\n任务详情页里显示\"这条片子发了 1 条、失败 2 次\"，而全站计数放在那里会让人以为\n整个系统只有这几条。",
@@ -12502,7 +12601,7 @@
     },
     "/api/v1/publish/tasks/{task_id}/enqueue": {
       "post": {
-        "description": "把这条任务排进发布池（幂等）。\n\n**不看 ``publish.enabled``**：开关关着的时候投递依然成功，作业会在 worker 那一侧\n转人工并带上 ``PUBLISH_DISABLED``。投递期直接拒绝的话，面板上什么都不会出现 ——\n而\"点了没反应\"比\"有一条带原因的待人工\"难查得多（见模块注释）。",
+        "description": "把这条任务排进发布池（幂等）。\n\n**不看 ``publish.enabled``**：开关关着的时候投递依然成功，作业会在 worker 那一侧\n带 ``PUBLISH_DISABLED`` **进死信**（不建 ``publications`` 那一行 ⇒ 这一屏上不会出现\n记录，去「四池调度」看死信）。投递期直接拒绝的话，面板上连作业都没有 ——\n而\"点了没反应\"比\"有一条能查的作业\"难查得多（见模块注释）。",
         "operationId": "enqueue_task_api_v1_publish_tasks__task_id__enqueue_post",
         "parameters": [
           {

@@ -33,6 +33,7 @@ __all__ = [
     "DEFAULT_READBACK",
     "METRIC_KEYS",
     "POST_ID_PLACEHOLDER",
+    "RATIO_METRIC_KEYS",
     "READBACK_KINDS",
     "REQUIRED_SELECTORS",
     "SELECTOR_KEY_GROUPS",
@@ -72,6 +73,7 @@ OPTIONAL_SELECTORS: Final[tuple[str, ...]] = (
     "metric_likes",  # 点赞
     "metric_comments",  # 评论
     "metric_shares",  # 分享
+    "metric_completion_rate",  # 完播率（**比率**，解析器与上面四个计数不同）
 )
 
 #: ``metric_row`` 里的作品号占位符（T5.4）。用 ``str.replace`` 而不是 ``str.format``：
@@ -79,9 +81,15 @@ OPTIONAL_SELECTORS: Final[tuple[str, ...]] = (
 #: 一个占位符会把其余的 ``{}`` 当成字段名 —— 报错还算好的，改坏成静默的空串才要命。
 POST_ID_PLACEHOLDER: Final[str] = "{post_id}"
 
-#: 四个计数的键（顺序 = 面板上的列顺序）。**`parse_metric_count` 按它遍历**，
+#: 四个**计数**的键（顺序 = 面板上的列顺序）。`parse_metric_count` 按它遍历，
 #: 于是"加一个计数维度"（比如收藏）只改这一行。
 METRIC_KEYS: Final[tuple[str, ...]] = ("views", "likes", "comments", "shares")
+
+#: **比率**类的键。与 :data:`METRIC_KEYS` 分开是必须的：``42.3%`` 走
+#: ``parse_metric_count`` 会变成整数 42，而 42 与 0.423 在"完播率"这个语义下
+#: 差 100 倍，且两者都是**看着正常**的数（42 与 0.42 都像真的）。
+#: 读取端按这个分组挑解析器，写库端按同一分组拼 payload —— 分组只此一份。
+RATIO_METRIC_KEYS: Final[tuple[str, ...]] = ("completion_rate",)
 
 #: 回读方式的取值（§06.5.3 第 ⑤ 步）。**为什么这是数据不是常量**：标题框在四个平台
 #: 上都是 ``<input>``（读 ``input_value``），而文案框有的是 ``<textarea>``（也是

@@ -27,10 +27,15 @@
     ?eat=newlines   走回读比对的 whitespace_only 分支
     ?reject=1       点下发布后走 PUBLISH_REVIEW_REJECTED 分支
 
-  数据回收（T5.4）用的那一块在同一页上：`?post=<作品号>` 会渲染出**一行**计数，
-  四个数字由 `views` / `likes` / `comments` / `shares` 给（默认写 `1.2万` 这种缩写，
-  好让 `parse_metric_count` 的缩写解析也被真跑一遍）。不给 `post` 就一行都没有 ——
-  "管理页上找不到这条作品"那条分支靠它。
+  数据回收（T5.4 / T5.9）用的那一块在同一页上：`?post=<作品号>` 会渲染出**一行**
+  计数，数字由 `views` / `likes` / `comments` / `shares` / `completion_rate` 给。
+  **不给就用作品号确定性算出来**（同一个作品号每次得到同一组数）—— 这样
+  "采数 → 落库 → 面板"这条链路有**稳定可断言**的读数，而不是每次刷新都变。
+  给了就用给的（缩写 `1.2万` 也照收，好让 `parse_metric_count` 的缩写解析被真跑一遍）。
+  不给 `post` 就一行都没有 —— "管理页上找不到这条作品"那条分支靠它。
+
+  点下"发布"（**真发布**，T5.9 的本地演练台走这条路）会在结果块里挂一个
+  `#post-link`，作品号从地址里来；`fetch_metrics` 读的正是这个链接的末段。
 
   被 http 打开时，点下"发布"会 POST 一次 /__published（见脚本末尾的注释）。
 
@@ -148,23 +153,65 @@
     if (cleaned !== text) { caption.innerText = cleaned; }
   });
 
-  // ④ 数据回收的靶子：`?post=<作品号>` ⇒ 渲染一行计数。
-  //    刻意**不**做任何格式化（"1.2万" 原样写进去）：缩写解析正是要验的东西之一。
-  (function () {
-    var postId = params.get("post");
+  // ④ 数据回收的靶子：`?post=<作品号>` ⇒ 渲染一行计数（T5.4 / T5.9）。
+  //
+  //    数字从哪来（两条，都不需要后端）：
+  //      ① 查询串给了就**原样**写进去（"1.2万" 也照收 —— 缩写解析正是要验的东西之一）；
+  //      ② 没给就**由作品号确定性算出来**（同一个作品号每次得到同一组数）。
+  //    第 ② 条是 T5.9 加的：真发布之后 `fetch_metrics` 只会带上作品号，不会带数字，
+  //    而没有数字的话"面板上出现播放量"这件事就永远验不了。确定性而不是随机，
+  //    是为了让重复演练**可比**（随机数会让"这次比上次多"变成一句没有意义的话）。
+  var METRIC_RANGES = {
+    views: [8000, 260000],
+    likes: [200, 30000],
+    comments: [30, 4000],
+    shares: [10, 900],
+  };
+
+  function stableHash(text) {
+    // FNV-1a 32 位：够短、够稳、不需要任何依赖。
+    var hash = 0x811c9dc5;
+    for (var i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i);
+      hash = (hash * 0x01000193) >>> 0;
+    }
+    return hash >>> 0;
+  }
+
+  function reading(key, postId) {
+    var given = params.get(key);
+    if (given !== null && given !== "") { return given; }
+    if (key === "completion_rate") {
+      // 22.0% – 68.9%：低到能让"完播率低"这条分支有东西可看，又不会低成 0。
+      return (22 + (stableHash(postId + key) % 470) / 10).toFixed(1) + "%";
+    }
+    var range = METRIC_RANGES[key];
+    return String(range[0] + (stableHash(postId + key) % (range[1] - range[0])));
+  }
+
+  function renderMetricsRow(postId) {
     var tbody = document.querySelector("#metrics-table tbody");
     if (!postId || !tbody) { return; }
     var row = document.createElement("tr");
     row.setAttribute("data-post-id", postId);
-    [["views", "播放"], ["likes", "点赞"], ["comments", "评论"], ["shares", "分享"]].forEach(function (pair) {
+    var columns = [
+      ["views", "播放"],
+      ["likes", "点赞"],
+      ["comments", "评论"],
+      ["shares", "分享"],
+      ["completion_rate", "完播率"],
+    ];
+    columns.forEach(function (pair) {
       var cell = document.createElement("td");
       cell.className = "metric-" + pair[0];
       cell.style.padding = "2px 12px 2px 0";
-      cell.textContent = params.get(pair[0]) || "—";
+      cell.textContent = reading(pair[0], postId);
       row.appendChild(cell);
     });
     tbody.appendChild(row);
-  })();
+  }
+
+  renderMetricsRow(params.get("post"));
 
   // ② 结果标志点下按钮才被创建（静态存在会让"发布成功了没"永远为真）。
   document.getElementById("publish").addEventListener("click", function () {
@@ -180,6 +227,20 @@
     } else {
       box.id = "result";
       box.textContent = "发布成功";
+      // 作品号：地址里给了就用给的，没给就现造一个（**带时间戳**，两次演练不会
+      // 撞成同一条作品 —— 撞了的话第二次采集会读到第一次的数字，看着像"数据没更新"）。
+      var postId = params.get("post") || ("rehearsal-" + Date.now());
+      var link = document.createElement("a");
+      link.id = "post-link";
+      link.href = "/rehearsal/" + postId;
+      link.textContent = "查看作品";
+      link.style.marginLeft = "8px";
+      box.appendChild(link);
+      // 结果块里露一下作品号：手验时不用打开 devtools 就知道库里会存什么。
+      var hint = document.createElement("span");
+      hint.className = "muted";
+      hint.textContent = " · " + postId;
+      box.appendChild(hint);
     }
     document.querySelector(".card").appendChild(box);
   });

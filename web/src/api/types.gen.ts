@@ -823,6 +823,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/publish/platforms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Platforms
+         * @description 投递面板能选哪些平台（T5.10 · **清单来自配置，不是面板自己列的**）。
+         *
+         *     面板列一份平台清单 = 把 ``config/publish.yaml`` 抄第二遍：加一个平台要改两处，
+         *     而漏改的那一处表现为"这个平台在面板上不存在" —— 没人会去报这个 bug。
+         *
+         *     连"点了会怎样"也一起给（``selectable`` / ``note``）：判据与投递期**同一套**，
+         *     所以不会出现"面板显示点得动、投出去被跳过"。``default_platforms`` 是"一个都不选"
+         *     时后端会投的那几个 —— 面板必须把它显示出来，否则"不选"看起来像"都不发"。
+         */
+        get: operations["list_platforms_api_v1_publish_platforms_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/publish/publications": {
         parameters: {
             query?: never;
@@ -929,8 +956,9 @@ export interface paths {
          * @description 把这条任务排进发布池（幂等）。
          *
          *     **不看 ``publish.enabled``**：开关关着的时候投递依然成功，作业会在 worker 那一侧
-         *     转人工并带上 ``PUBLISH_DISABLED``。投递期直接拒绝的话，面板上什么都不会出现 ——
-         *     而"点了没反应"比"有一条带原因的待人工"难查得多（见模块注释）。
+         *     带 ``PUBLISH_DISABLED`` **进死信**（不建 ``publications`` 那一行 ⇒ 这一屏上不会出现
+         *     记录，去「四池调度」看死信）。投递期直接拒绝的话，面板上连作业都没有 ——
+         *     而"点了没反应"比"有一条能查的作业"难查得多（见模块注释）。
          */
         post: operations["enqueue_task_api_v1_publish_tasks__task_id__enqueue_post"];
         delete?: never;
@@ -4194,6 +4222,58 @@ export interface components {
             task_id: string;
         };
         /**
+         * PublishPlatformOption
+         * @description 投递面板上的一个平台选项（T5.10）。
+         *
+         *     ``selectable`` 与 ``note`` **由服务端算**：判据（平台启用 / 这个平台有没有启用账号）
+         *     与投递期跳过它的那两条是同一套。面板自己再判一遍的代价是"显示点得动、点了被跳过"。
+         */
+        PublishPlatformOption: {
+            /** Accounts */
+            accounts?: string[];
+            /** Code */
+            code: string;
+            /** Enabled */
+            enabled: boolean;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /** Publisher */
+            publisher: string;
+            /**
+             * Rehearsal
+             * @default false
+             */
+            rehearsal: boolean;
+            /**
+             * Selectable
+             * @default false
+             */
+            selectable: boolean;
+        };
+        /**
+         * PublishPlatformsView
+         * @description 投递面板的选项清单（T5.10）。
+         */
+        PublishPlatformsView: {
+            /** Default Platforms */
+            default_platforms?: string[];
+            /**
+             * Dry Run
+             * @default false
+             */
+            dry_run: boolean;
+            /** Items */
+            items?: components["schemas"]["PublishPlatformOption"][];
+            /**
+             * Publish Enabled
+             * @default false
+             */
+            publish_enabled: boolean;
+        };
+        /**
          * RejectBody
          * @description 退回改稿（``awaiting_approval → editing``）。``comment`` **必填**。
          *
@@ -6788,6 +6868,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MetricsTickView"];
+                };
+            };
+        };
+    };
+    list_platforms_api_v1_publish_platforms_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishPlatformsView"];
                 };
             };
         };

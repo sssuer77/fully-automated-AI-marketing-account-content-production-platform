@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -31,6 +32,7 @@ from studio.db.repositories.publication_repo import (
     PUBLISHED,
     PublicationRow,
 )
+from studio.services.publish_service import PlatformOption
 
 __all__ = [
     "NO_PUBLICATION_HINT",
@@ -47,9 +49,12 @@ __all__ = [
     "PublishActionResponse",
     "PublishEnqueueRequest",
     "PublishEnqueueResponse",
+    "PublishPlatformOption",
+    "PublishPlatformsView",
     "compliance_view",
     "delivery_item_view",
     "handoff_preview",
+    "platforms_view",
     "publication_view",
 ]
 
@@ -57,7 +62,8 @@ __all__ = [
 NO_PUBLICATION_HINT: str = (
     "还没有发布记录：任务出片后在发布面板点「确认发布」会投递一条，"
     "或跑 studio publish enqueue --task <任务号>（出厂 publish.enabled=false，"
-    "投递的作业会带 PUBLISH_DISABLED 转人工 —— 那是 R14 的不可逆防护，不是故障）"
+    "投递的作业会带 PUBLISH_DISABLED 进死信（在「四池调度」里看）—— 那是 R14 的"
+    "不可逆防护，不是故障）"
 )
 
 
@@ -233,6 +239,54 @@ def handoff_preview(package: Any, *, adapter: str, output_dir: str, auto: bool) 
         output_dir=output_dir,
         auto_on_publish=auto,
         note=None if package.ready else "必需的那一件（成片）还不在盘上 —— 先把这条任务渲染出来",
+    )
+
+
+class PublishPlatformOption(BaseModel):
+    """投递面板上的一个平台选项（T5.10）。
+
+    ``selectable`` 与 ``note`` **由服务端算**：判据（平台启用 / 这个平台有没有启用账号）
+    与投递期跳过它的那两条是同一套。面板自己再判一遍的代价是"显示点得动、点了被跳过"。
+    """
+
+    code: str
+    publisher: str
+    enabled: bool
+    #: 本地演练台（发到本机靶页，不是真平台）。
+    rehearsal: bool = False
+    accounts: list[str] = Field(default_factory=list)
+    selectable: bool = False
+    note: str = ""
+
+
+class PublishPlatformsView(BaseModel):
+    """投递面板的选项清单（T5.10）。"""
+
+    items: list[PublishPlatformOption] = Field(default_factory=list)
+    #: **一个平台都不选**时后端会投哪几个（顺序 = 投递顺序）。出厂就一个 ``douyin``，
+    #: 演练台不在里面（T5.9）—— 面板要把这句话显示出来，否则"不选"看起来像"都不发"。
+    default_platforms: list[str] = Field(default_factory=list)
+    #: ``config/publish.yaml → enabled``。出厂 ``false``（R14）：投真平台会**直接死信**
+    #: （不是转人工，见 :func:`~studio.services.publish_service.platform_options`）。
+    #: 面板拿它来在"选了真平台"时给出显眼的警告，而不是等人投完发现面板上什么都没有。
+    publish_enabled: bool = False
+    #: ``config/publish.yaml → dry_run``：投递不带 ``dry_run`` 时的缺省。
+    dry_run: bool = False
+
+
+def platforms_view(
+    options: Sequence[PlatformOption],
+    *,
+    defaults: Sequence[str],
+    publish_enabled: bool = False,
+    dry_run: bool = False,
+) -> PublishPlatformsView:
+    """服务层的选项清单 ⇒ 面板要的那一份。"""
+    return PublishPlatformsView(
+        items=[PublishPlatformOption(**option.to_dict()) for option in options],
+        default_platforms=list(defaults),
+        publish_enabled=publish_enabled,
+        dry_run=dry_run,
     )
 
 

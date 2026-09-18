@@ -29,10 +29,13 @@ import StatusDot from "@/components/StatusDot.vue";
 import type { Publication } from "@/api/endpoints/publish";
 import {
   BOARD_STATUSES,
+  enqueueText,
   formatStamp,
   metricsText,
   missingText,
+  optionText,
   plainText,
+  platformLabel,
   rowsOf,
   statusLabel,
   statusTone,
@@ -80,6 +83,10 @@ const manualRows = computed(() => publish.manualRows);
 const metricsRows = computed(() => publish.metrics);
 /** 上一轮回收的结论（没跑过 ⇒ 空串，不占屏）。 */
 const lastTick = computed(() => tickText(publish.metricsTick));
+/** 投递那块的两份读（清单 + 勾选）。 */
+const platformItems = computed(() => publish.platformItems);
+const defaultTargets = computed(() => publish.defaultTargets);
+const enqueueWarning = computed(() => publish.enqueueWarning);
 const compliance = computed(() => publish.compliance);
 const preview = computed(() => publish.handoffPreview);
 const result = computed(() => publish.handoffResult);
@@ -96,6 +103,10 @@ const summary = computed(() => {
 
 function onHandoffTask(event: Event): void {
   publish.setHandoffTaskId((event.target as HTMLInputElement).value);
+}
+
+function onEnqueueTask(event: Event): void {
+  publish.setEnqueueTaskId((event.target as HTMLInputElement).value);
 }
 
 function onReason(publicationId: string, event: Event): void {
@@ -151,7 +162,78 @@ function onCancelReason(publication: Publication): void {
       </p>
     </PanelCard>
 
-    <!-- ② R2 合规提示：**常驻**（§06.11），不是可关的横幅 -->
+    <!-- ② 投递：这一屏唯一"往外投一条"的动作（T5.10 · §06.5.4） -->
+    <PanelCard
+      title="投递"
+      :subtitle="
+        defaultTargets.length > 0
+          ? `填任务号 → 勾平台 → 投进发布池；一个都不勾 = 投 ${defaultTargets.map(platformLabel).join(' / ')}`
+          : '还没读到平台清单'
+      "
+    >
+      <template #actions>
+        <AppButton size="sm" @click="publish.loadPlatforms()">重读选项</AppButton>
+        <AppButton
+          size="sm"
+          variant="primary"
+          :loading="publish.enqueueBusy"
+          :disabled="!publish.canEnqueue"
+          @click="publish.enqueue()"
+        >
+          投进发布池
+        </AppButton>
+      </template>
+
+      <div class="form">
+        <label class="f f--task">
+          <span class="f__key">任务号</span>
+          <input
+            class="field mono"
+            type="text"
+            placeholder="出片完成的任务号"
+            :value="publish.enqueueTaskId"
+            @change="onEnqueueTask"
+          />
+        </label>
+      </div>
+
+      <ul v-if="platformItems.length > 0" class="checks">
+        <li v-for="option in platformItems" :key="option.code" class="checks__item">
+          <label class="check">
+            <input
+              type="checkbox"
+              :checked="publish.enqueuePick.includes(option.code)"
+              :disabled="!option.selectable"
+              @change="publish.toggleEnqueuePlatform(option.code)"
+            />
+            <span>{{ optionText(option) }}</span>
+          </label>
+        </li>
+      </ul>
+      <p v-else class="hint">
+        还没读到平台清单 —— 这一块**不画任何自己猜的平台**（清单来自
+        <span class="mono">config/publish.yaml</span>，面板自己列一遍就会漏改）。
+      </p>
+
+      <p v-if="enqueueWarning" class="alert alert--warn">{{ plainText(enqueueWarning) }}</p>
+
+      <p v-if="publish.enqueueError" class="alert alert--error">
+        {{ publish.enqueueError }}
+      </p>
+      <p v-else-if="publish.enqueueResult" class="alert alert--ok">
+        {{ enqueueText(publish.enqueueResult) }}
+      </p>
+
+      <p class="hint">
+        投递只把作业排进发布池（真发布由 publish 池的 worker 干）。出厂
+        <span class="mono">publish.enabled=false</span> 时投递照样成功，但真平台那一条
+        会在 worker 侧带 PUBLISH_DISABLED <strong>进死信</strong> —— 发布面板上不会出现
+        记录（去「四池调度」看），那是 R14 的不可逆防护，不是故障。
+        没有真账号时勾「本地演练台」：它发到本机靶页，发完照样能采数、沉淀。
+      </p>
+    </PanelCard>
+
+    <!-- ③ R2 合规提示：**常驻**（§06.11），不是可关的横幅 -->
     <PanelCard
       title="R2 来源登记"
       :subtitle="
@@ -186,7 +268,7 @@ function onCancelReason(publication: Publication): void {
       </details>
     </PanelCard>
 
-    <!-- ③ 交付包：预览 → 导出（**先看再给**） -->
+    <!-- ④ 交付包：预览 → 导出（**先看再给**） -->
     <PanelCard
       title="交付包"
       subtitle="把一支成片连同封面 / 字幕 / 稿件 / 时间轴 / 渲染留痕打成一个自包含目录（含 handoff.json）"
@@ -263,7 +345,7 @@ function onCancelReason(publication: Publication): void {
       </p>
     </PanelCard>
 
-    <!-- ④⑤⑥ 三块状态看板 -->
+    <!-- ⑤⑥⑦ 三块状态看板 -->
     <PanelCard
       v-for="block in statusBlocks"
       :key="block.key"
@@ -277,7 +359,9 @@ function onCancelReason(publication: Publication): void {
             <span class="row__title">{{ row.title }}</span>
             <span v-if="row.dry_run" class="tag">演练</span>
             <span class="row__spacer" />
-            <span class="row__mono mono">{{ row.platform }} · {{ row.account_id }}</span>
+            <span class="row__mono mono">
+              {{ platformLabel(row.platform) }} · {{ row.account_id }}
+            </span>
           </div>
           <p class="row__sub">
             任务 <span class="mono">{{ row.task_id }}</span> · 尝试 {{ row.attempt_count }}/{{ row.max_attempts }}
@@ -292,7 +376,7 @@ function onCancelReason(publication: Publication): void {
       <EmptyState v-else :title="block.empty" hint="这里只显示最近 50 条；更早的在数据库里。" />
     </PanelCard>
 
-    <!-- ⑦ 数据回流 -->
+    <!-- ⑧ 数据回流 -->
     <PanelCard
       title="数据回流"
       :subtitle="`${metricsRows.length} 条有回流信息 · 后台每 60s 自己拍一次`"
@@ -340,7 +424,7 @@ function onCancelReason(publication: Publication): void {
       />
     </PanelCard>
 
-    <!-- ⑧ 待人工：唯一一个"要求人做决定"的区块 -->
+    <!-- ⑨ 待人工：唯一一个"要求人做决定"的区块 -->
     <PanelCard
       title="待人工"
       :subtitle="
@@ -424,7 +508,7 @@ function onCancelReason(publication: Publication): void {
       />
     </PanelCard>
 
-    <!-- ⑨ 失败 / 已取消（不在规格的七区块里，但藏起来更糟） -->
+    <!-- ⑩ 失败 / 已取消（不在规格的七区块里，但藏起来更糟） -->
     <PanelCard title="失败 / 已取消" :subtitle="`${endedRows.length} 条`">
       <ul v-if="endedRows.length > 0" class="rows">
         <li v-for="row in endedRows" :key="row.id" class="row row--stack">
@@ -449,7 +533,7 @@ function onCancelReason(publication: Publication): void {
       />
     </PanelCard>
 
-    <!-- ⑩⑪ 两块**尚未施工**：后端没有端点，所以一个数字都不画 -->
+    <!-- ⑪⑫ 两块**尚未施工**：后端没有端点，所以一个数字都不画 -->
     <PanelCard title="定时计划" subtitle="T5.6 · 尚未施工">
       <EmptyState
         title="这块还没接线"
@@ -555,6 +639,31 @@ function onCancelReason(publication: Publication): void {
   background: var(--bg-panel);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
+}
+
+.checks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-top: var(--space-3);
+}
+
+.checks__item {
+  list-style: none;
+}
+
+.check {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.check input:disabled + span {
+  /* 点不动的那些（二选平台 / 没有账号）灰掉 —— 但它**还在屏上**，
+     因为"这个平台存在，只是现在不能投"本身是有用的信息。 */
+  color: var(--text-muted);
 }
 
 .preview {
@@ -680,6 +789,11 @@ function onCancelReason(publication: Publication): void {
 .alert--error {
   color: var(--error);
   border-color: var(--error);
+}
+
+.alert--warn {
+  color: var(--warn);
+  background: var(--warn-soft);
 }
 
 .alert--ok {

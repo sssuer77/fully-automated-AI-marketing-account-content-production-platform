@@ -40,6 +40,7 @@ from studio.publish.base import (
     PublishStatus,
 )
 from studio.publish.platforms import NON_PLATFORM_CODES, REAL_PLATFORMS
+from studio.publish.platforms.fixture import REHEARSAL_PLATFORMS
 from studio.publish.playwright_publisher import PlaywrightPublisher
 from studio.publish.selectors import load_selector_pack, selector_root
 
@@ -142,7 +143,10 @@ class TestAbstractSurface:
 
     def test_publish_metrics_matches_the_spec_fields(self) -> None:
         spec_fields = {"views", "likes", "comments", "shares", "collected_at"}
-        assert {f.name for f in fields(PublishMetrics)} == spec_fields
+        # ``completion_rate`` 是**增补**的（T5.9）：§4.6.1 那张表只有四个**计数**，
+        # 而"这条片子留不留得住人"是完播率回答的 —— 播放量高、完播率低，说明标题
+        # 骗进来了、内容没接住，这两条给选题的指令正好相反。§4.6.1 已同步补上这一段。
+        assert {f.name for f in fields(PublishMetrics)} == spec_fields | {"completion_rate"}
 
 
 class TestStatusMachine:
@@ -216,8 +220,13 @@ class TestRegistry:
 
         多一个 = 配置写了没实现的平台（真机上才发现）；少一个 = 实现了但发不出去
         （面板上根本列不出来）。
+
+        ``other`` 是**唯一的例外**（T5.9 的本地演练台）：它填的是 §03.3.15 里本来就有的
+        那一档，``publisher: fixture`` ⇒ 它发不到任何真平台，所以它**不进** ``REAL_PLATFORMS``
+        （那个清单是"真平台"，§06.2.1 的七行一个字没变）。
         """
-        assert set(publish_config.platforms) == set(REAL_PLATFORMS)
+        assert set(publish_config.platforms) == set(REAL_PLATFORMS) | {"other"}
+        assert publish_config.platforms["other"].publisher == "fixture"
 
     def test_each_platform_class_declares_its_code(self) -> None:
         for code, cls in PUBLISHERS.items():
@@ -237,6 +246,16 @@ class TestRegistry:
         assert "fixture" in PUBLISHERS
         assert "fixture" in NON_PLATFORM_CODES
         assert "fixture" not in REAL_PLATFORMS
+
+    def test_rehearsal_publisher_refuses_real_platforms(self) -> None:
+        """T5.9 的保护 ②：靶页发布器**只服务演练台**。
+
+        有人把 ``platforms.douyin.publisher`` 改成 ``fixture`` 想"发抖音"时，
+        靶页发布器会直接拒 —— 否则库里会出现一条 ``platform='douyin'`` 而其实
+        什么都没发出去的记录（那是"看着像真的假数据"，比报错糟得多）。
+        """
+        assert frozenset({"other", "fixture"}) == REHEARSAL_PLATFORMS
+        assert not REHEARSAL_PLATFORMS & set(REAL_PLATFORMS)
 
     def test_fixture_code_is_not_a_valid_publication_platform(self) -> None:
         """纵深防御：``publications.platform`` 的 CHECK 约束里没有 ``fixture``。

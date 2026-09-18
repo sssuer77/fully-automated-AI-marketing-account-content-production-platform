@@ -85,8 +85,12 @@ uv run studio publish manual-done --id <publication_id> --reason "已到平台�
 ## 5. `PUBLISH_DISABLED`：出厂开关是关的
 
 `config/publish.yaml` 的 `enabled: false` 是**出厂状态**（R14：发布不可逆）。
-它开着的时候，投递进来的作业会在 worker 那一侧直接转人工并带上 `PUBLISH_DISABLED` ——
+开关关着的时候，投递进来的作业会在 worker 那一侧带 `PUBLISH_DISABLED` **进死信** ——
 **这不是故障**，是"你还没说要真发"。
+
+> 为什么不是"待人工"：开关守卫跑在**建 `publications` 那一行之前**，所以发布面板上
+> 不会出现任何记录，`GET /publish/queue` 也是空的。要看它去哪了：四池调度面板的
+> `publish` 池，失败 / 死信那一栏。**投递面板现在会把这句话写在真平台选项旁边**（T5.10）。
 
 ```powershell
 # 只想验证链路（不真发）：演练**不看**开关

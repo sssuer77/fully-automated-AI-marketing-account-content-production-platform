@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,7 @@ METRIC_VIEWS = ".m-views"
 METRIC_LIKES = ".m-likes"
 METRIC_COMMENTS = ".m-comments"
 METRIC_SHARES = ".m-shares"
+METRIC_COMPLETION = ".m-completion"
 
 
 class FakePage:
@@ -259,6 +261,7 @@ def _pack(**overrides: Any) -> SelectorPack:
         "metric_likes": METRIC_LIKES,
         "metric_comments": METRIC_COMMENTS,
         "metric_shares": METRIC_SHARES,
+        "metric_completion_rate": METRIC_COMPLETION,
     }
     selectors.update(overrides.pop("selectors", {}))
     markers: dict[str, tuple[str, ...]] = {
@@ -667,6 +670,30 @@ class TestFetchMetrics:
         )
         assert metrics.collected_at.endswith("Z")
 
+    async def test_reads_the_completion_rate_with_its_own_parser(self, tmp_paths: StudioPaths) -> None:
+        """完播率走 ``parse_metric_ratio``，**不走** ``parse_metric_count``。
+
+        走错解析器的后果不会报错：``42.3%`` 会被读成整数 ``42``，而 42 与 0.423
+        都是"看着正常"的数 —— 这条用例就是钉住那个 100 倍。
+        """
+        page = FakePage(metric_text={METRIC_VIEWS: "1.2万", METRIC_COMPLETION: "42.3%"})
+        publisher, _ = _publisher(tmp_paths, page)
+        metrics = await publisher.fetch_metrics("741")
+        assert metrics.completion_rate == 0.423
+        assert metrics.views == 12000
+
+    async def test_manage_url_placeholder_gets_the_post_id(self, tmp_paths: StudioPaths) -> None:
+        """``urls.manage`` 里的 ``{post_id}`` 会被换成这一条的作品号（本地演练台靠它）。
+
+        真平台的管理页是"列出全部作品"，不需要占位符；靶页没有后端，只能把"看哪一条"
+        写在地址里。占位符要**转义**：作品号将来带 ``&`` 时不转义会多出一个查询参数。
+        """
+        pack = replace(_pack(), urls={"manage": "https://example.invalid/manage?post={post_id}"})
+        page = FakePage(metric_text={METRIC_VIEWS: "7"})
+        publisher, _ = _publisher(tmp_paths, page, pack=pack)
+        await publisher.fetch_metrics("a&b")
+        assert page.visited == ["https://example.invalid/manage?post=a%26b"]
+
     async def test_login_expired_is_reported_not_silently_empty(self, tmp_paths: StudioPaths) -> None:
         """登录态没了 ⇒ 抛 ``PUBLISH_LOGIN_EXPIRED``（轮询层据此顺延重试）。"""
         publisher, _ = _publisher(tmp_paths, FakePage(logged_in=False))
@@ -746,6 +773,11 @@ class TestConventions:
         assert "platform" in info.value.message
 
     async def test_fixture_target_refuses_real_publish(self, tmp_paths: StudioPaths) -> None:
+        """保护 ②：有人把靶页接去发**真平台** ⇒ 直接拒（T5.9 起仍然如此）。
+
+        放行的后果是库里出现一条 ``platform='douyin'`` 而其实什么都没发出去的记录 ——
+        那是"看着像真的假数据"，比报错糟得多。
+        """
         publisher = FixturePublisher(_ctx(tmp_paths), session_factory=lambda _c: FakeSession(FakePage()))
         result = await publisher.publish(
             PublishRequest(
@@ -757,6 +789,34 @@ class TestConventions:
             )
         )
         assert result.error_code == ErrorCode.PUBLISH_NOT_IMPLEMENTED
+        assert "演练台" in (result.error_message or "")
+
+    async def test_rehearsal_platform_may_really_publish_to_the_local_page(
+        self, tmp_paths: StudioPaths, tmp_path: Path
+    ) -> None:
+        """演练台（``platform='other'``）**可以**真发布 —— 它打的是本地靶页。
+
+        这一条是 T5.9 的全部意义所在：没有真账号时，"点下发布 → 作品号回到库里"
+        这半条链路此前没有任何办法验。
+        """
+        page = FakePage(post_url="file:///rehearsal/rehearsal-1")
+        # 用假包而不是真 ``selectors/fixture.yaml``：这一层验的是"流程放不放行"，
+        # 真靶页的选择器由 `tests/integration/test_publish_dryrun.py` 对着真浏览器验。
+        publisher = FixturePublisher(
+            _ctx(tmp_paths), pack=_pack(), session_factory=lambda _c: FakeSession(page)
+        )
+        result = await publisher.publish(_request(tmp_path, platform="other", dry_run=False))
+        assert result.ok is True
+        assert result.status is PublishStatus.PUBLISHED
+        assert result.platform_post_id == "rehearsal-1"
+        assert PUBLISH in page.clicks  # 发布按钮**真的被点了**
+
+    async def test_rehearsal_manage_url_carries_the_post_id_placeholder(self, tmp_paths: StudioPaths) -> None:
+        """管理页地址带 ``{post_id}``：靶页没有后端，只能把"看哪一条"写在地址里。"""
+        publisher = FixturePublisher(_ctx(tmp_paths), session_factory=lambda _c: FakeSession(FakePage()))
+        manage = publisher._pack.urls["manage"]
+        assert manage.startswith("file://")
+        assert manage.endswith("post={post_id}")
 
     async def test_elapsed_ms_is_recorded(self, tmp_paths: StudioPaths, tmp_path: Path) -> None:
         result = await _run(tmp_paths, tmp_path, FakePage())

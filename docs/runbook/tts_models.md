@@ -83,12 +83,14 @@ from cosyvoice.cli.cosyvoice import CosyVoice2
 
 MODEL = r"D:\ai_models\modelscope_cache\models\iic--CosyVoice2-0.5B\snapshots\master"
 model = CosyVoice2(MODEL, load_jit=False, load_trt=False, load_vllm=False, fp16=False)
-chunks = list(model.inference_zero_shot(
-    "这是全自动制片台的第一句测试配音。",
-    "随便说点什么都可以的。",
-    "data/voice_src/bigbear/ref_01.wav",     # ← **路径**，不是张量
-    stream=False,
-))
+chunks = list(
+    model.inference_zero_shot(
+        "这是全自动制片台的第一句测试配音。",
+        "随便说点什么都可以的。",
+        "data/voice_src/bigbear/ref_01.wav",  # ← **路径**，不是张量
+        stream=False,
+    )
+)
 audio = torch.cat([c["tts_speech"] for c in chunks], dim=1).squeeze(0).numpy()
 sf.write("out.wav", audio, model.sample_rate)
 ```

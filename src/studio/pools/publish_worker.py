@@ -94,6 +94,7 @@ from studio.domain.publish import build_caption, fit_text, render_tags
 from studio.domain.task_service import TaskService
 from studio.pools.worker_base import UnitContext, UnitDeferred
 from studio.publish.base import (
+    REHEARSAL_PUBLISHER,
     PublisherContext,
     PublishEvidence,
     PublishRequest,
@@ -263,7 +264,7 @@ class PublishPlatformHandler:
             self._halt_on_ratelimit(decision, account)
 
         dry_run = self._dry_run_default or _truthy(ctx.payload.get("dry_run"))
-        self._guard_switch(dry_run=dry_run, ctx=ctx)
+        self._guard_switch(dry_run=dry_run, platform_cfg=platform_cfg, ctx=ctx)
 
         task = self._tasks.get(ctx.task_id)
         video = resolve_final_video(ctx.task_id, self._paths)
@@ -569,9 +570,20 @@ class PublishPlatformHandler:
         """
         return resolve_account(self._publish, platform=platform, account_id=_opt_str(payload, "account_id"))
 
-    def _guard_switch(self, *, dry_run: bool, ctx: UnitContext) -> None:
-        """``publish.enabled=false`` ⇒ 真发布一律拒绝（R14）；演练放行（见模块 docstring）。"""
-        if self._publish.enabled or dry_run:
+    def _guard_switch(self, *, dry_run: bool, platform_cfg: PlatformConfig, ctx: UnitContext) -> None:
+        """``publish.enabled=false`` ⇒ 真发布一律拒绝（R14）；演练与**演练台**放行。
+
+        判据是"这一条会不会发到真实平台上去"，而不是"它是不是 dry-run"：
+        ``platforms.other`` 的发布器是 :class:`~studio.publish.platforms.fixture.FixturePublisher`，
+        它只认本地靶页（见那个模块的三道保护）⇒ 它**发不出去任何东西**，因此不该被
+        "真发布开关"挡住。
+
+        反过来，如果拿 ``enabled`` 去挡它，就会出现一件很别扭的事：想验证"链路是不是
+        通的"，得先把**真发布**开关打开 —— 那正是 R14 要防的事。``dry_run`` 当初被
+        放行就是这个理由（见模块 docstring），演练台只是把同一件事往后延了一段：
+        连"点下发布之后"的那半条链路也一起验。
+        """
+        if self._publish.enabled or dry_run or platform_cfg.publisher == REHEARSAL_PUBLISHER:
             return
         raise StudioError(
             "发布开关是关的（config/publish.yaml → enabled: false）",

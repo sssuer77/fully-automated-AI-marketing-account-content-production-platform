@@ -8,8 +8,10 @@
 
 **这里没有"点发布"**：真发布是 publish 池 worker 干的，本层只投作业 —— 与"CLI 不
 替人点按钮"同一条边界。``publish.enabled=false`` 时投递**照样成功**，作业会在 worker
-那一侧带 ``PUBLISH_DISABLED`` 转人工（R14 的不可逆防护）。让投递直接报错会得到
-"面板点不动"，而操作员真正需要看到的是"作业在那儿、它为什么没发"。
+那一侧带 ``PUBLISH_DISABLED`` **进死信**（R14 的不可逆防护；**不是**转人工 —— 见
+``publish_worker._guard_switch`` 与 §04-contracts ① 的开关守卫那条：那一行
+``publications`` 根本不会建，所以发布面板上不会出现记录，死信在「四池调度」里看）。
+让投递直接报错会得到"面板点不动"，而操作员真正需要看到的是"作业在那儿、它为什么没发"。
 
 为什么"待人工"要一个独立端点
 ----------------------------
@@ -45,8 +47,10 @@ from studio.app.schemas.publish import (
     PublishActionResponse,
     PublishEnqueueRequest,
     PublishEnqueueResponse,
+    PublishPlatformsView,
     compliance_view,
     handoff_preview,
+    platforms_view,
     publication_view,
 )
 from studio.core.errors import ErrorCode, StudioError
@@ -59,8 +63,10 @@ from studio.services.publish_metrics_service import PublishMetricsService
 from studio.services.publish_service import (
     build_board,
     cancel_publication,
+    default_platforms,
     enqueue_publications,
     mark_manual_done,
+    platform_options,
     retry_publication,
 )
 
@@ -292,6 +298,27 @@ def compliance(request: Request) -> ComplianceView:
     return compliance_view(snapshot)
 
 
+@router.get("/api/v1/publish/platforms", response_model=PublishPlatformsView)
+def list_platforms(request: Request) -> PublishPlatformsView:
+    """投递面板能选哪些平台（T5.10 · **清单来自配置，不是面板自己列的**）。
+
+    面板列一份平台清单 = 把 ``config/publish.yaml`` 抄第二遍：加一个平台要改两处，
+    而漏改的那一处表现为"这个平台在面板上不存在" —— 没人会去报这个 bug。
+
+    连"点了会怎样"也一起给（``selectable`` / ``note``）：判据与投递期**同一套**，
+    所以不会出现"面板显示点得动、投出去被跳过"。``default_platforms`` 是"一个都不选"
+    时后端会投的那几个 —— 面板必须把它显示出来，否则"不选"看起来像"都不发"。
+    """
+    state: AppState = request.app.state.studio
+    config = publish_config_for(state)
+    return platforms_view(
+        platform_options(config),
+        defaults=default_platforms(config),
+        publish_enabled=config.enabled,
+        dry_run=config.dry_run,
+    )
+
+
 @router.post("/api/v1/publish/tasks/{task_id}/enqueue", response_model=PublishEnqueueResponse)
 def enqueue_task(
     request: Request,
@@ -301,8 +328,9 @@ def enqueue_task(
     """把这条任务排进发布池（幂等）。
 
     **不看 ``publish.enabled``**：开关关着的时候投递依然成功，作业会在 worker 那一侧
-    转人工并带上 ``PUBLISH_DISABLED``。投递期直接拒绝的话，面板上什么都不会出现 ——
-    而"点了没反应"比"有一条带原因的待人工"难查得多（见模块注释）。
+    带 ``PUBLISH_DISABLED`` **进死信**（不建 ``publications`` 那一行 ⇒ 这一屏上不会出现
+    记录，去「四池调度」看死信）。投递期直接拒绝的话，面板上连作业都没有 ——
+    而"点了没反应"比"有一条能查的作业"难查得多（见模块注释）。
     """
     state: AppState = request.app.state.studio
     config = publish_config_for(state)
