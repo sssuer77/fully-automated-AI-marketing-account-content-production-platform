@@ -453,6 +453,32 @@ def test_the_picker_never_downgrades_mid_task(rig: Rig, monkeypatch: pytest.Monk
     assert isinstance(handler._current_engine()[0], FakeResidentEngine), "不能回头降级"
 
 
+def test_a_sleeping_resident_service_still_wins(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """★ 真机坑（2026-09-18）：空闲卸载（``model_state: unloaded``）**不是**不可用。
+
+    池子若把它当"服务不可用"，成片里就换成系统语音包念 —— 而面板、日志、库里
+    全都写着 ``cosyvoice2``。真正会付出的代价只是**第一句多等一次冷加载**。
+    """
+    sleeping = ResidentStatus(
+        base_url="http://127.0.0.1:8788",
+        engine="cosyvoice2",
+        revision="074ca6dc",
+        ready=False,
+        device="cuda",
+        model_state="unloaded",
+        sample_rate=24_000,
+        voices=("bigbear", "littlebear"),
+    )
+    monkeypatch.setattr(voice_worker, "active_resident", lambda paths, **kwargs: sleeping)
+    monkeypatch.setattr(voice_worker, "pick_voice", lambda: VOICE)
+    monkeypatch.setattr(voice_worker, "ResidentEngine", _fake_resident_engine)
+
+    handler = build_voice_handler(paths=rig.paths, connection=rig.connection)
+
+    assert isinstance(handler._engine, FakeResidentEngine), "睡着了也要用常驻引擎（它叫得醒）"
+    assert handler._voice == "bigbear"
+
+
 def test_the_sapi_fallback_voice_is_resolved_only_once(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     """列音色要起一次 PowerShell（1–2 秒）—— 进程生命周期内只该解析一次。"""
     calls: list[str] = []

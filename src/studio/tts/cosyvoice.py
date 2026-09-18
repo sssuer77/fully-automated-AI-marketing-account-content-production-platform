@@ -265,11 +265,11 @@ class CosyVoiceBackend:
             assert self._load_result is not None
             return self._load_result
 
-        self._check_paths()
         self._state = EngineState.LOADING
         started = time.monotonic()
-        engine_cls = self._import_engine()
         try:
+            self._check_paths()
+            engine_cls = self._import_engine()
             model = engine_cls(
                 str(self.model_dir),
                 load_jit=False,
@@ -277,6 +277,14 @@ class CosyVoiceBackend:
                 load_vllm=False,
                 fp16=self.fp16,  # bf16 在 Turing 上不可用（R4）
             )
+        except StudioError as exc:
+            # 权重目录不在（:meth:`_check_paths`）与依赖缺失（:meth:`_import_engine`）
+            # 都要落到 ``ERROR``：停在 ``UNLOADED`` 会让这个实例看起来像**睡着的健康
+            # 实例**（叫得醒），停在 ``LOADING`` 会让它看起来像"还在加载"—— 两种都会
+            # 被当成"等一下就好"，于是每一句都白试一遍才失败（陷阱 168）。
+            self._state = EngineState.ERROR
+            self._last_error = exc.message
+            raise
         except BaseException as exc:
             self._state = EngineState.ERROR
             self._last_error = f"{type(exc).__name__}: {exc}"

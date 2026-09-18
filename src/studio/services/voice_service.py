@@ -739,8 +739,8 @@ def set_voice_map(
             },
             remediation=(
                 "换一个 available 里的音色；系统音色在「设置 → 时间和语言 → 语音」里装。"
-                "参考音（absent / unspeakable 里那些）要 CosyVoice 才念得出来 —— "
-                "权重未到位时它只能当素材留着，见 T2.1 / E5"
+                "参考音（absent / unspeakable 里那些）要 CosyVoice 才念得出来 —— 先把常驻推理服务起来"
+                "（`studio service start --only tts`）；起不来就看 `data/logs/tts.log`"
             ),
         )
 

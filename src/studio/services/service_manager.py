@@ -61,6 +61,7 @@ from studio.core.errors import ErrorCode, StudioError
 from studio.core.logging import get_logger
 from studio.core.paths import StudioPaths
 from studio.pools.runner import HANDLER_MODULES, HANDLER_REMEDIATION, STOP_FLAG_ENV, handler_for
+from studio.tts.service_engine import wakeable_health
 
 __all__ = [
     "DEFAULT_READY_TIMEOUT_SEC",
@@ -391,6 +392,27 @@ def _self_report_reason(payload: Mapping[str, Any]) -> str:
         if value:
             return str(value)
     return "ready=false"
+
+
+def _self_report(probe: HealthProbe) -> tuple[bool, str] | None:
+    """服务**自述**的那部分判据；没自述 ⇒ ``None``（交给状态码那一支）。
+
+    单拎出来是因为 :meth:`ServiceManager._default_health` 已经把"没答上 / 不是 200"
+    两条先排掉了，剩下的分岔（``ok`` / ``ready`` / 可唤醒）挤在一起会让那个函数
+    超出分支上限 —— 而它真正要说的话只有一句：**自报了才管**。
+    """
+    payload = probe.payload
+    if payload is None:
+        if '"ok": false' in probe.body.replace(" ", "").lower():
+            return False, "health 报 ok=false"
+        return None
+    if payload.get("ok") is False:
+        return False, "health 报 ok=false"
+    if payload.get("ready") is False:
+        if wakeable_health(payload):
+            return True, f"自报未就绪但可唤醒：{_self_report_reason(payload)}"
+        return False, f"自报未就绪：{_self_report_reason(payload)}"
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -749,19 +771,22 @@ class ServiceManager:
         配音一直悄悄退回系统语音包，而每一处日志都写着成功。
 
         没有 ``ready`` 字段的服务（``api`` 那条）不受影响 —— 判据是「自报了才管」。
+
+        两种"没就绪"（陷阱 168）
+        ------------------------
+        ``ready: false`` 有两种语义：①**坏了**（子环境里没有 torch ⇒ 该接管重启）；
+        ②**只是睡着了**（模型空闲卸载，``model_state: unloaded``）。后者叫得醒 ——
+        下一句 ``/synth`` 会自己把它读回来 —— 所以这里算就绪。混成一种的话，
+        "空闲 20 分钟后再启动一次"会稳定地报一句"tts 未就绪"，而它其实好好的。
         """
         probe = self._health_probe(spec)
         if not probe.answered:
             return False, probe.error or "没有应答"
         if probe.status is not None and probe.status != 200:
             return False, f"HTTP {probe.status}"
-        if probe.payload is not None:
-            if probe.payload.get("ok") is False:
-                return False, "health 报 ok=false"
-            if probe.payload.get("ready") is False:
-                return False, f"自报未就绪：{_self_report_reason(probe.payload)}"
-        elif '"ok": false' in probe.body.replace(" ", "").lower():
-            return False, "health 报 ok=false"
+        verdict = _self_report(probe)
+        if verdict is not None:
+            return verdict
         return True, probe.body[:200]
 
     def _takeover_unhealthy(self, spec: ServiceSpec) -> bool:
@@ -774,11 +799,13 @@ class ServiceManager:
         而守护进程每几分钟看到一次「端口有人占着，不关我事」就收工，这个状态于是能
         一直挂到人手动去关 —— 用户看到的是「配音怎么一直不是那个音色」。
 
-        三条判据缺一不可（**宁可不动手，也不能杀错**）
+        四条判据缺一不可（**宁可不动手，也不能杀错**）
         ----------------------------------------------
         ① 对面答的是**我们的**健康面（同时自报 ``ready`` 与 ``pid`` 两个字段）；
         ② 自报的 pid 真的活着；
-        ③ 它自报**没就绪** —— 健康的实例一律不碰（可能是用户自己起的，也可能正在干活）。
+        ③ 它自报**没就绪** —— 健康的实例一律不碰（可能是用户自己起的，也可能正在干活）；
+        ④ 它**不是"睡着了"**：空闲卸载（``model_state: unloaded``）是健康状态，
+           杀它只会让用户白等一次 20s 加载，而且加载期间面板会退回系统语音包（陷阱 168）。
 
         :return: 接管成功（端口已空出来）⇒ ``True``；否则 ``False``，调用方照旧记 port_busy。
         """
@@ -786,6 +813,14 @@ class ServiceManager:
         payload = probe.payload
         if payload is None or payload.get("ready") is not False or "engine" not in payload:
             # 要么不是我们的服务（没有自述字段），要么它自报是**就绪的** ⇒ 不碰
+            return False
+        if wakeable_health(payload):
+            logger.info(
+                "service.port_busy_wakeable",
+                service=spec.name,
+                port=spec.port,
+                reason=_self_report_reason(payload),
+            )
             return False
         pid = payload.get("pid")
         if not isinstance(pid, int) or not self._processes.alive(pid):

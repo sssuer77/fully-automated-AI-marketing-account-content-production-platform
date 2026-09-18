@@ -38,7 +38,7 @@ T2.2 把模型跑在了 ``127.0.0.1:8788`` 上，可**没有任何业务代码�
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,6 +50,7 @@ from studio.core.config import TtsServerConfig, load_tts_config
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.logging import get_logger
 from studio.core.paths import StudioPaths
+from studio.tts.cosyvoice import EngineState
 
 __all__ = [
     "FALLBACK_ENGINE_NAME",
@@ -57,6 +58,7 @@ __all__ = [
     "MIN_SPEED",
     "PROBE_TIMEOUT_SEC",
     "SYNTH_TIMEOUT_SLACK_SEC",
+    "WAKEABLE_MODEL_STATES",
     "ResidentEngine",
     "ResidentStatus",
     "active_resident",
@@ -65,6 +67,7 @@ __all__ = [
     "resident_status",
     "speed_for_rate",
     "synth_timeout_for",
+    "wakeable_health",
 ]
 
 logger = get_logger("studio.tts.service_engine")
@@ -85,6 +88,25 @@ FALLBACK_ENGINE_NAME: Final[str] = "cosyvoice2"
 #: ``speed`` 的上下界（与服务端 ``SynthRequest.speed`` 的 Field 约束一致）
 MIN_SPEED: Final[float] = 0.5
 MAX_SPEED: Final[float] = 2.0
+
+#: ``/health`` 自报这些 ``model_state`` 时，**没就绪 ≠ 坏了**（陷阱 168）：模型只是
+#: 不在显存里，下一次 ``/synth`` 会自己把它读回来（真机冷加载 ~20s）。
+#:
+#: 为什么非要分开：``ready: false`` 有两种语义 —— ①**坏了**（子环境里没有 torch，
+#: 该接管重启）②**只是睡着了**（空闲卸载）。混成一种，两件坏事会同时发生：编排器
+#: 去杀一个睡着的健康实例（用户白等一次 20s 加载），配音池悄悄退回系统语音包
+#: （成片里换了个人念，而每一处日志都写着成功）。
+WAKEABLE_MODEL_STATES: Final[frozenset[str]] = frozenset({EngineState.UNLOADED.value})
+
+
+def wakeable_health(payload: Mapping[str, Any]) -> bool:
+    """``/health`` 的**原始载荷**：这个"没就绪"是叫得醒的那种吗（陷阱 168）。
+
+    判据只此一份：编排器（``service_manager``）与配音池问的都是这一句 —— 两边各写
+    一遍，就会出现"启动器当它健康的、池子当它坏的"这种自相矛盾。
+    """
+    state = str(payload.get("model_state") or "")
+    return payload.get("ready") is False and state in WAKEABLE_MODEL_STATES
 
 
 class _Response(Protocol):
@@ -118,9 +140,18 @@ class ResidentStatus:
     detail: str | None = None
 
     @property
+    def wakeable(self) -> bool:
+        """没就绪、但**叫得醒**（空闲卸载）：不是故障 —— 别杀它，也别退回 SAPI（陷阱 168）。"""
+        return not self.ready and self.model_state in WAKEABLE_MODEL_STATES
+
+    @property
     def usable(self) -> bool:
-        """能不能拿它念句子：模型在显存里 **且** 至少有一个可克隆音色。"""
-        return self.ready and bool(self.voices)
+        """能不能拿它念句子：模型在显存里**或叫得醒**，且至少有一个可克隆音色。
+
+        叫得醒也算可用，是因为"第一句多等 20s"与"整条链路换个人念"不是一回事：
+        前者用户看得见（进度条卡在那一句），后者只在成片里听得出来。
+        """
+        return (self.ready or self.wakeable) and bool(self.voices)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -128,6 +159,7 @@ class ResidentStatus:
             "engine": self.engine,
             "revision": self.revision,
             "ready": self.ready,
+            "wakeable": self.wakeable,
             "device": self.device,
             "model_state": self.model_state,
             "sample_rate": self.sample_rate,
@@ -277,6 +309,10 @@ def active_resident(
 ) -> ResidentStatus | None:
     """**共用的那一份判据**：服务可用 ⇒ 状态，否则 ``None``（调用方退回 SAPI）。
 
+    "可用"包含**睡着的健康实例**（``model_state: unloaded``，空闲卸载 20 分钟）：
+    它下一句会自己醒过来（陷阱 168）。这不是放宽判据 —— 坏掉的实例（``error``）
+    照样回 ``None``，只有"叫得醒"那一种被放进来。
+
     ``paths is None`` ⇒ 直接 ``None``：调用方没给环境（比如只拿到一个 ``connection``
     的旧调用点），就按**最保守的那台引擎**算，而不是去猜。这条规则让"忘了传 paths"
     的表现是"没有用上新引擎"（看得见、能查），而不是"用了但用了错的"。
@@ -284,7 +320,12 @@ def active_resident(
     status = resident_status(paths, client=client)
     if status is None or not status.usable:
         return None
-    logger.info("tts.resident_active", base_url=status.base_url, voices=list(status.voices))
+    logger.info(
+        "tts.resident_active",
+        base_url=status.base_url,
+        voices=list(status.voices),
+        wakeable=status.wakeable,
+    )
     return status
 
 

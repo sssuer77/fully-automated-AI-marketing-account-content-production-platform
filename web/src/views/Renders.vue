@@ -233,7 +233,7 @@ const subtitle = computed(() =>
         </label>
 
         <label class="f f--voice">
-          <span class="f__key">音色（本机 SAPI）</span>
+          <span class="f__key">音色（{{ renders.snapshot?.engine ?? "探测中" }}）</span>
           <select class="field mono" :value="renders.draft.voice" @change="onVoice($event)">
             <option v-for="voice in renders.voices" :key="voice.name" :value="voice.name">
               {{ voice.name }}

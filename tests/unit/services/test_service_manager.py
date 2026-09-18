@@ -783,6 +783,15 @@ BROKEN_TTS = {
     "detail": "ModuleNotFoundError: No module named 'torch'",
 }
 
+#: 同一台服务**空闲 20 分钟之后**的读数：显存卸了、``ready`` 变回 false，但它是健康的
+#: （下一次 ``/synth`` 会冷加载）。与 ``BROKEN_TTS`` 只差 ``model_state`` 与 ``detail`` ——
+#: 而这两种读数**必须**分开处理（陷阱 168）。
+SLEEPING_TTS = {
+    **BROKEN_TTS,
+    "model_state": "unloaded",
+    "detail": "模型未加载（首次 /synth 会冷加载，或调 /warmup 预热）",
+}
+
 
 class OccupiedPortRecorder(Recorder):
     """端口上"占着"一个旧实例：**它死了端口才算空出来**（真 bind 也是这个次序）。"""
@@ -851,6 +860,22 @@ class TestHealthJudge:
         assert rec.spawned == ["tts"]  # 进程照起（起来才有日志可看）
         assert report.ready == ()
         assert report.failed == ("tts",)
+
+    def test_a_sleeping_instance_counts_as_ready(self, worker_home: StudioPaths, tts_ready: None) -> None:
+        """★ 空闲卸载（``model_state: unloaded``）⇒ **算就绪**：它下一句会自己醒。
+
+        与上面那条只差 ``model_state`` 一个字段。混成一种的话，每一次"空闲 20 分钟
+        之后再启动一次"都会稳定地报一句"tts 未就绪"，而它其实好好的（陷阱 168）。
+        """
+        table = FakeProcessTable()
+        rec = Recorder(table)
+        manager = make_manager_with_probe(
+            worker_home, table=table, rec=rec, probe=lambda spec: probe_of(SLEEPING_TTS)
+        )
+
+        report = manager.start(only=["tts"], open_browser=False, doctor_gate=False)
+
+        assert report.ready == ("tts",) and report.failed == ()
 
     def test_a_self_report_of_ready_is_enough(self, worker_home: StudioPaths, tts_ready: None) -> None:
         table = FakeProcessTable()
@@ -926,6 +951,24 @@ class TestTakeover:
         report = manager.start(only=["tts"], open_browser=False, doctor_gate=False)
 
         assert table.terminated == [] and 4242 in table.alive_pids
+        assert rec.spawned == []
+        assert report.port_busy == ("tts",)
+
+    def test_a_sleeping_instance_is_left_alone(self, worker_home: StudioPaths, tts_ready: None) -> None:
+        """★ 空闲卸载的实例**也是健康的**：接管它只会让用户白等一次 20s 加载（陷阱 168）。
+
+        它与上面那条只差 ``model_state``：``error`` 是坏了（该接管重启），
+        ``unloaded`` 只是睡着了（叫得醒）。
+        """
+        table = FakeProcessTable()
+        rec = OccupiedPortRecorder(4242, table)
+        manager = make_manager_with_probe(
+            worker_home, table=table, rec=rec, probe=lambda spec: probe_of(SLEEPING_TTS)
+        )
+
+        report = manager.start(only=["tts"], open_browser=False, doctor_gate=False)
+
+        assert table.terminated == [] and table.killed == [] and 4242 in table.alive_pids
         assert rec.spawned == []
         assert report.port_busy == ("tts",)
 

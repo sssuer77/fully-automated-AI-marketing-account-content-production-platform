@@ -206,7 +206,8 @@ function mapSubtitle(): string {
         </ul>
 
         <p class="hint">
-          配音引擎是本机 SAPI（音色列表就是系统装的那几个）。跳过是**降级**：这一句没声音，
+          “引擎”列写的是**念这一句时用的那台**：`cosyvoice2` = 常驻推理服务（参考音复刻），`sapi` = 本机系统语音包（常驻服务没起时的降级档）。两者都能出片，但听起来是两个人。
+          跳过是降级：这一句没声音，
           片子照样出 —— 原因见下面每一行的红字。失败要人管，否则它会卡在那一句上。
           <template v-if="polling">
             还有句子在念，这一屏每 {{ VOICE_POLL_MS / 1000 }} 秒自己刷一次（念完就停）。
@@ -228,6 +229,7 @@ function mapSubtitle(): string {
             <tr>
               <th>#</th>
               <th>角色</th>
+              <th>引擎</th>
               <th>状态</th>
               <th>文本</th>
               <th>时长</th>
@@ -244,6 +246,7 @@ function mapSubtitle(): string {
             >
               <td class="mono">{{ row.seq }}</td>
               <td class="mono">{{ row.speaker }}</td>
+              <td class="mono">{{ row.tts_engine ?? "—" }}</td>
               <td>
                 <StatusDot
                   :tone="statusTone(row.tts_status)"

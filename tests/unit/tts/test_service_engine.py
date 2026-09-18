@@ -21,6 +21,7 @@ from studio.tts.service_engine import (
     MAX_SPEED,
     MIN_SPEED,
     SYNTH_TIMEOUT_SLACK_SEC,
+    WAKEABLE_MODEL_STATES,
     ResidentEngine,
     ResidentStatus,
     active_resident,
@@ -28,6 +29,7 @@ from studio.tts.service_engine import (
     probe_resident,
     speed_for_rate,
     synth_timeout_for,
+    wakeable_health,
 )
 
 BASE_URL = "http://127.0.0.1:8788"
@@ -189,6 +191,26 @@ class TestProbe:
         assert found.usable is False
         assert found.detail == "no torch"
 
+    def test_idle_unloaded_is_wakeable_not_broken(self) -> None:
+        """★ 真机坑（2026-09-18）：空闲 20 分钟把显存卸了 ⇒ ``ready: false``，但**没坏**。
+
+        ``ready: false`` 有两种语义 —— ①坏了（子环境里没有 torch）②只是睡着了
+        （空闲卸载）。混成一种，配音池会退回系统语音包（成片里换了个人念），
+        编排器会去杀一个睡着的健康实例（用户白等一次 20s 加载）。
+        """
+        client = FakeClient(
+            health=health(ready=False, model_state="unloaded", detail="模型未加载（首次 /synth 会冷加载）"),
+            voices=voices("bigbear", "littlebear"),
+        )
+
+        found = probe_resident(TtsServerConfig(), client=client)
+
+        assert found is not None
+        assert found.ready is False
+        assert found.wakeable is True
+        assert found.usable is True, "叫得醒 ⇒ 配音池照样用它，不是退回 SAPI"
+        assert found.to_dict()["wakeable"] is True
+
     def test_only_usable_voices_count(self) -> None:
         client = FakeClient(
             health=health(),
@@ -262,6 +284,34 @@ class TestActiveResident:
         assert found is not None
         assert found.base_url == "http://127.0.0.1:8799"
         assert found.voices == ("bigbear", "littlebear")
+
+    def test_a_sleeping_service_is_still_returned(self, paths: StudioPaths) -> None:
+        """睡着（空闲卸载）也回状态：回 ``None`` 就是"退回 SAPI"⇒ 成片里换个人念。"""
+        write_tts_config(paths)
+        client = FakeClient(
+            health=health(ready=False, model_state="unloaded"),
+            voices=voices("bigbear", "littlebear"),
+        )
+
+        found = active_resident(paths, client=client)
+
+        assert found is not None and found.wakeable is True
+
+
+# ── 叫得醒 vs 坏了（陷阱 168）──────────────────────────────────────────
+
+
+def test_wakeable_health_reads_the_raw_payload() -> None:
+    """编排器手上只有**原始载荷** ⇒ 判据必须能从它那儿问出来。
+
+    两边各写一遍（``service_manager`` 一份、配音池一份）必然漂移：真出现过的样子
+    就是"启动器把它当健康的、池子把它当坏的"。
+    """
+    assert wakeable_health({"ready": False, "model_state": "unloaded"}) is True
+    assert wakeable_health({"ready": False, "model_state": "error"}) is False
+    assert wakeable_health({"ready": True, "model_state": "ready"}) is False
+    assert wakeable_health({"ready": False}) is False, "没自报 model_state ⇒ 按坏了算（保守）"
+    assert frozenset({"unloaded"}) == WAKEABLE_MODEL_STATES
 
 
 # ── 超时 ────────────────────────────────────────────────────────────────

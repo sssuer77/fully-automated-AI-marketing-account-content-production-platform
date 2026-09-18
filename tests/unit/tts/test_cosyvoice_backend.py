@@ -54,6 +54,10 @@ class TestPathGuards:
             backend.load()
         assert caught.value.code is ErrorCode.TTS_ENGINE_UNAVAILABLE
         assert "tts_models.md" in (caught.value.remediation or "")
+        # 权重目录不在也要落到 ERROR：停在 UNLOADED 会让这台服务看起来像**睡着的
+        # 健康实例**（"叫得醒"），于是配音池每一句都白试一遍才失败（陷阱 168）。
+        assert backend.state is EngineState.ERROR
+        assert backend.last_error is not None
 
     @pytest.mark.parametrize("field", ["source_dir", "matcha_dir"])
     def test_missing_source_or_matcha_dir_is_its_own_message(
