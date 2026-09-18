@@ -170,6 +170,12 @@ class DraftTaskHandler:
             status = TaskService(connection).get(task_id).status
             if status is TaskStatus.FAILED:
                 status = self._rewind(connection, task_id, actor=actor)
+                if status is TaskStatus.FAILED:
+                    # 断点不在写稿段（任务是在配音 / 渲染段挂的）⇒ 这条单元
+                    # 没活干。**空操作成功**，而不是接着去审稿：
+                    # 往下走会拿一个 `failed` 的任务去撞 `failed → reviewing`
+                    # 这条不存在的边，把"重投死信"变成"再死一次"（T1.9 裁定 316）。
+                    return self._skip(task_id, topic_id, status)
             if status not in _DRAFT_STATUSES and status not in _REVIEW_STATUSES:
                 # 已经被别的路径推过去了（确认闸放行 / 人工捞回 / 上一轮就跑完了）。
                 # **空操作成功**：报错只会让队列无意义地重试三次然后进死信。
@@ -245,6 +251,12 @@ class DraftTaskHandler:
                     services.scripts.draft(topic_id=topic_id, persona=persona, task_id=task_id, actor=actor)
                 )
                 if not report.ok:
+                    # 迟到的失败：CLI 的 `script draft` 与池里这条单元会跑同一个任务，
+                    # 先跑完的那条会把任务推过写稿段。此时**空操作成功** —— 任务不是
+                    # 这条单元的活了，把它记成死信只会天天报一次假警（T1.9 裁定 316）。
+                    current = tasks.get(task_id).status
+                    if current not in _DRAFT_STATUSES and current not in _REVIEW_STATUSES:
+                        return self._skip(task_id, topic_id, current)
                     raise _failure(
                         report.error_code,
                         report.error_message,

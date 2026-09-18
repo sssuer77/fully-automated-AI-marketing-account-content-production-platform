@@ -73,6 +73,15 @@ _LOG_RESERVED: Final[frozenset[str]] = frozenset({"event", "level", "logger", "m
 
 logger = get_logger("studio.script")
 
+#: 写稿失败**有权**把任务置 ``failed`` 的状态：写稿段之内。
+#: 出了这一段说明任务已被别的路径推走了 —— 最典型的现场是 CLI 的 `script draft`
+#: 就地跑完（并推着任务一路进了配音），而池里那条 `draft/task` 单元还在跑同一个任务，
+#: 它稍后失败时会把已经进配音的任务拽回 ``failed``，把一次好端端的生产打断。
+#: 迟到的失败没有话语权（T1.9 裁定 316 现场）。
+_FAILURE_HOME: Final[frozenset[TaskStatus]] = frozenset(
+    {TaskStatus.PENDING, TaskStatus.DRAFTING, TaskStatus.FAILED}
+)
+
 
 class DirectorLike(Protocol):
     """Director 只需实现 ``run``（与 Planner/Ideator 同一手法：服务认协议不认类）。"""
@@ -478,7 +487,25 @@ class ScriptService:
         )
 
     def _fail_task(self, task_id: str, *, code: str, message: str, actor: str) -> None:
-        """把任务置 ``failed``（带断点）；**绝不因为记不上失败而掩盖真正的错误**。"""
+        """把任务置 ``failed``（带断点）；**绝不因为记不上失败而掩盖真正的错误**。
+
+        任务已经越过写稿段 ⇒ **不置失败**，只留一条告警：这条失败是"迟到的"
+        （见 :data:`_FAILURE_HOME` 的注释）。任务本身没错，稿子也还在。
+        """
+        current = self._status_of(task_id)
+        if current is not None and current not in _FAILURE_HOME:
+            logger.warning(
+                "script.failure_arrived_late",
+                task_id=task_id,
+                status=current.value,
+                error_code=code,
+            )
+            self._emit(
+                "warn",
+                f"写稿失败但任务已到 {current.value}（迟到的失败不改状态）：{message}",
+                payload={"task_id": task_id, "error_code": code, "status": current.value},
+            )
+            return
         try:
             self._tasks.transition(
                 task_id,
@@ -490,6 +517,14 @@ class ScriptService:
             )
         except StudioError as exc:  # pragma: no cover — 状态已变时只记一笔
             logger.warning("fail_task_skipped", task_id=task_id, error=repr(exc))
+
+    def _status_of(self, task_id: str) -> TaskStatus | None:
+        """任务当前状态；任务不存在 ⇒ ``None``（失败路径**不再二次爆炸**）。"""
+        try:
+            return self._tasks.get(task_id).status
+        except StudioError:  # pragma: no cover — 任务被删掉的极端情形
+            logger.warning("script.task_missing_on_failure", task_id=task_id)
+            return None
 
     def _emit(
         self,

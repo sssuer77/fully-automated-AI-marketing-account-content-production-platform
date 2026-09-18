@@ -22,6 +22,7 @@ from studio.core.errors import ErrorCode, StudioError
 from studio.core.paths import StudioPaths
 from studio.db import connect, migrate
 from studio.db.repositories import DirectionRepo, ScriptRepo, TopicRepo
+from studio.domain.enums import TaskStatus
 from studio.domain.script import (
     DirectorInput,
     DirectorOutput,
@@ -253,6 +254,30 @@ class TestFailures:
         assert report.error_code == str(ErrorCode.SCRIPT_FORBIDDEN)
         assert connection.execute("SELECT COUNT(*) FROM scripts").fetchone()[0] == 0
         assert TaskService(connection).get(report.task_id).status.value == "failed"
+
+    async def test_a_late_failure_does_not_pull_the_task_back(self, connection: sqlite3.Connection) -> None:
+        """迟到的写稿失败**没有话语权**（T1.9 裁定 316 的真机现场）。
+
+        CLI 的 `script draft` 就地跑完、把任务一路推进配音，而池里那条 `draft/task`
+        单元还在跑**同一个**任务；它稍后失败时若照常置 ``failed``，就会把一次好端端的
+        生产打断（真机现场：`voicing \u2192 failed`，随后流水线撞上非法迁移
+        `failed \u2192 queued_render`）。稿子还在，任务没错，错的是这条迟到的失败。
+        """
+        topic_id = seed_topic(connection)
+        first = await build(connection).draft(topic_id=topic_id, persona=persona())
+        assert first.ok
+        tasks = TaskService(connection)
+        for target in (TaskStatus.REVIEWING, TaskStatus.QUEUED_VOICE, TaskStatus.VOICING):
+            tasks.transition(first.task_id, target, actor="pipeline")
+
+        director = FakeDirector(data=None, ok=False, error_code="LLM_TIMEOUT", error_message="超时")
+        report = await build(connection, director=director).draft(topic_id=topic_id, persona=persona())
+
+        assert not report.ok
+        row = tasks.get(first.task_id)
+        assert row.status is TaskStatus.VOICING, "任务已越过写稿段 \u21d2 不许拽回 failed"
+        assert row.error_code is None, "也不许把错误盖上去"
+        assert read_active_script(connection, first.task_id) is not None
 
     async def test_out_of_range_script_is_still_persisted_with_warnings(
         self, connection: sqlite3.Connection
