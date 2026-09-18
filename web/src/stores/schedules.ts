@@ -62,6 +62,7 @@ export function resultLabel(result: string | null | undefined): string {
   if (result === "ok") return "成功";
   if (result === "skipped_ratelimit") return "被限频，已顺延";
   if (result === "skipped_disabled") return "发布开关关着，空转";
+  if (result === "skipped_duplicate") return "早就投过，没重复发";
   return result;
 }
 
@@ -130,6 +131,7 @@ export function runText(outcome: ScheduleRunResult): string {
   if (outcome.result === "ok") return `已建 ${outcome.queued} 个发布作业，去「待发布」看它`;
   if (outcome.result === "skipped_ratelimit") return "被限频挡住了：额度恢复前不会再试（这不是失败）";
   if (outcome.result === "skipped_disabled") return "发布总开关是关的 ⇒ 空转，没建作业";
+  if (outcome.result === "skipped_duplicate") return "这条任务早就投过 ⇒ 没重复发（也不用改什么）";
   if (outcome.result.startsWith("error:")) return outcome.result.slice("error:".length);
   return outcome.result;
 }

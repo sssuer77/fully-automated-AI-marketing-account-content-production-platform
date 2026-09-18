@@ -709,6 +709,10 @@ class EnqueueReport:
     queued: int
     #: 没投出去的平台及原因（``"douyin：已经投过"``）。
     skipped: tuple[str, ...] = ()
+    #: 其中"**这条早就投过**"（幂等命中）的平台。**单独列出来**是因为它的处置动作与
+    #: 其余跳过完全不同：其余跳过要人去改配置，而这一种**什么都不用做** —— 让调用方
+    #: 去猜那句中文，等于把"这不是故障"这件事绑在一句文案上（定时器要按它决定记不记失败）。
+    duplicates: tuple[str, ...] = ()
     #: 任务**不存在**时也走这条路（返回而不是抛）：投递常由"任务完成"的事件触发，
     #: 那时任务一定存在；而人工点一次不存在的任务号，报错比静默好。见 ``missing``。
     missing: bool = False
@@ -719,6 +723,7 @@ class EnqueueReport:
             "platforms": list(self.platforms),
             "queued": self.queued,
             "skipped": list(self.skipped),
+            "duplicates": list(self.duplicates),
             "missing": self.missing,
         }
 
@@ -827,6 +832,7 @@ def enqueue_publications(
 
     queued = 0
     skipped: list[str] = []
+    duplicates: list[str] = []
     for platform in wanted:
         platform_cfg = resolve_platform(config, platform)
         if not platform_cfg.enabled:
@@ -847,6 +853,7 @@ def enqueue_publications(
         )
         if job_id is None:
             skipped.append(f"{platform}：已经投过（幂等命中）")
+            duplicates.append(platform)
             continue
         queued += 1
     logger.info(
@@ -856,7 +863,13 @@ def enqueue_publications(
         platforms=wanted,
         skipped=skipped,
     )
-    return EnqueueReport(task_id=task_id, platforms=tuple(wanted), queued=queued, skipped=tuple(skipped))
+    return EnqueueReport(
+        task_id=task_id,
+        platforms=tuple(wanted),
+        queued=queued,
+        skipped=tuple(skipped),
+        duplicates=tuple(duplicates),
+    )
 
 
 # ── 投递面板的选项清单（T5.10）─────────────────────────────────────────

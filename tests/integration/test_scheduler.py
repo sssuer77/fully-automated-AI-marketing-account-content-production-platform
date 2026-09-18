@@ -10,6 +10,7 @@
 ⑥ ``publish.enabled=false`` ⇒ ``skipped_disabled``（空转，不建作业）
 ⑦ 连续失败 >=5 次 ⇒ ``system.alert(SCHEDULE_FAILING)``
 ⑧ 增 / 删 / 改 / 启停均写 ``audit_ops``
+⑥′ 这条任务**早就投过**（幂等命中）⇒ ``skipped_duplicate``（**不是失败**，真机踩到）
 ⑨ 非法参数被拒且**不落库**
 ⑩ 编辑 ⇒ ``next_run_at`` **与参数在同一条 UPDATE 里**重算（陷阱 #33）
 
@@ -32,6 +33,7 @@ import sqlite3
 from collections.abc import Iterator
 from datetime import timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -39,7 +41,7 @@ from fastapi.testclient import TestClient
 from studio.app.deps import AppState, build_state
 from studio.app.main import create_app
 from studio.core.clock import format_iso, local_tz, parse_iso, utc_now
-from studio.core.config import PublishConfig, load_publish_config
+from studio.core.config import PlatformCode, PublishConfig, load_publish_config
 from studio.core.paths import StudioPaths
 from studio.core.proto import AlertCode, EventKind
 from studio.db.migrate import migrate
@@ -58,6 +60,7 @@ from studio.services.scheduler_service import (
     AUDIT_UPDATE,
     RESULT_OK,
     RESULT_SKIPPED_DISABLED,
+    RESULT_SKIPPED_DUPLICATE,
     RESULT_SKIPPED_RATELIMIT,
     SCHEDULER_TICK_INTERVAL_SEC,
     SchedulerService,
@@ -480,6 +483,65 @@ def test_publish_disabled_records_skipped_disabled(
     assert fresh.last_result == RESULT_SKIPPED_DISABLED
     assert fresh.run_count == 1
     assert fresh.fail_streak == 0
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ⑥′ 幂等命中（这条任务早投过）⇒ skipped_duplicate，**不是失败**
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_already_published_records_skipped_duplicate(
+    connection: sqlite3.Connection, paths: StudioPaths, config: PublishConfig
+) -> None:
+    """到点了、作业没建出来，但原因是「早就投过」⇒ 记 ``skipped_duplicate``。
+
+    真机踩到（陷阱 182）：钉着一条已发任务的计划，每一拍都撞幂等，被记成
+    ``error:PUBLISH_FAILED`` ⇒ ``fail_streak`` 每天 +1 ⇒ 第 5 天拉一条
+    ``SCHEDULE_FAILING`` 告警。而那条告警淹掉的正是真故障。
+    """
+    task_id = make_completed_task(connection)
+    schedule_id = make_due_schedule(connection, config, task_id=task_id)
+    scheduler = service_for(connection, paths, config)
+
+    first = scheduler.tick(now=format_iso(utc_now()))
+    assert first.fired == (schedule_id,)
+
+    repo = ScheduleRepo(connection)
+    repo.set_enabled(schedule_id, enabled=True, next_run_at=format_iso(utc_now() - timedelta(minutes=1)))
+    second = scheduler.tick(now=format_iso(utc_now()))
+
+    assert second.skipped_duplicate == (schedule_id,)
+    assert second.errors == () and second.job_ids == ()
+    assert JobStore(connection).stats(pool="publish").pending == 1
+
+    fresh = repo.require(schedule_id)
+    assert fresh.last_result == RESULT_SKIPPED_DUPLICATE
+    assert fresh.fail_streak == 0
+    assert fresh.run_count == 2
+
+
+def test_platform_skip_is_still_an_error(
+    connection: sqlite3.Connection, paths: StudioPaths, config: PublishConfig
+) -> None:
+    """边界：**平台没启用**与「早就投过」不是一回事 —— 前者仍然是 ``error:…``。
+
+    两者都会让 ``queued=0``，但处置动作相反：一个要人去改配置，一个什么都不用做。
+    把后者也算成成功会让"配置写错了"永远静默；把前者算成"跳过"则相反。
+    """
+    task_id = make_completed_task(connection)
+    schedule_id = make_due_schedule(connection, config, task_id=task_id)
+    key = cast("PlatformCode", REHEARSAL)
+    platforms = dict(config.platforms)
+    platforms[key] = platforms[key].model_copy(update={"enabled": False})
+    patched = config.model_copy(update={"platforms": platforms})
+
+    scheduler = service_for(connection, paths, patched)
+    outcome = scheduler.fire(ScheduleRepo(connection).require(schedule_id), now=format_iso(utc_now()))
+
+    assert outcome.result.startswith("error:")
+    assert "平台未启用" in outcome.result
+    fresh = ScheduleRepo(connection).require(schedule_id)
+    assert fresh.fail_streak == 1
 
 
 # ══════════════════════════════════════════════════════════════════════

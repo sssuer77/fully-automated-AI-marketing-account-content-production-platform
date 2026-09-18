@@ -2932,7 +2932,7 @@ class ScheduleRuntime(BaseModel):
     next_run_at: str  # 持久化，重启后不丢
     last_run_at: str | None
     run_count: int
-    last_result: str | None  # 'ok' | 'skipped_ratelimit' | 'error:…'
+    last_result: str | None  # 'ok' | 'skipped_ratelimit' | 'skipped_disabled' | 'skipped_duplicate' | 'error:…'
 ```
 
 | 项 | 规则 |
@@ -2942,6 +2942,7 @@ class ScheduleRuntime(BaseModel):
 | 与限频关系 | **叠加**：定时 ≠ 免限频（§03.4.4 的 `≤3 条/天/账号` 仍生效）。被限频 ⇒ `last_result='skipped_ratelimit'` 并顺延 |
 | 窗口模式（默认） | `daily_window` 在窗口内随机取时刻 + `jitter_min` ⇒ 比固定时刻更自然（Q14 默认 `18:00–21:30` + 15min） |
 | 幂等 | 同一 `(task_id, platform, account_id)` 的发布幂等键仍生效（§03.3.15），**调度不会重复发布** |
+| 幂等命中 | 这条任务在该平台上**早就投过** ⇒ `last_result='skipped_duplicate'`（**不是失败**，`fail_streak` 不动）：钉着已发任务的计划不该每天"失败"一次（陷阱 182） |
 | 失败 | 创建 job 失败 ⇒ 记 `warn` + `next_run_at` 顺延 1 个 tick；连续失败 ≥5 次 ⇒ `system.alert` |
 | **策略可编辑（Q14）** | 模式 / 窗口 / `jitter_min` / 平台 / 账号 / 启停 **均可在 WebUI 编辑**；`PATCH` ⇒ **同事务重算 `next_run_at`** + 写 `audit_ops`（陷阱 #33：只改参数不重算 ⇒ 不生效或立刻触发） |
 | 参数校验 | 窗口必须 `HH:MM` 且 `start < end`；`jitter_min ∈ [0,120]`；`at_time` 必须带时区；非法参数 ⇒ **400 且不落库** |

@@ -989,7 +989,7 @@ CREATE TABLE publish_schedules (
   next_run_at   TEXT,                                          -- ★ 持久化，重启不丢
   last_run_at   TEXT,
   run_count     INTEGER NOT NULL DEFAULT 0,
-  last_result   TEXT,   -- 'ok' | 'skipped_ratelimit' | 'skipped_disabled' | 'error:…'
+  last_result   TEXT,   -- 'ok' | 'skipped_ratelimit' | 'skipped_disabled' | 'skipped_duplicate' | 'error:…'
   fail_streak   INTEGER NOT NULL DEFAULT 0,                    -- ≥5 ⇒ system.alert
 
   created_by    TEXT NOT NULL DEFAULT 'user',
@@ -1013,6 +1013,10 @@ END;
 1. **到点才建 job**：调度器（30s tick）只做 `enqueue(publish/publish)`；不预先占坑，**不阻塞** worker。
 2. **定时 ≠ 免限频**：§3.4.4 的 `≤3 条/天/账号` 仍然生效；被限频 ⇒ `last_result='skipped_ratelimit'` + 顺延到下一个可用时刻（**不算失败**）。
 3. **`publish.enabled=false` 时空转**：不创建 job，记 `last_result='skipped_disabled'`（便于验证调度器本身在工作）。
+4. **幂等命中不是失败**：这条任务在该平台上**早就投过**（§03.3.15 的幂等键命中）⇒ 记
+   `last_result='skipped_duplicate'`、`fail_streak` **不动**。"作业没建出来"有两种原因 ——
+   平台/账号不可用（要人改配置）与早就投过（什么都不用做）—— 合成一个 `error:` 之后，
+   钉着已发任务的计划会每天"失败"一次，五天后拉一条告警，而那条告警淹掉的正是真故障。
 
 **窗口模式取时刻算法（默认 `daily_window`，Q14）**
 

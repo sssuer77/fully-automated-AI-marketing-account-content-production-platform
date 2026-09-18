@@ -232,7 +232,7 @@ queued ─▶ uploading ─▶ published
 | 与队列关系 | 调度器**只负责到点创建 `publish` job**；job 的认领/租约/重试全走 §03.4 —— **不占 worker 空转** |
 | 与限频关系 | **叠加**：定时 ≠ 免限频。`≤3 条/天/账号` 仍生效；被限频 ⇒ `last_result='skipped_ratelimit'` + 顺延（**不算失败**） |
 | 与开关关系 | `publish.enabled=false` 时调度器**空转**（不建 job），记 `last_result='skipped_disabled'`（便于验证调度器在工作） |
-| 幂等 | 发布幂等键（§03.3.15）仍生效 ⇒ 定时**不会**造成重复发布 |
+| 幂等 | 发布幂等键（§03.3.15）仍生效 ⇒ 定时**不会**造成重复发布；命中幂等 ⇒ `last_result='skipped_duplicate'`（**不是失败**，`fail_streak` 不动） |
 | 失败处理 | 建 job 失败 ⇒ `warn` + 顺延 1 tick；连续失败 ≥5 次 ⇒ `system.alert` |
 | **策略可编辑（Q14）** | 模式 / 窗口起止 / `jitter_min` / 平台 / 账号 / 启停 **全部可在 WebUI 编辑**，无需改配置文件；`PATCH` ⇒ **同事务重算 `next_run_at`** + 写 `audit_ops`（陷阱 #33：只改参数不重算 ⇒ 新策略不生效或立刻触发） |
 | 参数校验 | 窗口必须 `HH:MM` 且 `start < end`；`jitter_min ∈ [0,120]`；`at_time` 必须带时区；非法参数 ⇒ **400 且不落库** |

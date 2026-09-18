@@ -161,6 +161,7 @@ describe("纯函数", () => {
     expect(resultLabel("ok")).toBe("成功");
     expect(resultLabel("skipped_ratelimit")).toBe("被限频，已顺延");
     expect(resultLabel("skipped_disabled")).toBe("发布开关关着，空转");
+    expect(resultLabel("skipped_duplicate")).toBe("早就投过，没重复发");
     expect(resultLabel("error:上传超时")).toBe("失败：上传超时");
     expect(resultLabel("whatever")).toBe("whatever");
   });
@@ -222,6 +223,9 @@ describe("纯函数", () => {
     );
     expect(runText(fire({ result: "skipped_disabled", queued: 0 }))).toBe(
       "发布总开关是关的 ⇒ 空转，没建作业",
+    );
+    expect(runText(fire({ result: "skipped_duplicate", queued: 0 }))).toBe(
+      "这条任务早就投过 ⇒ 没重复发（也不用改什么）",
     );
     expect(runText(fire({ result: "error:没找到任务", queued: 0 }))).toBe("没找到任务");
     expect(runText(fire({ result: "surprise", queued: 0 }))).toBe("surprise");

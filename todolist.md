@@ -1765,6 +1765,7 @@
 - [x] 被限频 ⇒ `last_result='skipped_ratelimit'` + 顺延（**不算失败**）
 - [x] `publish.enabled=false` ⇒ 空转 + `skipped_disabled`
 - [x] 连续失败 ≥5 次 ⇒ `system.alert`（`AlertCode.SCHEDULE_FAILING`）
+- [x] **幂等命中不算失败**：这条任务在该平台上早就投过 ⇒ `last_result='skipped_duplicate'`（`fail_streak` 不动）
 - [x] REST：`GET/POST /api/v1/schedules`、`PATCH/DELETE /api/v1/schedules/{id}`、`POST .../run_now`
 - [x] WS：`publish.scheduled` / `publish.schedule_fired`
 - ✅ `pytest tests/integration/test_scheduler.py -q` ⇒ **23 passed**：①窗口模式在 `[18:00,21:30]` 内取时刻且叠加 ≤15min 抖动 ②**同 schedule + 同一天多次计算得到同一时刻** ③未到点/已停用的计划**不**被取到 ④到点 ⇒ 创建 `publish` job 且不占 worker ⑤被限频 ⇒ `skipped_ratelimit` + 顺延 ⑥`enabled=false` ⇒ `skipped_disabled` ⑦连续失败 ≥5 ⇒ 告警 ⑧增删改启停均写 `audit_ops` ⑨**非法参数被拒绝**且不落库 ⑩编辑 ⇒ **同事务重算 `next_run_at`**
@@ -1775,7 +1776,12 @@
   - 前端：`api/endpoints/schedules.ts` + `stores/schedules.ts`（15s 慢轮询）+ `views/Publish.vue` 第 ⑪ 块
     「定时计划」换成**真 UI**（列表 + 立即执行 / 启停 / 删除 + 建计划表单）
   - **表早就存在**（`0005_schedule_report.sql` 的 `publish_schedules`，含三个索引与 touch 触发器）⇒ **本轮零迁移**
-- ✅ **门禁**：`.\tasks.ps1 check` ⇒ **3890 passed / 32 skipped / 27 deselected**（+23 例）；
+- ✅ **真机**（服务重启后打真库）：`GET /api/v1/schedules` ⇒ 空清单；`POST` 建一条
+  （`other` + `_rehearsal` + 18:00–21:30）⇒ `next_run_at=2026-09-18T10:09:00Z`（= 本地 18:09，**落在窗口内**）；
+  总开关关着时 `run_now` ⇒ `skipped_disabled`；临时打开开关 ⇒ 撞幂等 ⇒ **`skipped_duplicate` + `fail_streak=0`**
+  （修之前是 `error:PUBLISH_FAILED` + `fail_streak=1`，见陷阱 182）；`DELETE` ⇒ `deleted=true` + 留痕，清单回到空。
+  **验完已把 `config/publish.yaml` 改回 `enabled: false`**
+- ✅ **门禁**：`.\tasks.ps1 check` ⇒ **3892 passed / 32 skipped / 27 deselected**（+25 例）；
   `.\tasks.ps1 web:verify` ⇒ **482 passed · dist 0.37 MB**（+31 例）
 - ⚠️ 陷阱 #29 变成「每天准点」的机器特征 ⇒ 窗口随机 + 抖动
 - ⚠️ 陷阱 #30 重启丢计划 ⇒ `next_run_at` **落库**
@@ -1800,6 +1806,9 @@
   - **331** 展示层的时间戳**必须换算**（`stampText` 用 `new Date()` + 浏览器真实偏移），不许截 UTC 字符串；
     时区取**浏览器偏移**而不是写死 `+08:00`（写死后任何一台非东八区的机器排出来的计划都会差几小时，
     而面板上显示的时刻还是对的 —— 最难查的一类）
+  - **333** **幂等命中（早就投过）不是失败**：`EnqueueReport.duplicates` 单独列出来，命中 ⇒ `skipped_duplicate`
+    且 `failed=False`。「作业没建出来」有两种原因，处置动作相反 —— 平台/账号不可用要人改配置，早就投过什么都
+    不用做；合成一个 `error:` 的代价是钉着已发任务的计划每天"失败"一次、五天后拉一条真告警（陷阱 182，真机踩到）
   - **332** **枚举的数量不进断言、不进文案**：加一个 `AlertCode` 就要改两处 `len(...) == 8` 与三处「8 值」文案，
     而文案不会自己红，只会安静地骗人（陷阱 180）
 
@@ -2118,8 +2127,10 @@ T1.12 ✅             （一键启动）
 > - **表早就有了**（`0005_schedule_report.sql` 的 `publish_schedules`）⇒ **本轮零迁移**；
 > - **前端**：面板第 ⑪ 块「定时计划」从「尚未施工」换成**真 UI**（列表 + 立即执行 / 启停 / 删除 + 建计划表单：平台 / 模式 / 窗口 / 时刻 / 间隔 / 抖动 / 任务号 / 启用），
 >   15s 慢轮询（这一块轮询的是**时间本身**，空闲也要问）；
-> - **门禁**：`.\tasks.ps1 check` ⇒ **3890 passed / 32 skipped**（+23）；`.\tasks.ps1 web:verify` ⇒ **482 passed · dist 0.37 MB**（+31）；
-> - **裁定 325–332 · 陷阱 179–181**。本轮**修掉一个真 bug**：面板把 UTC 时刻当本地时间显示（陷阱 179）；
+> - **真机**：建计划 ⇒ `next_run_at` 落在 18:00–21:30 窗口内（本地 18:09）；总开关关着 ⇒ `skipped_disabled`；
+>   打开开关 ⇒ 撞幂等 ⇒ **`skipped_duplicate` + `fail_streak=0`**（修之前是 `error:PUBLISH_FAILED` + `fail_streak=1`）；`DELETE` 带留痕；验完已把开关改回出厂值；
+> - **门禁**：`.\tasks.ps1 check` ⇒ **3892 passed / 32 skipped**（+25）；`.\tasks.ps1 web:verify` ⇒ **482 passed · dist 0.37 MB**（+31）；
+> - **裁定 325–333 · 陷阱 179–182**。本轮**修掉一个真 bug**：面板把 UTC 时刻当本地时间显示（陷阱 179）；
 > - 遗留 ⏳：`T5.7` 报告（M5 最后一块，面板仍如实标「尚未施工」）· `T5.8` 多账号（结构已就绪）· `publish.ts` 的 `formatStamp` 同款 UTC 问题（T5.5 遗留）。
 
 > **当前关键路径**：`T2.1 ✅` ⇒ `T2.2 ✅` ⇒ `T2.3 🔶`（**管子已通**，剩熔断与决策表）⇒ **`T2.4` 正式音色** ⇒ `T3.3`（时间轴 ✅，可直接开工）⇒ T3.4–T3.7 ⇒ `T4.6` 与 `T5.1` 起全部。
@@ -2303,9 +2314,10 @@ T1.12 ✅             （一键启动）
 | 177 | **没让它发，它自己发了一条**（面板上多出一条与真发布只差平台代号的记录） | 演练台（`platforms.other`）被算进**投递默认目标**：只要任务完成，投递侧就会顺手给它排一条作业 | `_default_platforms` **跳过**演练台（判据是「这个平台的发布器是不是 `REHEARSAL_PUBLISHER`」）；要演练就**显式点名** `platforms=("other",)` | T5.9 |
 | 179 | **定时面板把「下一次」显示得比它自己的窗口还早**（排 18:00–21:30 的计划写着「下一次 10:30」，两行当场自相矛盾） | 库里 / API 一律 **UTC** ISO（`…Z`，§02.4），而展示层**直接截字符串**（`ts.slice(11,16)`）⇒ 显示的是 UTC 钟点，比北京时间早 8 小时 | 展示层**必须换算**：`stampText` 用 `new Date()` + **浏览器真实偏移**（不写死 `+08:00` —— 写死后任何一台非东八区的机器排出来的计划都会差几小时，而面板上显示的时刻还是对的）。**遗留**：`stores/publish.ts` 的 `formatStamp` 仍是老写法（`next_metric_at` 会偏 8 小时） | T5.6 |
 | 180 | **给枚举加一个值，仓库里两处硬编码的断言与三处文档当场过时**（`len(AlertCode) == 8` / 「8 值」文案） | 枚举的**数量**被写进了契约测试与文档：加一个 `SCHEDULE_FAILING` ⇒ 契约红，而文案不会自己红，只会安静地骗人 | **枚举数量不进断言、不进文案**：契约测试断言具体成员（或 `>=` 下限），文档写「枚举」而不写数字。加值时全仓库搜一遍 `== 8` 与「N 值」 | T5.6 |
+| 182 | **钉着已发任务的计划每天"失败"一次，五天后拉一条真告警** —— 而那条告警淹掉的正是真故障 | 「作业没建出来」只有一种落点（`error:PUBLISH_FAILED`），可它有两种原因：**平台没启用**（要人改配置）与**这条早投过**（什么都不用做）。幂等命中被算进失败 ⇒ `fail_streak` 每天 +1 | 两种原因**分开报**：`EnqueueReport.duplicates` 单独列出来（别让调用方去猜那句中文），幂等命中 ⇒ `last_result='skipped_duplicate'` 且 `failed=False`；只有"平台/账号不可用"才落 `error:`。真机踩到 | T5.6 |
 | 181 | **`web:verify` 只回一句「npm run verify 未通过」，看不到真错**（`tasks.ps1` 抛的是自己的中文提示，npm 的输出被吞掉） | 门禁脚本为了给出人话提示，把子进程输出压掉了 ⇒ 真错（`vue-tsc` 的 5 处 TS2554）一个字都看不见 | 前端门禁红了先**绕过外层**直接跑：`cd web; cmd /c "npm run typecheck"`（再 `test` / `build`）。类型错永远排第一 —— 单测与打包都排在它后面 | T5.6 |
 | 178 | **面板 / 文档说「开关关着时投递进来的作业会转人工」，实际是死信** —— 操作员去「待人工」里找一个永远不出现的记录 | 开关守卫（`_guard_switch`）跑在**建 `publications` 那一行之前** ⇒ 既没有待人工记录、发布面板上也什么都不出现；而三处文案（路由 docstring / CLI / runbook）写的是「转人工」，§04-contracts ① 自己写的是「死信」 | 文案与**代码的真实落点**对齐：死信（去「四池调度」看）。投递面板把这句话写在**真平台选项旁边**（出厂就是这一档，不说的话按一次投递会得到「什么都没发生」） | T5.10 |
-> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 181 条见该处；跨文档引用按编号即可）。
+> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 182 条见该处；跨文档引用按编号即可）。
 
 ---
 

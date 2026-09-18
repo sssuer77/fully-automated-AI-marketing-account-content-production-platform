@@ -66,6 +66,7 @@ __all__ = [
     "LOG_SOURCE",
     "RESULT_OK",
     "RESULT_SKIPPED_DISABLED",
+    "RESULT_SKIPPED_DUPLICATE",
     "RESULT_SKIPPED_RATELIMIT",
     "SCHEDULER_BATCH_LIMIT",
     "SCHEDULER_TICK_INTERVAL_SEC",
@@ -100,10 +101,14 @@ AUDIT_UPDATE: Final[str] = "schedule.update"
 AUDIT_DISABLE: Final[str] = "schedule.disable"
 AUDIT_DELETE: Final[str] = "schedule.delete"
 
-#: ``last_result`` 的三个非错误取值（与 §04.6.5.1 的表逐字一致）。
+#: ``last_result`` 的四个非错误取值（与 §04.6.5.1 的表逐字一致）。
 RESULT_OK: Final[str] = "ok"
 RESULT_SKIPPED_RATELIMIT: Final[str] = "skipped_ratelimit"
 RESULT_SKIPPED_DISABLED: Final[str] = "skipped_disabled"
+#: 到点了，但这条任务在这个平台上**早就投过**（幂等命中）⇒ 什么都没做。
+#: 它**不是失败**：记成 ``error:…`` 的话，一个钉着已发任务的计划会每天"失败"一次，
+#: 五天后拉一条告警 —— 而那条告警淹掉的正是真故障（陷阱 182）。
+RESULT_SKIPPED_DUPLICATE: Final[str] = "skipped_duplicate"
 
 #: 日志/事件来源（面板按它过滤）。
 LOG_SOURCE: Final[str] = "publish.scheduler"
@@ -152,12 +157,19 @@ class ScheduleTickReport:
     fired: tuple[str, ...] = ()
     skipped_ratelimit: tuple[str, ...] = ()
     skipped_disabled: tuple[str, ...] = ()
+    skipped_duplicate: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
     job_ids: tuple[str, ...] = ()
 
     @property
     def due(self) -> int:
-        return len(self.fired) + len(self.skipped_ratelimit) + len(self.skipped_disabled) + len(self.errors)
+        return (
+            len(self.fired)
+            + len(self.skipped_ratelimit)
+            + len(self.skipped_disabled)
+            + len(self.skipped_duplicate)
+            + len(self.errors)
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -165,6 +177,7 @@ class ScheduleTickReport:
             "fired": list(self.fired),
             "skipped_ratelimit": list(self.skipped_ratelimit),
             "skipped_disabled": list(self.skipped_disabled),
+            "skipped_duplicate": list(self.skipped_duplicate),
             "errors": list(self.errors),
             "job_ids": list(self.job_ids),
         }
@@ -203,6 +216,7 @@ class SchedulerService:
         fired: list[str] = []
         ratelimited: list[str] = []
         disabled: list[str] = []
+        duplicated: list[str] = []
         errors: list[str] = []
         jobs: list[str] = []
         for row in self.due(now=moment, limit=limit):
@@ -214,12 +228,15 @@ class SchedulerService:
                 ratelimited.append(row.id)
             elif outcome.result == RESULT_SKIPPED_DISABLED:
                 disabled.append(row.id)
+            elif outcome.result == RESULT_SKIPPED_DUPLICATE:
+                duplicated.append(row.id)
             else:
                 errors.append(row.id)
         report = ScheduleTickReport(
             fired=tuple(fired),
             skipped_ratelimit=tuple(ratelimited),
             skipped_disabled=tuple(disabled),
+            skipped_duplicate=tuple(duplicated),
             errors=tuple(errors),
             job_ids=tuple(jobs),
         )
@@ -232,6 +249,7 @@ class SchedulerService:
                 fired=len(report.fired),
                 ratelimited=len(report.skipped_ratelimit),
                 disabled=len(report.skipped_disabled),
+                duplicated=len(report.skipped_duplicate),
                 errors=len(report.errors),
             )
         return report
@@ -279,6 +297,8 @@ class SchedulerService:
         task_id = self._resolve_task(row)
         job_ids: list[str] = []
         skipped: list[str] = []
+        duplicates: list[str] = []
+        unavailable: list[str] = []
         for platform, account in targets:
             report = enqueue_publications(
                 connection=self._connection,
@@ -301,12 +321,26 @@ class SchedulerService:
                 job_id = self._latest_job_id(task_id, platform)
                 if job_id is not None:
                     job_ids.append(job_id)
+            elif report.duplicates:
+                duplicates.extend(report.duplicates)
+            else:
+                # 平台没启用 / 这个平台没有启用的账号 —— 这一类**要人去改配置**。
+                unavailable.extend(report.skipped)
         if not job_ids:
+            if duplicates and not unavailable:
+                return self._settle(
+                    row,
+                    at=now,
+                    result=RESULT_SKIPPED_DUPLICATE,
+                    task_id=task_id,
+                    skipped=tuple(skipped),
+                    note="这条任务在这些平台上早就投过（幂等命中）—— 没有重复发，也不用改什么",
+                )
             raise StudioError(
-                f"到点了但一个作业都没建出来：{'；'.join(skipped) or '没有可投递的平台'}",
+                f"到点了但一个作业都没建出来：{'；'.join(unavailable or skipped) or '没有可投递的平台'}",
                 code=ErrorCode.PUBLISH_FAILED,
                 context={"schedule_id": row.id, "task_id": task_id, "skipped": list(skipped)},
-                remediation="多半是平台没启用、或这条任务已经投过；发布面板的投递区块能看到平台状态",
+                remediation="多半是平台没启用、或这个平台没有启用的账号；发布面板的投递区块能看到平台状态",
             )
         return self._settle(
             row,
