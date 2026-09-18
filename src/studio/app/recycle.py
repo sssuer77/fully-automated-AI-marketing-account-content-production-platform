@@ -31,6 +31,7 @@ from studio.services.publish_metrics_service import (
     MetricsTickReport,
     PublishMetricsService,
 )
+from studio.services.report_service import ReportSchedulerService, ReportTickReport
 from studio.services.scheduler_service import (
     SCHEDULER_TICK_INTERVAL_SEC,
     SchedulerService,
@@ -169,6 +170,20 @@ class SchedulePump:
         )
         return service.tick(now=now)
 
+    def report_tick(self, *, now: str | None = None) -> ReportTickReport:
+        """报告周期的一拍（T5.7 · §3.3.20：「同一个调度器 tick 处理两类计划」）。
+
+        为什么与发布计划共用这一拍：两者的节奏完全一样（精度是**天**，30s 一拍
+        已经细了三个量级），而且都要在 ``workers/`` 不在时天然不动。分开起第二个泵
+        只会多一份「起停与判据」要维护。
+        """
+        service = ReportSchedulerService(
+            connection=self._connections.get(),
+            paths=self._paths,
+            log=self._log,
+        )
+        return service.tick(now=now)
+
     async def run(self) -> None:
         while not self._stopping:
             await asyncio.sleep(self._interval)
@@ -178,6 +193,14 @@ class SchedulePump:
                 raise
             except Exception as exc:  # 一轮失败绝不能把泵掀翻（下一拍照跑）
                 logger.warning("schedule.tick_failed", error=str(exc))
+            # 报告与发布分开 try：发布失败影响产出、报告失败只影响洞察，
+            # 一边炸掉不该把另一边也带走（§3.3.20「报告失败不阻断生产」）。
+            try:
+                self.report_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("report.tick_failed", error=str(exc))
 
     def start(self) -> None:
         if self._task is not None or not self.runnable:

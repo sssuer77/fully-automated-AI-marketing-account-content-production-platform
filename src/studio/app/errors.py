@@ -95,6 +95,10 @@ HTTP_STATUS_BY_CODE: Final[Mapping[ErrorCode, int]] = {
     # 「start < end」这种跨字段关系，422 只会让人去猜哪个框是红的。
     ErrorCode.SCHEDULE_INVALID: 400,
     ErrorCode.SCHEDULE_NOT_FOUND: 404,
+    # 数据报告（T5.7）：与定时计划同一条判据 —— 周期参数是**跨字段**的
+    # （weekly 必须有 weekday），没有单个输入框可标红 ⇒ 400 而不是 422。
+    ErrorCode.REPORT_INVALID: 400,
+    ErrorCode.REPORT_NOT_FOUND: 404,
 }
 
 

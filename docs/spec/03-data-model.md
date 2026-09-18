@@ -1146,6 +1146,10 @@ END;
 - 停用某周期 ⇒ `next_run_at` 置 NULL，调度器不再取到（与 `publish_schedules` 同一套到期查询）。
 - **报告失败不阻断生产**：`fail_streak ≥ 3` 仅告警；处置等级低于 `publish` 计划（发布失败影响产出，报告失败只影响洞察）。
 - 幂等兜底：`reports` 的 `UNIQUE (period, start_date, end_date)` ⇒ 同日重复触发不会产生重复报告（真机已验证）。
+- **`next_run_at IS NULL` = 「未排期」，不是「永不触发」**（T5.7 落地时踩到，陷阱 183）：seed 里三条内置周期的
+  初值就是 NULL，而到期查询写的是 `next_run_at <= now` —— SQL 里 `NULL <= x` 恒为假，于是出厂自带的周报/月报
+  **一次都不会跑，且不报错**。调度器每拍先做一次 `_schedule_pending()`（`enabled=1 AND next_run_at IS NULL`
+  ⇒ 当场算好落库），把「新建时没排期」与「停用后清空」两种情况都收敛掉。
 
 ---
 

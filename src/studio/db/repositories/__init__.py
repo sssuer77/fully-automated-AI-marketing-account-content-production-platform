@@ -28,6 +28,12 @@ from studio.db.repositories.audit_repo import AuditRepo
 from studio.db.repositories.direction_repo import DirectionRepo
 from studio.db.repositories.feedback_repo import FeedbackItemRepo
 from studio.db.repositories.hot_repo import HotItemRepo
+from studio.db.repositories.report_repo import (
+    ReportRepo,
+    ReportRow,
+    ReportScheduleRepo,
+    ReportScheduleRow,
+)
 from studio.db.repositories.review_repo import ReviewRepo
 from studio.db.repositories.schedule_repo import SCHEDULE_MODES, ScheduleRepo, ScheduleRow
 from studio.db.repositories.script_repo import SENTENCE_COLUMNS, SavedScript, ScriptRepo
@@ -50,6 +56,10 @@ __all__ = [
     "FeedbackItemRepo",
     "HotItemRepo",
     "IngestAction",
+    "ReportRepo",
+    "ReportRow",
+    "ReportScheduleRepo",
+    "ReportScheduleRow",
     "ReviewRepo",
     "SavedScript",
     "ScheduleRepo",

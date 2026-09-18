@@ -1781,6 +1781,8 @@ class Envelope(BaseModel):
 | publish | `metrics.updated` | `publication_id,views,likes,comments,shares` | 数据回收 | 事件驱动 |
 | publish | `publish.scheduled` | `schedule_id,next_run_at,task_id,platforms` | 定时计划排定/改期（T5.6） | 事件驱动 |
 | publish | `publish.schedule_fired` | `schedule_id,job_ids` | 定时计划到点建作业（T5.6） | 事件驱动 |
+| publish | `report.generated` | `report_id,period,start,end,insights_count` | 报告生成（T5.7） | 事件驱动 |
+| publish | `report.schedule_updated` | `schedule_id,period,next_run_at,enabled` | 报告周期新建/改动（T5.7） | 事件驱动 |
 | logs | `log.appended` | `log_id,level,source,message,task_id,payload` | 任意日志写入（**先落库再广播**） | **2 Hz** + `debug` 不落库 |
 | pools | `pool.stats` | `pool,pending,blocked,claimed,succeeded,failed,dead,concurrency,running,paused,workers[]` | 5s 周期 + 变化触发 | 1 Hz |
 | pools | `pool.worker_status` | `worker_id,pool,status,current_job_id,gpu_mem_mb` | 心跳变化 | 1 Hz |
@@ -1797,9 +1799,11 @@ class Envelope(BaseModel):
 - `log_id` 是 `system_logs.id`（**不要复用 `id`**）：业务事件（`task.updated` 等）的 `id` 是实体主键，
   混用会让前端的去重/合并逻辑误伤正常事件。
 - 所有时间戳为 UTC ISO8601（`2026-09-13T04:12:33.412Z`），前端负责本地时区展示。
-- `system.alert.code` 枚举：`DISK_LOW` / `DISK_CRITICAL` / `TTS_CIRCUIT_OPEN` / `JOB_DEAD` / `POOL_AUTODEGRADED` / `PUBLISH_LOGIN_EXPIRED` / `DUP_AUDIT_WARN` / `BROLL_EMPTY` / `SCHEDULE_FAILING`。
-  （T5.6 新增 `SCHEDULE_FAILING`：定时计划连续 5 次建不出作业。T1.5 裁定 31「锁死 8 值」随之改成 9 值 ——
-  那条裁定的**目的**是让「不在枚举内 ⇒ 走 `log.appended`」这条分流成立，加第 9 个不影响它。）
+- `system.alert.code` 枚举：`DISK_LOW` / `DISK_CRITICAL` / `TTS_CIRCUIT_OPEN` / `JOB_DEAD` / `POOL_AUTODEGRADED` / `PUBLISH_LOGIN_EXPIRED` / `DUP_AUDIT_WARN` / `BROLL_EMPTY` / `SCHEDULE_FAILING` / `REPORT_FAILING`。
+  （T5.6 新增 `SCHEDULE_FAILING`：定时计划连续 5 次建不出作业。T5.7 新增 `REPORT_FAILING`（`warn`）：
+  报告周期连续 3 次生成失败 —— 它只影响洞察、不影响产出，严重度比 `SCHEDULE_FAILING` 低一档（§3.3.20）。
+  这份清单是**枚举**，**不写死数量**：T1.5 裁定 31 要的是「不在枚举内 ⇒ 走 `log.appended`」这条分流成立，
+  加减成员都不影响它（陷阱 180：数量进了断言与文案，加一个值就有两处当场过时、而文案不会自己红）。）
 
 ### 4.4.4 确认闸契约（原文 §2.2⑦ / §7.3③ · 全流程唯一人工节点）
 
@@ -1917,7 +1921,7 @@ class ApprovalDecision(StrEnum):
 - WebUI 池监控直接消费 `pools` 通道的心跳数据。
 - **不变式：行存在 ⇔ 该进程应当在跑**（T1.6 施工裁定 33）。优雅退出（`draining` 跑完当前单元）时 worker **删掉自己那行**（`HeartbeatStore.forget`）⇒ "行还在但 15s 没动静"就一定是猝死，不误报。
 - 写心跳与续 job 租约是**同一个后台脉冲线程**（T1.6 施工裁定 34）：心跳 5s、续租 `lease/3`、判超时共用一条 1s tick；**tick 异常一律吞掉继续** —— 脉冲线程死了就"看着还活着但不再续租"，比直接崩更危险。
-- `WORKER_DEAD` **不是** `system.alert.code`（§4.5.2 的告警码是**枚举**，T5.6 起为 9 值）：判死落 `system_logs` 的 `error` 行 + `payload_json.code='WORKER_DEAD'`，WS 层按"不在枚举内 ⇒ 走 `log.append`"处理（T1.6 施工裁定 39）。
+- `WORKER_DEAD` **不是** `system.alert.code`（§4.5.2 的告警码是**枚举**）：判死落 `system_logs` 的 `error` 行 + `payload_json.code='WORKER_DEAD'`，WS 层按"不在枚举内 ⇒ 走 `log.append`"处理（T1.6 施工裁定 39）。
 
 ### 4.5.2 日志事件规范（`source` 命名空间）
 
@@ -2932,7 +2936,9 @@ class ScheduleRuntime(BaseModel):
     next_run_at: str  # 持久化，重启后不丢
     last_run_at: str | None
     run_count: int
-    last_result: str | None  # 'ok' | 'skipped_ratelimit' | 'skipped_disabled' | 'skipped_duplicate' | 'error:…'
+    last_result: (
+        str | None
+    )  # 'ok' | 'skipped_ratelimit' | 'skipped_disabled' | 'skipped_duplicate' | 'error:…'
 ```
 
 | 项 | 规则 |
@@ -3037,6 +3043,28 @@ class Report(BaseModel):
 | 决策闭环 | `Insight` 经**人工确认**后写入 `config/persona.yaml` 偏好项 或 `content_directions` 权重 ⇒ 影响下轮 Planner |
 | 调度（**周期可编辑 · Q15**） | `report_schedules` 表驱动，与 `publish_schedules` 共用同一个调度器 tick。默认 seed：`weekly`（周一 09:00，回看 7 天）+ `monthly`（每月 1 日 09:00）；`daily` **默认停用**。同周期**仅允许 1 个启用**（部分唯一索引） |
 | 留痕 | `reports` 表 + `audit_ops(report.generate)`；报告文件永久保留 |
+
+**落地（T5.7 · 2026-09-18）**：`domain/report.py`（周期算术纯函数：`period_bounds` / `next_run_at` /
+`confidence_for` / 四个校验器）+ `db/repositories/report_repo.py` + `services/report_service.py`
+（一条 SQL 取 `publications ⋈ tasks ⋈ topic_candidates`，中位数等全在 Python 里算；**不调 LLM**）+
+`app/schemas/report.py` + `app/routers/reports.py`（9 端点）+ `AlertCode.REPORT_FAILING`（`warn`）+
+两条 WS 事件（`report.generated` / `report.schedule_updated`）。表在 `0005_schedule_report.sql` 里
+**早就存在** ⇒ **零迁移**。
+
+四条与规格的偏差（都是施工时的裁定，理由见 §05 的 T5.7 行）：
+
+1. **采纳写 `persona.style_hint`，不写 `content_directions.priority`** —— 后者是**历史批次**
+   （"当时为什么这么做"的证据），改它对下一轮 Planner **没有任何影响**（下一轮会重新生成一个批次），
+   表现出来就是"我点了采纳，但选题一点没变"。`style_hint` 是所有 Agent（含 Planner）每次都会读到的
+   公共输入（`agents/base.py` 的 `persona_block`），改它才是真的影响下一轮。**写入唯一正门仍是
+   `PersonaStore`**（校验 + 备份 + 留痕），不碰文件。
+2. **窗口右端 = 触发日的**前一天**，左端由 `lookback_days` 倒推**（不是 `start`/`end` 两个独立参数）——
+   今天还没过完，把它算进去只会让每份报告都偏低。
+3. **`skipped_no_data` 不是失败**：窗口里没有数据是常态（新账号、淡季），它照记 `last_result` 但不涨
+   `fail_streak`。涨了的话，一个刚上线的账号会在三周后拉出一条"报告连续失败"的告警，而那条告警淹掉的
+   正是真故障（同陷阱 182 的形状）。
+4. **`is_builtin=1` 的周期只能停用、不能删**（`delete()` 的 SQL 里写死 `AND is_builtin = 0`）——
+   删掉之后没人知道它们本来是什么，而"停用"这件事**会留痕**。
 
 **REST 契约**
 

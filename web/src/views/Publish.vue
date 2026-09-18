@@ -12,9 +12,9 @@
 // 1. **R2 提示是常驻的**，不是可关的横幅：复刻他人声音可能同时触及声音权与著作权，
 //    而"是否可商用"只有人能判断 —— 工具只负责把"缺哪一份"摆出来。
 // 2. **待人工计数在顶部**：那是这一屏唯一"要求人做决定"的地方，其余都是"看"。
-// 3. **定时计划是真接线**（T5.6）：能建、能改、能停、能立刻跑一次；每条上写着下一次
-//    什么时候触发、上一次跑成什么样。**报告那块还没施工**（T5.7）—— 它一个数字都不画，
-//    因为画一个看着像真的统计，比空着更糟。
+// 3. **定时计划与报告都是真接线**（T5.6 / T5.7）：计划能建、能改、能停、能立刻跑一次；
+//    报告能看、能采纳建议、能导出，报告周期同样能建能改。报告里的每个数字都来自后端
+//    那一条 SQL，面板不做任何估算 —— 画一个看着像真的统计，比空着更糟。
 //
 // 为什么交付包要"先预览再导出"
 // ----------------------------
@@ -40,6 +40,27 @@ import {
   useSchedulesStore,
 } from "@/stores/schedules";
 import {
+  INCLUDE_KINDS,
+  WEEKDAYS,
+  confidenceLabel,
+  confidenceTone,
+  countText,
+  includeLabel,
+  insightEvidenceText,
+  insightIsShaky,
+  insightKindLabel,
+  nextRunText as reportNextRunText,
+  periodLabel,
+  resultLabel as reportResultLabel,
+  resultTone as reportResultTone,
+  scheduleSummary as reportScheduleSummary,
+  stampText as reportStampText,
+  summaryText,
+  triggerLabel,
+  useReportsStore,
+  windowText,
+} from "@/stores/reports";
+import {
   BOARD_STATUSES,
   enqueueText,
   formatStamp,
@@ -60,16 +81,22 @@ const publish = usePublishStore();
 // 定时计划单独一个 store：它的轮询节奏与发布看板**不是一回事**（15s vs 2s，见 store 注释）。
 const schedules = useSchedulesStore();
 
+// 报告再单独一个（60s）：它看的是「到点那一刻多出一份」，比计划还慢。
+const reports = useReportsStore();
+
 onMounted(() => {
   // 进面板即接线：一次拉齐看板 + 待人工 + 合规；有活在跑时 store 自己按
   // `PUBLISH_POLL_MS` 轮询，离开面板必须停 —— 否则切走之后还在每两秒问一次后端。
   publish.start();
   // 定时计划慢轮询（15s）：它看的是**时间**，不是某个进程在忙 —— 到点了才需要重画。
   schedules.start();
+  // 报告更慢（60s）：一份报告只可能在到点那一刻多出来，问得再勤也不会早一秒。
+  reports.start();
 });
 onUnmounted(() => {
   publish.stop();
   schedules.stop();
+  reports.stop();
 });
 
 /** 一块看板（区块名 + 那几条 + 空态那句话）。 */
@@ -159,6 +186,58 @@ function onDraft(event: Event, key: string): void {
 
 function onDraftPlatform(event: Event): void {
   schedules.setDraft({ platform: (event.target as HTMLSelectElement).value });
+}
+
+// ── 报告（T5.7）────────────────────────────────────────────
+
+const reportItems = computed(() => reports.items);
+const reportDetail = computed(() => reports.detail);
+const reportInsights = computed(() => reports.insights);
+const reportDraft = computed(() => reports.draft);
+const reportEditingId = computed(() => reports.editingId);
+const reportPeriods = computed(() =>
+  reports.list !== null && reports.list.periods.length > 0
+    ? reports.list.periods
+    : ["daily", "weekly", "monthly"],
+);
+const reportSubtitle = computed(() => {
+  if (reports.loading && reportItems.value.length === 0) return "读取中";
+  const counts = reports.counts;
+  return `共 ${counts.total ?? 0} 份 · 有建议 ${counts.with_insights ?? 0} 份 · 累计采纳 ${counts.applied ?? 0} 条`;
+});
+const reportScheduleItems = computed(() => reports.scheduleItems);
+const reportScheduleSubtitle = computed(() => {
+  const counts = reports.scheduleCounts;
+  const failing = counts.failing ?? 0;
+  return (
+    `共 ${counts.total ?? 0} 条 · 启用 ${counts.enabled ?? 0} 条 · 出厂自带 ${counts.builtin ?? 0} 条` +
+    (failing > 0 ? ` · 连续失败 ${failing} 条` : "")
+  );
+});
+
+/** 报告落盘的那一份（后端可能没写盘 ⇒ 空串，那一行就不占屏）。 */
+const reportArtifact = computed<string>(() => reportDetail.value?.artifacts?.[0] ?? "");
+
+function reportBusy(scheduleId: string): boolean {
+  return reports.busyId === scheduleId;
+}
+
+/** 「现在生成」用哪个周期（与下面表单里那条周期**互不影响**）。 */
+function onReportPeriod(event: Event): void {
+  reports.period = (event.target as HTMLSelectElement).value;
+}
+
+/** 表单里任意一个输入框 -> store（`checkbox` 取 `checked`，数字框转成数字）。 */
+function onReportDraft(event: Event, key: string): void {
+  const target = event.target as HTMLInputElement;
+  const raw = target.type === "checkbox" ? target.checked : target.value;
+  const numeric = key === "weekday" || key === "dayOfMonth" || key === "lookbackDays";
+  reports.setDraft({ [key]: numeric ? Number(raw) : raw } as never);
+}
+
+/** 换周期（回看天数跟着走：weekly 改成 daily 还带着 7 天是错的）。 */
+function onReportPeriodPick(event: Event): void {
+  reports.setPeriod((event.target as HTMLSelectElement).value);
 }
 
 function onCancelReason(publication: Publication): void {
@@ -760,11 +839,290 @@ function onCancelReason(publication: Publication): void {
       </p>
     </PanelCard>
 
-    <PanelCard title="报告" subtitle="T5.7 · 尚未施工">
+    <!-- ⑫ 报告（T5.7）：看 / 采纳 / 导出 / 周期可编辑 -->
+    <PanelCard title="报告" :subtitle="reportSubtitle">
+      <template #actions>
+        <AppButton size="sm" :loading="reports.loading" @click="reports.refresh()">刷新</AppButton>
+      </template>
+
+      <p v-if="reports.error" class="alert alert--error">{{ reports.error }}</p>
+      <p v-else-if="reports.notice" class="alert alert--ok">{{ reports.notice }}</p>
+
+      <div class="form">
+        <label class="f">
+          <span class="f__key">周期</span>
+          <select class="field" :value="reports.period" @change="onReportPeriod">
+            <option v-for="item in reportPeriods" :key="item" :value="item">
+              {{ periodLabel(item) }}
+            </option>
+          </select>
+        </label>
+        <AppButton
+          size="sm"
+          variant="primary"
+          :loading="reports.generating"
+          @click="reports.generate()"
+        >
+          现在生成一份
+        </AppButton>
+        <span class="row__note">同一个窗口已经有一份 ⇒ 直接给你那一份，不会重复插入</span>
+      </div>
+
+      <ul v-if="reportItems.length > 0" class="rows">
+        <li
+          v-for="row in reportItems"
+          :key="row.id"
+          class="row row--stack"
+          :class="{ 'row--picked': row.id === reports.selectedId }"
+        >
+          <div class="row__head">
+            <span class="row__title">{{ periodLabel(row.period) }}</span>
+            <span class="row__mono mono">{{ windowText(row.start_date, row.end_date) }}</span>
+            <span class="row__spacer" />
+            <span class="row__mono mono">{{ triggerLabel(row.trigger) }}</span>
+            <span class="row__note">{{ reportStampText(row.generated_at) }}</span>
+          </div>
+          <p class="row__sub">{{ summaryText(row) }}</p>
+          <div class="row__actions">
+            <AppButton size="sm" @click="reports.select(row.id)">看这一份</AppButton>
+          </div>
+        </li>
+      </ul>
       <EmptyState
-        title="这块还没接线"
-        hint="后端目前没有报告相关的端点（tests/integration/test_reports.py 也不存在）。上面「数据回流」里的数字是这条链路目前唯一能看到的统计，它来自发布记录本身，不是报告模块。"
+        v-else
+        title="还没有报告"
+        hint="上面那行就是生成一份的地方。报告只统计**已发布**的记录 —— 还没投出去的任务不会出现在任何数字里，这是故意的：把未发布的算进去，中位数就成了自己编的。"
       />
+
+      <div v-if="reportDetail" class="report">
+        <div class="row__head">
+          <span class="row__title">
+            {{ periodLabel(reportDetail.period) }} ·
+            <span class="mono">{{ windowText(reportDetail.start_date, reportDetail.end_date) }}</span>
+          </span>
+          <span class="row__spacer" />
+          <span class="row__mono mono">
+            任务 {{ reportDetail.task_count }} · 发布 {{ reportDetail.publish_count }} ·
+            中位播放 {{ countText(reportDetail.median_views) }} ·
+            建议 {{ reportDetail.insights_count }} 条
+          </span>
+        </div>
+        <div class="row__actions">
+          <AppButton
+            size="sm"
+            :disabled="reportBusy(reportDetail.id)"
+            @click="reports.download('md')"
+          >
+            导出 Markdown
+          </AppButton>
+          <AppButton
+            size="sm"
+            :disabled="reportBusy(reportDetail.id)"
+            @click="reports.download('csv')"
+          >
+            导出 CSV
+          </AppButton>
+          <span v-if="reportArtifact !== ''" class="row__note mono">落盘 {{ reportArtifact }}</span>
+        </div>
+
+        <ul v-if="reportInsights.length > 0" class="rows">
+          <li v-for="(insight, index) in reportInsights" :key="index" class="row row--stack">
+            <div class="row__head">
+              <StatusDot
+                :tone="confidenceTone(insight.confidence)"
+                :label="`置信度${confidenceLabel(insight.confidence)}`"
+              />
+              <span class="row__title">{{ insightKindLabel(insight.kind) }}</span>
+              <span class="row__spacer" />
+              <span class="row__mono mono">{{ insightEvidenceText(insight) }}</span>
+            </div>
+            <p class="row__sub">{{ insight.statement }}</p>
+            <p v-if="insightIsShaky(insight)" class="alert alert--warn">
+              样本不足，仅供参考 —— 这条结论的证据不到 10 条，别照它改风格。后端也把它写进了上面那句话。
+            </p>
+            <p class="row__sub">建议动作：{{ insight.suggested_action }}</p>
+            <div class="row__actions">
+              <AppButton
+                size="sm"
+                :variant="insight.applied ? 'ghost' : 'primary'"
+                :loading="reports.applyingIndex === index"
+                :disabled="insight.applied"
+                @click="reports.apply(index)"
+              >
+                {{ insight.applied ? "已采纳（写进人物偏好）" : "采纳 ⇒ 写进人物偏好" }}
+              </AppButton>
+            </div>
+          </li>
+        </ul>
+        <EmptyState
+          v-else
+          title="这份报告没有建议"
+          hint="只有「有对比且相对差 ≥10%」的维度才会出一条建议。一条建议都没有，说明这个窗口里的数据还看不出差别 —— 那不是坏消息。"
+        />
+
+        <details class="more">
+          <summary>报告正文（Markdown 原文）</summary>
+          <pre class="md mono">{{ reportDetail.summary_md }}</pre>
+        </details>
+      </div>
+
+      <h4 class="sub">报告周期</h4>
+      <p class="row__sub">{{ reportScheduleSubtitle }}</p>
+
+      <ul v-if="reportScheduleItems.length > 0" class="rows">
+        <li v-for="row in reportScheduleItems" :key="row.id" class="row row--stack">
+          <div class="row__head">
+            <StatusDot
+              :tone="reportResultTone(row.last_result)"
+              :label="reportResultLabel(row.last_result)"
+            />
+            <span class="row__title">{{ periodLabel(row.period) }}</span>
+            <span v-if="row.is_builtin" class="row__note">出厂自带</span>
+            <span v-if="!row.enabled" class="row__note">已停用</span>
+            <span class="row__spacer" />
+            <span class="row__mono mono">{{ row.tz }}</span>
+          </div>
+          <p class="row__sub">{{ reportScheduleSummary(row) }}</p>
+          <p class="row__sub">
+            下一次 <span class="mono">{{ reportNextRunText(row) }}</span> ·
+            上次 <span class="mono">{{ reportStampText(row.last_run_at) }}</span>
+            <template v-if="row.fail_streak > 0">
+              · <strong>连续失败 {{ row.fail_streak }} 次</strong>
+            </template>
+          </p>
+          <p class="row__sub">
+            正文区块：<span class="mono">{{ row.include.map(includeLabel).join(" / ") }}</span>
+          </p>
+          <div class="row__actions">
+            <AppButton size="sm" :disabled="reportBusy(row.id)" @click="reports.runSchedule(row)">
+              立即生成一次
+            </AppButton>
+            <AppButton size="sm" :disabled="reportBusy(row.id)" @click="reports.openEdit(row)">
+              编辑
+            </AppButton>
+            <AppButton size="sm" :disabled="reportBusy(row.id)" @click="reports.toggleSchedule(row)">
+              {{ row.enabled ? "停用" : "启用" }}
+            </AppButton>
+            <AppButton
+              size="sm"
+              variant="danger"
+              :disabled="reportBusy(row.id) || row.is_builtin"
+              @click="reports.removeSchedule(row)"
+            >
+              删除
+            </AppButton>
+          </div>
+        </li>
+      </ul>
+      <EmptyState
+        v-else
+        title="还没有报告周期"
+        hint="下面那张表就是建一条的地方。出厂自带的三条（周报 / 月报 / 日报）已经在库里，看不到就点一下「刷新」。"
+      />
+
+      <div class="form">
+        <label class="f">
+          <span class="f__key">周期</span>
+          <select class="field" :value="reportDraft.period" @change="onReportPeriodPick">
+            <option v-for="item in reportPeriods" :key="item" :value="item">
+              {{ periodLabel(item) }}
+            </option>
+          </select>
+        </label>
+
+        <label v-if="reportDraft.period === 'weekly'" class="f">
+          <span class="f__key">星期几</span>
+          <select
+            class="field"
+            :value="String(reportDraft.weekday)"
+            @change="onReportDraft($event, 'weekday')"
+          >
+            <option v-for="(day, index) in WEEKDAYS" :key="day" :value="String(index)">
+              {{ day }}
+            </option>
+          </select>
+        </label>
+
+        <label v-else-if="reportDraft.period === 'monthly'" class="f">
+          <span class="f__key">每月第几天</span>
+          <input
+            class="field mono"
+            type="number"
+            min="1"
+            max="28"
+            :value="reportDraft.dayOfMonth"
+            @change="onReportDraft($event, 'dayOfMonth')"
+          />
+        </label>
+
+        <label class="f">
+          <span class="f__key">生成时刻</span>
+          <input
+            class="field mono"
+            type="time"
+            :value="reportDraft.atTime"
+            @change="onReportDraft($event, 'atTime')"
+          />
+        </label>
+
+        <label class="f">
+          <span class="f__key">回看天数</span>
+          <input
+            class="field mono"
+            type="number"
+            min="1"
+            max="366"
+            :value="reportDraft.lookbackDays"
+            @change="onReportDraft($event, 'lookbackDays')"
+          />
+        </label>
+
+        <label class="check">
+          <input
+            type="checkbox"
+            :checked="reportDraft.enabled"
+            @change="onReportDraft($event, 'enabled')"
+          />
+          <span>{{ reportEditingId === null ? "建好就启用" : "保持启用" }}</span>
+        </label>
+      </div>
+
+      <ul class="checks">
+        <li v-for="kind in INCLUDE_KINDS" :key="kind" class="checks__item">
+          <label class="check">
+            <input
+              type="checkbox"
+              :checked="reportDraft.include.includes(kind)"
+              @change="reports.toggleInclude(kind)"
+            />
+            <span>{{ includeLabel(kind) }}<span class="row__mono mono"> · {{ kind }}</span></span>
+          </label>
+        </li>
+      </ul>
+
+      <div class="row__actions">
+        <AppButton
+          size="sm"
+          variant="primary"
+          :loading="reports.saving"
+          @click="reports.saveDraft()"
+        >
+          {{ reportEditingId === null ? "建这条周期" : "保存改动" }}
+        </AppButton>
+        <AppButton v-if="reportEditingId !== null" size="sm" @click="reports.cancelEdit()">
+          取消编辑
+        </AppButton>
+      </div>
+
+      <p class="hint">
+        到点只做一件事：<strong>把上一段窗口的数字算成一份报告</strong>。窗口右端是
+        <strong>触发日的前一天</strong>（今天还没过完，把它算进去只会让每份报告都偏低），
+        左端由「回看天数」倒推。同一个窗口不会生成第二份 —— 想重算就换一个窗口。
+        采纳一条建议会写进<strong>人物偏好</strong>（<span class="mono">style_hint</span>），
+        下一轮 Planner 就会读到它；<span class="mono">content_directions</span>
+        是历史批次，改它对下一轮没有任何影响，所以采纳**不动它**。出厂自带的三条周期
+        只能停用、不能删（删掉之后没人知道它们本来是什么）。
+      </p>
     </PanelCard>
   </div>
 </template>
@@ -994,6 +1352,39 @@ function onCancelReason(publication: Publication): void {
   color: var(--text-inverse);
   font-size: var(--text-xs);
   background: var(--warn);
+  border-radius: var(--radius-sm);
+}
+
+.row--picked {
+  border-left: 2px solid var(--ok);
+  padding-left: var(--space-2);
+}
+
+.report {
+  padding: var(--space-3);
+  margin-top: var(--space-3);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.sub {
+  margin-top: var(--space-4);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+
+.md {
+  max-height: 420px;
+  padding: var(--space-2) var(--space-3);
+  margin-top: var(--space-2);
+  overflow: auto;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
 }
 

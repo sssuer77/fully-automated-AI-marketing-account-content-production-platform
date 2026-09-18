@@ -174,6 +174,13 @@ class ErrorCode(StrEnum):
     SCHEDULE_INVALID = "SCHEDULE_INVALID"
     SCHEDULE_NOT_FOUND = "SCHEDULE_NOT_FOUND"
 
+    # ── 数据报告（T5.7 · §03.3.19 / §06.7）─────────────────────
+    #: 报告周期参数非法（weekly 缺 weekday、monthly 的 day_of_month 越界…）。
+    #: 与 ``SCHEDULE_INVALID`` 同样是 **400**，但码分开：排障时
+    #: 「是发布计划写错了还是报告周期写错了」是两个去处。
+    REPORT_INVALID = "REPORT_INVALID"
+    REPORT_NOT_FOUND = "REPORT_NOT_FOUND"
+
     # ── 输入源与选题池（T1.9 · §04.1.2 / §04.1.3 / §04.1.7）─────
     INPUT_SOURCE_EMPTY = "INPUT_SOURCE_EMPTY"
     INPUT_PARSE_FAILED = "INPUT_PARSE_FAILED"

@@ -61,6 +61,10 @@ class AlertCode(StrEnum):
     #: 「这个计划连着 5 拍都没能把作业建出来」—— 前者的处置是重投那一条作业，
     #: 后者是去查这个计划的平台/账号/配置。合成一个码，两种处置就分不出来了。
     SCHEDULE_FAILING = "SCHEDULE_FAILING"
+    #: 报告周期连续失败（T5.7 · §03.3.20：「fail_streak ≥3 ⇒ system.alert」）。
+    #: 严重度比 ``SCHEDULE_FAILING`` 低一档（``warn``）：报告失败只影响洞察，
+    #: 发布失败影响产出 —— 两件事的处置等级本来就不同（§3.3.20 的「不阻断生产」）。
+    REPORT_FAILING = "REPORT_FAILING"
 
 
 #: 告警码 → 落 ``system_logs.level`` 的级别（一处定义，禁止各处硬编码）。
@@ -74,6 +78,7 @@ ALERT_SEVERITY: Final[Mapping[AlertCode, AlertSeverity]] = {
     AlertCode.DUP_AUDIT_WARN: "warn",
     AlertCode.BROLL_EMPTY: "warn",
     AlertCode.SCHEDULE_FAILING: "error",
+    AlertCode.REPORT_FAILING: "warn",
 }
 
 
@@ -114,6 +119,9 @@ class EventKind(StrEnum):
     METRICS_UPDATED = "metrics.updated"
     PUBLISH_SCHEDULED = "publish.scheduled"
     PUBLISH_SCHEDULE_FIRED = "publish.schedule_fired"
+    # report
+    REPORT_GENERATED = "report.generated"
+    REPORT_SCHEDULE_UPDATED = "report.schedule_updated"
     # logs / pools / metrics / system / control
     LOG_APPENDED = "log.appended"
     POOL_STATS = "pool.stats"

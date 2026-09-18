@@ -1,6 +1,6 @@
 # 施工 Todolist · AI 全自动营销号制片台
 
-> 依据：`docs/spec/`（**v3.2 终版 · 需求已冻结**）｜ 生成日期：2026-09-13 ｜ 最近更新：2026-09-17（**T4.8 补正：面板与出片合成一个真相源 + 停用真的生效 ✅**）（**T1.1–T1.12 全部 ✅** + **T4 已完成 14/14（T4 齐了）**：T4.1 前端脚手架 ✅ · T4.2 总览台 ✅ · T4.3 选题面板 ✅ · T4.4 稿件面板 + 确认闸 ✅ · **T4.6 渲染面板 ✅** · T4.7 合成配置面板 ✅ · **T4.8 素材库 ✅** · T4.9 实时日志 ✅ · T4.10 四池调度控制台 ✅ · T4.11 无人值守 ✅ · T4.12 观测/备份/交付 ✅ · T4.13 人物库面板 ✅ · **T4.5 配音面板 ✅** · **T4.14 四屏端到端串联 ✅**（T4 14/14 齐）** + **T2.5 文本归一化与切分 ✅（2026-09-15）** + **T2.6 按句合成流水线 + 句级缓存 ✅（2026-09-16）** + **T2.7 时长时间轴 ✅（2026-09-16）** + **T2.8 配音阶段编排与降级演练 ✅（2026-09-16）** + **T2.9 配音服务化操作接口 ✅（2026-09-16）** + **T4.5 配音面板 ✅（2026-09-16）** + **T4.14 四屏端到端串联 ✅（2026-09-16）** + **T5.2 发布适配层与 profile ✅（2026-09-16）**）
+> 依据：`docs/spec/`（**v3.2 终版 · 需求已冻结**）｜ 生成日期：2026-09-13 ｜ 最近更新：2026-09-18（**T5.7 数据报告与决策闭环 ✅ —— M5 只剩多账号**）（**T1.1–T1.12 全部 ✅** + **T4 已完成 14/14（T4 齐了）**：T4.1 前端脚手架 ✅ · T4.2 总览台 ✅ · T4.3 选题面板 ✅ · T4.4 稿件面板 + 确认闸 ✅ · **T4.6 渲染面板 ✅** · T4.7 合成配置面板 ✅ · **T4.8 素材库 ✅** · T4.9 实时日志 ✅ · T4.10 四池调度控制台 ✅ · T4.11 无人值守 ✅ · T4.12 观测/备份/交付 ✅ · T4.13 人物库面板 ✅ · **T4.5 配音面板 ✅** · **T4.14 四屏端到端串联 ✅**（T4 14/14 齐）** + **T2.5 文本归一化与切分 ✅（2026-09-15）** + **T2.6 按句合成流水线 + 句级缓存 ✅（2026-09-16）** + **T2.7 时长时间轴 ✅（2026-09-16）** + **T2.8 配音阶段编排与降级演练 ✅（2026-09-16）** + **T2.9 配音服务化操作接口 ✅（2026-09-16）** + **T4.5 配音面板 ✅（2026-09-16）** + **T4.14 四屏端到端串联 ✅（2026-09-16）** + **T5.2 发布适配层与 profile ✅（2026-09-16）**）
 > 本文件是**唯一施工执行入口**：把规格书里 50 个原子任务拆成可勾选的子项。
 > 规格书回答"**为什么这样做**"，本文件回答"**现在做什么、怎么算做完**"。
 
@@ -1772,7 +1772,7 @@
 - **落地清单**：
   - 后端：`domain/schedule.py`（时刻算术纯函数）+ `db/repositories/schedule_repo.py` +
     `services/scheduler_service.py` + `app/schemas/schedule.py` + `app/routers/schedules.py`（5 端点）+
-    `app/recycle.py` 的 `SchedulePump`（30s）；`AlertCode.SCHEDULE_FAILING`（枚举 8 ⇒ 9 值）+ 两条 WS 事件
+    `app/recycle.py` 的 `SchedulePump`（30s）；`AlertCode.SCHEDULE_FAILING`（枚举加一个成员）+ 两条 WS 事件
   - 前端：`api/endpoints/schedules.ts` + `stores/schedules.ts`（15s 慢轮询）+ `views/Publish.vue` 第 ⑪ 块
     「定时计划」换成**真 UI**（列表 + 立即执行 / 启停 / 删除 + 建计划表单）
   - **表早就存在**（`0005_schedule_report.sql` 的 `publish_schedules`，含三个索引与 touch 触发器）⇒ **本轮零迁移**
@@ -1812,22 +1812,74 @@
   - **332** **枚举的数量不进断言、不进文案**：加一个 `AlertCode` 就要改两处 `len(...) == 8` 与三处「8 值」文案，
     而文案不会自己红，只会安静地骗人（陷阱 180）
 
-### T5.7 数据报告与决策闭环 · **P0**（★D9 + Q15）
+### T5.7 数据报告与决策闭环 · **P0**（★D9 + Q15）· **已交付 2026-09-18**
 - 依赖：T5.4 ｜ 里程碑：M5 ｜ 契约：**§03.3.19 / §03.3.20 / §04.6.5.2 / §06.7**
-- [ ] `services/report_service.py`：**纯 SQL 聚合 + 规则归因**（**不调 LLM**）
-- [ ] 七维归因：①选题类型 ②发布时段 ③平台 ④时长 ⑤稿件评分 ⑥TTS 质量 ⑦成本
-- [ ] 产物：`summary_md`（模板渲染）+ `data_json`（图表）+ `insights_json` + `artifacts_json` + `coverage_json`
-- [ ] `insights` 置信度：`n<10` ⇒ `low`（**必须**标注"样本不足"）/ `10–29` ⇒ `medium` / `≥30` ⇒ `high`
-- [ ] **周期可编辑（Q15）**：`report_schedules` CRUD；`period`/`weekday`/`day_of_month`/`at_time`/`tz`/`lookback_days`/`include`/`enabled`
-- [ ] **同周期仅 1 个启用**（部分唯一索引）；`is_builtin=1` **不可删、只能停用**
-- [ ] 编辑 ⇒ 重算 `next_run_at` + `audit_ops`
-- [ ] **决策闭环**：`POST /api/v1/reports/{id}/insights/{idx}/apply` ⇒ 写入 persona 偏好项 / `content_directions` 权重 ⇒ **影响下轮 Planner**，写 `audit_ops(action='report.apply_insight')`
-- [ ] `GET /api/v1/reports/{id}/export?format=md|csv`
-- [ ] WS：`report.generated` / `report.schedule_updated`
-- ✅ `pytest tests/integration/test_reports.py -q`：①周报含 `summary_md` + `data_json` + `insights` ②**同周期重复生成不重复插入** ③`n<10` ⇒ `confidence='low'` 且 WebUI 强制显示"样本不足" ④`apply` ⇒ 写入 persona/方向权重 + `audit_ops` ⑤**闭环**：采纳后下轮 Planner 的 `grounded_on` 可见该偏好 ⑥非法 `period` 被 CHECK 拒绝 ⑦**周期编辑** ⇒ `next_run_at` 重算 + `audit_ops` ⑧**同周期仅 1 个启用** ⑨停用 ⇒ 不再被到期查询取到
+- [x] `services/report_service.py`：**纯 SQL 聚合 + 规则归因**（**不调 LLM**）
+- [x] 五维归因 + 两项：①选题类型 ②发布时段 ③平台 ④时长 ⑤稿件评分 ⑥TTS 质量 ⑦成本
+- [x] 产物：`summary_md`（模板渲染）+ `data_json` + `insights_json` + `artifacts_json` + `coverage_json`
+- [x] `insights` 置信度：`n<10` ⇒ `low`（**必须**标注"样本不足"）/ `10–29` ⇒ `medium` / `≥30` ⇒ `high`
+- [x] **周期可编辑（Q15）**：`report_schedules` CRUD；`period`/`weekday`/`day_of_month`/`at_time`/`tz`/`lookback_days`/`include`/`enabled`
+- [x] **同周期仅 1 个启用**（部分唯一索引）；`is_builtin=1` **不可删、只能停用**
+- [x] 编辑 ⇒ 重算 `next_run_at` + `audit_ops`
+- [x] **决策闭环**：`POST /api/v1/reports/{id}/insights/{idx}/apply` ⇒ 写入 persona 偏好项 ⇒ **影响下轮 Planner**，写 `audit_ops(action='report.apply_insight')`
+- [x] `GET /api/v1/reports/{id}/export?format=md|csv`
+- [x] WS：`report.generated` / `report.schedule_updated`
+- ✅ `pytest tests/integration/test_reports.py -q` ⇒ **29 passed**：①周报含 `summary_md` + `data_json` + `insights` ②**同周期重复生成不重复插入** ③`n<10` ⇒ `confidence='low'` 且面板强制显示"样本不足" ④`apply` ⇒ 写入 persona + `audit_ops` ⑤**闭环**：采纳后 `persona_variables(...)['style_hint']` 含该结论 ⑥非法 `period` 被 CHECK 拒绝 ⑦**周期编辑** ⇒ `next_run_at` 重算 + `audit_ops` ⑧**同周期仅 1 个启用** ⑨停用 ⇒ 不再被到期查询取到；外加：幂等再点、结论只留 5 条、越界 index、内置不可删、到点生成、**补排期**、无数据空转、连败告警、`run_now`、导出 md+csv、WS 事件、REST roundtrip、400/422 边界
 - ⚠️ 陷阱 #31 报告被当"结论"直接改生产策略 ⇒ `insights` **必须人工采纳**（**不自动改配置**）
 - ⚠️ 陷阱 #32 报告烧钱 ⇒ **不调 LLM**（纯 SQL）
 - ⚠️ 采纳不可追溯 ⇒ `audit_ops` 记 `before/after`
+- ⚠️ 陷阱 #183 内置周期 `next_run_at` 初值为 NULL ⇒ 调度器每拍先补排期（否则出厂自带的周报**一次都不会跑**）
+- ⚠️ 陷阱 #184 枚举数量进了断言与文案 ⇒ 加 `REPORT_FAILING` 让两处契约测试与两处文档当场过时（同陷阱 180）
+
+**落地清单**
+
+| 层 | 文件 | 内容 |
+| --- | --- | --- |
+| 领域 | `domain/report.py` | `period_bounds`（右端 = 触发日**前一天**）/ `next_run_at`（逐日扫 400 天）/ `confidence_for` / 四个校验器 |
+| 仓储 | `db/repositories/report_repo.py` | `ReportRepo`（`get`/`require`/`find_period`/`list_recent`/`create`/`mark_applied`）+ `ReportScheduleRepo`（含 `delete()` 里写死 `AND is_builtin = 0`） |
+| 服务 | `services/report_service.py` | `build_report`（**一条 SQL**，中位数等在 Python 算）+ `_build_insights`（只出「有对比且相对差 ≥10%」的）+ `report_markdown` + `generate_report`（幂等 / 落盘 / 留痕 / 发事件）+ `apply_insight`（写 `persona.style_hint`）+ `export_report` + `ReportSchedulerService`（`tick` 含 `_schedule_pending`）+ 周期 CRUD |
+| 接口 | `app/routers/reports.py` | **9 端点**：`GET|POST /api/v1/reports`、`GET /reports/{id}`、`POST .../insights/{idx}/apply`、`GET .../export`、`GET|POST /report-schedules`、`PATCH|DELETE /report-schedules/{id}`、`POST .../run_now` |
+| 契约 | `core/proto.py` · `ws/protocol.py` | `AlertCode.REPORT_FAILING`（`warn`）+ `report.generated` / `report.schedule_updated`（均进 `Channel.PUBLISH`） |
+| 编排 | `app/recycle.py` | `SchedulePump.report_tick()` —— **第二个独立 try**（发布失败影响产出，报告失败只影响洞察，一边炸不能带走另一边） |
+| 前端 | `api/endpoints/reports.ts` · `stores/reports.ts` · `views/Publish.vue` ⑫ | 10 个 API 函数 + 60s 慢轮询 store + 报告列表 / 详情 / 建议卡片（含采纳与「样本不足」警示）/ 导出 / 周期编辑表单 |
+
+**真机读数（2026-09-18 · 六进程全 ready）**
+
+- `POST /api/v1/reports/generate {period:"daily", start:"2026-09-18", end:"2026-09-18"}` ⇒
+  `01M2T9MDBZF9XKCDCZF2AF94GH`，`publish_count=1` / `median_views=128524` / 落盘
+  `data/output/reports/daily_2026-09-18_2026-09-18.md`；**再发一次 ⇒ 同一个 id**（幂等，`counts.total=1`）；
+- `POST /api/v1/report-schedules/rsched_weekly/run_now` ⇒ `ok` + `01M2T9MZ8TJF5YZ9C0YKG6P567`（`weekly 2026-09-11~2026-09-17`）；
+- `GET /api/v1/reports/{id}/export?format=csv` ⇒ 200 + `Content-Disposition: attachment; filename="daily_2026-09-18_2026-09-18.csv"` + `text/csv`；
+- `GET /api/v1/report-schedules` ⇒ seed 三条（周报/月报启用、日报停用），`next_run_at` 起初为 `null`，
+  **api 起来跑一拍后自动补上**（`2026-09-21T01:00:00Z` / `2026-10-01T01:00:00Z`）；
+- `PATCH {enabled:true}` ⇒ 当场算出 `2026-09-19T01:00:00Z`；`{enabled:false}` ⇒ 置回 `null`；验完已复原；
+- `DELETE /api/v1/report-schedules/rsched_weekly` ⇒ **400 `REPORT_INVALID`**「『weekly』是内置周期，不能删，只能停用」+ `remediation`；
+- 面板第 ⑫ 块目视：三条建议卡片（置信度低/高/中三色灯、`n=4` 那条强制显示「样本不足，仅供参考」、已采纳的按钮禁用）、
+  周期三条（`已生成` 绿灯 / `窗口里没数据` 黄灯 / `失败：数据库锁住了` 红灯 + 连续失败 3 次），内置行的「删除」按钮置灰。
+
+**施工裁定（334–340）**
+
+- **334** **采纳写 `persona.style_hint`，不写 `content_directions.priority`**：后者是**历史批次**
+  （"当时为什么这么做"的证据），下一轮 Planner 会重新生成一个批次 ⇒ 改上一批的 priority 对下一轮
+  **没有任何影响**。表现出来就是"我点了采纳，但选题一点没变"—— 那是最坏的一类假闭环。
+  `style_hint` 是**所有 Agent（含 Planner）每次都会读到**的公共输入（`agents/base.py` 的 `persona_block`）。
+- **335** **只统计已发布记录**：把未发布的算进中位数，那个数字就是自己编的。面板空态把这句话写出来。
+- **336** **窗口右端 = 触发日的**前一天**，左端由 `lookback_days` 倒推**：今天还没过完，算进去每份报告都偏低。
+- **337** **`is_builtin=1` 只能停用、不能删**（`delete()` 的 SQL 里写死 `AND is_builtin = 0`）：删掉之后
+  没人知道它们本来是什么，而"停用"**会留痕**。
+- **338** **导出走 `apiDownload` 而不是 `apiGet`**：导出要的是一个**文件**（带 `Content-Disposition`），
+  前端自己拼文件名的话，那份"拼出来的名字"与服务器实际写的那一份迟早分家 —— 而没有任何地方会报错。
+- **339** **`skipped_no_data` 不是失败**：窗口里没数据是常态（新账号 / 淡季），照记 `last_result` 但**不涨**
+  `fail_streak`。涨了的话，一个刚上线的账号会在三周后拉出一条"报告连续失败"的告警，而它淹掉的正是真故障（同陷阱 182）。
+- **340** **`REPORT_FAILING` 的严重度是 `warn`**（比 `SCHEDULE_FAILING` 的 `error` 低一档）：报告失败只影响
+  洞察，发布失败影响产出 —— 两件事的处置等级本来就不同（§3.3.20「不阻断生产」）。
+
+**新增陷阱**
+
+| # | 现象 | 根因 | 正确做法 | 关联 |
+| --- | --- | --- | --- | --- |
+| 183 | **出厂自带的周报 / 月报一次都不会跑，而且不报错** | seed 里三条内置周期的 `next_run_at` 初值全是 NULL，而到期查询写的是 `next_run_at <= now` —— SQL 里 `NULL <= x` **恒为假** | 把 `NULL` 读成「未排期」而不是「永不触发」：调度器每拍先 `_schedule_pending()`（`enabled=1 AND next_run_at IS NULL` ⇒ 当场算好落库）。它同时覆盖「新建时没排期」与「停用后被清空」两种情况 | T5.7 |
+| 184 | **加一个枚举值，两处契约测试与两处文档当场过时** | 陷阱 180 的同一个坑再咬一次：T5.6 记下"枚举数量不进断言、不进文案"之后，仓库里仍有 `len(AlertCode) == 9` 与两处「9 值」文案 | 契约测试改成 `>= 9` 下限（**数量不是它要守的东西** —— 它守的是"猝死不升格为告警"）；文档只写「枚举」。加值前先 `rg "== 9|9 值"` | T5.7 |
 
 ### T5.8 多账号支持与合规留档 · **P1**（★D1）
 - 依赖：T5.3, T5.5 ｜ 里程碑：M5 ｜ 契约：§06.2.4 / §06.9
@@ -1953,7 +2005,7 @@ uv run pytest tests/integration/test_scheduler.py tests/integration/test_reports
 | **M2** | 一句话用熊大音色读出；杀进程重启后已完成句**引擎调用为 0**；网页可见逐句进度 | T2.1–T2.9 | [ ] |
 | **M3** | 换稿不重剪（**同素材 + 同水印，换稿件直接出片**）；网页一键出新片并在线预览；水印/响度/相似度门禁通过 | T3.1–T3.7 | [ ] |
 | **M4** | ≥3 篇同时推进；中断后恢复；连续 24h 无人干预；全程网页操作 | T4.1–T4.12 | [ ] |
-| **M5** | 成片**定时/即时**自动发布（≥1 平台）+ 数据回流 + **报告生成与决策采纳** + 记忆沉淀闭环 | T5.1–T5.10 | [ ] **定时发布已通（T5.6）**，剩 T5.7 报告 / T5.8 多账号 |
+| **M5** | 成片**定时/即时**自动发布（≥1 平台）+ 数据回流 + **报告生成与决策采纳** + 记忆沉淀闭环 | T5.1–T5.10 | [ ] **定时发布已通（T5.6）+ 报告与决策闭环已通（T5.7）**，剩 T5.8 多账号 |
 
 ---
 
@@ -2130,8 +2182,28 @@ T1.12 ✅             （一键启动）
 > - **真机**：建计划 ⇒ `next_run_at` 落在 18:00–21:30 窗口内（本地 18:09）；总开关关着 ⇒ `skipped_disabled`；
 >   打开开关 ⇒ 撞幂等 ⇒ **`skipped_duplicate` + `fail_streak=0`**（修之前是 `error:PUBLISH_FAILED` + `fail_streak=1`）；`DELETE` 带留痕；验完已把开关改回出厂值；
 > - **门禁**：`.\tasks.ps1 check` ⇒ **3892 passed / 32 skipped**（+25）；`.\tasks.ps1 web:verify` ⇒ **482 passed · dist 0.37 MB**（+31）；
-> - **裁定 325–333 · 陷阱 179–182**。本轮**修掉一个真 bug**：面板把 UTC 时刻当本地时间显示（陷阱 179）；
-> - 遗留 ⏳：`T5.7` 报告（M5 最后一块，面板仍如实标「尚未施工」）· `T5.8` 多账号（结构已就绪）· `publish.ts` 的 `formatStamp` 同款 UTC 问题（T5.5 遗留）。
+> - **裁定 325–333 · 陷阱 179–182**。本轮**修掉一个真 bug**：面板把 UTC 时刻当本地时间显示（陷阱 179）。
+>
+> ㉖ **`T5.7` 数据报告与决策闭环** ⇒ **已完成（2026-09-18）**：M5 的最后一块 —— 数据回流上来的原始指标从此会变成**结论与建议**。
+> - **后端**：`domain/report.py`（周期算术纯函数：`period_bounds` 右端 = 触发日**前一天**、`next_run_at` 逐日扫 400 天、
+>   `confidence_for` 分档）+ `db/repositories/report_repo.py` + `services/report_service.py`（**一条 SQL** 取
+>   `publications ⋈ tasks ⋈ topic_candidates`，中位数/归因全在 Python 里算 —— **一个模型都不调**）+
+>   `app/schemas/report.py` + `app/routers/reports.py`（**9 端点**）+ `AlertCode.REPORT_FAILING`（`warn`）+
+>   两条 WS 事件；`app/recycle.py` 的 `SchedulePump.report_tick()` 是**第二个独立 try**（一边炸不能带走另一边）；
+> - **表早就有了**（`0005_schedule_report.sql` 的 `reports` / `report_schedules`）⇒ **本轮零迁移**；
+> - **决策闭环落在 `persona.style_hint`**（裁定 334）：`content_directions` 是**历史批次**，改它的 priority
+>   对下一轮 Planner **没有任何影响** ⇒ 那会是"点了采纳但选题一点没变"的假闭环。`style_hint` 才是每个 Agent
+>   每次都读到的公共输入；写入仍走 `PersonaStore`（校验 + 备份 + 留痕），只保留最新 5 条结论、用户自己写的风格一行不丢；
+> - **前端**：面板第 ⑫ 块「报告」从「尚未施工」换成**真 UI**（报告列表 + 详情 + 建议卡片（采纳 / 已采纳禁用 / `low` 强制警示）
+>   + 导出 md·csv + 周期编辑表单（period / weekday / day_of_month / at_time / lookback_days / include / enabled）），
+>   60s 慢轮询（一份报告只可能在**到点那一刻**多出来，问得再勤也不会早一秒）；
+> - **真机**：`generate` 幂等（同窗口再发一次 ⇒ **同一个 id**，`counts.total=1`）；`run_now` ⇒ `ok` + 新报告；
+>   导出 csv ⇒ 200 + `Content-Disposition` + `text/csv`；seed 三条周期 `next_run_at` 起初为 `null`，
+>   **api 起来跑一拍后自动补上**；启停 ⇒ 当场算 / 置回 `null`；删内置的 ⇒ 400 说清"只能停用"；面板目视通过；
+> - **门禁**：`.\tasks.ps1 check` ⇒ **3921 passed / 32 skipped**（+29）；`.\tasks.ps1 web:verify` ⇒ **544 passed · dist 0.39 MB**（+62）；
+> - **裁定 334–340 · 陷阱 183–184**。本轮**修掉两个真问题**：出厂自带的周报/月报一次都不会跑（陷阱 183）、
+>   枚举数量再次进断言与文案（陷阱 184，同 180）；
+> - 遗留 ⏳：`T5.8` 多账号（结构已就绪）· `publish.ts` 的 `formatStamp` 同款 UTC 问题（T5.5 遗留）· **E8 字体**（`templates/douyin_9x16_default/assets/fonts/` 仍空，字幕走系统字体降级）。
 
 > **当前关键路径**：`T2.1 ✅` ⇒ `T2.2 ✅` ⇒ `T2.3 🔶`（**管子已通**，剩熔断与决策表）⇒ **`T2.4` 正式音色** ⇒ `T3.3`（时间轴 ✅，可直接开工）⇒ T3.4–T3.7 ⇒ `T4.6` 与 `T5.1` 起全部。
 > ⇒ **没有任何硬阻塞**；E1/E2/E3/E4 只影响各自任务的真机验收，**不影响开发推进**。
@@ -2316,8 +2388,10 @@ T1.12 ✅             （一键启动）
 | 180 | **给枚举加一个值，仓库里两处硬编码的断言与三处文档当场过时**（`len(AlertCode) == 8` / 「8 值」文案） | 枚举的**数量**被写进了契约测试与文档：加一个 `SCHEDULE_FAILING` ⇒ 契约红，而文案不会自己红，只会安静地骗人 | **枚举数量不进断言、不进文案**：契约测试断言具体成员（或 `>=` 下限），文档写「枚举」而不写数字。加值时全仓库搜一遍 `== 8` 与「N 值」 | T5.6 |
 | 182 | **钉着已发任务的计划每天"失败"一次，五天后拉一条真告警** —— 而那条告警淹掉的正是真故障 | 「作业没建出来」只有一种落点（`error:PUBLISH_FAILED`），可它有两种原因：**平台没启用**（要人改配置）与**这条早投过**（什么都不用做）。幂等命中被算进失败 ⇒ `fail_streak` 每天 +1 | 两种原因**分开报**：`EnqueueReport.duplicates` 单独列出来（别让调用方去猜那句中文），幂等命中 ⇒ `last_result='skipped_duplicate'` 且 `failed=False`；只有"平台/账号不可用"才落 `error:`。真机踩到 | T5.6 |
 | 181 | **`web:verify` 只回一句「npm run verify 未通过」，看不到真错**（`tasks.ps1` 抛的是自己的中文提示，npm 的输出被吞掉） | 门禁脚本为了给出人话提示，把子进程输出压掉了 ⇒ 真错（`vue-tsc` 的 5 处 TS2554）一个字都看不见 | 前端门禁红了先**绕过外层**直接跑：`cd web; cmd /c "npm run typecheck"`（再 `test` / `build`）。类型错永远排第一 —— 单测与打包都排在它后面 | T5.6 |
+| 183 | **出厂自带的周报 / 月报一次都不会跑，而且不报错** | seed 里三条内置周期的 `next_run_at` 初值全是 NULL，而到期查询写的是 `next_run_at <= now` —— SQL 里 `NULL <= x` **恒为假** | 把 `NULL` 读成「未排期」而不是「永不触发」：调度器每拍先 `_schedule_pending()`（`enabled=1 AND next_run_at IS NULL` ⇒ 当场算好落库）。它同时覆盖「新建时没排期」与「停用后被清空」两种情况 | T5.7 |
+| 184 | **加一个枚举值，两处契约测试与两处文档当场过时** | 陷阱 180 的同一个坑再咬一次：T5.6 记下"枚举数量不进断言、不进文案"之后，仓库里仍有 `len(AlertCode) == 9` 与两处「9 值」文案 | 契约测试改成 `>= 9` 下限（**数量不是它要守的东西** —— 它守的是"猝死不升格为告警"）；文档只写「枚举」。加值前先 `rg "== 9\|9 值"` | T5.7 |
 | 178 | **面板 / 文档说「开关关着时投递进来的作业会转人工」，实际是死信** —— 操作员去「待人工」里找一个永远不出现的记录 | 开关守卫（`_guard_switch`）跑在**建 `publications` 那一行之前** ⇒ 既没有待人工记录、发布面板上也什么都不出现；而三处文案（路由 docstring / CLI / runbook）写的是「转人工」，§04-contracts ① 自己写的是「死信」 | 文案与**代码的真实落点**对齐：死信（去「四池调度」看）。投递面板把这句话写在**真平台选项旁边**（出厂就是这一档，不说的话按一次投递会得到「什么都没发生」） | T5.10 |
-> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 182 条见该处；跨文档引用按编号即可）。
+> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 184 条见该处；跨文档引用按编号即可）。
 
 ---
 

@@ -3037,6 +3037,67 @@
         "title": "ImportResult",
         "type": "object"
       },
+      "InsightModel": {
+        "description": "一条决策建议（``applied`` 是本项目补的：面板据此显示\"已采纳\"）。",
+        "properties": {
+          "applied": {
+            "default": false,
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "applied_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied At"
+          },
+          "applied_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied By"
+          },
+          "confidence": {
+            "title": "Confidence",
+            "type": "string"
+          },
+          "evidence": {
+            "additionalProperties": true,
+            "title": "Evidence",
+            "type": "object"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "statement": {
+            "title": "Statement",
+            "type": "string"
+          },
+          "suggested_action": {
+            "title": "Suggested Action",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "statement",
+          "confidence",
+          "suggested_action"
+        ],
+        "title": "InsightModel",
+        "type": "object"
+      },
       "LlmKeyModel": {
         "additionalProperties": false,
         "description": "密钥的**静态**状态（不发任何请求就能回答）。",
@@ -7617,6 +7678,918 @@
           "is_default"
         ],
         "title": "RenderVoiceModel",
+        "type": "object"
+      },
+      "ReportApplyResponse": {
+        "description": "采纳一条建议的结论。",
+        "properties": {
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "report": {
+            "$ref": "#/components/schemas/ReportDetail"
+          },
+          "report_id": {
+            "title": "Report Id",
+            "type": "string"
+          },
+          "style_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Style Hint"
+          }
+        },
+        "required": [
+          "report_id",
+          "index",
+          "applied",
+          "message",
+          "report"
+        ],
+        "title": "ReportApplyResponse",
+        "type": "object"
+      },
+      "ReportDeleteResponse": {
+        "description": "删除周期的结论（``deleted=False`` ⇒ 这个 id 本来就不在，**不是错误**）。",
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "schedule_id": {
+            "title": "Schedule Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schedule_id",
+          "deleted",
+          "message"
+        ],
+        "title": "ReportDeleteResponse",
+        "type": "object"
+      },
+      "ReportDetail": {
+        "description": "报告详情（正文 + 聚合数据 + 建议 + 产物路径）。",
+        "properties": {
+          "applied_count": {
+            "title": "Applied Count",
+            "type": "integer"
+          },
+          "artifacts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Artifacts",
+            "type": "array"
+          },
+          "avg_views": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Views"
+          },
+          "coverage": {
+            "additionalProperties": true,
+            "title": "Coverage",
+            "type": "object"
+          },
+          "data": {
+            "additionalProperties": true,
+            "title": "Data",
+            "type": "object"
+          },
+          "end_date": {
+            "title": "End Date",
+            "type": "string"
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "insights": {
+            "items": {
+              "$ref": "#/components/schemas/InsightModel"
+            },
+            "title": "Insights",
+            "type": "array"
+          },
+          "insights_count": {
+            "title": "Insights Count",
+            "type": "integer"
+          },
+          "llm_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Cost Usd"
+          },
+          "median_views": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Views"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "publish_count": {
+            "title": "Publish Count",
+            "type": "integer"
+          },
+          "start_date": {
+            "title": "Start Date",
+            "type": "string"
+          },
+          "summary_md": {
+            "title": "Summary Md",
+            "type": "string"
+          },
+          "task_count": {
+            "title": "Task Count",
+            "type": "integer"
+          },
+          "total_comments": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Comments"
+          },
+          "total_likes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Likes"
+          },
+          "total_shares": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Shares"
+          },
+          "total_views": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Views"
+          },
+          "trigger": {
+            "title": "Trigger",
+            "type": "string"
+          },
+          "tts_skip_ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tts Skip Ratio"
+          }
+        },
+        "required": [
+          "id",
+          "period",
+          "start_date",
+          "end_date",
+          "trigger",
+          "task_count",
+          "publish_count",
+          "insights_count",
+          "applied_count",
+          "summary_md"
+        ],
+        "title": "ReportDetail",
+        "type": "object"
+      },
+      "ReportGenerateRequest": {
+        "additionalProperties": false,
+        "description": "手动生成（``trigger='manual'``）。``start``/``end`` 缺省 ⇒ 按周期自动算。",
+        "properties": {
+          "end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End"
+          },
+          "include": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "publish",
+                    "metrics",
+                    "topics",
+                    "quality",
+                    "cost",
+                    "errors"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include"
+          },
+          "period": {
+            "default": "weekly",
+            "enum": [
+              "daily",
+              "weekly",
+              "monthly"
+            ],
+            "title": "Period",
+            "type": "string"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start"
+          }
+        },
+        "title": "ReportGenerateRequest",
+        "type": "object"
+      },
+      "ReportList": {
+        "description": "``GET /api/v1/reports`` —— 报告列表 + 计数 + 周期设置。",
+        "properties": {
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReportSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "periods": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Periods",
+            "type": "array"
+          },
+          "tick_sec": {
+            "title": "Tick Sec",
+            "type": "number"
+          }
+        },
+        "required": [
+          "items",
+          "counts",
+          "periods",
+          "tick_sec"
+        ],
+        "title": "ReportList",
+        "type": "object"
+      },
+      "ReportScheduleList": {
+        "description": "``GET /api/v1/report-schedules``。",
+        "properties": {
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReportScheduleView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "tick_sec": {
+            "title": "Tick Sec",
+            "type": "number"
+          }
+        },
+        "required": [
+          "items",
+          "counts",
+          "tick_sec"
+        ],
+        "title": "ReportScheduleList",
+        "type": "object"
+      },
+      "ReportSchedulePatch": {
+        "additionalProperties": false,
+        "description": "改一条周期（**部分字段**：只给 ``enabled`` 就是启停）。",
+        "properties": {
+          "at_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At Time"
+          },
+          "day_of_month": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Day Of Month"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "include": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "publish",
+                    "metrics",
+                    "topics",
+                    "quality",
+                    "cost",
+                    "errors"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include"
+          },
+          "lookback_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lookback Days"
+          },
+          "period": {
+            "anyOf": [
+              {
+                "enum": [
+                  "daily",
+                  "weekly",
+                  "monthly"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "tz": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tz"
+          },
+          "weekday": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weekday"
+          }
+        },
+        "title": "ReportSchedulePatch",
+        "type": "object"
+      },
+      "ReportScheduleRunRequest": {
+        "additionalProperties": false,
+        "description": "立刻生成一次（``reason`` 进日志）。",
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "ReportScheduleRunRequest",
+        "type": "object"
+      },
+      "ReportScheduleRunResponse": {
+        "description": "立即生成的结论（``report_id`` 为空 ⇒ 这次没生成，看 ``result`` 与 ``note``）。",
+        "properties": {
+          "next_run_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run At"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "report_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report Id"
+          },
+          "result": {
+            "title": "Result",
+            "type": "string"
+          },
+          "schedule_id": {
+            "title": "Schedule Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schedule_id",
+          "result"
+        ],
+        "title": "ReportScheduleRunResponse",
+        "type": "object"
+      },
+      "ReportScheduleSpec": {
+        "additionalProperties": false,
+        "description": "新建一条报告周期（§04.6.5.2 的 ``ReportScheduleSpec``）。",
+        "properties": {
+          "at_time": {
+            "default": "09:00",
+            "title": "At Time",
+            "type": "string"
+          },
+          "day_of_month": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Day Of Month"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "include": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "publish",
+                    "metrics",
+                    "topics",
+                    "quality",
+                    "cost",
+                    "errors"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include"
+          },
+          "lookback_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lookback Days"
+          },
+          "period": {
+            "enum": [
+              "daily",
+              "weekly",
+              "monthly"
+            ],
+            "title": "Period",
+            "type": "string"
+          },
+          "tz": {
+            "default": "Asia/Shanghai",
+            "title": "Tz",
+            "type": "string"
+          },
+          "weekday": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weekday"
+          }
+        },
+        "required": [
+          "period"
+        ],
+        "title": "ReportScheduleSpec",
+        "type": "object"
+      },
+      "ReportScheduleView": {
+        "description": "一条周期（``ReportScheduleRow.to_dict()`` 原样）。",
+        "properties": {
+          "at_time": {
+            "title": "At Time",
+            "type": "string"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "day_of_month": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Day Of Month"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "fail_streak": {
+            "title": "Fail Streak",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "include": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Include",
+            "type": "array"
+          },
+          "is_builtin": {
+            "title": "Is Builtin",
+            "type": "boolean"
+          },
+          "last_report_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Report Id"
+          },
+          "last_result": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Result"
+          },
+          "last_run_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run At"
+          },
+          "lookback_days": {
+            "title": "Lookback Days",
+            "type": "integer"
+          },
+          "next_run_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run At"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "tz": {
+            "title": "Tz",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "weekday": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weekday"
+          }
+        },
+        "required": [
+          "id",
+          "period",
+          "at_time",
+          "tz",
+          "lookback_days",
+          "include",
+          "enabled",
+          "is_builtin",
+          "fail_streak",
+          "created_by"
+        ],
+        "title": "ReportScheduleView",
+        "type": "object"
+      },
+      "ReportSummary": {
+        "description": "报告列表里的一条（**不含正文**）。",
+        "properties": {
+          "applied_count": {
+            "title": "Applied Count",
+            "type": "integer"
+          },
+          "end_date": {
+            "title": "End Date",
+            "type": "string"
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "insights_count": {
+            "title": "Insights Count",
+            "type": "integer"
+          },
+          "llm_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Cost Usd"
+          },
+          "median_views": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Views"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "publish_count": {
+            "title": "Publish Count",
+            "type": "integer"
+          },
+          "start_date": {
+            "title": "Start Date",
+            "type": "string"
+          },
+          "task_count": {
+            "title": "Task Count",
+            "type": "integer"
+          },
+          "total_views": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Views"
+          },
+          "trigger": {
+            "title": "Trigger",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "period",
+          "start_date",
+          "end_date",
+          "trigger",
+          "task_count",
+          "publish_count",
+          "insights_count",
+          "applied_count"
+        ],
+        "title": "ReportSummary",
         "type": "object"
       },
       "RequeueFailureModel": {
@@ -13590,6 +14563,479 @@
         "summary": "Get Video",
         "tags": [
           "render"
+        ]
+      }
+    },
+    "/api/v1/report-schedules": {
+      "get": {
+        "description": "全部周期（启用的排前面，同组按下次触发升序）。",
+        "operationId": "list_schedules_api_v1_report_schedules_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportScheduleList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Schedules",
+        "tags": [
+          "reports"
+        ]
+      },
+      "post": {
+        "description": "新建一条周期（``next_run_at`` 当场算好落库 · 陷阱 #30）。",
+        "operationId": "create_api_v1_report_schedules_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportScheduleSpec"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportScheduleView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/api/v1/report-schedules/{schedule_id}": {
+      "delete": {
+        "description": "删一条周期（**内置的不能删**，只能停用 ⇒ 400 说清原因）。",
+        "operationId": "remove_api_v1_report_schedules__schedule_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9A-Za-z_-]{1,64}$",
+              "title": "Schedule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportDeleteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove",
+        "tags": [
+          "reports"
+        ]
+      },
+      "patch": {
+        "description": "改一条周期（部分字段；``exclude_unset=True`` 是这一层的关键）。",
+        "operationId": "patch_api_v1_report_schedules__schedule_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9A-Za-z_-]{1,64}$",
+              "title": "Schedule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportSchedulePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportScheduleView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/api/v1/report-schedules/{schedule_id}/run_now": {
+      "post": {
+        "description": "立刻生成一次（``trigger='manual'``）。",
+        "operationId": "run_api_v1_report_schedules__schedule_id__run_now_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9A-Za-z_-]{1,64}$",
+              "title": "Schedule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ReportScheduleRunRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportScheduleRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/api/v1/reports": {
+      "get": {
+        "description": "报告列表（新到旧；``period`` 可选过滤）。",
+        "operationId": "list_reports_api_v1_reports_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Reports",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/api/v1/reports/generate": {
+      "post": {
+        "description": "手动生成一份（同周期已存在 ⇒ 返回那一份，**不重复插入**）。",
+        "operationId": "generate_api_v1_reports_generate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportGenerateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/api/v1/reports/{report_id}": {
+      "get": {
+        "description": "报告详情（正文 + 聚合数据 + 建议）。",
+        "operationId": "get_report_api_v1_reports__report_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "report_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9A-Za-z_-]{1,64}$",
+              "title": "Report Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Report",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/api/v1/reports/{report_id}/export": {
+      "get": {
+        "description": "导出（``?format=md|csv``）—— 直接回文件，不塞进 JSON。",
+        "operationId": "export_api_v1_reports__report_id__export_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "report_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9A-Za-z_-]{1,64}$",
+              "title": "Report Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "default": "md",
+              "title": "Format",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/api/v1/reports/{report_id}/insights/{index}/apply": {
+      "post": {
+        "description": "采纳第 ``index`` 条建议 ⇒ 写进人物偏好（``style_hint``）+ 留痕。\n\n已经采纳过的再点一次**什么都不做**（幂等）：往提示词里重复追加同一句话\n会让它越滚越长，而且从内容上完全看不出重复。",
+        "operationId": "apply_api_v1_reports__report_id__insights__index__apply_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "report_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9A-Za-z_-]{1,64}$",
+              "title": "Report Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "minimum": 0,
+              "title": "Index",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportApplyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Apply",
+        "tags": [
+          "reports"
         ]
       }
     },

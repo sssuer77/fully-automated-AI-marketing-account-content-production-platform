@@ -51,6 +51,8 @@ export const EVENT_KINDS = [
   "metrics.updated",
   "publish.scheduled",
   "publish.schedule_fired",
+  "report.generated",
+  "report.schedule_updated",
   "log.appended",
   "pool.stats",
   "pool.worker_status",
@@ -72,6 +74,7 @@ export const ALERT_CODES = [
   "DUP_AUDIT_WARN",
   "BROLL_EMPTY",
   "SCHEDULE_FAILING",
+  "REPORT_FAILING",
 ] as const;
 export type AlertCode = (typeof ALERT_CODES)[number];
 
@@ -101,6 +104,8 @@ export const KIND_CHANNEL: Record<EventKind, Channel> = {
   "metrics.updated": "publish",
   "publish.scheduled": "publish",
   "publish.schedule_fired": "publish",
+  "report.generated": "publish",
+  "report.schedule_updated": "publish",
   "log.appended": "logs",
   "pool.stats": "pools",
   "pool.worker_status": "pools",

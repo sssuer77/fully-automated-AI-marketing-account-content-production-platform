@@ -1132,6 +1132,177 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/report-schedules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Schedules
+         * @description 全部周期（启用的排前面，同组按下次触发升序）。
+         */
+        get: operations["list_schedules_api_v1_report_schedules_get"];
+        put?: never;
+        /**
+         * Create
+         * @description 新建一条周期（``next_run_at`` 当场算好落库 · 陷阱 #30）。
+         */
+        post: operations["create_api_v1_report_schedules_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/report-schedules/{schedule_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove
+         * @description 删一条周期（**内置的不能删**，只能停用 ⇒ 400 说清原因）。
+         */
+        delete: operations["remove_api_v1_report_schedules__schedule_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Patch
+         * @description 改一条周期（部分字段；``exclude_unset=True`` 是这一层的关键）。
+         */
+        patch: operations["patch_api_v1_report_schedules__schedule_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/report-schedules/{schedule_id}/run_now": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run
+         * @description 立刻生成一次（``trigger='manual'``）。
+         */
+        post: operations["run_api_v1_report_schedules__schedule_id__run_now_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Reports
+         * @description 报告列表（新到旧；``period`` 可选过滤）。
+         */
+        get: operations["list_reports_api_v1_reports_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reports/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate
+         * @description 手动生成一份（同周期已存在 ⇒ 返回那一份，**不重复插入**）。
+         */
+        post: operations["generate_api_v1_reports_generate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reports/{report_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Report
+         * @description 报告详情（正文 + 聚合数据 + 建议）。
+         */
+        get: operations["get_report_api_v1_reports__report_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reports/{report_id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export
+         * @description 导出（``?format=md|csv``）—— 直接回文件，不塞进 JSON。
+         */
+        get: operations["export_api_v1_reports__report_id__export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reports/{report_id}/insights/{index}/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply
+         * @description 采纳第 ``index`` 条建议 ⇒ 写进人物偏好（``style_hint``）+ 留痕。
+         *
+         *     已经采纳过的再点一次**什么都不做**（幂等）：往提示词里重复追加同一句话
+         *     会让它越滚越长，而且从内容上完全看不出重复。
+         */
+        post: operations["apply_api_v1_reports__report_id__insights__index__apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/schedules": {
         parameters: {
             query?: never;
@@ -2895,6 +3066,33 @@ export interface components {
             skipped: number;
         };
         /**
+         * InsightModel
+         * @description 一条决策建议（``applied`` 是本项目补的：面板据此显示"已采纳"）。
+         */
+        InsightModel: {
+            /**
+             * Applied
+             * @default false
+             */
+            applied: boolean;
+            /** Applied At */
+            applied_at?: string | null;
+            /** Applied By */
+            applied_by?: string | null;
+            /** Confidence */
+            confidence: string;
+            /** Evidence */
+            evidence?: {
+                [key: string]: unknown;
+            };
+            /** Kind */
+            kind: string;
+            /** Statement */
+            statement: string;
+            /** Suggested Action */
+            suggested_action: string;
+        };
+        /**
          * LlmKeyModel
          * @description 密钥的**静态**状态（不发任何请求就能回答）。
          */
@@ -4587,6 +4785,295 @@ export interface components {
             is_default: boolean;
             /** Name */
             name: string;
+        };
+        /**
+         * ReportApplyResponse
+         * @description 采纳一条建议的结论。
+         */
+        ReportApplyResponse: {
+            /** Applied */
+            applied: boolean;
+            /** Index */
+            index: number;
+            /** Message */
+            message: string;
+            report: components["schemas"]["ReportDetail"];
+            /** Report Id */
+            report_id: string;
+            /** Style Hint */
+            style_hint?: string | null;
+        };
+        /**
+         * ReportDeleteResponse
+         * @description 删除周期的结论（``deleted=False`` ⇒ 这个 id 本来就不在，**不是错误**）。
+         */
+        ReportDeleteResponse: {
+            /** Deleted */
+            deleted: boolean;
+            /** Message */
+            message: string;
+            /** Schedule Id */
+            schedule_id: string;
+        };
+        /**
+         * ReportDetail
+         * @description 报告详情（正文 + 聚合数据 + 建议 + 产物路径）。
+         */
+        ReportDetail: {
+            /** Applied Count */
+            applied_count: number;
+            /** Artifacts */
+            artifacts?: string[];
+            /** Avg Views */
+            avg_views?: number | null;
+            /** Coverage */
+            coverage?: {
+                [key: string]: unknown;
+            };
+            /** Data */
+            data?: {
+                [key: string]: unknown;
+            };
+            /** End Date */
+            end_date: string;
+            /** Generated At */
+            generated_at?: string | null;
+            /** Id */
+            id: string;
+            /** Insights */
+            insights?: components["schemas"]["InsightModel"][];
+            /** Insights Count */
+            insights_count: number;
+            /** Llm Cost Usd */
+            llm_cost_usd?: number | null;
+            /** Median Views */
+            median_views?: number | null;
+            /** Period */
+            period: string;
+            /** Publish Count */
+            publish_count: number;
+            /** Start Date */
+            start_date: string;
+            /** Summary Md */
+            summary_md: string;
+            /** Task Count */
+            task_count: number;
+            /** Total Comments */
+            total_comments?: number | null;
+            /** Total Likes */
+            total_likes?: number | null;
+            /** Total Shares */
+            total_shares?: number | null;
+            /** Total Views */
+            total_views?: number | null;
+            /** Trigger */
+            trigger: string;
+            /** Tts Skip Ratio */
+            tts_skip_ratio?: number | null;
+        };
+        /**
+         * ReportGenerateRequest
+         * @description 手动生成（``trigger='manual'``）。``start``/``end`` 缺省 ⇒ 按周期自动算。
+         */
+        ReportGenerateRequest: {
+            /** End */
+            end?: string | null;
+            /** Include */
+            include?: ("publish" | "metrics" | "topics" | "quality" | "cost" | "errors")[] | null;
+            /**
+             * Period
+             * @default weekly
+             * @enum {string}
+             */
+            period: "daily" | "weekly" | "monthly";
+            /** Start */
+            start?: string | null;
+        };
+        /**
+         * ReportList
+         * @description ``GET /api/v1/reports`` —— 报告列表 + 计数 + 周期设置。
+         */
+        ReportList: {
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Items */
+            items: components["schemas"]["ReportSummary"][];
+            /** Periods */
+            periods: string[];
+            /** Tick Sec */
+            tick_sec: number;
+        };
+        /**
+         * ReportScheduleList
+         * @description ``GET /api/v1/report-schedules``。
+         */
+        ReportScheduleList: {
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Items */
+            items: components["schemas"]["ReportScheduleView"][];
+            /** Tick Sec */
+            tick_sec: number;
+        };
+        /**
+         * ReportSchedulePatch
+         * @description 改一条周期（**部分字段**：只给 ``enabled`` 就是启停）。
+         */
+        ReportSchedulePatch: {
+            /** At Time */
+            at_time?: string | null;
+            /** Day Of Month */
+            day_of_month?: number | null;
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Include */
+            include?: ("publish" | "metrics" | "topics" | "quality" | "cost" | "errors")[] | null;
+            /** Lookback Days */
+            lookback_days?: number | null;
+            /** Period */
+            period?: ("daily" | "weekly" | "monthly") | null;
+            /** Reason */
+            reason?: string | null;
+            /** Tz */
+            tz?: string | null;
+            /** Weekday */
+            weekday?: number | null;
+        };
+        /**
+         * ReportScheduleRunRequest
+         * @description 立刻生成一次（``reason`` 进日志）。
+         */
+        ReportScheduleRunRequest: {
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
+         * ReportScheduleRunResponse
+         * @description 立即生成的结论（``report_id`` 为空 ⇒ 这次没生成，看 ``result`` 与 ``note``）。
+         */
+        ReportScheduleRunResponse: {
+            /** Next Run At */
+            next_run_at?: string | null;
+            /** Note */
+            note?: string | null;
+            /** Report Id */
+            report_id?: string | null;
+            /** Result */
+            result: string;
+            /** Schedule Id */
+            schedule_id: string;
+        };
+        /**
+         * ReportScheduleSpec
+         * @description 新建一条报告周期（§04.6.5.2 的 ``ReportScheduleSpec``）。
+         */
+        ReportScheduleSpec: {
+            /**
+             * At Time
+             * @default 09:00
+             */
+            at_time: string;
+            /** Day Of Month */
+            day_of_month?: number | null;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Include */
+            include?: ("publish" | "metrics" | "topics" | "quality" | "cost" | "errors")[] | null;
+            /** Lookback Days */
+            lookback_days?: number | null;
+            /**
+             * Period
+             * @enum {string}
+             */
+            period: "daily" | "weekly" | "monthly";
+            /**
+             * Tz
+             * @default Asia/Shanghai
+             */
+            tz: string;
+            /** Weekday */
+            weekday?: number | null;
+        };
+        /**
+         * ReportScheduleView
+         * @description 一条周期（``ReportScheduleRow.to_dict()`` 原样）。
+         */
+        ReportScheduleView: {
+            /** At Time */
+            at_time: string;
+            /** Created At */
+            created_at?: string | null;
+            /** Created By */
+            created_by: string;
+            /** Day Of Month */
+            day_of_month?: number | null;
+            /** Enabled */
+            enabled: boolean;
+            /** Fail Streak */
+            fail_streak: number;
+            /** Id */
+            id: string;
+            /** Include */
+            include: string[];
+            /** Is Builtin */
+            is_builtin: boolean;
+            /** Last Report Id */
+            last_report_id?: string | null;
+            /** Last Result */
+            last_result?: string | null;
+            /** Last Run At */
+            last_run_at?: string | null;
+            /** Lookback Days */
+            lookback_days: number;
+            /** Next Run At */
+            next_run_at?: string | null;
+            /** Period */
+            period: string;
+            /** Tz */
+            tz: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Weekday */
+            weekday?: number | null;
+        };
+        /**
+         * ReportSummary
+         * @description 报告列表里的一条（**不含正文**）。
+         */
+        ReportSummary: {
+            /** Applied Count */
+            applied_count: number;
+            /** End Date */
+            end_date: string;
+            /** Generated At */
+            generated_at?: string | null;
+            /** Id */
+            id: string;
+            /** Insights Count */
+            insights_count: number;
+            /** Llm Cost Usd */
+            llm_cost_usd?: number | null;
+            /** Median Views */
+            median_views?: number | null;
+            /** Period */
+            period: string;
+            /** Publish Count */
+            publish_count: number;
+            /** Start Date */
+            start_date: string;
+            /** Task Count */
+            task_count: number;
+            /** Total Views */
+            total_views?: number | null;
+            /** Trigger */
+            trigger: string;
         };
         /**
          * RequeueFailureModel
@@ -7540,6 +8027,321 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_schedules_api_v1_report_schedules_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportScheduleList"];
+                };
+            };
+        };
+    };
+    create_api_v1_report_schedules_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReportScheduleSpec"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportScheduleView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_api_v1_report_schedules__schedule_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                schedule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportDeleteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_api_v1_report_schedules__schedule_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                schedule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReportSchedulePatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportScheduleView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_api_v1_report_schedules__schedule_id__run_now_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                schedule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ReportScheduleRunRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportScheduleRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_reports_api_v1_reports_get: {
+        parameters: {
+            query?: {
+                period?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generate_api_v1_reports_generate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReportGenerateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_report_api_v1_reports__report_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                report_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_api_v1_reports__report_id__export_get: {
+        parameters: {
+            query?: {
+                format?: string;
+            };
+            header?: never;
+            path: {
+                report_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_api_v1_reports__report_id__insights__index__apply_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                report_id: string;
+                index: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportApplyResponse"];
                 };
             };
             /** @description Validation Error */
