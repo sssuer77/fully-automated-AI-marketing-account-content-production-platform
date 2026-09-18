@@ -63,6 +63,7 @@ __all__ = [
     "LIMITER_AUTO_LEVEL",
     "MEASURE_TIMEOUT_SEC",
     "MIX_SAMPLE_RATE",
+    "PEAK_SAFETY_MARGIN_DB",
     "TARGET_LRA",
     "LoudnessMeasurement",
     "MixSettings",
@@ -85,7 +86,7 @@ TARGET_LRA: Final[float] = 11.0
 
 #: 编码过冲的余量（dB）。限幅器压的是**编码前**的样本峰值，而门禁量的是
 #: **解码后**的真峰值 —— AAC 的重建会过冲零点几 dB。实测：限幅器设到 −1.0 dBFS 时
-#: 解码出来是 −0.85 dBTP（超了 −1.0 的门禁），再让 0.3 dB 才稳定落在 −1.2 dBTP。
+#: 解码出来是 −0.85 dBTP（超了 −1.0 的门禁），让 0.3 dB 就落在 −1.0 dBTP。
 #:
 #: **余量必须加在 `alimiter` 上，不能加到 `loudnorm` 的 TP 目标上。** 看着像等价的
 #: 两处，其实不是：`loudnorm` 的 `TP` 只是**第一遍算 offset 时的参考值**，第二遍
@@ -93,6 +94,12 @@ TARGET_LRA: Final[float] = 11.0
 #: 配 `offset=0.86` 时它老老实实 +0.86dB，把峰值推到 +2.78dBFS，**一点都没拦**。
 #: 真正压住峰值的是后面的 `alimiter` —— 所以余量放在 `loudnorm` 上等于没人管峰值。
 CODEC_PEAK_MARGIN_DB: Final[float] = 0.3
+
+#: 安全间隙（dB）：**过冲量只够把成片顶到门禁线上**。
+#: 只留过冲量的话，落点正好是 −1.0 dBTP，而门禁是"≤ −1.0" —— 渲染器量到
+#: −0.99（比 ebur128 的整数读数细一点）就把整条发布链路拦死，成片一个字节都发不出去。
+#: 多让一格：落点变成 −1.3 dBTP，换来的是"过冲随内容浮动"也顶不穿门禁。
+PEAK_SAFETY_MARGIN_DB: Final[float] = 0.3
 
 #: ``alimiter`` 的**自动电平必须关掉**。它的 ``level`` 选项默认是开的，语义是
 #: "把输出抬到 0dBFS" —— 一个上限幅器之后再加的**补偿增益**。后果是：loudnorm 好
@@ -197,7 +204,7 @@ def limiter_limit(settings: MixSettings) -> float:
     ``true_peak_max_dbtp = −1.0`` **宽**了半 dB —— 照抄它，片子会被发布门禁拦下，
     而报错只会说"真峰值超标"，指不回是限幅器设宽了。
     """
-    return 10 ** ((settings.true_peak_dbtp - CODEC_PEAK_MARGIN_DB) / 20)
+    return 10 ** ((settings.true_peak_dbtp - CODEC_PEAK_MARGIN_DB - PEAK_SAFETY_MARGIN_DB) / 20)
 
 
 def _aformat(layout: str) -> str:

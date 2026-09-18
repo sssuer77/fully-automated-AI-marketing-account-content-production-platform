@@ -26,6 +26,7 @@ from studio.core.media import run_command
 from studio.render.mixdown import (
     CODEC_PEAK_MARGIN_DB,
     LIMITER_AUTO_LEVEL,
+    PEAK_SAFETY_MARGIN_DB,
     LoudnessMeasurement,
     MixSettings,
     build_audio_chain,
@@ -142,7 +143,7 @@ def test_limiter_auto_level_is_off_and_limit_follows_the_gate() -> None:
 
 
 def test_the_peak_margin_sits_on_the_limiter_not_on_loudnorm() -> None:
-    """★ 0.3 dB 的编码过冲余量加在 ``alimiter`` 上 —— **只有它真的压峰值**。
+    """★ 编码过冲余量 + 安全间隙都加在 ``alimiter`` 上 —— **只有它真的压峰值**。
 
     `loudnorm` 的 `TP` 只是第一遍算 `offset` 时的参考值：第二遍 `linear=true` 施加的
     是"把响度归到目标"的那一个静态增益。实测 `measured_I=-17.35` 配 `offset=0.86` 时
@@ -151,10 +152,11 @@ def test_the_peak_margin_sits_on_the_limiter_not_on_loudnorm() -> None:
     """
     settings = MixSettings()
     assert limiter_limit(settings) == pytest.approx(
-        10 ** ((settings.true_peak_dbtp - CODEC_PEAK_MARGIN_DB) / 20)
+        10 ** ((settings.true_peak_dbtp - CODEC_PEAK_MARGIN_DB - PEAK_SAFETY_MARGIN_DB) / 20)
     )
-    # 限幅器必须比门禁**更紧**，否则解码过冲那零点几 dB 就顶出去了
-    assert limiter_limit(settings) < 10 ** (settings.true_peak_dbtp / 20)
+    # 限幅器必须比门禁**更紧**，否则解码过冲那零点几 dB 就顶出去了；
+    # 而且要紧**一整格**：只让过冲量的话落点正好在门禁线上（实测 −0.99 dBTP vs ≤ −1.0）。
+    assert limiter_limit(settings) < 10 ** ((settings.true_peak_dbtp - CODEC_PEAK_MARGIN_DB) / 20)
     # 两遍 loudnorm（测量 + 混音）用同一个 TP，且就是门禁值
     graphs = [
         ";".join(build_audio_chain(voice_index=1, bgm_index=2, settings=settings, measured=_measured())),
