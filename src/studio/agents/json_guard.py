@@ -96,11 +96,17 @@ class SchemaGuard:
                 remediation="修 schemas/ 下的 schema 文件（契约测试会比对 §04 条款）",
             ) from exc
         self._name = name
+        self._schema = schema
         self._validator = Draft202012Validator(schema)
 
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def schema(self) -> Mapping[str, Any]:
+        """原始 schema（本地通道拿它做语法约束解码，见 ``llm_client.build_body``）。"""
+        return self._schema
 
     @classmethod
     def from_file(cls, path: Path) -> SchemaGuard:

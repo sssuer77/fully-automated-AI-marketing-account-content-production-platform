@@ -14,7 +14,7 @@
 | --- | --- | --- | --- | --- |
 | ``oi_compatible`` | ``POST {base}/chat/completions`` | [OI] 标准 | ``response_format`` | ``prompt_tokens`` |
 | ``llama_cpp`` | 同上（llama.cpp server 兼容该端点） | 同上 | 同上 | 同上 |
-| ``ollama`` | ``POST {base}/api/chat`` | Ollama 原生 | ``format: "json"`` | ``prompt_eval_count`` |
+| ``ollama`` | ``POST {base}/api/chat`` | Ollama 原生 | ``format: <schema>`` | ``prompt_eval_count`` |
 
 **超时是"单次尝试"的硬上限**：网关会取 ``min(profile.timeout_sec, app.timeouts.llm_sec)``
 后传进来（§04.1.1 硬约束 3：单次 LLM 调用硬超时 120s）。
@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping, Sequence
-from typing import Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -100,6 +100,10 @@ class LlmCall(BaseModel):
     json_mode: bool = True
     timeout_sec: float = 120.0
     seed: int | None = None
+    #: 该 Agent 的 JSON Schema（网关从 ``SchemaGuard`` 取，engine 无关的**契约事实**）。
+    #: 传输层按 engine 决定怎么用：Ollama 直接当 ``format``（语法约束解码），
+    #: 云端仍走 ``json_object``（要真 Key 才能验，另开一刀）。
+    response_schema: Mapping[str, Any] | None = None
 
     @property
     def is_local(self) -> bool:
@@ -275,7 +279,10 @@ def build_body(call: LlmCall, messages: Sequence[ChatMessage]) -> dict[str, obje
             "options": options,
         }
         if call.json_mode:
-            body["format"] = "json"
+            # 有 schema 就交给解码器做**语法约束**：像"5–8 条"这种数量约束
+            # 也在语法里，小模型没机会少写几条（T1.9 本地兜底实测：
+            # qwen2.5:7b 只给 "json" 时稳定只吐 1 条方向，给 schema 后 5–8 条）。
+            body["format"] = call.response_schema if call.response_schema is not None else "json"
         return body
 
     body = {

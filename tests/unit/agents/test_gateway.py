@@ -32,6 +32,7 @@ from studio.core.errors import ErrorCode, LlmError
 from studio.core.proto import Severity
 from tests.unit.agents.fakes import (
     INVALID_TEXT,
+    SCHEMA,
     VALID_TEXT,
     DemoOutput,
     Reply,
@@ -391,6 +392,26 @@ async def test_api_key_comes_from_env_and_seed_is_passed(
     await harness.run(agent="local_only")
     local_call = harness.transport.calls[1][0]
     assert local_call.api_key is None, "本地通道不需要密钥"
+
+
+async def test_every_channel_gets_the_agent_schema(
+    harness_factory: Callable[..., Harness],
+) -> None:
+    """schema 挂在 :class:`LlmCall` 上（与 engine 无关）：本地兜底才有语法约束可用。
+
+    只给 ``format: "json"`` 时，7B 级模型会稳定少写（"5–8 条"被无视）——
+    见 ``tests/unit/agents/test_llm_client.py``。所以"兜底通道也拿到了 schema"是
+    必须钉住的 wire 事实，而不是实现细节。
+    """
+    harness = harness_factory(
+        config=llm_config(cloud_retries=0),
+        replies=[Reply(error=http_error(500)), Reply(text=VALID_TEXT)],
+    )
+    await harness.run()
+    cloud_call, local_call = harness.transport.calls[0][0], harness.transport.calls[1][0]
+    assert cloud_call.response_schema == SCHEMA
+    assert local_call.response_schema == SCHEMA
+    assert local_call.profile == "local"
 
 
 async def test_missing_schema_file_raises_config_error(

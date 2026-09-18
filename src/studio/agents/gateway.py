@@ -319,7 +319,7 @@ class LlmGateway:
         tally: _Tally,
     ) -> AgentResult[TOut] | None:
         profile = self._config.profiles[channel]
-        call = self._build_call(channel, profile, ctx)
+        call = self._build_call(channel, profile, ctx, guard=guard)
         conversation = list(messages)
         transport_failures = 0
         repairs = 0
@@ -402,7 +402,14 @@ class LlmGateway:
             ]
 
     # ── 记账 / 日志 / 退避 ─────────────────────────────────────────
-    def _build_call(self, channel: str, profile: LlmProfileConfig, ctx: AgentContext) -> LlmCall:
+    def _build_call(
+        self,
+        channel: str,
+        profile: LlmProfileConfig,
+        ctx: AgentContext,
+        *,
+        guard: SchemaGuard | None = None,
+    ) -> LlmCall:
         return LlmCall(
             profile=channel,
             engine=profile.engine,
@@ -413,6 +420,7 @@ class LlmGateway:
             json_mode=profile.json_mode,
             timeout_sec=min(profile.timeout_sec, self._settings.hard_timeout_sec),
             seed=ctx.seed,
+            response_schema=None if guard is None else guard.schema,
         )
 
     def _api_key(self, profile: LlmProfileConfig) -> str | None:
