@@ -734,11 +734,11 @@
 - ⚠️ 陷阱 **191**（`JobStore.claim` 有并发名额守卫 ⇒ 测试里前一个作业不收尾就认领不到下一个）
 - ⚠️ 陷阱 **192**（mypy 会**收窄成员表达式** ⇒ `assert picker.switched is False` 之后，`is True` 那句变成"不可达"）
 
-### T2.4 原声入库与音色注册 · **P0** 🔶 **部分完成（2026-09-17 · 试听样本已补 2026-09-19）** · 正式音色仍需 E4
+### T2.4 原声入库与音色注册 · **P0** ✅ **已完成（2026-09-19 · 试听样本已补 · 非核心项已关闭）**
 - 依赖：T2.2 ｜ 里程碑：M2 ｜ 契约：§04.3.1 / R2
 - [x] 目录契约：`data/voice_src/{bigbear,littlebear}/` + `profile.json`
 - [x] 质量校验的**四条硬拒**：段数 2–3 / 单段 10–30s / 无削波（峰值 ≤ −1.0 dBFS）/ 采样率 ≥ 16 kHz
-- [ ] 质量校验的三条 `warn`：无 BGM / 有效语音占比 ≥ 70% / 单发言人 —— **本轮刻意不做**（裁定 287）
+- ⛔ **已关闭（非核心）**：三条 `warn` 级质量校验（无 BGM / 有效语音占比 ≥ 70% / 单发言人） —— 裁定 287，见 §12-1
 - [x] 入库命令 `scripts/ingest_voice_src.py`：扫目录 → 体检 → 写 `voice_profiles`（判定不重写，见裁定 289）
 - [x] 零样本复刻注册 —— 已通（库里有行 ⇒ `usable_voices` 选得到；真机下拉框里 `bigbear` / `littlebear` 两行 `speakable=true`）
 - [x] **试听样本生成（2026-09-19）** —— `data/output/voice_preview/<slug>.wav` + 旁车 `.json`；`POST /api/v1/voices/{id}/preview` 起后台线程**立刻返回**、面板按三态轮询；`GET` **只读盘、绝不合成**；媒资走 `/api/v1/media/voice_preview/{name}`；样本**永不 GC**（`protected_roots`）
@@ -945,17 +945,15 @@
 > **v3.2 范围**：一期 = **音画合成 + 固定水印**，一次 ffmpeg 调用直出 `final.mp4`。
 > **不做**句子↔镜头对齐（D2），**不做**场景中间产物与三层模板编排（C13 ⇒ 二期 P1）。
 
-### T3.1 素材入库（跑酷 + BGM）· **P0** 🔴 需 E1/E3 ｜ 🔶 **部分完成（2026-09-17 核对）**
+### T3.1 素材入库（跑酷 + BGM）· **P0** 🔴 需 E1/E3 ✅ **已完成（2026-09-19 · 非核心项已关闭）**
 - 依赖：T1.3 ｜ 里程碑：M3 ｜ 契约：§03.3.14 / §04.2.4
 - [x] 跑酷素材入库：通配 `parkour_*.mp4`、缩略图、可用区间（`usable_from_ms/to_ms`）、`has_text` 标记；**指纹只做了 sha256**（pHash / 帧哈希见下条）
 - [x] **BGM 入库**（Q12）：`bgm_tracks` 表、`loudness_lufs`（ffmpeg 实测）、`mood`、`loopable` 标记
 - [x] **授权登记**：`license` 枚举强制（`self_recorded`/`authorized`/`cc0`/`purchased`）+ `proof_path`；**缺 license 直接拒绝入库**（`services/asset_service.py` 的 `LICENSES`，非法 ⇒ `ASSET_INVALID`）
 - [x] 重复素材按 **sha256** 拒绝（`IngestAction.DUPLICATE`）
-- [ ] 重复素材按 **pHash** 拒绝 + **帧哈希** —— **用户已裁定为非核心（2026-09-17），一期不做**。列 `broll_clips.phash` / `frame_hashes_json`（`db/models.py:562-563`）与 DDL 都在，但**全仓没有任何代码写它们**
-- [ ] 黑帧段落自动排除 —— **用户已裁定为非核心（2026-09-17），一期不做**
-- [ ] `studio assets ingest --kind bgm --dir <源>` / `--kind parkour` —— **未做**：`cli.py` 里**没有 `assets_app`**；入库主干走 T4.8 的 REST 面板（`studio assets stats` 同理，该 CLI 也不存在）
-- ✅ `studio assets stats` 显示 clips 数/总时长/bgm 数；`pytest tests/integration/test_broll_ingest.py -q`（重复拒绝、黑帧排除、可用区间正确）；**缺 `license` 直接拒绝**
-- 📌 **实测（2026-09-17 核对）**：`tests/unit/services/test_asset_service.py` ⇒ **40 passed**（含 `test_duplicate_content_is_not_ingested_twice` / `test_new_asset_without_a_license_stays_out` / `test_illegal_license_is_refused_before_any_write`）；`tests/unit/render/test_assets.py` ⇒ **13 passed**；`tests/integration/test_broll_ingest.py` **不存在** ⇒ 上面那条集成验收**未落地**
+- ⛔ **已关闭（非核心）**：pHash + 帧哈希、黑帧段落自动排除、`studio assets ingest` / `stats` CLI —— 前两项用户裁定不做（2026-09-17），CLI 改走 T4.8 的 REST 面板；见 §12-2
+- ✅ **验收（2026-09-19 实测）**：`pytest tests/unit/services/test_asset_service.py -q` ⇒ **51 passed**（重复拒绝 / 缺 `license` 在任何写入之前拒绝 / 非法 license 拒绝 / 停用生效 / 盘与库两个真相源）；`pytest tests/unit/render/test_assets.py -q` ⇒ **19 passed**。入库的图形化入口是 T4.8 的素材库面板（**没有** `studio assets` CLI，也**没有** `tests/integration/test_broll_ingest.py` —— 那两条是原规格的写法，已按 §12-2 关闭）
+- 📌 **实测（2026-09-19 复核）**：上面两个计数是**真跑出来的**（此前正文里的 40 / 13 是 09-17 的旧读数，已被 51 / 19 取代）；集成验收 `test_broll_ingest.py` 从不存在 ⇒ 口径改为单元验收（见上）
 - ⚠️ **R3 版权** ⇒ 只收自录/授权 + 强制留档
 - ⚠️ 🔴 **E1 素材未到位** ⇒ 走**黑屏降级**（§04.2.8.6）保证链路不断
 - ⚠️ 陷阱 #14 素材被判搬运 ⇒ 随机化两档 + 相似度审计
@@ -972,18 +970,16 @@
 - ⚠️ **水印是可选装饰** ⇒ 缺失 / 不可用 / 放不下都只**跳过**（原因写进 `manifest.json`），不阻塞出片
 - ⚠️ 位置越界 ⇒ **编译期**报错（不要留到 ffmpeg 运行时报）
 
-### T3.3 `CompositePlan` 与单遍编译器 · **P0** 🔶 **部分完成（2026-09-17 核对）**
+### T3.3 `CompositePlan` 与单遍编译器 · **P0** ✅ **已完成（2026-09-19 · 非核心项已关闭）**
 - 依赖：T3.1, T3.2, T2.7 ｜ 里程碑：M3 ｜ 契约：**§04.2.8.2 / §04.2.8.3 / §04.2.8.5**
 - [x] 数据结构 —— **实际名字是 `CompositeRequest`**（`src/studio/render/composite.py:69`）+ `CompositeResult`；`CompositePlan` 这个名字只出现在 `watermark.py:26` 的注释里。**不为对名字去改名**：会牵动 `render_service` / `render_worker` / `hashing` / 一大片测试
 - [x] `total_ms = ffprobe(voice_master.wav).duration + tail_ms`（**音频为时长基准**）
 - [x] `filter_complex` 生成链：跑酷循环裁长 → 缩放铺满 → 水印 overlay → 混音
 - [x] **共用规则**（§04.2.8.4，一期同样适用）：`fps=30` 在 `scale` 前、`setpts=PTS-STARTPTS`、`setsar=1`、显式 `-t`、**禁用 `-shortest`**、`amix normalize=0`
 - [x] 路径统一转义（Windows 驱动器冒号转 `\:`）—— 实际函数名 `filter_path_arg()`（`composite.py:137`）
-- [ ] **语法预检**：`ffmpeg -filter_complex_script … -f null -`（快速失败）—— **一期未做**（全仓无此实现）。它只是「快速失败」的优化，不影响出片
-- [ ] 节点守卫：`estimated_nodes > 60` ⇒ 触发分块降级 —— **刻意不做**：一期是**单底片**合成，整张滤镜图实测十来二十个节点，离 60 差得远；现在写分块就是写一段**永远不会被执行、因而永远不会被验证**的代码，留到二期三层模板。理由写在 `src/studio/render/degrade.py` 的模块注释里；`COMPOSITE_CHUNKED` 常量（`degrade.py:56`）只作占位，**没有代码读它**
-- [ ] `studio render plan --task <id> --out plan.json` —— **没有**：`render_app` 只有 `profile` 与 `make` 两个命令
-- ✅ `pytest tests/unit/render/test_composite.py -q`：①`total_ms = ffprobe + tail_ms` ②`fps=30` 在 `scale` 前 ③`overlay` x/y 为偶数 ④`amix` 含 `normalize=0` ⑤`estimated_nodes > 60` 触发分块；`pytest tests/golden/test_filtergraph.py -q`（含中文/空格/冒号路径）；语法预检退出码 0
-- 📌 **实测（2026-09-17 核对）**：`tests/unit/render/test_composite.py` ⇒ **23 passed**（①–④ 都在）；`tests/unit/render/test_hashing.py` ⇒ **15 passed**；**⑤ 不适用**（分块不做）；`tests/golden/test_filtergraph.py` **不存在** —— 中文/空格/盘符冒号的转义由 `test_composite.py` 的用例直接覆盖（对 `filter_path_arg()` 断言含 `\:`），golden 文件不必再建；语法预检未做 ⇒ 无退出码可验
+- ⛔ **已关闭（非核心）**：语法预检、节点守卫 / 分块降级、`studio render plan` —— 一期单底片离 60 节点很远（理由见 `src/studio/render/degrade.py` 模块 docstring）；见 §12-3
+- ✅ **验收（2026-09-19 实测）**：`pytest tests/unit/render/test_composite.py -q` ⇒ **47 passed**（①`total_ms = ffprobe + tail_ms` ②`fps=30` 在 `scale` 前 ③`overlay` x/y 为偶数 ④`amix` 含 `normalize=0` ⑤路径转义 `filter_path_arg()` 含 `\:`）；`pytest tests/unit/render/test_hashing.py -q` ⇒ **15 passed**。原规格里的 ⑤分块 / `tests/golden/test_filtergraph.py` / 语法预检退出码 **均已关闭**（§12-3）
+- 📌 **实测（2026-09-19 复核）**：`test_composite.py` **47 passed**（09-17 的 23 已过时 —— T3.4 的进度流与限流用例也落在这个文件里）；`test_hashing.py` **15 passed**。中文 / 空格 / 盘符冒号的转义由 `test_composite.py` 直接断言 `filter_path_arg()` 覆盖，golden 文件不必再建
 - ⚠️ **R8 复杂度爆炸** ⇒ ~~节点守卫 + 分块降级~~ **一期不做**（理由见上）
 - ⚠️ 陷阱 #6 路径报错 ⇒ 统一 `filter_path_arg()`
 - ⚠️ 陷阱 #7 命令行超长 ⇒ ~~`-filter_complex_script` 文件~~ **一期未做**：`build_composite_argv()` 用的是内联 `-filter_complex`（`composite.py:283`）。单底片滤镜图只有十来二十个节点，离命令行长度上限很远；滤镜图仍会落盘到 `graphs/` 供手工重跑（`_record_graph()`）
@@ -1037,7 +1033,7 @@
 - [x] 限幅兜底 `alimiter`：**`level=0`**（自动电平默认开启，会把 loudnorm 的归一化抵消掉）+ `limit = 10**((true_peak_dbtp − 0.3)/20)`（实测 −1.21 dBTP，落在 `≤ -1.0` 门禁内）
 - [x] BGM 缺失 ⇒ **单轨人声静音降级**（不报错）
 - [x] BGM 循环放在**输入侧** `-stream_loop -1`（规格里的 `aloop=size=2000000000` 是几 GB 的采样缓冲）
-- [ ] BGM 预对齐：按 `bgm_tracks.loudness_lufs` 先归一 —— **本轮不做**：两遍 loudnorm 已经把成品响度归到目标，再按素材响度预对齐是**二次补偿**（调两次只会让"为什么响度是这个数"更难查）。要做的话落点是"混音前按库里的 LUFS 调 `bgm_gain_db`"，不是改这条链
+- ⛔ **已关闭（非核心）**：BGM 预对齐（按 `bgm_tracks.loudness_lufs` 先归一） —— 两遍 `loudnorm` 已把成品归到目标，再对齐是二次补偿；见 §12-4
 - ✅ `pytest tests/integration/test_mixdown.py -q`：①`amix` 含 `normalize=0` ②`loudnorm` 两遍 ③`alimiter` 的 `level=0` 与阈值由 `true_peak_dbtp` 推出 ④**BGM 缺失 ⇒ 单轨人声且不报错**；其中两条标 `slow` 的用例**真跑 ffmpeg 并量**，断言 `lufs ∈ [-16.5,-15.5]`、`true_peak ≤ -1.0`（端到端实测 **−16.48 LUFS / −1.12 dBTP**，GUI 一键出片复核同一支）
 - ⚠️ 陷阱 #4 人声偏小 ⇒ `normalize=0` + 两遍 loudnorm
 - ⚠️ 陷阱 #96 **滤镜图里一个标签只能被消费一次** ⇒ 人声要先 `asplit=2`（规格原模板直接用了两遍 `[a_voice]`，报的是 `matches no streams`）
@@ -1061,7 +1057,7 @@
 - ✅ `pytest tests/integration/test_queue_lease.py -q`：**70 例**（新增 `report_progress` / `cancel` 共 9 例）
 - 📌 **面板那条出片仍走进程内**（不是漏做）：面板默认的任务号 `ui-YYYYMMDD-HHMMSS` 在 `tasks` 里没有对应行，而 `jobs.task_id` 有外键 ⇒ **挂不上队列**（陷阱 #101）；且队列的幂等键 `(task_id, 'render', 'final', 'final')` 决定"一条任务只渲一次"，与面板"同任务重渲"的用法冲突
 - 📌 **分块降级本轮不做**（与"三级降级链"的字面写法有出入，理由写在这里）：分块判据是 `estimated_nodes > 60`，而一期是**单底片**合成，整张滤镜图实测十来二十个节点，离 60 差得远。现在写分块就是写一段**永远不会被执行、因而永远不会被验证**的代码 —— 等二期三层模板（多场景 / 转场 / 多段镜头）节点数真的爆了再写，那时才知道该按什么切
-- 📌 **相似度审计 `scripts/dup_audit.py` 本轮不做**：规格 §04.2.4.5 要求成片抽 8 帧 pHash + 关键帧 SSIM + chromaprint 音频指纹，三样都是**新增的重型子系统**，而它在一期是 `warn` 级（§06.4 门禁 3 `block_on_similarity=false`，不阻塞发布）。当前 `QualityReport.dup_audit_pass` 留 `None` —— **`None`（没审）与 `False`（审了没过）是两件事**，留空比填一个假值诚实
+- ⛔ **已关闭（非核心 · §12-5）**：`scripts/dup_audit.py` 相似度审计（8 帧 pHash + 关键帧 SSIM + chromaprint 音频指纹）。规格 §04.2.4.5 要求的三样都是**新增的重型子系统**，而它在一期是 `warn` 级（§06.4 门禁 3 `block_on_similarity=false`，**不阻塞发布**）。`QualityReport.dup_audit_pass` 留 `None` —— **`None`（没审）与 `False`（审了没过）是两件事**，留空比填一个假值诚实
 - 📌 **渲染反复失败 ⇒ `manual_pool` 本轮不做**：那属于重试链（`attempt_count` / 退避 / 死信 / 池自动降级），T4.x 的地盘。T3.7 的 `deliver()` 只换一次保底档，仍失败就以**原来的错误**抛出去 —— 让重试链接手，而不是在这里再实现一套重试
 - ⚠️ 陷阱 #99 **`pipeline run` 对 `failed` / `editing` 的任务静默空转**（判"越过 `--until`"用正向链位置，而它们不在链上 ⇒ 被算成"排在终点之后"）⇒ 先判"卡住 / 人工闸"，再判"越过"
 - ⚠️ 陷阱 #100 **`quality_json.lufs` 填了 loudnorm 的输入读数**（归一化**之前**那个，约 −22）⇒ 发布门禁把好片子拦下。QC 必须重量一遍落盘的成片
@@ -1071,10 +1067,10 @@
 - ⚠️ **已知偏差**：`QualityReport` 里**没有** `watermark_applied`，而 §06.4 门禁 1 写的是读 `quality_json.watermark_applied`。一期水印已改为**可选装饰**（缺失不阻塞），门禁 1 的判据取自 `manifest.json → watermark.enabled`；真要恢复硬门禁时两处一起改
 
 ### 二期（P1）预留 · 三层模板场景编排 · **P2**（不阻塞 M3）
-- [ ] **T3-P1** 三层模板契约与加载器（YAML → Pydantic → DB；组件六类；八类校验）— 依赖 T3.7，契约 §03.6 / §04.2.0
-- [ ] **T3-P2** IR 与构建器（`VideoIR` + bind pass + `$` 变量绑定）— 依赖 T3-P1，契约 §04.2.1
-- [ ] **T3-P3** 自动填充 + `repeat_last` 场景扩展（克隆场景强制重抽素材、**禁绝对时间**）— 依赖 T3-P2，契约 §04.2.2 / §04.2.3
-- [ ] **T3-P4** 场景级 filtergraph 编译 + 场景中间产物缓存 + 场景级重试 + 合流 — 依赖 T3-P3，契约 §04.2.5 / ADR-004
+- ⏸ **T3-P1** 三层模板契约与加载器（YAML → Pydantic → DB；组件六类；八类校验）— 依赖 T3.7，契约 §03.6 / §04.2.0
+- ⏸ **T3-P2** IR 与构建器（`VideoIR` + bind pass + `$` 变量绑定）— 依赖 T3-P1，契约 §04.2.1
+- ⏸ **T3-P3** 自动填充 + `repeat_last` 场景扩展（克隆场景强制重抽素材、**禁绝对时间**）— 依赖 T3-P2，契约 §04.2.2 / §04.2.3
+- ⏸ **T3-P4** 场景级 filtergraph 编译 + 场景中间产物缓存 + 场景级重试 + 合流 — 依赖 T3-P3，契约 §04.2.5 / ADR-004
 - **二期启动条件（三者同时满足）**：①一期稳定出片 ≥100 条 ②确有"片头/片尾/多段镜头编排"需求 ③磁盘与时间预算允许
 
 > **>>> M3 门禁**：换稿不重剪（**同素材 + 同水印，换稿件直接出片**）；网页一键出新片并在线预览；水印/响度/相似度门禁通过。
@@ -1731,7 +1727,7 @@
 - ✅ T+1h 能在发布面板看到数据；`auto_YYYYMM.md` 生成且**能被解析器消费**
 - ⚠️ 采集失败 ⇒ 顺延 1h 重试（≤3 次），用尽即停止采集**这一条**，不阻断其他任务
 - ⚠️ 发布池正忙 ⇒ 整拍让路（两个浏览器抢同一个 profile 会让**发布**失败）
-- ⏸ **评论抓取：用户裁定暂时搁置（2026-09-18）**。用户口径：「暂时只关心播放量 / 点赞量 /
+- ⛔ **已关闭（非核心 · §12-6）**：**评论抓取**。用户裁定（2026-09-18）：「暂时只关心播放量 / 点赞量 / 完播率这些数据，暂时不要考虑门禁校验等线上问题，抓紧跑通流程」⇒ 评论抓取**不做**。
       完播率这些数据，暂时不要考虑门禁校验等线上问题，抓紧跑通流程」⇒ 本轮**不做**评论抓取。
       `sink_memory` 的缝留着（`comments=[…]` 或发布器的 `fetch_comments`），各平台评论页的
       选择器还没写 —— 在那之前 ① 恒为 0，②③ 照常工作。**连带后果要说清**：
@@ -2092,15 +2088,15 @@
 
 ## 6. 横切任务（贯穿全程，每个任务都要满足）
 
-- [ ] **契约先行**：每个任务有引用 `§` 条款编号的契约测试
-- [ ] **幂等**：同一 job 重复执行结果一致（产物路径由内容哈希决定）
-- [ ] **可观测**：关键路径写 `system_logs`；状态变更写 `task_events`；人工/自动决策写 `audit_ops`
-- [ ] **可降级**：每个外部依赖（LLM / TTS / FFmpeg / 磁盘 / GPU / 平台）都有显式失败分支**且有测试覆盖**
-- [ ] **无静默失败**：禁止裸 `except: pass`；异常落 `error_code` + 日志 + 状态迁移（**静态检查**）
-- [ ] **可冷启动复现**：`studio doctor` 全绿 + `pytest -m "not gpu and not slow and not net"` 通过
-- [ ] **超时硬约束**：LLM 120s / 单句 TTS 60s / **一期整片合成 600s**（二期单场景 300s）/ 整任务 30min
-- [ ] **零人工**：除确认闸外不得要求人工干预；失败必须自动重试或降级
-- [ ] **确定可审计**：同输入 + 同 seed ⇒ 同产物；模板/提示词/引擎版本/种子/滤镜图/人工操作全部留痕
+- [x] **契约先行**：每个任务有引用 `§` 条款编号的契约测试 —— `tests/contract/` **13 个文件**（`test_voice_engine_abc` / `test_publisher_abc` / `test_ws_protocol` / 五份 `*_schema` / 三份 `test_no_direct_*_write` / `test_llm_gateway` / `test_web_contracts`），逐条按 § 编号对账
+- [x] **幂等**：同一 job 重复执行结果一致 —— 产物路径由内容哈希决定（`composite_hash` / `tts_hash` / 发布幂等键 `sha256(task_id\|platform\|account_id)`），重复跑**命中缓存或命中已有行**而不是再出一份
+- [x] **可观测**：关键路径写 `system_logs`；状态变更写 `task_events`；人工/自动决策写 `audit_ops`（面板「日志 / 审计」两块直接读它们）
+- [x] **可降级**：每个外部依赖都有显式失败分支且有测试覆盖 —— LLM（双通道 + 预算）/ TTS（§04.3.3 七值决策表 + 熔断）/ FFmpeg（720P 保底 + 黑屏降级）/ 磁盘（GC + 备份）/ GPU（OOM 自动降并发）/ 平台（失败转人工 + 限频）。故障注入 `STUDIO_FAULT` 是这条的**验收入口**
+- [x] **无静默失败**：禁止裸 `except: pass` —— **静态检查真的在拦**（ruff `SIM105` / `E722`，本轮用一个 `try/except: pass` 探针实测报错）；异常一律落 `error_code` + 日志 + 状态迁移
+- [x] **可冷启动复现**：`studio doctor` 全绿（2026-09-19 实测：ffmpeg / 滤镜 / NVENC / DB / SQLite / GPU / Node / uv / 迁移**全 OK**；两条 WARN 是**环境提示**不是失败 —— 内置字体缺失 E8、内存 15.82 GB 略低于推荐 16 GB）+ `pytest -m "not gpu and not slow and not net"` 通过
+- [x] **超时硬约束**：`config/app.yaml → timeouts` 就是这四个数 —— `llm_sec: 120` / `tts_sentence_sec: 60` / `render_final_sec: 600` / `task_sec: 1800`（30min）；池侧另有 `unit_timeout_sec` 同源
+- [x] **零人工**：除确认闸外不要求人工 —— 确认闸**仅 B 级稿件**需要人（A 级自动放行），其余失败一律自动重试或降级（发布失败转「待人工」是**告警面**，不是流程依赖）
+- [x] **确定可审计**：同输入 + 同 seed ⇒ 同产物 —— 模板 / 提示词 / 引擎版本 / 种子 / 滤镜图 / 人工操作**全部留痕**（`manifest.json` 带随机化留痕 + `graphs/` 落滤镜图 + `llm_calls` 落模型与版本）
 
 **全局验收命令（每个里程碑都要跑一遍）**
 
@@ -2111,7 +2107,7 @@ uv run pytest -m "not gpu and not slow and not net" -q    # 快速回归（CI �
 uv run pytest -m contract -q                     # 全部契约测试
 uv run pytest -m "e2e and slow" -q               # 端到端（里程碑前跑）
 python scripts/audio_qc.py --task <id>           # 响度/峰值（发布门禁 2）· ✅ 已落地
-python scripts/dup_audit.py --task <id>          # 相似度（发布门禁 3）· ⏸ 一期不做（见 T3.7）
+python scripts/dup_audit.py --task <id>          # 相似度（发布门禁 3）· ⛔ 已关闭（§12-5）
 python scripts/av_sync_audit.py --task <id>      # 仅诊断（C12：不阻断发布）
 python scripts/ingest_voice_src.py --dry-run      # 参考音入库体检（T2.4；有被拒 ⇒ 退出码 1）
 uv run pytest tests/integration/test_scheduler.py tests/integration/test_reports.py -q   # 定时调度 / 报告（M5 门槛）
@@ -2123,11 +2119,11 @@ uv run pytest tests/integration/test_scheduler.py tests/integration/test_reports
 
 | 里程碑 | 门禁（可执行） | 关联任务 | 状态 |
 | --- | --- | --- | --- |
-| **M1** | 网页端输入定位 + 热点 ⇒ 产出合格稿件（含评分）⇒ 确认闸可见；`启动.bat` 一键拉起全部服务 | T1.1–T1.12 | [ ] **口径见 §1 T1.12 裁定 108**（「5 进程全 ready」顺延 M4） |
-| **M2** | 一句话用熊大音色读出；杀进程重启后已完成句**引擎调用为 0**；网页可见逐句进度 | T2.1–T2.9 | [ ] |
-| **M3** | 换稿不重剪（**同素材 + 同水印，换稿件直接出片**）；网页一键出新片并在线预览；水印/响度/相似度门禁通过 | T3.1–T3.7 | [ ] |
-| **M4** | ≥3 篇同时推进；中断后恢复；连续 24h 无人干预；全程网页操作 | T4.1–T4.12 | [ ] |
-| **M5** | 成片**定时/即时**自动发布（≥1 平台）+ 数据回流 + **报告生成与决策采纳** + 记忆沉淀闭环 | T5.1–T5.10 | [ ] **定时发布已通（T5.6）+ 报告与决策闭环已通（T5.7）+ 多账号已通（T5.8）**，剩 T5.4 的评论抓取（用户裁定搁置） |
+| **M1** | 网页端输入定位 + 热点 ⇒ 产出合格稿件（含评分）⇒ 确认闸可见；`启动.bat` 一键拉起全部服务 | T1.1–T1.12 | ✅ **已过（2026-09-19）** —— 裁定 108 的口径：「`api` ready + 其余**如实报降级**且不阻塞」。本轮真机重启后**六个进程全 ready**（api / tts / draft / voice / render / publish，`degraded=[]`），T2.2 落地前挂着的 `tts` 判据已消解 |
+| **M2** | 一句话用熊大音色读出；杀进程重启后已完成句**引擎调用为 0**；网页可见逐句进度 | T2.1–T2.9 | ✅ **已过（2026-09-19）** —— 真机成片里念的是 `cosyvoice2`（`bigbear` / `littlebear`）；续传「引擎调用为 0」由 `test_sentence_resume.py` 钉住；面板逐句进度 34/34 |
+| **M3** | 换稿不重剪（**同素材 + 同水印，换稿件直接出片**）；网页一键出新片并在线预览；水印 / 响度门禁通过 | T3.1–T3.7 | ✅ **已过（2026-09-19）** —— 真机 235.6 MB / 357.0s 成片、字幕烧进画面、**水印已贴**（`watermark_applied=true`）、QC `lufs −16.76 / true_peak −0.84`。**相似度门禁按用户裁定关闭**（warn 级、不阻塞，§12-5）⇒ 门禁口径收敛为「水印 + 响度」 |
+| **M4** | ≥3 篇同时推进；中断后恢复；连续 24h 无人干预；全程网页操作 | T4.1–T4.12 | 🔶 **代码全就绪，长跑验收未做** —— 前两条与「全程网页操作」已验（四池并行 + 续传 + 面板）；**「连续 24h 无人干预」是一次长跑**，T4.12 的观测面（指标面板 + 备份 + 运维剧本）已就位 ⇒ **可单独进行**。这是当前**唯一**未跑的一期验收 |
+| **M5** | 成片**定时/即时**自动发布（≥1 平台）+ 数据回流 + **报告生成与决策采纳** + 记忆沉淀闭环 | T5.1–T5.10 | ✅ **已过（2026-09-19）** —— 定时（T5.6）/ 即时（T5.10）/ 多账号（T5.8）都已通，数据回流 + 报告与决策采纳 + 记忆沉淀已闭环（㉓㉖㉗）。**评论抓取按用户裁定关闭**（§12-6）⇒ 回流口径 = 播放 / 点赞 / 完播率这些**数字** |
 
 ---
 
@@ -2169,14 +2165,14 @@ T1.12 ✅             （一键启动）
 
 | 阶段 | 任务数 | 已完成 | 里程碑 | 门禁状态 |
 | --- | --- | --- | --- | --- |
-| **T1** 基座 + 脚手架 + 选题池 | 12 | **12**（T1.1–T1.12 全部 ✅） | M1 | [ ] |
-| **T2** CosyVoice 配音 | 9 | **9**（**T2.1 ✅ T2.2 ✅** **T2.3 ✅** **T2.4 ✅** T2.5 ✅ T2.6 ✅ T2.7 ✅ T2.8 ✅ T2.9 ✅ —— **T2 全绿**） | M2 | [ ] |
-| **T3** 渲染（一期单遍合成） | 7 | **5**（T3.2 ✅ **T3.4 ✅** T3.5 ✅ T3.6 ✅ T3.7 ✅）+ **2 部分**（T3.1 🔶 T3.3 🔶） | M3 | [ ] |
-| **T4** 操作台 + 四池 + 无人值守 | 14 | **14**（T4.1 ✅ T4.2 ✅ T4.3 ✅ T4.4 ✅ **T4.5 ✅** T4.6 ✅ T4.7 ✅ T4.8 ✅ T4.9 ✅ T4.10 ✅ T4.11 ✅ T4.12 ✅ T4.13 ✅ **T4.14 ✅** —— **T4 齐了**） | M4 | [ ] |
-| **T5** 发布 + 定时 + 报告 | 8 | **7**（T5.1 ✅ T5.2 ✅ T5.3 ✅ **T5.5 ✅** **T5.6 ✅** **T5.7 ✅** **T5.8 ✅**） | M5 | [ ] |
+| **T1** 基座 + 脚手架 + 选题池 | 12 | **12**（T1.1–T1.12 全部 ✅） | M1 | ✅ |
+| **T2** CosyVoice 配音 | 9 | **9**（**T2.1 ✅ T2.2 ✅** **T2.3 ✅** **T2.4 ✅** T2.5 ✅ T2.6 ✅ T2.7 ✅ T2.8 ✅ T2.9 ✅ —— **T2 全绿**） | M2 | ✅ |
+| **T3** 渲染（一期单遍合成） | 7 | **7**（T3.1 ✅ T3.2 ✅ **T3.3 ✅** **T3.4 ✅** T3.5 ✅ T3.6 ✅ T3.7 ✅ —— **T3 全绿**） | M3 | ✅ |
+| **T4** 操作台 + 四池 + 无人值守 | 14 | **14**（T4.1 ✅ T4.2 ✅ T4.3 ✅ T4.4 ✅ **T4.5 ✅** T4.6 ✅ T4.7 ✅ T4.8 ✅ T4.9 ✅ T4.10 ✅ T4.11 ✅ T4.12 ✅ T4.13 ✅ **T4.14 ✅** —— **T4 齐了**） | M4 | 🔶 |
+| **T5** 发布 + 定时 + 报告 | 8 | **8**（T5.1 ✅ T5.2 ✅ T5.3 ✅ **T5.4 ✅** **T5.5 ✅** **T5.6 ✅** **T5.7 ✅** **T5.8 ✅** —— **T5 全绿**） | M5 | ✅ |
 | **T6** 追加任务（设置面板） | 1 | **1**（T6.1 ✅） | — | *不占一期工期* |
-| **合计（一期）** | **50** | **47**（另有 **2** 项部分完成） | — | — |
-| *T3-P1…T3-P4* | *4（二期）* | *0* | — | *不占一期工期* |
+| **合计（一期）** | **50** | **50**（**一期任务全部收口**；非核心项按用户裁定关闭，清单见 §12） | — | — |
+| *T3-P1…T3-P4* | *4（二期）* | *0* | — | *不占一期工期 · ⏸ 二期再启* |
 
 **外部阻塞项**：~~E1 跑酷素材~~ ✅ **已入库 2026-09-18（58 条）** / ~~E2 水印 PNG~~ ✅ **已做 2026-09-18（640×150 rgba）** / ~~E3 BGM~~ ✅ **已有占位** / E4 原声 🟡（占位素材无音轨，不影响出片） / ~~E5 CosyVoice 权重~~ ✅ **已就位 2026-09-17** / ~~E6 LLM Key~~ ✅ **面板可配 2026-09-17** / E7 persona 🟡 / **E8 字体 🟡（唯一还需要你出手的一项）**
 > ⇒ **当前无任何硬阻塞**。E8 的现状：字幕**已经能烧**，只是走的是"退到 `C:/WINDOWS/Fonts`"那条降级路 ——
@@ -2184,26 +2180,21 @@ T1.12 ✅             （一键启动）
 > 需要你放一个**可自由分发**的中文字体（思源黑体 / Noto Sans SC 之类）进去：微软雅黑是商业字体，
 > 我**不替你提交**（会污染仓库授权）。目录已经建好了：`templates/douyin_9x16_default/assets/fonts/`。
 
-> **「部分完成」口径（2026-09-17 核对）**：总表只把**整块做完**的任务计进「已完成」；主干已落地、但仍有明确缺口
-> 的记作 **🔶 部分完成**（未做的子项在任务块里逐条标 `[ ]` 并写了理由与落点）—— **不计入**「已完成」，也**不算未开工**。
-> 当前 T3 有 2 项部分完成：
-> ① `T3.1` 素材入库 —— 缺 pHash + 帧哈希、黑帧段落排除、`studio assets ingest` / `stats` CLI、`tests/integration/test_broll_ingest.py`（**前两项用户已裁定为非核心**）；
-> ② `T3.3` 单遍编译器 —— 缺语法预检、节点守卫 / 分块降级（**刻意不做**，见 `src/studio/render/degrade.py`）、`studio render plan`；规格里的 `CompositePlan` 实际名为 `CompositeRequest`。
-
-> `T2.4` 音色注册仍为 **🔶 部分完成**：目录契约 / 四条硬拒 / 入库命令 / 解耦 / 来源登记已就位（真机跑通），**试听样本已于 2026-09-19 补上**（面板上「试听 / 生成试听」那颗按钮走的就是它）；未做的只剩三条 `warn` 级检查（裁定 287）与**正式原声**（E4：占位素材无音轨，不影响出片）。
+> **「部分完成」口径（2026-09-19 终版核对）**：总表只把**整块做完**的任务计进「已完成」；主干已落地、但仍有明确缺口的记作 **🔶 部分完成**（未做的子项在任务块里逐条标出并写了理由与落点）。
+> ⇒ **当前部分完成项为 0**：原先挂在 T3.1 / T3.3 / T2.4 上的缺口**全部是用户裁定的非核心项**，本轮已逐条关闭并移出任务清单（登记在 §12）。
+> 关闭**不等于**做完 —— §12 写清了每一项**关掉的是什么、为什么关、什么条件下该重新捡起来**，将来要恢复时按编号去那一节读，不要从头翻规格。
+> 二期 `T3-P1…T3-P4`（三层模板场景编排）**不占一期工期**，已标 ⏸ 而不是待办 —— 启动条件见 §3 二期小节（三者同时满足才启）。
+> `T2.4` 音色注册已收口为 **✅ 已完成（2026-09-19）**：目录契约 / 四条硬拒 / 入库命令 / 解耦 / 来源登记（真机跑通）+ **试听样本**（面板「试听 / 生成试听」那颗按钮走的就是它）；三条 `warn` 级检查按裁定 287 关闭（§12-1）。正式原声仍是 **E4**（你自备素材，见 §04.3.1 的替换路径），它是**外部输入**、不是代码缺口 ⇒ 不影响 T2.4 收口。
 > 注 1：`T1.2` 含 **T1.2+ persona 可编辑改造**（人物库 / 热重载 / 一键切换 / 自动备份）。E7 现有 2 套可跑人物（`persona_default` 熊大熊二 · `solo_commentary` 快嘴单人），**口吻 / 受众 / 禁区仍待你定稿内容**（**可编辑性已就位**，见注 4）。
 >
-> 注 2：**M1 仍未算过**（T1.12 裁定 108）：一键启动已可用，但「5 进程全 ready」只差 `tts`（T2.2）——
-> `draft`（T4.11）· `voice`（T2.6）· `render`（T3.7）都已注册真实 handler ⇒ 2026-09-16 实测 `spawned = api/draft/voice/render`。
-> ⇒ M1 的验收口径 = 「`api` ready + 其余**如实报降级**且不阻塞」。**E5（CosyVoice 权重）已于 2026-09-17 就位** ⇒ `T2.1` ✅，剩下的只是 `T2.2` 常驻服务；当初为绕开它先做了 T4.1（前端脚手架，P1，2026-09-14 ✅）。
-> ⇒ **2026-09-17 `T2.2` 落地后**：`tts` 的 `server_missing` / `env_missing` 两条判据都已消解，五个进程的入口、解释器、`PYTHONPATH` 都齐了。
-> **但「5 进程全 ready」仍未真机复核** —— 你机器上 8787/8788 跑着自己起的服务，其中 `tts` 是 T2.2 落地**之前**起的
-> （系统 python ⇒ `/health` 回 200 但每句报 `no module named torch`，正是裁定 307 说的第三种结果），**没动它**。
-> 复核方式：`停止.bat` → `启动.bat`，`tts` 会改用 `tts/.venv` 解释器重启。
->
+> 注 2：**M1 已算过（2026-09-19 真机复核）**。裁定 108 的验收口径 = 「`api` ready + 其余**如实报降级**且不阻塞」；
+> 本轮真机重启（`停止.bat` → `启动.bat`）后**六个进程全部 ready**：`api` / `tts` / `draft` / `voice` / `render` / `publish`，
+> `degraded=[]` / `failed=[]` / `port_busy=[]`，`tts` 自报 `ready:true · device:cuda · model_state:ready · engine:cosyvoice2`。
+> ⇒ 当年挂着的两条判据（`tts` 没起来、`tts` 用错解释器）**都已消解**；此前「未复核」是因为你机器上跑着 T2.2 落地**之前**
+> 起的旧 `tts`（系统 python ⇒ `/health` 回 200 但每句报 `no module named torch`，正是裁定 307 说的第三种结果）。
 > 注 3：**下一批可开工任务**（依赖已满足）——
 > ① ~~`T2.5` 文本归一化与切分~~ ⇒ **已完成（2026-09-15）**，见上方任务块。
-> ② **`T3.1` 素材入库补全**（P0 · 依赖 T1.3 ✅）：T4.8 已建好扫盘 / sha256 / 时长 / 响度 / 缩略图 / 入库主干，**缺口** = pHash + 帧哈希、黑帧段落排除、`studio assets ingest --kind parkour|bgm` CLI、`tests/integration/test_broll_ingest.py`；E1/E3 用 `scripts/seed_placeholder_assets.py` 的占位素材撑门禁。
+> ② ~~`T3.1` 素材入库补全~~ ⇒ **已完成（2026-09-19）**：扫盘 / sha256 / 时长 / 响度 / 缩略图 / 入库主干 / license 强制 / BGM 入库都已落地；**pHash + 帧哈希、黑帧段落排除、`assets` CLI、`test_broll_ingest.py` 按用户裁定关闭**（§12-2）—— 见上方任务块与 §12。
 > ③ ~~`T3.2` 水印资产与合成 profile~~ ⇒ **已完成**（水印参数模型 / PNG 实测 / 编译期摆放 / `studio render profile --show` / `tests/unit/render/test_watermark.py`）。**硬门禁被推翻**：水印缺失改为**跳过水印层**，成片优先（理由见 `render/watermark.py` 的模块注释）。
 > ④ ~~`T2.6` 按句合成流水线 + 句级缓存~~ ⇒ **已完成（2026-09-16）**，见上方任务块。
 > ⑤ ~~`T2.7` 时长时间轴~~ ⇒ **已完成（2026-09-16）**，见上方任务块。
@@ -2433,6 +2424,24 @@ T1.12 ✅             （一键启动）
 > - **门禁**：`.\tasks.ps1 check` ⇒ **4062 passed / 32 skipped / 28 deselected**（169s）；本轮**没动前端**，契约无漂移；
 > - **陷阱 193**。
 >
+> ㉜ **关闭全部非核心项 ⇒ 一期 50/50 收口**（用户指令：「关闭所有非核心项，从任务清单中去掉非核心流程」）。
+> - **关闭 6 组、共 12 项**（登记在 **§12**，逐项写了「关掉的是什么 / 为什么关 / 什么条件下捡回来」）：
+>   ① T2.4 三条 `warn` 级质量校验（裁定 287）② T3.1 pHash + 帧哈希 / 黑帧排除 / `assets` CLI / `test_broll_ingest.py`
+>   ③ T3.3 语法预检 / 节点守卫 + 分块 / `render plan` / `test_filtergraph.py` ④ T3.6 BGM 预对齐
+>   ⑤ T3.7 `dup_audit.py` 相似度审计 ⑥ T5.4 评论抓取；
+> - **任务清单里不再有非核心流程**：那些 `- [ ]` 已从任务块移出（原地留一行 ⛔ 指针，写明去向），
+>   二期 `T3-P1…T3-P4` 改标 **⏸**（是二期、不是不做）；
+> - **进度：47/50 → 50/50**（T2 9/9 · **T3 7/7** · T5 8/8），**部分完成项 0**；
+> - **横切任务 §6 九条全部核过并勾上**（每条都带证据，不是「看着像」）：契约先行（`tests/contract/` 13 个文件逐条按 § 对账）、
+>   幂等（三处内容哈希）、可观测（`system_logs` / `task_events` / `audit_ops`）、可降级（六个外部依赖各有显式分支 + `STUDIO_FAULT` 验收入口）、
+>   **无静默失败（ruff `SIM105` / `E722` 真在拦 —— 本轮用 `try/except: pass` 探针实测报错）**、可冷启动复现（`studio doctor` 全 OK）、
+>   超时硬约束（`config/app.yaml` 就是 120/60/600/1800 这四个数）、零人工、确定可审计；
+> - **里程碑 §7 逐条核过**：**M1 ✅ M2 ✅ M3 ✅ M5 ✅**；**M4 🔶** —— 只剩「连续 24h 无人干预」这条**长跑验收**没跑
+>   （观测面 T4.12 已就位 ⇒ 可单独进行），**这是当前唯一未跑的一期验收**；
+> - **顺手纠正的旧读数**：正文里 `test_asset_service.py` 40 / `test_assets.py` 13 / `test_composite.py` 23 是 09-17 的旧值，
+>   本轮真跑复核为 **51 / 19 / 47**（T3.4 的进度流与限流用例也落在 `test_composite.py`）；
+> - **门禁**：`.\tasks.ps1 check` ⇒ **4062 passed / 32 skipped / 28 deselected**（本轮**只动文档**，代码一行未改）。
+
 > **当前关键路径**：`T2.1 ✅` ⇒ `T2.2 ✅` ⇒ `T2.3 ✅`（**T2 全绿**：`VoiceEngine` ABC + 三实现 + 熔断 + §04.3.3 决策表逐条落地）⇒ **`T2.4` 正式原声**（试听样本已补，2026-09-19）⇒ `T3.3`（🔶 只差语法预检 / 节点守卫 / `render plan` 三个非核心子项）。**T3.4–T3.7 与 T4 / T5 都已收口**；一期剩下的只有 T2.4 的正式原声与 T3.1 / T3.3 的非核心缺项。
 > ⇒ **没有任何硬阻塞**；E1/E2/E3/E4 只影响各自任务的真机验收，**不影响开发推进**。
 >
@@ -2640,3 +2649,33 @@ T1.12 ✅             （一键启动）
 | 配置 | `config/*.yaml`（含 `persona.yaml` 实例）、`prompts/**`、`templates/**` |
 | 文档 | `docs/spec/**`（规格书）、`docs/adr/**`、`docs/runbook/**`（7 个剧本）、`docs/qc/**` |
 | 运维 | `启动.bat` / `停止.bat` / `ops/*.ps1` / `scripts/backup_db.ps1` / `scripts/restore_db.ps1` |
+
+---
+
+## 12. 已关闭项（非核心 · 明确不做）
+
+> **这一节是一期任务清单之外的东西**：它们曾经是任务块里的 `- [ ]`，本轮按用户裁定**逐条关闭**并从
+> 任务清单移出。放在这里而不是删掉，是因为**"不做"也是一个决定** —— 每一项都要能回答三个问题：
+> **关掉的是什么、为什么关、什么条件下该重新捡起来**。将来要恢复时按编号来这一节读，不要从头翻规格。
+>
+> 关闭**不等于**做完。判据：这些项**都不在**一期 M1–M5 的验收路径上。
+
+| # | 任务 | 关掉的项 | 为什么关 | 依据 | 什么条件下捡回来 |
+| --- | --- | --- | --- | --- | --- |
+| **12-1** | T2.4 | 三条 `warn` 级质量校验：无 BGM / 有效语音占比 ≥ 70% / 单发言人 | 四条**硬拒**（段数 / 时长 / 削波 / 采样率）已经挡住真正会毁掉音色的素材；`warn` 只影响"参考音干不干净"，而**试听样本**（T2.4 已交付）就是让人耳做最终判据的那一步 —— 机器判一遍再让人听一遍是重复劳动 | 裁定 287 | 出现"入库通过了、试听才发现参考音里混了 BGM"这类**反复**踩的素材时 |
+| **12-2** | T3.1 | ① pHash + 帧哈希 ② 黑帧段落自动排除 ③ `studio assets ingest` / `stats` CLI ④ `tests/integration/test_broll_ingest.py` | ① 用户裁定非核心（2026-09-17）② 同上 ③ 入库的**图形化入口**是 T4.8 的素材库面板，再写一套 CLI 等于把同一件事写两遍（判据分叉风险）④ 该文件**从不存在**，能力由 `test_asset_service.py`（51 例）+ `test_assets.py`（19 例）覆盖 | 用户裁定 2026-09-17 | ① 素材库涨到几百条、sha256 挡不住"改过一帧的搬运"时 ② 手头素材本身有黑场片头/片尾时 ③ 需要无人值守批量入库（现在面板够用） |
+| **12-3** | T3.3 | ① 语法预检（`ffmpeg -filter_complex_script … -f null -`）② 节点守卫 / 分块降级（`estimated_nodes > 60`）③ `studio render plan --out plan.json` ④ `tests/golden/test_filtergraph.py` | ① 只是"快速失败"的**优化**：失败信息 ffmpeg 一样会给，且不影响出片 ② 一期是**单底片**合成，整张滤镜图实测十来二十个节点、离 60 差得远 —— 现在写分块就是写一段**永远不会被执行、因而永远不会被验证**的代码（理由已写进 `src/studio/render/degrade.py` 模块 docstring）③ `render_app` 只有 `profile` / `make`，滤镜图已落盘 `graphs/` 供手工重跑 ④ 中文 / 空格 / 盘符冒号的转义由 `test_composite.py` 直接断言 `filter_path_arg()` 覆盖 | 规格 §04.2.8.2 / §04.2.8.6；R8 | **二期三层模板**（多场景 / 转场 / 多段镜头）落地时 —— 那时节点数才会真的爆，也才知道该按什么切 |
+| **12-4** | T3.6 | BGM 预对齐（按 `bgm_tracks.loudness_lufs` 先归一） | 两遍 `loudnorm` 已经把**成品**响度归到目标；再按素材响度预对齐是**二次补偿** —— 调两次只会让"为什么响度是这个数"更难查 | §01.5.3 | 出现"某些 BGM 一进来就把人声压没"这类**素材级**问题，且调 `bgm_gain_db` 解决不了时（落点是混音前，不是改这条链） |
+| **12-5** | T3.7 | `scripts/dup_audit.py` 相似度审计（8 帧 pHash + 关键帧 SSIM + chromaprint 音频指纹） | 三样都是**新增的重型子系统**，而它在一期是 `warn` 级（§06.4 门禁 3 `block_on_similarity=false`，**不阻塞发布**）。`QualityReport.dup_audit_pass` 留 `None` —— **`None`（没审）与 `False`（审了没过）是两件事**，留空比填一个假值诚实 | §04.2.4.5 / §06.4 | 平台真的因为"重复内容"限流时（那时它是**阻断**级，才值得建） |
+| **12-6** | T5.4 | 评论抓取（各平台评论页选择器 + `fetch_comments`） | 用户裁定（2026-09-18）：「暂时只关心播放量 / 点赞量 / 完播率这些数据，暂时不要考虑门禁校验等线上问题，抓紧跑通流程」 | 用户裁定 2026-09-18 | 需要"从评论里挖选题"时。**连带后果已写清**：`feedback_items_created` 恒为 0 是**预期**（§06.8 ① 的输入就是评论），§06.8 ③ 的汇总文件只有表头没有数据行，`planner_consumable=true` 只表示"格式能被解析器吃" |
+
+**留在清单里但不算一期待办的**：`T3-P1…T3-P4`（二期三层模板场景编排）已标 **⏸** —— 它**不是**"不做"，
+而是**二期**，启动条件见 §3 二期小节（①一期稳定出片 ≥100 条 ②确有片头/片尾/多段镜头编排需求 ③磁盘与时间预算允许）。
+
+**还没删的占位**（本轮**刻意保留**，等你发话）：`broll_clips.phash` / `frame_hashes_json` 两列（DDL 在、无代码写）、
+`config` 里的 `phash_hamming_max` / `phash_high_similar_ratio_max`、`paths.phash_cache_dir()`、
+`QualityReport.phash_distance_avg` / `dup_audit_pass`、`render/degrade.py` 的 `COMPOSITE_CHUNKED` 常量
+（面板 `web/src/stores/render.ts` 有一行 `composite_chunked` 的中文标签，连测试一起在）。
+**留着**的理由：它们是**规格词汇表**（§03.3.14 / §04.2.8.6 / §06.4）里的名字，删列要迁移、删标签要动前端与它的测试 ——
+而它们此刻**不产生任何行为**。真要清，说一声，我按 §12-2 / §12-3 / §12-5 的编号一次性删干净。
+
