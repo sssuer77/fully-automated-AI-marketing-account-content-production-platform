@@ -1040,7 +1040,7 @@
 - ⚠️ 陷阱 #97 `alimiter` 自动电平 + `limit` 比门禁宽 ⇒ 成品响度/真峰值双超标
 - ⚠️ 陷阱 #98 **`sidechaincompress` 接反**（规格下半段模板就是反的）⇒ BGM 整条消失、人声被叠一份，混音真峰值 +1.91 dBTP，成品响度掉到门禁边缘。判据是 `ffmpeg -h filter=sidechaincompress` 的 `#0: main` / `#1: sidechain`
 - 📌 **离下界只剩 0.02 dB 不是缺陷**：口播的峰值因数约 19 dB，而 `I=−16` 配 `TP=−1.3` 只允许 14.7 dB，`loudnorm` 为保证不越真峰值门禁主动少抬了 ~0.5 LU。实测去掉限幅器后 `loudnorm` 自己就落在 −16.3 / −1.0 —— 这是素材动态决定的物理上限，再往上顶就得放宽真峰值门禁
-- 📌 `scripts/audio_qc.py` **本轮不做**：它要读 `publish.yaml` 的发布门禁并回填 `quality_json`，那属于 T3.7（成片交付与降级链）。当前的响度验证在 `tests/integration/test_mixdown.py` 里真跑真量
+- 📌 `scripts/audio_qc.py` **后来在 T3.7 落地了**（这条是 T3.6 当时的备注，已过时）：判据直接读 `config/publish.yaml → precheck`，不另写一份阈值；用法 `python scripts/audio_qc.py --task <id>`
 
 ### T3.7 成片交付、manifest 与降级链 · **P0** ✅ **已完成（2026-09-16）**
 - 依赖：T3.4–T3.6 ｜ 里程碑：M3 ｜ 契约：§04.2.8.6 / §04.2.8.7 / §03.3.11
@@ -2108,7 +2108,7 @@ uv run pytest -m contract -q                     # 全部契约测试
 uv run pytest -m "e2e and slow" -q               # 端到端（里程碑前跑）
 python scripts/audio_qc.py --task <id>           # 响度/峰值（发布门禁 2）· ✅ 已落地
 python scripts/dup_audit.py --task <id>          # 相似度（发布门禁 3）· ⛔ 已关闭（§12-5）
-python scripts/av_sync_audit.py --task <id>      # 仅诊断（C12：不阻断发布）
+# 音画同步**没有**独立脚本：`av_sync_offset_ms` 只进 `publish/precheck.py` 的 `diagnostics`（C12：仅诊断，不阻断）
 python scripts/ingest_voice_src.py --dry-run      # 参考音入库体检（T2.4；有被拒 ⇒ 退出码 1）
 uv run pytest tests/integration/test_scheduler.py tests/integration/test_reports.py -q   # 定时调度 / 报告（M5 门槛）
 ```
