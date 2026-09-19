@@ -51,6 +51,7 @@ from studio.core.errors import ErrorCode, StudioError
 from studio.core.logging import get_logger
 from studio.core.paths import StudioPaths
 from studio.tts.cosyvoice import EngineState
+from studio.tts.engine import EngineHealth
 
 __all__ = [
     "FALLBACK_ENGINE_NAME",
@@ -84,6 +85,16 @@ SYNTH_TIMEOUT_SLACK_SEC: Final[float] = 5.0
 
 #: ``/health`` 里没有 ``engine`` 字段时的占位（只在"问过了但对面没报"时出现）
 FALLBACK_ENGINE_NAME: Final[str] = "cosyvoice2"
+
+#: ``POST /warmup`` 等多久（秒）。**故意比合成宽得多**：冷加载模型真机实测
+#: 22–32 秒，而按合成超时（60s + 余量）掐它勉强够 —— 但一台正在被别的进程抢
+#: 磁盘的机器会超过它。掐掉的后果不是"这次没预热"，而是**决策表以为引擎坏了**，
+#: 于是去 unload 一个正在加载的实例（把 30 秒的等待变成两倍）。
+WARMUP_TIMEOUT_SEC: Final[float] = 180.0
+
+#: ``POST /unload`` 等多久（秒）。释放显存是秒级的事，给太长只会让
+#: "服务没在跑"这种情形白等（那时连接被拒是瞬时的，这里防的是端口被静默丢包）。
+UNLOAD_TIMEOUT_SEC: Final[float] = 30.0
 
 #: ``speed`` 的上下界（与服务端 ``SynthRequest.speed`` 的 Field 约束一致）
 MIN_SPEED: Final[float] = 0.5
@@ -233,7 +244,23 @@ def probe_resident(
         logger.info("tts.resident_unreachable", base_url=base_url, error=f"{type(exc).__name__}: {exc}")
         return None
 
-    status = ResidentStatus(
+    status = _status_from_health(health, voices=voices, base_url=base_url)
+    if not status.usable:
+        logger.warning("tts.resident_not_usable", **status.to_dict())
+    return status
+
+
+def _status_from_health(
+    health: Mapping[str, Any], *, voices: tuple[str, ...], base_url: str
+) -> ResidentStatus:
+    """``/health`` 的原始 JSON ⇒ :class:`ResidentStatus`（**判据只此一份**）。
+
+    抽出来是因为有两个调用点：装配期的 :func:`probe_resident`，与引擎缝上的
+    ``ResidentEngine.health()``（决策表在失败路径上调它）。两处各写一份的话，
+    迟早出现"面板说这个音色能用、决策表说这台引擎不能用"—— 而那正是陷阱 #154
+    的形状（选了个音色、成片没人声，而库里写着换成功）。
+    """
+    return ResidentStatus(
         base_url=base_url,
         engine=str(health.get("engine") or FALLBACK_ENGINE_NAME),
         revision=str(health.get("revision") or ""),
@@ -244,9 +271,6 @@ def probe_resident(
         voices=voices,
         detail=health.get("detail"),
     )
-    if not status.usable:
-        logger.warning("tts.resident_not_usable", **status.to_dict())
-    return status
 
 
 def synth_timeout_for(paths: StudioPaths, *, fallback_sec: float = 60.0) -> float:
@@ -381,6 +405,26 @@ class ResidentEngine:
         try:
             with _client_for(self._base_url, self._client) as http:
                 response = http.post("/synth", json=payload, timeout=self._timeout)
+        except httpx.TimeoutException as exc:
+            # **超时不是"引擎没了"**（§04.3.3 的表里两者去往不同）：超时说明服务
+            # 在跑、只是这一句念得太久 —— 而长句是超时主因 ⇒ 决策表要"再切一刀"。
+            # 归到 TTS_ENGINE_DOWN 的话，它会先去 unload + 重载（真机 20–32 秒）
+            # 再重试同一句超长文本，然后**再超时一次** —— 三句下来整片进了字幕模式，
+            # 而真正该做的（把这一句切成两半）一次都没试。
+            raise StudioError(
+                f"常驻推理服务在 {self._timeout:.0f}s 内没念完这一句：{text[:40]}",
+                code=ErrorCode.TTS_TIMEOUT,
+                context={
+                    "base_url": self._base_url,
+                    "voice": voice,
+                    "text": text[:80],
+                    "chars": len(text),
+                    "timeout_sec": self._timeout,
+                },
+                remediation=(
+                    "长句是超时主因 ⇒ 让决策表走 SPLIT_AND_MERGE；反复如此看 data/logs/tts.log 里的推理耗时"
+                ),
+            ) from exc
         except httpx.HTTPError as exc:
             raise StudioError(
                 f"常驻推理服务连不上（{self._base_url}）：{type(exc).__name__}: {exc}",
@@ -401,6 +445,83 @@ class ResidentEngine:
                 context={"out_path": out_path.as_posix(), "base_url": self._base_url},
                 remediation="看 data/logs/tts.log：多半是服务写了别的地方（out_path 越界会被拒，这里是没写）",
             )
+
+    # ── 生命周期（T2.3 · §04.3.2）────────────────────────────────────
+
+    def warmup(self) -> None:
+        """``POST /warmup``：把模型读进显存（真机 22–32 秒）。
+
+        :raises StudioError: 连不上 / 服务回错（加载失败也是它）
+        """
+        self._post_lifecycle(
+            "/warmup",
+            timeout=WARMUP_TIMEOUT_SEC,
+            what="预热",
+            remediation=(
+                "看 data/logs/tts.log 的加载栈：权重目录不对 / 显存不够都会在这里现形；"
+                "`studio service status` 看 tts 进程在不在"
+            ),
+        )
+
+    def unload(self) -> None:
+        """``POST /unload``：释放显存（真机实测 2402 MB）。
+
+        空闲策略（T2.2 的 20 分钟）与 ``REWARM_ENGINE`` 都走它 —— 前者是省显存，
+        后者是"腾出来再载一遍"。
+        """
+        self._post_lifecycle(
+            "/unload",
+            timeout=UNLOAD_TIMEOUT_SEC,
+            what="卸载",
+            remediation="看 data/logs/tts.log；服务不支持 /unload（旧版本）时会回 404",
+        )
+
+    def health(self) -> EngineHealth:
+        """问一次 ``/health``（**不抛** —— 问不到就是"不能用"这个结论本身）。
+
+        判据与 :func:`probe_resident` **共用一份**（:func:`_status_from_health`）：
+        "能不能用"这件事在仓库里只该有一个答案。
+        """
+        try:
+            with _client_for(self._base_url, self._client) as http:
+                payload = _json_or_none(http.get("/health", timeout=PROBE_TIMEOUT_SEC))
+                if payload is None:
+                    return EngineHealth(
+                        engine=self.name,
+                        ready=False,
+                        detail=f"服务的 /health 没有正常应答（{self._base_url}）",
+                    )
+                voices = _usable_voices(http, timeout=PROBE_TIMEOUT_SEC, base_url=self._base_url)
+        except httpx.HTTPError as exc:
+            return EngineHealth(
+                engine=self.name,
+                ready=False,
+                detail=f"连不上常驻服务：{type(exc).__name__}",
+            )
+        status = _status_from_health(payload, voices=voices, base_url=self._base_url)
+        return EngineHealth(
+            engine=status.engine,
+            ready=status.ready,
+            detail=status.detail,
+            voices=status.voices,
+            model_state=status.model_state,
+            wakeable=status.wakeable,
+        )
+
+    def _post_lifecycle(self, path: str, *, timeout: float, what: str, remediation: str) -> None:
+        """两个生命周期端点共用的往返（错误映射只写一次）。"""
+        try:
+            with _client_for(self._base_url, self._client) as http:
+                response = http.post(path, json={}, timeout=timeout)
+        except httpx.HTTPError as exc:
+            raise StudioError(
+                f"常驻推理服务{what}失败：连不上（{self._base_url}）",
+                code=ErrorCode.TTS_ENGINE_DOWN,
+                context={"base_url": self._base_url, "path": path},
+                remediation=remediation,
+            ) from exc
+        if response.status_code != 200:
+            raise _from_error_response(response, base_url=self._base_url, voice=f"({what})")
 
     def _relative_to_data(self, out_path: Path) -> str:
         """``data/output/voice/<t>/s001.wav`` ⇒ ``output/voice/<t>/s001.wav``。"""

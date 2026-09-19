@@ -17,13 +17,14 @@ from __future__ import annotations
 import importlib.util
 import sqlite3
 import wave
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from tests.unit.tts.fakes import patch_analyze_volume, tone_frames
 
 from studio.core.clock import utc_now
 from studio.core.errors import ErrorCode, StudioError
@@ -38,6 +39,7 @@ from studio.pools.heartbeat import WorkerIdentity
 from studio.pools.runner import HANDLER_MODULES
 from studio.pools.voice_worker import (
     DEGRADE_AFTER_ATTEMPTS,
+    SPLIT_LIMIT_CHARS,
     VOICE_UNIT_TYPES,
     VoiceSentenceHandler,
     build_voice_handler,
@@ -46,7 +48,8 @@ from studio.pools.worker_base import UnitContext, _Pulse
 from studio.services.log_service import LogService
 from studio.tts import sentence as sentence_module
 from studio.tts.cache import TtsCache
-from studio.tts.sentence import SapiEngine
+from studio.tts.circuit import CircuitBreaker
+from studio.tts.sentence import SapiEngine, SentenceSynthesis, synthesize_sentence
 from studio.tts.service_engine import ResidentEngine, ResidentStatus
 
 WORKER_ID = "voice#1@4242"
@@ -144,6 +147,12 @@ def fake_probe(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def fake_volume(monkeypatch: pytest.MonkeyPatch) -> None:
+    """把 ``analyze_volume`` 换成"读数正常"的假件（单测不跑 ffmpeg）。"""
+    patch_analyze_volume(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
 def fake_placeholder(monkeypatch: pytest.MonkeyPatch) -> None:
     """占位静音走假实现（真 ffmpeg 那条路由集成测试覆盖）。"""
 
@@ -165,10 +174,17 @@ class FakeEngine:
     name = "fake"
     revision = "test"
 
-    def __init__(self, *, duration_ms: int = 900, fail: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        duration_ms: int = 900,
+        fail: bool = False,
+        code: ErrorCode = ErrorCode.TTS_SENTENCE_FAILED,
+    ) -> None:
         self.calls: list[tuple[str, str | None, int]] = []
         self._duration_ms = duration_ms
         self._fail = fail
+        self._code = code
         #: 合成**期间**要发生的事（测竞态用：用户在引擎正念这一句时改了稿）
         self.on_call: Callable[[], None] | None = None
 
@@ -177,16 +193,21 @@ class FakeEngine:
         if self.on_call is not None:
             self.on_call()
         if self._fail:
-            raise StudioError("引擎炸了", code=ErrorCode.TTS_SENTENCE_FAILED)
+            raise StudioError("引擎炸了", code=self._code)
         frames = max(1, round(SAMPLE_RATE * self._duration_ms / 1000))
         with wave.open(str(out_path), "wb") as handle:
             handle.setnchannels(1)
             handle.setsampwidth(2)
             handle.setframerate(SAMPLE_RATE)
-            handle.writeframes(b"\x00\x00" * frames)
+            handle.writeframes(tone_frames(frames, sample_rate=SAMPLE_RATE))
 
 
-def _handler(rig: Rig, engine: FakeEngine | None = None) -> VoiceSentenceHandler:
+def _handler(
+    rig: Rig,
+    engine: FakeEngine | None = None,
+    *,
+    breaker: CircuitBreaker | None = None,
+) -> VoiceSentenceHandler:
     return VoiceSentenceHandler(
         paths=rig.paths,
         connection=rig.connection,
@@ -194,6 +215,7 @@ def _handler(rig: Rig, engine: FakeEngine | None = None) -> VoiceSentenceHandler
         engine=engine if engine is not None else FakeEngine(),
         voice=VOICE,
         log=None,
+        breaker=breaker,
     )
 
 
@@ -831,3 +853,254 @@ def test_progress_keeps_the_failure_scene(rig: Rig) -> None:
     stored = rig.store.get(job_id).result
     assert "失败" in stored["note"]
     assert stored["error_code"] == str(ErrorCode.TTS_SENTENCE_FAILED)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ④ 熔断与降级链（T2.3 · §04.3.3）—— "决策表选出来的那一张牌，落在哪儿"
+# ══════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def fake_concat(monkeypatch: pytest.MonkeyPatch) -> list[list[Path]]:
+    """把 ``concat_wavs`` 换成"读帧拼帧"的版本（单测不依赖 ffmpeg）。
+
+    真 ffmpeg 那条路由由 ``tests/integration/test_voice_stage.py`` 覆盖。
+    """
+    calls: list[list[Path]] = []
+
+    def concat(files: Sequence[Path], out_path: Path, **_kwargs: object) -> Path:
+        calls.append(list(files))
+        frames = b""
+        rate = SAMPLE_RATE
+        for path in files:
+            with wave.open(str(path), "rb") as handle:
+                rate = handle.getframerate()
+                frames += handle.readframes(handle.getnframes())
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(out_path), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(rate)
+            handle.writeframes(frames)
+        return out_path
+
+    monkeypatch.setattr(voice_worker, "concat_wavs", concat)
+    return calls
+
+
+def test_a_dead_engine_stops_being_called_after_three_sentences(rig: Rig) -> None:
+    """★ 熔断的**唯一目的**：引擎坏了的时候别再一句句白等（§04.3.3 "池暂停 5min"）。
+
+    三句各念一次、各失败一次 ⇒ 闸门打开 ⇒ 之后**一次引擎调用都不该发生**。
+    拉闸的那一句也就地占位（不再白等一轮退避），所以它**不抛**而是返回 ``skipped``。
+    """
+    engine = FakeEngine(fail=True)
+    handler = _handler(rig, engine)
+
+    for sentence_id in rig.sentence_ids[:2]:
+        ctx, job_id = _claimed(rig, sentence_id)
+        with pytest.raises(StudioError):
+            handler.run(ctx)
+        _fail_job(rig, job_id)  # 队列退避重排（也把并发名额让出来）
+
+    assert len(engine.calls) == 2
+    assert handler._breaker.blocking() is False, "两句还没到线"
+
+    ctx, _job_id = _claimed(rig, rig.sentence_ids[2])
+    third = handler.run(ctx)
+
+    assert len(engine.calls) == 3
+    assert handler._breaker.blocking() is True
+    assert third["status"] == "skipped", "拉闸的那一句就地占位"
+
+    ctx = _claim_again(rig)
+    result = handler.run(ctx)
+
+    assert len(engine.calls) == 3, "熔断期间一次引擎调用都不该发生"
+    assert result["status"] == "skipped"
+    assert result["degraded"] is True
+
+
+def test_one_stubborn_sentence_does_not_trip_the_breaker(rig: Rig) -> None:
+    """★ 同一句重试三次**只是一个信号**：它是"这段文本念不出来"，不是"这台引擎坏了"。
+
+    按**次**数计的话，一句难念的台词会把整条片子剩下的句子一起送进静音 ——
+    而那正是 ``RETRY_SIMPLIFIED`` 想避免的事。
+    """
+    engine = FakeEngine(fail=True)
+    handler = _handler(rig, engine)
+    sentence_id = rig.sentence_ids[0]
+    ctx, job_id = _claimed(rig, sentence_id)
+    for _ in range(2):
+        with pytest.raises(StudioError):
+            handler.run(ctx)
+        _fail_job(rig, job_id)
+        ctx = _claim_again(rig)
+
+    result = handler.run(ctx)
+
+    assert len(engine.calls) == 3, "三次都真的调了引擎（闸门没被一句台词拉开）"
+    assert handler._breaker.blocking() is False
+    assert result["status"] == "skipped", "到线降级仍然发生，只是原因不同"
+
+
+def test_the_circuit_still_serves_sentences_that_are_already_in_the_cache(rig: Rig) -> None:
+    """闸门开着 ⇒ 不调引擎，但**缓存照查**：那一句别人念过的话，音频就在盘上。
+
+    一句话不看就占位等于把已经有的东西丢掉 —— 而"没命中就自己合成"又正好是熔断
+    要阻止的事。所以 ``cache_only`` 才是闸门挡住的粒度。
+    """
+    engine = FakeEngine()
+    handler = _handler(rig, engine)
+    first, second = rig.sentence_ids[0], rig.sentence_ids[1]
+    assert rig.repo.update_text(second, text="第1句台词") == 2, "两句同文 ⇒ 同一个缓存键"
+
+    ctx, first_job = _claimed(rig, first)
+    handler.run(ctx)
+    assert len(engine.calls) == 1
+    _fail_job(rig, first_job)
+
+    for key in ("x", "y", "z"):
+        handler._breaker.record_failure(key)
+    assert handler._breaker.blocking() is True
+
+    ctx, _ = _claimed(rig, second)
+    result = handler.run(ctx)
+
+    assert len(engine.calls) == 1, "缓存命中不算调用引擎"
+    assert result["status"] == "done"
+    assert result["cache_hit"] is True
+
+
+def test_a_long_sentence_that_times_out_is_split_and_merged(rig: Rig, fake_concat: list[list[Path]]) -> None:
+    """★ ``TTS_TIMEOUT`` ⇒ ``SPLIT_AND_MERGE``：长句是超时主因。"""
+    sentence_id = rig.sentence_ids[0]
+    long_line = "这一句故意写得非常长好让切分那一步真的有东西可切"
+    assert rig.repo.update_text(sentence_id, text=long_line) == 2
+    engine = FakeEngine(duration_ms=400)
+    handler = _handler(rig, _TimeoutOnLongText(engine, limit=SPLIT_LIMIT_CHARS))
+    ctx, _ = _claimed(rig, sentence_id)
+
+    result = handler.run(ctx)
+
+    assert result["status"] == "done"
+    assert result["tts_hash"] == "", "多段拼起来的产物没有单一缓存键（不许假装命中）"
+    assert len(fake_concat) == 1 and len(fake_concat[0]) > 1
+    assert all(part.parent.name == "tts_split" for part in fake_concat[0]), "分片落 work/，不进交付目录"
+    row = rig.repo.get(sentence_id)
+    assert row is not None and row.tts_status == "done"
+    assert rig.paths.sentence_wav(rig.task_id, 1).is_file()
+
+
+def test_a_missing_voice_never_degrades(rig: Rig) -> None:
+    """★ §04.3.3 的"音色缺失 ⇒ ``FAIL_TASK``"：配置错误**不降级**。
+
+    做成静音占位的话，用户拿到一支"出片成功、整片没人声"的片子 —— 而真正的错因
+    （音色名写错）会被"这条片子进了字幕模式"盖过去。
+    """
+    engine = FakeEngine(fail=True, code=ErrorCode.TTS_VOICE_MISSING)
+    handler = _handler(rig, engine)
+    sentence_id = rig.sentence_ids[0]
+    ctx, _ = _claimed(rig, sentence_id)
+
+    with pytest.raises(StudioError) as caught:
+        handler.run(ctx)
+
+    assert caught.value.code == ErrorCode.TTS_VOICE_MISSING
+    row = rig.repo.get(sentence_id)
+    assert row is not None and row.tts_status == "failed", "不许变成 skipped"
+    assert not rig.paths.sentence_wav(rig.task_id, 1).exists(), "更不许留下静音占位"
+
+
+def test_a_qc_failure_retries_simplified_with_a_fresh_seed(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """★ 假成功（静音）⇒ ``RETRY_SIMPLIFIED``：去 emotion / speed=1.0 / **换 seed**。
+
+    换 seed 不是仪式：它进缓存键。不换的话"重试"会命中上一次那段坏音频 ——
+    ``RETRY_SIMPLIFIED`` 于是变成"读一遍缓存再失败一次"，三次退避白等。
+    """
+    seen: list[dict[str, Any]] = []
+    real = synthesize_sentence
+
+    def spy(text: str, **kwargs: Any) -> SentenceSynthesis:
+        seen.append(kwargs)
+        return real(text, **kwargs)
+
+    monkeypatch.setattr(voice_worker, "synthesize_sentence", spy)
+    patch_analyze_volume(monkeypatch, mean_db=-91.0, max_db=-91.0)  # 引擎"念"出来的是静音
+
+    handler = _handler(rig)
+    sentence_id = rig.sentence_ids[0]
+    ctx, job_id = _claimed(rig, sentence_id)
+
+    with pytest.raises(StudioError) as caught:
+        handler.run(ctx)
+
+    assert caught.value.code == ErrorCode.TTS_SILENT
+    assert handler._simplified == {sentence_id}
+
+    patch_analyze_volume(monkeypatch)  # 下一轮：引擎恢复正常
+    _fail_job(rig, job_id)
+    result = handler.run(_claim_again(rig))
+
+    assert result["status"] == "done"
+    assert len(seen) == 2
+    assert seen[0]["seed"] is None
+    assert seen[1]["seed"] != seen[0]["seed"], "换 seed 才能绕开上一次那段坏音频的缓存键"
+    assert seen[1]["emotion"] == "neutral"
+    assert seen[1]["speed"] == 1.0
+
+
+class _TimeoutOnLongText(FakeEngine):
+    """整句念不出来（超时），但**分段之后**念得出来 —— 这正是切分要解决的事。
+
+    判据用长度而不是整串相等：送进引擎的是**归一化之后**的文本，拿原文比会得到
+    一个永远不触发的"故障注入"（与 ``FaultEngine`` 同一个坑）。
+    """
+
+    def __init__(self, inner: FakeEngine, *, limit: int) -> None:
+        super().__init__()
+        self._inner = inner
+        self._limit = limit
+
+    def synthesize(self, text: str, out_path: Path, *, voice: str | None, rate: int) -> None:
+        if len(text) > self._limit:
+            self.calls.append((text, voice, rate))
+            raise StudioError("整句超时", code=ErrorCode.TTS_TIMEOUT)
+        self._inner.synthesize(text, out_path, voice=voice, rate=rate)
+        self.calls.append((text, voice, rate))
+
+
+class FakeResidentOomEngine(FakeResidentEngine):
+    """常驻服务这台"显存不够"（真机上就是它炸）。"""
+
+    def __init__(self) -> None:
+        super().__init__(fail=True, code=ErrorCode.TTS_OOM)
+
+
+def test_oom_twice_switches_to_the_system_voice_pack(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """★ §04.3.3：``TTS_OOM`` 第一次卸了重载，第二次**切备用引擎**。
+
+    常驻服务这台再试也没用（显存就那么多），系统语音包至少能保证成片有人声。
+    """
+    state = _upgrading_pool(monkeypatch)
+    monkeypatch.setattr(voice_worker, "ResidentEngine", lambda **_kwargs: FakeResidentOomEngine())
+    state["up"] = True
+    handler = build_voice_handler(paths=rig.paths, connection=rig.connection)
+    assert isinstance(handler._engine, FakeResidentOomEngine)
+    sentence_id = rig.sentence_ids[0]
+    ctx, job_id = _claimed(rig, sentence_id)
+
+    with pytest.raises(StudioError) as first:
+        handler.run(ctx)
+
+    assert first.value.code == ErrorCode.TTS_OOM
+    assert handler._engine_picker is not None
+    first_switch: bool = handler._engine_picker.switched
+    assert first_switch is False, "第一次是 REWARM_ENGINE，不是换引擎"
+
+    _fail_job(rig, job_id)
+    with pytest.raises(StudioError):
+        handler.run(_claim_again(rig))
+
+    assert handler._engine_picker.switched is True
+    assert isinstance(handler._current_engine()[0], SapiEngine), "换到了系统语音包"

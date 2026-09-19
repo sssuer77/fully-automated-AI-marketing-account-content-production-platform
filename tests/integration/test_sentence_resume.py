@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.unit.tts.fakes import write_tone
 
 from studio.core.config import PoolConfig
 from studio.core.errors import ErrorCode, StudioError
@@ -115,12 +116,7 @@ class CountingEngine:
         self.calls.append(text)
         if self.fail_marker is not None and self.fail_marker in text:
             raise StudioError("注入的合成失败", code=ErrorCode.TTS_SENTENCE_FAILED)
-        frames = max(1, round(SAMPLE_RATE * SENTENCE_MS / 1000))
-        with wave.open(str(out_path), "wb") as handle:
-            handle.setnchannels(1)
-            handle.setsampwidth(2)
-            handle.setframerate(SAMPLE_RATE)
-            handle.writeframes(b"\x00\x00" * frames)
+        write_tone(out_path, duration_ms=SENTENCE_MS, sample_rate=SAMPLE_RATE)
 
 
 @dataclass(frozen=True, slots=True)

@@ -26,7 +26,6 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
-import wave
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -34,6 +33,7 @@ from itertools import pairwise
 from pathlib import Path
 
 import pytest
+from tests.unit.tts.fakes import write_tone
 
 from studio.core.config import PoolConfig, load_outputs_config
 from studio.core.errors import ErrorCode, StudioError
@@ -109,12 +109,7 @@ class CountingEngine:
 
     def synthesize(self, text: str, out_path: Path, *, voice: str | None, rate: int) -> None:
         self.calls.append(text)
-        frames = max(1, round(SAMPLE_RATE * self.duration_ms / 1000))
-        with wave.open(str(out_path), "wb") as handle:
-            handle.setnchannels(1)
-            handle.setsampwidth(2)
-            handle.setframerate(SAMPLE_RATE)
-            handle.writeframes(b"\x00\x00" * frames)
+        write_tone(out_path, duration_ms=self.duration_ms, sample_rate=SAMPLE_RATE)
 
 
 @dataclass(frozen=True, slots=True)

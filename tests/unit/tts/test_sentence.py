@@ -20,15 +20,19 @@ from studio.pools import worker_base  # noqa: F401  （保持 import 顺序稳�
 from studio.tts import sentence as sentence_module
 from studio.tts.cache import TtsCache
 from studio.tts.sentence import (
+    CLIP_PEAK_DBFS,
     PLACEHOLDER_MAX_MS,
     PLACEHOLDER_MIN_MS,
     SAPI_ENGINE,
+    SILENCE_RMS_DBFS,
     SapiEngine,
+    check_audio_qc,
     estimate_duration_ms,
     sapi_rate_for,
     synthesize_sentence,
     write_placeholder,
 )
+from tests.unit.tts.fakes import patch_analyze_volume, tone_frames
 
 SAMPLE_RATE = 22_050
 
@@ -37,13 +41,17 @@ SAMPLE_RATE = 22_050
 
 
 def _write_wav(path: Path, duration_ms: int, *, sample_rate: int = SAMPLE_RATE) -> None:
-    """写一段**真的** PCM WAV（标准库 ``wave``）—— 假探针要能读出它的时长。"""
+    """写一段**真的** PCM WAV（标准库 ``wave``）—— 假探针要能读出它的时长。
+
+    内容是**正弦音**而不是全零：T2.3 起产物会被 ``check_audio_qc`` 听一遍，
+    全零 PCM 会被判成 ``TTS_SILENT``（见 :mod:`tests.unit.tts.fakes`）。
+    """
     frames = max(1, round(sample_rate * duration_ms / 1000))
     with wave.open(str(path), "wb") as handle:
         handle.setnchannels(1)
         handle.setsampwidth(2)
         handle.setframerate(sample_rate)
-        handle.writeframes(b"\x00\x00" * frames)
+        handle.writeframes(tone_frames(frames, sample_rate=sample_rate))
 
 
 class FakeEngine:
@@ -88,6 +96,16 @@ def fake_probe(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     monkeypatch.setattr(sentence_module, "probe_media", probe)
+
+
+@pytest.fixture(autouse=True)
+def fake_volume(monkeypatch: pytest.MonkeyPatch) -> None:
+    """把 ``analyze_volume`` 换成"读数正常"的假件（单测不跑 ffmpeg）。
+
+    QC 判据本身由 ``test_audio_qc_*`` 用显式读数逐条验，这里只负责让
+    "合成成功"这条路上的产物被放行。
+    """
+    patch_analyze_volume(monkeypatch)
 
 
 @pytest.fixture
@@ -301,3 +319,128 @@ def test_wav_helper_is_a_real_wav(tmp_path: Path) -> None:
         assert handle.getnframes() == pytest.approx(SAMPLE_RATE * 0.5, rel=0.01)
     assert target.read_bytes()[:4] == b"RIFF"
     assert struct.unpack("<I", target.read_bytes()[4:8])[0] == target.stat().st_size - 8
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 音频 QC（T2.3 · §04.3.3 的静音 / 爆音判据）
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_a_healthy_reading_passes(tmp_path: Path) -> None:
+    assert check_audio_qc(tmp_path / "s.wav") == (None, -20.0, -6.0)
+
+
+def test_a_silent_artifact_is_flagged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``RMS < -50 dBFS`` ⇒ ``TTS_SILENT``：这是"引擎报成功、成片没人声"的唯一防线。"""
+    patch_analyze_volume(monkeypatch, mean_db=-91.0, max_db=-91.0)
+    assert check_audio_qc(tmp_path / "s.wav") == (ErrorCode.TTS_SILENT.value, -91.0, -91.0)
+
+
+def test_a_clipped_artifact_is_flagged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_analyze_volume(monkeypatch, mean_db=-3.0, max_db=0.0)
+    assert check_audio_qc(tmp_path / "s.wav")[0] == ErrorCode.TTS_CLIP.value
+
+
+def test_the_thresholds_are_exclusive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """判据是 ``<`` / ``>``：正好落在线上**不算**坏（否则阈值本身变成一个说不清的数）。"""
+    patch_analyze_volume(monkeypatch, mean_db=SILENCE_RMS_DBFS, max_db=CLIP_PEAK_DBFS)
+    assert check_audio_qc(tmp_path / "s.wav")[0] is None
+
+
+def test_an_unmeasurable_artifact_is_not_judged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """**测不出来就不判**：ffmpeg 不在 PATH / 文件正被占着，与"这一段音频有问题"是
+    两件事。把前者判成后者会让好句子被降级 —— 而降级的代价是成片里那一句永远没声音。"""
+    patch_analyze_volume(monkeypatch, mean_db=None, max_db=None)
+    assert check_audio_qc(tmp_path / "s.wav") == (None, None, None)
+
+
+def test_silence_never_reaches_the_cache(
+    tmp_path: Path, cache: TtsCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """★ 判在 ``cache.put`` **之前**：把一段静音收进缓存的话，后续所有相同文本都会
+    "命中"它 —— 那是"引擎报成功、成片没人声"里最难查的一种形态（每处日志都写着成功）。"""
+    patch_analyze_volume(monkeypatch, mean_db=-91.0, max_db=-91.0)
+    with pytest.raises(StudioError) as excinfo:
+        synthesize_sentence("今天聊三件事", out_path=tmp_path / "s001.wav", cache=cache, engine=FakeEngine())
+    assert excinfo.value.code is ErrorCode.TTS_SILENT
+    assert cache.stats().files == 0
+
+
+def test_a_clipped_artifact_is_rejected_too(
+    tmp_path: Path, cache: TtsCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    patch_analyze_volume(monkeypatch, mean_db=-3.0, max_db=0.5)
+    with pytest.raises(StudioError) as excinfo:
+        synthesize_sentence("今天聊三件事", out_path=tmp_path / "s001.wav", cache=cache, engine=FakeEngine())
+    assert excinfo.value.code is ErrorCode.TTS_CLIP
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 熔断期间只查缓存（``cache_only``）
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_cache_only_refuses_to_touch_the_engine(tmp_path: Path, cache: TtsCache) -> None:
+    engine = FakeEngine()
+    with pytest.raises(StudioError) as excinfo:
+        synthesize_sentence(
+            "今天聊三件事", out_path=tmp_path / "s001.wav", cache=cache, engine=engine, cache_only=True
+        )
+    assert excinfo.value.code is ErrorCode.TTS_ENGINE_UNAVAILABLE
+    assert engine.calls == [], "熔断期间一次引擎调用都不该发生"
+
+
+def test_cache_only_still_delivers_a_hit(tmp_path: Path, cache: TtsCache) -> None:
+    """缓存里有就交付：那一句别人念过，音频就在盘上，白丢可惜。"""
+    out = tmp_path / "s001.wav"
+    synthesize_sentence("今天聊三件事", out_path=out, cache=cache, engine=FakeEngine())
+    out.unlink()
+
+    engine = FakeEngine()
+    result = synthesize_sentence("今天聊三件事", out_path=out, cache=cache, engine=engine, cache_only=True)
+
+    assert result.cache_hit is True
+    assert engine.calls == []
+    assert out.is_file()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 引擎生命周期原语（T2.3 · §04.3.2）—— 降级档也要能被同一套决策表驱动
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_sapi_warmup_asks_for_the_voice_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    """预热 = 提前把那一次 PowerShell（1–2 秒）做掉，首句因此不必等它。"""
+    calls: list[int] = []
+
+    def voices() -> tuple[str, ...]:
+        calls.append(1)
+        return ("Microsoft Huihui Desktop",)
+
+    monkeypatch.setattr(sentence_module, "list_voices_cached", voices)
+    SapiEngine().warmup()
+    assert calls == [1]
+
+
+def test_sapi_unload_is_a_no_op() -> None:
+    """降级档没有显存可放 —— "什么都不做"是**正当答案**，不是空实现凑数。"""
+    SapiEngine().unload()
+
+
+def test_sapi_health_reports_the_installed_voices(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sentence_module, "list_voices_cached", lambda: ("Microsoft Huihui Desktop",))
+    health = SapiEngine().health()
+    assert health.ready is True
+    assert health.voices == ("Microsoft Huihui Desktop",)
+    assert health.usable is True
+
+
+def test_sapi_health_says_not_ready_when_no_voice_pack_is_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """一个语音包都没有 ⇒ 这一档**真的念不出声**（不是"睡着了"，所以 ``wakeable=False``）。"""
+    monkeypatch.setattr(sentence_module, "list_voices_cached", lambda: ())
+    health = SapiEngine().health()
+    assert health.ready is False
+    assert health.wakeable is False
+    assert health.usable is False

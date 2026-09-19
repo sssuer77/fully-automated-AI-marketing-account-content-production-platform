@@ -24,6 +24,18 @@ T2.3 落地时把 :class:`SapiEngine` 换成路由后的实现即可，**调用�
 --------------------------------------------
 一句念不出来时，成片要留一段静音占位（§04.3.3 的 ``PLACEHOLDER``：字幕照留）。
 "等长"里的"长"没有任何东西可测 —— 音频压根没生成出来，所以只能估。
+产物还要**听一遍**（T2.3 的 QC 判据）
+------------------------------------
+引擎回"成功"不等于盘上那段音频能听：真机踩过"音色选错 ⇒ 出一段能播但没声音的
+wav"，库里写着 ``done``、时间轴按实测时长排得好好的，成片里那一句却没人声。
+所以合成完之后跑一次 ``volumedetect``（本机实测 **78 ms**，而念一句要 14 s）：
+``RMS < -50 dBFS`` ⇒ :data:`~studio.core.errors.ErrorCode.TTS_SILENT`；
+峰值 ``> -0.5 dBFS`` ⇒ ``TTS_CLIP``。判据在 §04.3.3 的决策表里各自有去处
+（两者都是 ``RETRY_SIMPLIFIED``）。
+
+**测不出来就不判**：``analyze_volume`` 失败（ffmpeg 不在 / 超时）时返回的两个值
+是 ``None``，这时**放行** —— 因为"量不出来"不该把一句正常的音频判成坏的。
+
 估算系数是**本机实测标定**的（Huihui Desktop / rate 1，3 个样本共 86 字）：
 ``860 + 208 × 字数``（毫秒），取整成 :data:`PLACEHOLDER_BASE_MS` +
 :data:`PLACEHOLDER_PER_CHAR_MS`。它只决定"这段静音多长"，而字幕与时间轴用的是
@@ -35,17 +47,19 @@ from __future__ import annotations
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Final
 
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.logging import get_logger
-from studio.core.media import ffmpeg_binary, probe_media, run_command
+from studio.core.media import analyze_volume, ffmpeg_binary, probe_media, run_command
 from studio.domain.text import count_chars
 from studio.tts.cache import TtsCache, tts_cache_key
-from studio.tts.sapi import synthesize
+from studio.tts.engine import EngineHealth, SentenceEngine
+from studio.tts.sapi import list_voices_cached, synthesize
 from studio.tts.text_normalize import Glossary, normalize
 
 __all__ = [
+    "CLIP_PEAK_DBFS",
     "PLACEHOLDER_BASE_MS",
     "PLACEHOLDER_MAX_MS",
     "PLACEHOLDER_MIN_MS",
@@ -53,9 +67,11 @@ __all__ = [
     "PLACEHOLDER_SAMPLE_RATE",
     "SAPI_ENGINE",
     "SAPI_REVISION",
+    "SILENCE_RMS_DBFS",
     "SapiEngine",
     "SentenceEngine",
     "SentenceSynthesis",
+    "check_audio_qc",
     "copy_audio",
     "estimate_duration_ms",
     "sapi_rate_for",
@@ -89,24 +105,63 @@ PLACEHOLDER_SAMPLE_RATE: Final[int] = 48_000
 #: 生成占位静音的超时（纯合成一段无声 WAV，秒级）
 PLACEHOLDER_TIMEOUT_SEC: Final[int] = 60
 
+#: 静音判据（§04.3.3）：RMS 低于它 ⇒ 引擎**报成功**、产物却近乎无声。
+#: 这是最坏的一种"成功"：库里是 ``done``、时间轴也对得上，只是成片里那一句没人声。
+SILENCE_RMS_DBFS: Final[float] = -50.0
 
-class SentenceEngine(Protocol):
-    """一句文本 ⇒ 一段 WAV 的最小引擎缝（T2.3 的路由落地后替换实现）。"""
+#: 爆音判据（§04.3.3）：峰值高于它 ⇒ 破音，而且会连带污染混音那一步。
+CLIP_PEAK_DBFS: Final[float] = -0.5
 
-    name: str
-    revision: str
 
-    def synthesize(self, text: str, out_path: Path, *, voice: str | None, rate: int) -> None: ...
+# ``SentenceEngine`` 的**定义**已经下沉到 :mod:`studio.tts.engine`（T2.3 在那里
+# 补上了 ``warmup`` / ``unload`` / ``health`` 三个生命周期原语，成为
+# :class:`~studio.tts.engine.VoiceEngine`）。这里原样 re-export：调用方写的
+# ``from studio.tts.sentence import SentenceEngine`` 一行都不用改（与陷阱 #64 那条
+# "事件枚举下沉、``ws/protocol.py`` 原样 re-export"是同一个手法 —— 下沉的是定义，
+# 不是导入路径）。
 
 
 class SapiEngine:
-    """:class:`SentenceEngine` 的 SAPI 实现（Windows 自带、零下载、零显存）。"""
+    """SAPI 实现（Windows 自带、零下载、零显存）。
+
+    它同时是**降级档**：常驻推理服务不可用时的兜底（§1.7）。所以它必须满足与
+    :class:`~studio.tts.service_engine.ResidentEngine` **同一份**契约
+    （:class:`~studio.tts.engine.VoiceEngine`）—— 决策表不该知道对面是哪台引擎。
+
+    三个生命周期原语在它身上各有一件**真事**可做
+    -------------------------------------------
+    - ``warmup``：把"列音色"那一次 PowerShell（1–2 秒）提前做掉 —— 这是真的预热，
+      首句因此不必等它；
+    - ``unload``：**什么都不做**，因为它没有显存可放。这不是凑数：决策表在
+      ``TTS_OOM`` 时会调它，而"降级档没有显存"这个事实本身就该由它自己回答；
+    - ``health``：本机装了哪些语音包 ⇒ ``voices``；一个都没有 ⇒ ``ready=False``
+      （那时这一档真的念不出声）。
+    """
 
     name: str = SAPI_ENGINE
     revision: str = SAPI_REVISION
 
     def synthesize(self, text: str, out_path: Path, *, voice: str | None, rate: int) -> None:
         synthesize(text, out_path, voice=voice, rate=rate)
+
+    def warmup(self) -> None:
+        """预热 = 提前把音色列表问出来（首句不必再等那 1–2 秒的 PowerShell）。"""
+        list_voices_cached()
+
+    def unload(self) -> None:
+        """没有显存可放 ⇒ 什么都不做（见类 docstring）。"""
+
+    def health(self) -> EngineHealth:
+        """本机语音包的自述。**不抛**：问不到就是"念不出来"。"""
+        voices = tuple(list_voices_cached())
+        return EngineHealth(
+            engine=self.name,
+            ready=bool(voices),
+            detail=("系统语音包已就绪" if voices else "本机没有装任何语音包"),
+            voices=voices,
+            model_state=None,
+            wakeable=False,
+        )
 
 
 def sapi_rate_for(speed: float) -> int:
@@ -153,6 +208,26 @@ class SentenceSynthesis:
         }
 
 
+def check_audio_qc(path: Path) -> tuple[str | None, float | None, float | None]:
+    """听一遍产物 ⇒ ``(错误码 | None, rms_dbfs, peak_dbfs)``。
+
+    **测不出来就不判**（两个读数都是 ``None`` ⇒ 错误码也是 ``None``）：``volumedetect``
+    失败的原因（ffmpeg 不在 PATH、文件正被别的进程占着）与"这一段音频有问题"是两件
+    事，把前者判成后者会让好句子被降级 —— 而降级的代价是成片里那一句永远没声音。
+
+    阈值来自 §04.3.3：``RMS < -50 dBFS`` 判静音、峰值 ``> -0.5 dBFS`` 判爆音。
+    """
+    stats = analyze_volume(path)
+    if stats.mean_db is None or stats.max_db is None:
+        logger.warning("tts.qc_unmeasurable", path=path.as_posix())
+        return None, stats.mean_db, stats.max_db
+    if stats.mean_db < SILENCE_RMS_DBFS:
+        return ErrorCode.TTS_SILENT.value, stats.mean_db, stats.max_db
+    if stats.max_db > CLIP_PEAK_DBFS:
+        return ErrorCode.TTS_CLIP.value, stats.mean_db, stats.max_db
+    return None, stats.mean_db, stats.max_db
+
+
 def synthesize_sentence(
     text: str,
     *,
@@ -165,6 +240,7 @@ def synthesize_sentence(
     seed: int | None = None,
     sample_rate: int = SENTENCE_SAMPLE_RATE,
     glossary: Glossary | None = None,
+    cache_only: bool = False,
 ) -> SentenceSynthesis:
     """合成一句（命中缓存则**一次引擎调用都不发生**）。
 
@@ -173,7 +249,12 @@ def synthesize_sentence(
     :param voice: 已解析的音色名。``None`` ⇒ 交给引擎自己挑 —— 但那样**每句都要
         重挑一次**（列音色要起一个 PowerShell，1–2 秒），所以池的装配方会解析一次
         再逐句传进来。
-    :raises StudioError: 文本空 / 引擎失败 / 产物为 0 秒
+    :param cache_only: **不许碰引擎**（配音熔断打开时池子传它）。缓存里有就交付，
+        没有就抛 :attr:`~studio.core.errors.ErrorCode.TTS_ENGINE_UNAVAILABLE` ——
+        而不是回一段静音。为什么要这个开关：熔断期间"缓存命中"是**免费的且真的能
+        交付**（那一句别人念过、音频就在盘上），一句话不看就占位等于把已经有的东西
+        丢掉；而"没命中就自己合成"又正好是熔断要阻止的事。
+    :raises StudioError: 文本空 / 引擎失败 / 产物为 0 秒 / 没过音频 QC
     """
     chosen = engine if engine is not None else SapiEngine()
     spoken = normalize(text, glossary=glossary if glossary is not None else Glossary())
@@ -212,6 +293,17 @@ def synthesize_sentence(
             voice_id=voice,
         )
 
+    if cache_only:
+        raise StudioError(
+            f"缓存里没有这一句，而当前不允许调用引擎：{out_path.name}",
+            code=ErrorCode.TTS_ENGINE_UNAVAILABLE,
+            context={"out_path": out_path.as_posix(), "text": spoken[:80], "cache_key": key},
+            remediation=(
+                "配音熔断中（连续多句念不出来）⇒ 看 system.alert(TTS_CIRCUIT_OPEN)；"
+                "闸门会自己半开，也可以修完引擎后重启配音池"
+            ),
+        )
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     chosen.synthesize(spoken, out_path, voice=voice, rate=sapi_rate_for(speed))
     info = probe_media(out_path)
@@ -221,6 +313,24 @@ def synthesize_sentence(
             code=ErrorCode.TTS_AUDIO_QC_FAILED,
             context={"out_path": out_path.as_posix(), "engine": chosen.name, "voice": voice},
             remediation="换一个音色重试（音色选错时会得到一段能播但没声音的 wav）",
+        )
+
+    # 产物**听一遍**再收进缓存（§04.3.3 的静音 / 爆音判据）。
+    # 顺序要紧：判在 `cache.put` **之前** —— 把一段静音收进缓存的话，后续所有
+    # 相同文本都会"命中"它，而那正是"引擎报成功、成片没人声"最难查的一种形态。
+    verdict, rms_dbfs, peak_dbfs = check_audio_qc(out_path)
+    if verdict is not None:
+        raise StudioError(
+            f"合成产物没过音频 QC：{verdict}（RMS {rms_dbfs} dBFS / 峰值 {peak_dbfs} dBFS）",
+            code=ErrorCode(verdict),
+            context={
+                "out_path": out_path.as_posix(),
+                "engine": chosen.name,
+                "voice": voice,
+                "rms_dbfs": rms_dbfs,
+                "peak_dbfs": peak_dbfs,
+            },
+            remediation="换一个 seed / 音色重试；反复如此 ⇒ 这一档引擎念不出这段文本",
         )
 
     cache.put(key, out_path)

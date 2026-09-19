@@ -28,7 +28,6 @@ import json
 import shutil
 import sqlite3
 import time
-import wave
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -37,6 +36,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from tests.unit.tts.fakes import write_tone
 
 from studio.app.deps import AppState, build_state
 from studio.app.main import create_app
@@ -117,13 +117,7 @@ class CountingEngine:
     def synthesize(self, text: str, out_path: Path, *, voice: str | None, rate: int) -> None:
         del voice, rate
         self.calls.append(text)
-        frames = max(1, round(SAMPLE_RATE * self.duration_ms / 1000))
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with wave.open(str(out_path), "wb") as handle:
-            handle.setnchannels(1)
-            handle.setsampwidth(2)
-            handle.setframerate(SAMPLE_RATE)
-            handle.writeframes(b"\x00\x00" * frames)
+        write_tone(out_path, duration_ms=self.duration_ms, sample_rate=SAMPLE_RATE)
 
 
 class _Probe:
@@ -216,14 +210,7 @@ def client(state: AppState) -> Iterator[TestClient]:
 
 def _wav(path: Path, *, duration_ms: int = SENTENCE_MS) -> Path:
     """盘上真放一个 WAV（试听与时间轴读的都是**盘上那一份**）。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    frames = max(1, round(SAMPLE_RATE * duration_ms / 1000))
-    with wave.open(str(path), "wb") as handle:
-        handle.setnchannels(1)
-        handle.setsampwidth(2)
-        handle.setframerate(SAMPLE_RATE)
-        handle.writeframes(b"\x00\x00" * frames)
-    return path
+    return write_tone(path, duration_ms=duration_ms, sample_rate=SAMPLE_RATE)
 
 
 #: `_seed` 默认给任务写的音色映射（两个都"装了" —— 见模块头第 2 条纪律）
@@ -884,13 +871,7 @@ class PreviewEngine:
         self.calls.append((text, voice))
         if self.fail is not None:
             raise StudioError(self.fail, code=ErrorCode.TTS_ENGINE_DOWN)
-        frames = max(1, round(SAMPLE_RATE * self.duration_ms / 1000))
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with wave.open(str(out_path), "wb") as handle:
-            handle.setnchannels(1)
-            handle.setsampwidth(2)
-            handle.setframerate(SAMPLE_RATE)
-            handle.writeframes(b"\x00\x00" * frames)
+        write_tone(out_path, duration_ms=self.duration_ms, sample_rate=SAMPLE_RATE)
 
 
 @pytest.fixture

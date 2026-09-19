@@ -26,7 +26,6 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
-import wave
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -35,11 +34,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.unit.tts.fakes import write_tone
 
 from studio.core.config import load_outputs_config
 from studio.core.faults import FAULT_ENV
 from studio.core.media import probe_media
 from studio.core.paths import StudioPaths
+from studio.core.proto import AlertCode
 from studio.db import connect, migrate
 from studio.db.repositories import ScriptRepo
 from studio.domain import TaskService
@@ -103,12 +104,7 @@ class CountingEngine:
 
     def synthesize(self, text: str, out_path: Path, *, voice: str | None, rate: int) -> None:
         self.calls.append(text)
-        frames = max(1, round(SAMPLE_RATE * self.duration_ms / 1000))
-        with wave.open(str(out_path), "wb") as handle:
-            handle.setnchannels(1)
-            handle.setsampwidth(2)
-            handle.setframerate(SAMPLE_RATE)
-            handle.writeframes(b"\x00\x00" * frames)
+        write_tone(out_path, duration_ms=self.duration_ms, sample_rate=SAMPLE_RATE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,6 +261,19 @@ def _job_attempts(rig: Rig) -> dict[str, int]:
     return {str(row["unit_ref"]): int(row["attempts"]) for row in rows}
 
 
+def _alerts(rig: Rig, code: str) -> list[str]:
+    """``system_logs`` 里这个告警码写了几条、都说了什么（按写入顺序）。
+
+    告警是**留痕**，不是日志：面板的告警区读的就是 ``unit_ref = <AlertCode>`` 这些行。
+    """
+    with _db(rig.paths) as connection:
+        rows = connection.execute(
+            "SELECT payload_json FROM system_logs WHERE unit_ref = ? AND task_id = ? ORDER BY id",
+            (code, rig.task_id),
+        ).fetchall()
+    return [str(json.loads(row["payload_json"])["message"]) for row in rows]
+
+
 def _spoken_and_pauses(payload: dict[str, Any]) -> tuple[int, int]:
     """时间轴里"句子占了多久"与"句间停顿一共多久"。
 
@@ -401,6 +410,8 @@ def test_a_dead_engine_still_reaches_queued_render(
 
     §04.3.3：连续失败到线 ⇒ 降级是**成功**的一种（"这一句的产物是静音"），
     任务继续往下走（字幕模式），``quality_json`` 打 ``tts_unavailable``。
+    另外熔断（T2.3）要在这里看得见：三句都念不出来 ⇒ 闸门打开 ⇒ **剩下的句子
+    不再白试**，所以总计远小于"每句挂满 3 次"的 9 次。
     """
     _require_ffmpeg()
     monkeypatch.setenv(FAULT_ENV, "tts_down=1")
@@ -412,10 +423,22 @@ def test_a_dead_engine_still_reaches_queued_render(
     assert engine.calls == [], "故障要在引擎缝上 —— 引擎一次都不该被调到"
     rows = _sentences(rig)
     assert [row[1] for row in rows] == ["skipped"] * len(TEXTS)
-    assert [row[2] for row in rows] == [3, 3, 3], "每句挂满 3 次才降级"
 
-    # 每个作业都重试满 3 次才降级
-    assert sorted(_job_attempts(rig).values()) == [3, 3, 3]
+    # ⚠️ 这里钉的是**不变量**，不是一个固定元组：每句的最终次数取决于认领顺序
+    # （重试带退避 ⇒ "新句的第一次"可能先于"旧句的第二次"被认领），
+    # 于是 `[2,2,1]` / `[3,2,1]` / `[3,3,1]` 都是合法的。变的是顺序，不变的是
+    # 下面这两条。
+    attempts = [row[2] for row in rows]
+    assert all(1 <= value <= 3 for value in attempts), f"次数越线（降级线是 3）：{attempts}"
+    assert sum(attempts) < 3 * len(TEXTS), f"熔断没有省下任何一次重试：{attempts}"
+    assert sorted(_job_attempts(rig).values()) == sorted(attempts), "作业与句子的次数必须对得上"
+
+    # 熔断**发了告警，而且只发一条**（§04.3.3 的 `system.alert(TTS_CIRCUIT_OPEN)`）：
+    # 每句都发的话，三十句的任务会往告警区灌三十条一样的行 —— 而告警面板正是靠
+    # "稀有"来工作的。
+    circuit_alerts = _alerts(rig, str(AlertCode.TTS_CIRCUIT_OPEN))
+    assert len(circuit_alerts) == 1, circuit_alerts
+    assert "熔断" in circuit_alerts[0]
 
     # 等长静音真的落了盘，而且进了母带（母带不是空的、时长仍然对得上）
     master = rig.paths.voice_master(rig.task_id)

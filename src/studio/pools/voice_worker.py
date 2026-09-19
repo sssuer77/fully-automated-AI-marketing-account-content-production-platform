@@ -8,10 +8,29 @@ claim(voice/sentence, unit_ref = sentence_id)
    ├─ payload 只带**运行期选择**（音色 / seed）—— 它不该重复稿件内容
    ├─ 已经是 done：产物在盘上 ⇒ 直接用；只在缓存里 ⇒ 拷回来（**0 次引擎调用**）；
    │  两处都没了 ⇒ 退回 pending 重念（否则这一句永远没声音，见 _settled_outcome）
-   ├─ begin → synthesize_sentence（归一化 → 查缓存 → 引擎 → ffprobe 实测）
+   ├─ begin → synthesize_sentence（归一化 → 查缓存 → 引擎 → ffprobe 实测 → 音频 QC）
    ├─ finish（带 expected_version：稿件被改过就丢弃结果）
-   └─ 失败 ⇒ tts_attempts + 1；到 3 次 ⇒ **降级**（等长静音 + 字幕保留），不是失败
+   └─ 失败 ⇒ tts_attempts + 1 ⇒ **决策表**（T2.3）决定下一步做什么：
+       重试 / 唤醒引擎 / 简化重试 / 再切分 / 换引擎 / 静音占位 / 放弃任务
 ```
+
+失败之后做什么，由决策表说了算（T2.3 · §04.3.3）
+------------------------------------------------
+本轮之前，这里只有一条规则："失败 ⇒ 到 3 次 ⇒ 静音占位"。于是"引擎显存炸了"
+与"这一句太长念不完"得到**同一个**处置 —— 而它们该做的事正好相反（前者要卸了重载，
+后者要再切一刀）。现在分流在 :func:`~studio.tts.fallback.decide`（纯函数、逐条可测），
+这里只负责**执行**它选出来的那个动作。
+
+三个动作是"就地再干一次活"（唤醒引擎 / 简化重试 / 再切分），四个是"交给队列"
+（原样重试 / 换引擎后重试 / 占位 / 放弃）。区别在于：需要**跨单元记住**的东西
+（这一句已经简化过、已经切过）由本处理器持有；不需要记的直接抛出去让队列退避重试。
+
+熔断（:class:`~studio.tts.circuit.CircuitBreaker`）是**池级**的
+----------------------------------------------------------
+"连续 3 句念不出来"与"这一句失败了 3 次"是两件事：前者说明**这台引擎现在不能念**
+（每一句都会白等一轮 60 秒超时 + 退避），后者说明**这一句有问题**。前者一旦成立，
+剩下的句子不再调用引擎 —— 但**缓存还是要查**（那一句别人念过的话，音频就在盘上，
+不查白不查，见 ``synthesize_sentence(cache_only=…)``）。
 
 为什么单元处理器放在 ``pools/`` 而不是 ``services/``
 --------------------------------------------------
@@ -42,8 +61,9 @@ claim(voice/sentence, unit_ref = sentence_id)
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -52,16 +72,28 @@ from studio.core.clock import now_iso
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.faults import FaultPlan, fault_plan_from_env
 from studio.core.logging import get_logger
+from studio.core.media import probe_media
 from studio.core.paths import StudioPaths
-from studio.core.proto import Severity
+from studio.core.proto import AlertCode, Severity
 from studio.db import connect
 from studio.db.models import SentenceRow
 from studio.db.queue import JobStore
 from studio.db.repositories.sentence_repo import DONE_STATUS, SKIPPED_STATUS, SentenceRepo
 from studio.domain.enums import UnitType
+from studio.domain.text import split_long_sentence
 from studio.pools.worker_base import UnitContext
 from studio.services.log_service import LogService
 from studio.tts.cache import TtsCache
+from studio.tts.circuit import CircuitBreaker
+from studio.tts.engine import VoiceEngine, rewarm
+from studio.tts.fallback import (
+    DEGRADE_AFTER_ATTEMPTS,
+    DefaultFallbackPolicy,
+    DegradeAction,
+    FailureState,
+    FallbackPolicy,
+    action_note,
+)
 from studio.tts.faults import wrap_engine
 from studio.tts.sapi import list_voices_cached, pick_voice
 from studio.tts.sentence import (
@@ -72,6 +104,7 @@ from studio.tts.sentence import (
     write_placeholder,
 )
 from studio.tts.service_engine import ResidentEngine, active_resident
+from studio.tts.synth import concat_wavs
 from studio.tts.text_normalize import GlossaryStore
 from studio.tts.timeline import has_audio
 
@@ -83,19 +116,34 @@ __all__ = [
     "build_voice_handler",
 ]
 
+# ``DEGRADE_AFTER_ATTEMPTS`` 的**定义**已经下沉到 :mod:`studio.tts.fallback`
+# （决策表要用它），这里原样 re-export：调用方写的
+# ``from studio.pools.voice_worker import DEGRADE_AFTER_ATTEMPTS`` 一行都不用改。
+
 logger = get_logger("studio.pools.voice")
 
 #: 本处理器认领的单元类型（``jobs.unit_type``）
 VOICE_UNIT_TYPES: Final[frozenset[str]] = frozenset({UnitType.SENTENCE.value})
-
-#: 到几次失败就把这一句降级成静音（§04.3.3 不变量 3：``tts_attempts >= 3 ⇒ skipped``）
-DEGRADE_AFTER_ATTEMPTS: Final[int] = 3
 
 #: 进度说明写进 ``result_json`` 时截断到多少字符
 _NOTE_CHARS: Final[int] = 80
 
 #: 日志来源（``system_logs.source``）
 _LOG_SOURCE: Final[str] = "studio.pools.voice"
+
+#: 池名（告警的 ``stage`` / ``source`` 用它，与 ``config/pools.yaml`` 的键一致）
+POOL_NAME: Final[str] = "voice"
+
+#: ``SPLIT_AND_MERGE`` 里"再切一刀"的目标长度（字）。与写稿那一步的上限
+#: （``ScriptRules`` 的句长阈值）同一条口径：切分**比重新合成便宜**，所以宁可
+#: 多切一句，也不要再赌一次超时。
+SPLIT_LIMIT_CHARS: Final[int] = 20
+
+#: 分片合成的产物放在 ``data/work/<task_id>/tts_split/``（**不是**交付目录）。
+#: 交付目录（``output/voice/<task_id>/``）里每一份都是"这一句的音频"，多出来的
+#: 分片会让"盘上有几个文件"与"稿子有几句话"对不上 —— 而拼接那一步的产物才叫
+#: ``s00N.wav``（§04.3.3 不变量 1）。
+_SPLIT_DIRNAME: Final[str] = "tts_split"
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,10 +214,12 @@ class VoiceSentenceHandler:
         connection: sqlite3.Connection,
         cache: TtsCache | None = None,
         engine: SentenceEngine | None = None,
-        engine_picker: Callable[[], tuple[SentenceEngine, str | None, tuple[str, ...]]] | None = None,
+        engine_picker: _EnginePicker | None = None,
         voice: str | None = None,
         glossary: GlossaryStore | None = None,
         log: LogService | None = None,
+        breaker: CircuitBreaker | None = None,
+        policy: FallbackPolicy | None = None,
     ) -> None:
         self._paths = paths
         self._connection = connection
@@ -181,6 +231,12 @@ class VoiceSentenceHandler:
         self._voice = voice
         self._glossary = glossary
         self._log = log
+        self._breaker = breaker if breaker is not None else CircuitBreaker()
+        self._policy = policy if policy is not None else DefaultFallbackPolicy()
+        #: 这一句已经用过哪些招（**进程内**，见 `FailureState` 的说明）。
+        #: 两处都只在降级链里有意义，所以不落库 —— 进程重启后多试一次而已。
+        self._simplified: set[str] = set()
+        self._split: set[str] = set()
 
     def run(self, ctx: UnitContext) -> Mapping[str, Any]:
         """念一句：库里已是 ``done`` 且音频还在 ⇒ 只把音频找回来；否则合成 + 回填。"""
@@ -340,6 +396,15 @@ class VoiceSentenceHandler:
         seed = _opt_int(payload, "seed")
         target = self._paths.sentence_wav(ctx.task_id, int(sentence.seq))
 
+        # 熔断：闸门开着 ⇒ **不调引擎**（`cache_only`），但缓存照查 —— 那一句
+        # 别人念过的话，音频就在盘上，白丢可惜（见 `synthesize_sentence` 的说明）。
+        allowed = self._breaker.allow()
+        if not allowed:
+            self._log_line(ctx, "warn", "配音熔断中（连续多句念不出来）⇒ 这一句只查缓存，不调引擎")
+        simplified = sentence.id in self._simplified
+        if simplified:
+            self._log_line(ctx, "info", "这一句上一轮已简化 ⇒ 去 emotion / speed=1.0 / 换 seed")
+
         if not self._repo.begin(sentence.id, engine=engine.name, voice_id=voice):
             # ``begin`` 被拒只有一种可能：这一句在**读行之后**被别人做完了
             # （并发投递或人工重投）。那不是错误 —— 如实报"已定局"即可。
@@ -373,13 +438,20 @@ class VoiceSentenceHandler:
                 cache=self._cache,
                 engine=engine,
                 voice=voice,
-                speed=sentence.speed,
-                emotion=sentence.emotion,
-                seed=seed,
+                # 简化重试：去 emotion、语速回正、换一个**确定性**的 seed。
+                # 换 seed 不是仪式 —— 它进缓存键，不换的话"重试"会命中上一次那段
+                # 坏音频（`RETRY_SIMPLIFIED` 于是变成"读一遍缓存再失败一次"）。
+                speed=1.0 if simplified else sentence.speed,
+                emotion="neutral" if simplified else (sentence.emotion or "neutral"),
+                seed=_simplified_seed(sentence) if simplified else seed,
                 glossary=self._glossary.current() if self._glossary is not None else None,
+                cache_only=not allowed,
             )
         except StudioError as exc:
             return self._on_failure(sentence, ctx, exc, started_at=started_at, state=state, voice=voice)
+        if not synthesis.cache_hit:
+            # 真的念出来了一句 ⇒ 引擎此刻是好的（缓存命中不算：它没碰引擎）
+            self._breaker.record_success()
 
         written = self._repo.finish(
             sentence.id,
@@ -431,7 +503,18 @@ class VoiceSentenceHandler:
         state: dict[str, Any],
         voice: str | None,
     ) -> VoiceSentenceOutcome:
-        """记一次失败；到线就**降级成静音占位**（成功），否则抛出去让队列重试。"""
+        """记一次失败 ⇒ **问决策表** ⇒ 执行它选出来的那个动作（T2.3 · §04.3.3）。
+
+        七个动作在这里分成两类
+        ----------------------
+        **就地做完**（唤醒引擎 / 简化重试 / 再切分 / 占位）：前三件是"现在就该做的事"
+        （卸了重载、换个采样点、把长句切开），等一轮退避只会把 20 秒的加载拖成
+        20 秒 + 退避；占位是终点。
+
+        **交给队列**（原样重试 / 换引擎后重试 / 放弃任务）：它们要么需要**退避**
+        （给引擎喘息），要么需要**下一次执行时用不同的参数**（换引擎后那一句要
+        重新解析音色 —— 那是单元开头的事）。抛出去即可。
+        """
         attempts = self._repo.fail(
             sentence.id, expected_version=sentence.version, error=f"{exc.code}: {exc.message}"[:200]
         )
@@ -446,17 +529,250 @@ class VoiceSentenceHandler:
             ) from exc
 
         self._log_line(ctx, "warn", f"voice.sentence 失败（第 {attempts} 次）：{exc.message}")
-        if attempts < DEGRADE_AFTER_ATTEMPTS:
-            state.update(
-                note=f"失败（第 {attempts} 次）：{exc.message}",
-                error_code=str(exc.code),
-                remediation=exc.remediation,
+
+        # 熔断器记的是"**连续几句**念不出来"（池级），与"这一句第几次失败"是两件事：
+        # 同一句重试三次也只是一句没念出来，而它判的是"这台引擎现在还能不能用"。
+        # 所以传 `sentence.id` 让它**按句去重** —— 否则一句难念的台词会自己把闸门
+        # 拉开，把整条片子剩下的句子一起送进静音。
+        if self._breaker.record_failure(sentence.id):
+            self._alert_circuit_open(ctx, attempts=attempts, exc=exc)
+
+        action = self._decide(exc, sentence=sentence, attempts=attempts)
+        self._log_line(ctx, "info", f"voice.sentence 处置：{action.value}（{action_note(action)}）")
+
+        if action is DegradeAction.PLACEHOLDER:
+            return self._placeholder(
+                sentence, ctx, exc, started_at=started_at, state=state, voice=voice, attempts=attempts
             )
-            self._report(ctx, state, sentence)
+
+        if action is DegradeAction.FAIL_TASK:
+            # **不降级**（§04.3.3 的"音色缺失"那一行）：把它做成静音占位的话，用户
+            # 拿到的是一支"出片成功、整片没人声"的片子 —— 而真正的错因（音色名写错）
+            # 会被"这条片子进了字幕模式"盖过去。响亮地失败，让 pipeline 停下来报它。
+            self._log_line(ctx, "error", f"这一句不降级（配置错误）：{exc.message}")
+            self._report(
+                ctx,
+                {**state, "note": _clip(f"配置错误，不降级：{exc.message}"), "action": action.value},
+                sentence,
+            )
             raise exc
 
-        # 到线 ⇒ 降级：等长静音占位 + 字幕保留（§04.3.3 的 PLACEHOLDER）。
-        # 这是**成功**的一种：任务继续往下走（字幕模式），而不是卡在配音这一步。
+        if action is DegradeAction.REWARM_ENGINE:
+            self._rewarm(ctx)
+        elif action is DegradeAction.RETRY_SIMPLIFIED:
+            self._simplified.add(sentence.id)
+        elif action is DegradeAction.SPLIT_AND_MERGE:
+            outcome = self._try_split(sentence, ctx, exc, started_at=started_at, state=state, voice=voice)
+            if outcome is not None:
+                return outcome
+            # 切了还是不行 ⇒ 交给下一次：那时 `split=True`，决策表会到线降级。
+            # **不在这里再试一遍**：一次单元执行里试两次等于把退避机制绕过去了。
+            self._log_line(ctx, "warn", "切分后仍然失败 ⇒ 交给队列重试（下一次直接到线降级）")
+        elif action is DegradeAction.SWITCH_ENGINE:
+            self._switch_engine(ctx)
+
+        state.update(
+            note=_clip(f"失败（第 {attempts} 次）⇒ {action_note(action)}：{exc.message}"),
+            error_code=str(exc.code),
+            action=action.value,
+            remediation=exc.remediation,
+        )
+        self._report(ctx, state, sentence)
+        raise exc
+
+    def _decide(self, exc: StudioError, *, sentence: SentenceRow, attempts: int) -> DegradeAction:
+        """问决策表。
+
+        闸门开着的时候**不问**：表里每一个动作都要碰引擎（唤醒 / 重试 / 切分后再念 /
+        换引擎），而闸门就是"别碰引擎"这个结论本身 —— 这时候唯一该做的是占位收工。
+        """
+        if self._breaker.blocking():
+            return DegradeAction.PLACEHOLDER
+        return self._policy.decide(
+            code=str(exc.code),
+            state=FailureState(
+                attempt=attempts,
+                simplified=sentence.id in self._simplified,
+                split=sentence.id in self._split,
+                switched=self._engine_switched(),
+                split_available=self._split_available(sentence),
+            ),
+        )
+
+    def _split_available(self, sentence: SentenceRow) -> bool:
+        """这一句当前的文本切得动吗（**实时算**：切分判据不该是一份可能过时的状态）。"""
+        text = sentence.tts_text or sentence.text
+        return len(split_long_sentence(text, limit=SPLIT_LIMIT_CHARS)) > 1
+
+    def _engine_switched(self) -> bool:
+        """已经强制降档到备用引擎了吗（引擎级事实，问 picker）。"""
+        return self._engine_picker is not None and self._engine_picker.switched
+
+    def _rewarm(self, ctx: UnitContext) -> None:
+        """唤醒引擎（``REWARM_ENGINE``）：卸了再载。
+
+        **失败只记日志，不改抛出去的那个异常**：唤醒失败说明这台引擎叫不醒，而
+        "这一句为什么失败"仍然是原来那个原因（显存 / 崩溃）—— 换成"唤醒失败"会让
+        真正的原因从 ``tts_error`` 里消失，而决策表下一轮正是按那个码分流的。
+        """
+        engine, _voice, _speakable = self._current_engine()
+        if not isinstance(engine, VoiceEngine):
+            # 只实现 `synthesize` 的引擎（测试假件、以及将来某个最小实现）没有
+            # 生命周期原语可调。**跳过而不是报错**：决策表选这张牌是因为"引擎可能
+            # 是坏的"，而"这台引擎压根没有显存可卸"是个正当答案 —— 抛出去只会让
+            # 一次正常的降级链变成一条新故障。
+            self._log_line(ctx, "warn", f"引擎 {engine.name} 没有生命周期原语 ⇒ 跳过唤醒")
+            return
+        try:
+            rewarm(engine)
+        except Exception as exc:
+            self._log_line(ctx, "warn", f"唤醒引擎失败：{type(exc).__name__}: {exc}")
+            return
+        self._log_line(ctx, "info", f"已唤醒引擎 {engine.name}（卸载后重载）")
+
+    def _switch_engine(self, ctx: UnitContext) -> None:
+        """切备用引擎（``SWITCH_ENGINE``）：常驻服务这台别用了，改走系统语音包。"""
+        if self._engine_picker is None:
+            self._log_line(ctx, "warn", "没有可切换的引擎（引擎是注入的）⇒ 继续用当前这台")
+            return
+        if not self._engine_picker.switch():
+            self._log_line(ctx, "warn", "已经在备用引擎上了 ⇒ 继续用当前这台")
+            return
+        engine, voice, _speakable = self._current_engine()
+        self._log_line(ctx, "warn", f"已切到备用引擎 {engine.name}（兜底音色 {voice}）")
+
+    def _alert_circuit_open(self, ctx: UnitContext, *, attempts: int, exc: StudioError) -> None:
+        """闸门拉开 ⇒ 发 ``TTS_CIRCUIT_OPEN``（error 级，WS 层永不合并）。
+
+        **只在拉开的那一拍发**（``record_failure()`` 返回 ``True`` 时才走到这里）：
+        每句都发的话，三十句的任务会往日志里灌三十条一样的告警 —— 而告警面板正是
+        靠"稀有"来工作的。
+        """
+        if self._log is None:
+            return
+        snapshot = self._breaker.snapshot()
+        self._log.alert(
+            AlertCode.TTS_CIRCUIT_OPEN,
+            message=(
+                f"配音连续 {snapshot.consecutive_failures} 句念不出来 ⇒ 熔断 "
+                f"{snapshot.open_sec:.0f}s（这一句第 {attempts} 次失败：{exc.message}）"
+            ),
+            hint=(
+                "闸门打开期间剩下的句子走静音占位（字幕模式），**任务不失败**；"
+                "到点自动半开一次探测。看 data/logs/tts.log 与 `studio service status`；"
+                "修完引擎重启配音池可立刻清零"
+            ),
+            task_id=ctx.task_id,
+            job_id=ctx.job_id,
+            pool=POOL_NAME,
+        )
+
+    def _try_split(
+        self,
+        sentence: SentenceRow,
+        ctx: UnitContext,
+        exc: StudioError,
+        *,
+        started_at: str,
+        state: dict[str, Any],
+        voice: str | None,
+    ) -> VoiceSentenceOutcome | None:
+        """再切一刀、分段合成、拼成一份交付音频（§04.3.3 的 ``SPLIT_AND_MERGE``）。
+
+        ⇒ 成功时给这一句的结论（**``done``**，不是失败）；切不动 / 切了还是失败 ⇒ ``None``
+        （调用方交给队列重试，那时 ``split=True`` ⇒ 决策表到线降级）。
+
+        分片落在 ``data/work/<task_id>/tts_split/``，**不是交付目录**：交付目录里
+        每一份都对应稿子的一句话，多出来的分片会让"盘上有几个文件"与"稿子有几句话"
+        对不上（§04.3.3 不变量 1 说的是"文件名由 seq 决定"）。
+        """
+        text = sentence.tts_text or sentence.text
+        pieces = split_long_sentence(text, limit=SPLIT_LIMIT_CHARS)
+        if len(pieces) < 2:
+            # 决策那一刻判"切得动"、真到切的时候切不动（文本在这中间被改过）⇒ 不硬来
+            return None
+
+        self._split.add(sentence.id)
+        engine, _fallback, _speakable = self._current_engine()
+        target = self._paths.sentence_wav(ctx.task_id, int(sentence.seq))
+        split_dir = self._paths.work_dir_for(ctx.task_id) / _SPLIT_DIRNAME
+        glossary = self._glossary.current() if self._glossary is not None else None
+        try:
+            parts: list[Path] = []
+            for index, piece in enumerate(pieces, start=1):
+                part = split_dir / f"s{int(sentence.seq):03d}_p{index}.wav"
+                synthesize_sentence(
+                    piece,
+                    out_path=part,
+                    cache=self._cache,
+                    engine=engine,
+                    voice=voice,
+                    speed=sentence.speed,
+                    emotion=sentence.emotion or "neutral",
+                    glossary=glossary,
+                )
+                parts.append(part)
+            concat_wavs(parts, target)
+            info = probe_media(target)
+        except StudioError as split_exc:
+            self._log_line(ctx, "warn", f"切分合成失败：{split_exc.message}")
+            return None
+
+        written = self._repo.finish(
+            sentence.id,
+            expected_version=sentence.version,
+            audio_path=target.as_posix(),
+            duration_ms=info.duration_ms,
+            sample_rate=info.sample_rate,
+            # 切分产物是**多段拼起来的**，没有单一的缓存键可记。留空是诚实的：
+            # 它不会命中任何缓存，也不会假装命中（见 `_settled_outcome` 的第三条）。
+            tts_hash="",
+            engine=engine.name,
+            voice_id=voice,
+        )
+        if not written:
+            raise StudioError(
+                f"这一句在切分合成期间被改过（sentence {sentence.id}）",
+                code=ErrorCode.STATE_VERSION_CONFLICT,
+                context={"sentence_id": sentence.id, "version": sentence.version},
+                remediation="无需处理：队列会重试，重试时读到的就是新文本",
+            ) from exc
+
+        self._breaker.record_success()
+        self._log_line(ctx, "info", f"voice.sentence 切分合成完成：{len(pieces)} 段 ⇒ {info.duration_ms}ms")
+        return self._outcome(
+            sentence,
+            ctx,
+            started_at=started_at,
+            status=DONE_STATUS,
+            audio_path=target.as_posix(),
+            duration_ms=info.duration_ms,
+            sample_rate=info.sample_rate,
+            tts_hash="",
+            cache_hit=False,
+            degraded=False,
+            degrade_reason=None,
+            note=f"再切分后分段合成（{len(pieces)} 段）",
+            state=state,
+            voice=voice,
+        )
+
+    def _placeholder(
+        self,
+        sentence: SentenceRow,
+        ctx: UnitContext,
+        exc: StudioError,
+        *,
+        started_at: str,
+        state: dict[str, Any],
+        voice: str | None,
+        attempts: int,
+    ) -> VoiceSentenceOutcome:
+        """降级：等长静音占位 + 字幕保留（§04.3.3 的 ``PLACEHOLDER``）。
+
+        这是**成功**的一种：任务继续往下走（字幕模式），而不是卡在配音这一步
+        （§04.3.3："熔断后任务不失败，改为字幕模式继续产出"）。
+        """
         target = self._paths.sentence_wav(ctx.task_id, int(sentence.seq))
         measured = write_placeholder(sentence.tts_text or sentence.text, out_path=target)
         skipped = self._repo.skip(
@@ -576,6 +892,7 @@ def build_voice_handler(
     engine: SentenceEngine | None = None,
     voice: str | None = None,
     fault: FaultPlan | None = None,
+    breaker: CircuitBreaker | None = None,
 ) -> VoiceSentenceHandler:
     """配音池进程入口的装配（``workers/run_voice.py`` 调它）。
 
@@ -592,6 +909,10 @@ def build_voice_handler(
     ``fault`` 缺省从 ``STUDIO_FAULT`` 读（T2.8 的降级演练）。**在装配期读一次**：
     故障是"这次进程启动时定的环境事实"，与音色同理 —— 每念一句重读一遍只会让
     "演练到一半改了环境变量"变成一个没人能复现的现象。
+
+    ``breaker`` 缺省**自己建一个**（T2.3 的熔断）：它是**进程级**状态，一个池进程
+    共用一只闸门 —— 每句新建一只的话，计数器永远是 1，闸门永远打不开（而那正是
+    "连续 3 句念不出来"这条判据唯一要防的事）。注入点留给测试与运维。
     """
     plan = fault if fault is not None else fault_plan_from_env()
     if plan.enabled:
@@ -615,6 +936,7 @@ def build_voice_handler(
         voice=voice if voice is not None else default_voice,
         glossary=GlossaryStore(paths.glossary_file),
         log=log if log is not None else LogService(resolved),
+        breaker=breaker if breaker is not None else CircuitBreaker(),
     )
 
 
@@ -651,11 +973,45 @@ class _EnginePicker:
         self._sapi = wrap_engine(SapiEngine(), self._plan)
         self._sapi_voice: str | None = None
         self._resident: tuple[SentenceEngine, str | None, tuple[str, ...]] | None = None
+        #: 已经**强制**降档到系统语音包（`SWITCH_ENGINE` 打过这张牌）
+        self._switched = False
+
+    @property
+    def switched(self) -> bool:
+        """已经强制降档了吗（决策表用它判"换引擎这张牌打过了没有"）。"""
+        return self._switched
+
+    def switch(self) -> bool:
+        """强制降档到系统语音包（§04.3.3 的 ``SWITCH_ENGINE``）。
+
+        ⇒ **这一次真的换了没有**：已经在备用引擎上 ⇒ ``False``（调用方据此说
+        "没得换了"，而不是谎报换成功）。
+
+        与"只升不降"（裁定 314）不矛盾：那一条说的是**判据**不许自己往下降
+        （服务明明可用却退回 SAPI ⇒ 同一支片子两种嗓子）。这里是**决策表**在
+        连续失败之后主动换档 —— 它知道自己在做什么，而且换完就不再回头看常驻服务
+        （``self._switched`` 一置位，``__call__`` 里那句探测也不会再问）。
+
+        **不切回常驻服务**：这台引擎刚刚被判定"念不出来"，切回去只会再失败一轮；
+        要恢复就重启配音池（那是"修完引擎"之后的事）。
+        """
+        if self._switched:
+            return False
+        self._switched = True
+        self._resident = None
+        logger.warning("voice.engine_switched", reason="决策表判定常驻引擎连续失败 ⇒ 改走系统语音包")
+        return True
 
     def __call__(self) -> tuple[SentenceEngine, str | None, tuple[str, ...]]:
         """⇒ ``(引擎, 兜底音色, 念得出来的音色)``。"""
         if self._resident is not None:
             return self._resident
+        if self._switched:
+            # 已经强制降档 ⇒ **不再问常驻服务**：它刚刚被判"念不出来"，
+            # 再问一次只会把整批句子又带回那条路上（见 `switch`）。
+            if self._sapi_voice is None:
+                self._sapi_voice = _resolve_voice()
+            return self._sapi, self._sapi_voice, tuple(list_voices_cached())
         status = active_resident(self._paths)
         if status is None:
             if self._sapi_voice is None:
@@ -691,6 +1047,21 @@ def _resolve_voice() -> str | None:
             ),
         )
     return chosen
+
+
+def _simplified_seed(sentence: SentenceRow) -> int:
+    """简化重试用的 seed —— **确定性的**（同一句每次算出来都一样）。
+
+    为什么要确定性：seed 进缓存键。用随机数的话，每次"重试"都是一个新键 ⇒
+    每次都要真念一遍（真机 14 秒），而我们要的只是"换一个采样点"。确定性的值让
+    第二次重试能命中第一次简化成功时留下的产物。
+
+    为什么非换不可：``RETRY_SIMPLIFIED`` 的前提是"上一轮的产物是静音 / 爆音"。
+    seed 不变 ⇒ 缓存键不变 ⇒ 重试**命中那段坏音频**，于是"重试"变成"读一遍缓存
+    再失败一次"，三次退避白等。
+    """
+    digest = hashlib.sha256(sentence.id.encode("utf-8")).hexdigest()
+    return int(digest[:8], 16)
 
 
 def _opt_str(payload: Mapping[str, Any], key: str) -> str | None:
