@@ -3184,11 +3184,11 @@ R13 不自动登录，探测不过就如实报"需人工扫码登录"。
 §06.5.4 定的是**六态状态机**，§06.10 定的是**六个错误码怎么处置**；这一节定的是
 "一个 ``publish/publish`` 单元从被认领到有结论"这段路上，**每一条判据住在哪**。
 
-**① 单元生命周期（``publish/publish`` · ``unit_ref`` = 平台代号）**
+**① 单元生命周期（``publish/publish`` · ``unit_ref`` = ``平台代号:账号``）**
 
 ```text
-claim(publish/publish, unit_ref = douyin)
-   ├─ 解析账号（payload.account_id ⇒ 该平台唯一启用的账号）
+claim(publish/publish, unit_ref = douyin:acc_main)
+   ├─ 解析账号（unit_ref 里的账号 ⇒ payload.account_id ⇒ 该平台唯一的启用账号）
    ├─ 幂等短路（只读）：已有 published / canceled 的记录 ⇒ 直接收工
    ├─ 限频守卫：≤3 条/天/账号（池级为准）+ 间隔 ≥30min
    │     └─ 不过 ⇒ UnitDeferred（回 pending + not_before，**不计 attempts**）
@@ -3237,7 +3237,7 @@ claim(publish/publish, unit_ref = douyin)
 | --- | --- | --- |
 | GET | ``/api/v1/publish/publications`` | 看板：六状态计数 + 各若干条（``task_id`` 过滤时计数**只算这条任务**） |
 | GET | ``/api/v1/publish/queue`` | **待人工**队列（§06.10）：带 ``error_code`` / ``error_message`` / ``evidence`` |
-| POST | ``/api/v1/publish/tasks/{task_id}/enqueue`` | 投递（幂等）。**不看** ``publish.enabled`` |
+| POST | ``/api/v1/publish/tasks/{task_id}/enqueue`` | 投递（幂等）。**不看** ``publish.enabled``。请求体 ``platforms[]`` + ``account_ids[]``（T5.8，均缺省 = 配置口径） |
 | POST | ``/api/v1/publish/{publication_id}/retry`` | 人工重试：记录回 ``queued`` + 作业重排（两处都改） |
 | POST | ``/api/v1/publish/{publication_id}/cancel`` | 人工取消：``canceled`` + 作废还没被认领的作业 |
 | POST | ``/api/v1/publish/{publication_id}/manual-done`` | 标记已人工处理（写 ``finished_at``） |
@@ -3246,6 +3246,19 @@ claim(publish/publish, unit_ref = douyin)
 ``PublicationView`` 的 ``can_retry`` / ``can_cancel`` / ``can_mark_done`` 由**服务端**算：
 判据是服务端的状态机规则，发给面板三个布尔比让前端记住"哪些状态能点"可靠 ——
 规则改一次就漏一处，而漏的那一处会变成"点了按钮报 400"。
+
+**⑤′ 投递 = 平台 × 账号 的笛卡尔积**（T5.8）
+
+``enqueue_publications`` 对**每个平台下的每个启用账号**各建一条作业，单元标识是
+``platform:account_id`` —— ``jobs`` 的唯一键含 ``unit_ref``，所以两个账号是两条作业、
+互不顶掉；而 ``publications`` 的幂等键 ``sha256(task_id|platform|account_id)`` 同样是
+两条记录。``account_ids`` 是**全局名单、按平台取交集**（面板上的勾选框分平台画，
+而请求体只有一份名单）：交集为空才报错，其余落 ``skipped`` 而**不抛** ——
+批量指令里"有一路发不出去"是常态。
+
+> ``EnqueueReport`` 的 ``duplicates`` 单列"早就投过"的那几个目标（**带账号**）：
+> 同一个平台上两个账号，一个是"早发过"、另一个是"刚投出去"，只写平台代号时这两件事
+> 在面板上长得一样（陷阱 182 的同族）。
 
 **⑥ 投递期**不看**开关**
 

@@ -44,6 +44,7 @@ from studio.db.repositories.audit_repo import AuditRepo
 from studio.db.repositories.publication_repo import PublicationRepo
 from studio.db.repositories.schedule_repo import ScheduleRepo, ScheduleRow
 from studio.domain.enums import UnitType
+from studio.domain.publish import unit_ref
 from studio.domain.schedule import (
     DEFAULT_JITTER_MIN,
     MAX_INTERVAL_HOURS,
@@ -305,7 +306,7 @@ class SchedulerService:
                 task_id=task_id,
                 config=self._config,
                 platforms=(platform,),
-                account_id=account.account_id,
+                account_ids=(account.account_id,),
             )
             if report.missing:
                 raise StudioError(
@@ -318,7 +319,7 @@ class SchedulerService:
             if report.queued:
                 # 只在**这一拍真的建了作业**时去回读作业号：``queued=0`` 是幂等命中，
                 # 那时表里那条是上一拍的，把它算成"这次建的"会让事件骗人。
-                job_id = self._latest_job_id(task_id, platform)
+                job_id = self._latest_job_id(task_id, platform, account.account_id)
                 if job_id is not None:
                     job_ids.append(job_id)
             elif report.duplicates:
@@ -352,11 +353,15 @@ class SchedulerService:
         )
 
     def _targets(self, row: ScheduleRow) -> tuple[tuple[str, AccountConfig], ...]:
-        """``(平台, 账号)`` 对 —— 一个平台一个账号（§03.3.10 的发布单元是"一任务一平台一次"）。
+        """``(平台, 账号)`` 对 —— **一个平台下的每个启用账号都是一个目标**（T5.8）。
 
-        计划里写的 ``account_ids`` 是**筛选**而不是硬绑定：平台下没有它点的那个账号时，
-        退回到该平台启用的账号（T5.8 之前一个平台只有一个）。硬绑定会让"账号改名"
-        变成"计划永远不再触发"，而那种失败是静默的。
+        T5.8 之前这里是"一个平台挑第一个账号"，因为发布单元是"一任务一平台一次"
+        （``unit_ref = platform``）。多账号落地后单元标识带上了账号
+        （``platform:account_id``），于是一个平台能投出多条 —— 而"配了第二个账号却
+        不发"正是 §06.2.4 要避免的那件事。
+
+        计划里写的 ``account_ids`` 是**筛选**而不是硬绑定：筛完一个都不剩时，退回该平台
+        启用的全部账号。硬绑定会让"账号改名"变成"计划永远不再触发"，而那种失败是静默的。
         """
         out: list[tuple[str, AccountConfig]] = []
         for platform in row.platforms:
@@ -364,9 +369,8 @@ class SchedulerService:
             if row.account_ids:
                 picked = [a for a in accounts if a.account_id in row.account_ids]
                 accounts = picked or accounts
-            if not accounts:
-                continue
-            out.append((platform, accounts[0]))
+            for account in accounts:
+                out.append((platform, account))
         return tuple(out)
 
     def _rate_blocked(self, targets: Sequence[tuple[str, AccountConfig]], *, now: str) -> str | None:
@@ -441,16 +445,19 @@ class SchedulerService:
             remediation="等一条任务走完出片，或把这个计划钉到某个 task_id 上",
         )
 
-    def _latest_job_id(self, task_id: str, platform: str) -> str | None:
+    def _latest_job_id(self, task_id: str, platform: str, account_id: str) -> str | None:
         """刚投出去那条作业的 id（``enqueue_publications`` 只回条数，不回 id）。
 
         作业 id 是"到点之后到底建了什么"的凭据（WS 事件 ``publish.schedule_fired``
         就带它），所以这里回读一次。调用方保证**只在 ``queued > 0`` 时**调它。
+
+        单元标识带账号（T5.8）：同一个平台的两个账号是两条作业，只按平台查会拿到
+        另一条（甚至拿到上一拍那条），于是事件里报的 job_id 与"这次建的"对不上。
         """
         row = self._connection.execute(
             "SELECT id FROM jobs WHERE task_id = ? AND pool = ? AND unit_type = ? AND unit_ref = ? "
             "ORDER BY created_at DESC, id DESC LIMIT 1",
-            (task_id, PUBLISH_POOL, UnitType.PUBLISH.value, platform),
+            (task_id, PUBLISH_POOL, UnitType.PUBLISH.value, unit_ref(platform, account_id)),
         ).fetchone()
         return None if row is None else str(row["id"])
 

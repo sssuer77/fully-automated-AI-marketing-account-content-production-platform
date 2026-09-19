@@ -4449,10 +4449,10 @@ export interface components {
          */
         PublishEnqueueRequest: {
             /**
-             * Account Id
-             * @description 指定账号；缺省 = 该平台唯一启用的那个
+             * Account Ids
+             * @description 指定账号（可多个）；缺省 = 这些平台下的**全部**启用账号（T5.8 矩阵分发）
              */
-            account_id?: string | null;
+            account_ids?: string[] | null;
             /**
              * Dry Run
              * @description 演练（走完前七步停在第 ⑥ 步之前）；缺省 = 跟随 publish.yaml
@@ -4474,6 +4474,8 @@ export interface components {
          * @description 投递结论。
          */
         PublishEnqueueResponse: {
+            /** Duplicates */
+            duplicates?: string[];
             /**
              * Missing
              * @default false

@@ -294,7 +294,10 @@ class PublishEnqueueRequest(BaseModel):
     """投递请求：把这条任务排进发布池。"""
 
     platforms: list[str] | None = Field(default=None, description="目标平台；缺省 = 所有启用账号所在的平台")
-    account_id: str | None = Field(default=None, description="指定账号；缺省 = 该平台唯一启用的那个")
+    account_ids: list[str] | None = Field(
+        default=None,
+        description="指定账号（可多个）；缺省 = 这些平台下的**全部**启用账号（T5.8 矩阵分发）",
+    )
     dry_run: bool | None = Field(
         default=None, description="演练（走完前七步停在第 ⑥ 步之前）；缺省 = 跟随 publish.yaml"
     )
@@ -307,7 +310,12 @@ class PublishEnqueueResponse(BaseModel):
     task_id: str
     platforms: list[str] = Field(default_factory=list)
     queued: int = 0
+    #: 没投出去的目标及原因（``"douyin/acc_b：已经投过（幂等命中）"`` —— 带账号，
+    #: 同一个平台上两个账号的两种命运分得开）。
     skipped: list[str] = Field(default_factory=list)
+    #: 其中"早就投过"的那些目标（幂等命中）。单独列出来是因为它的处置动作是**什么都不用做**，
+    #: 而其余跳过要人去改配置 —— 让调用方去猜那句中文，等于把"这不是故障"绑在一句文案上。
+    duplicates: list[str] = Field(default_factory=list)
     missing: bool = False
 
 

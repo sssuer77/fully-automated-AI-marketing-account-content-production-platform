@@ -340,7 +340,7 @@ def enqueue_task(
         task_id=task_id,
         config=config,
         platforms=payload.platforms,
-        account_id=payload.account_id,
+        account_ids=payload.account_ids,
         dry_run=payload.dry_run,
         scheduled_at=payload.scheduled_at,
     )

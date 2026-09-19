@@ -50,7 +50,13 @@ from studio.db.repositories.publication_repo import (
 )
 from studio.domain.cover import CoverInput, CoverOutput, rule_cover_output
 from studio.domain.enums import UnitType
-from studio.domain.publish import build_caption, fit_text, render_tags
+from studio.domain.publish import (
+    build_caption,
+    fit_text,
+    parse_unit_ref,
+    render_tags,
+    unit_ref,
+)
 from studio.domain.script import find_forbidden
 from studio.domain.task_service import TaskService
 from studio.publish.base import (
@@ -90,10 +96,12 @@ __all__ = [
     "build_board",
     "cancel_publication",
     "default_platforms",
+    "default_targets",
     "enqueue_publications",
     "mark_manual_done",
     "platform_options",
     "resolve_account",
+    "resolve_accounts",
     "resolve_final_video",
     "resolve_platform",
     "retry_publication",
@@ -746,6 +754,67 @@ def resolve_platform(config: PublishConfig, platform: str) -> PlatformConfig:
     return cfg
 
 
+def resolve_accounts(
+    config: PublishConfig,
+    *,
+    platform: str,
+    account_ids: Sequence[str] | None = None,
+) -> tuple[AccountConfig, ...]:
+    """这个平台上要发到**哪几个账号**（T5.8 · §06.2.4）。
+
+    ``account_ids`` 缺省 ⇒ 该平台**全部**启用账号（矩阵运营的默认意图：同一期内容
+    铺满这个平台的所有号）；显式给了 ⇒ 只发点名的那些（顺序按 ``accounts`` 的书写顺序，
+    与面板上的顺序一致）。
+
+    ``account_ids`` 是一份**全局**名单，这里取它与本平台启用账号的**交集**
+    ------------------------------------------------------------------
+    面板上的账号勾选框是分平台画的，而请求体里只有一份 ``account_ids``（T5.10 的
+    投递区块）。取交集是唯一能让"勾了 douyin 的 acc_b、同时也要发 kuaishou"这种
+    组合表达出来的读法：``account_ids=['acc_b', 'ks_main']`` 落到 douyin 就是
+    ``['acc_b']``、落到 kuaishou 就是 ``['ks_main']``。
+
+    严格版（名单里出现任何一个不属于本平台的账号就整条报错）在这里是**错的**：
+    它会把"另一个平台的账号"读成"这个平台的误配"，于是面板上勾了两个平台、
+    点一次投递，其中一个平台被整条跳过 —— 而用户什么都没做错。
+
+    **交集为空才算错**（这个平台上点名的账号一个都不存在）：那才是真的误配，
+    文案里带上这个平台**有哪些**账号，操作员一眼能看出是名字写错了还是账号没启用。
+
+    为什么默认是"全部"而不是"第一个"
+    --------------------------------
+    "配了第二个账号，但得手动点名才发"这件事**失败起来是静默的** —— 面板上有一条
+    ``published``，看起来完全正常，要等到人自己去平台上数才发现少了一半。默认全发，
+    少发就变成一个必须显式表达的动作（传 ``account_ids``）。
+
+    **演练台不在这里排除**：排除归调用方（:func:`default_targets`），因为"显式点名
+    演练台"是一条正经用法（T5.9），把它写进这里会让那条路也走不通。
+    """
+    enabled = [a for a in config.enabled_accounts if a.platform == platform]
+    if account_ids:
+        wanted = list(account_ids)
+        picked = [a for a in enabled if a.account_id in wanted]
+        if not picked:
+            raise StudioError(
+                f"平台 {platform} 上没有启用的账号 {'、'.join(wanted)}",
+                code=ErrorCode.VALIDATION_FAILED,
+                context={
+                    "platform": platform,
+                    "account_ids": wanted,
+                    "enabled": [a.account_id for a in enabled],
+                },
+                remediation="在 config/publish.yaml 的 accounts 里加一条并 enabled: true",
+            )
+        return tuple(picked)
+    if not enabled:
+        raise StudioError(
+            f"平台 {platform} 没有启用的账号",
+            code=ErrorCode.CONFIG_INVALID,
+            context={"platform": platform},
+            remediation="在 config/publish.yaml 的 accounts 里加一条（首次发布前需人工扫码登录）",
+        )
+    return tuple(enabled)
+
+
 def resolve_account(
     config: PublishConfig,
     *,
@@ -754,15 +823,15 @@ def resolve_account(
 ) -> AccountConfig:
     """这条发布用哪个账号：指定的那个 ⇒ 它；没指定 ⇒ 该平台**唯一**启用的那个。
 
-    为什么"该平台有多个启用账号"要**报错**而不是挑第一个
-    --------------------------------------------------
-    发布单元是"一任务一平台一次"（§03.3.10：``unit_ref = platform``，每平台 1 条作业），
-    所以一个平台上配两个启用账号时，**没有**哪一条作业能覆盖第二个账号。挑第一个
-    会安静地少发一半 —— 而"配了两个号，只发出去一个"在面板上看起来完全正常
-    （有一条 ``published``），要等到人自己去平台上数才发现。
+    **单数版**，给"手里只有一条作业、必须问出是哪个账号"的场景用（发布池的
+    worker 就是这一种）。投递侧（一条任务可以铺多个账号）用
+    :func:`resolve_accounts`。
 
-    多账号分发（一条任务发到两个账号）归 **T5.8**：那时要么把账号编进 ``unit_ref``，
-    要么投两条作业。这里把边界说清楚，比现在猜一个方案好。
+    "该平台有多个启用账号 + 没指定是哪个" ⇒ **报错**而不是挑第一个：那时候
+    调用方手里那条作业**说不出**它属于哪个账号，挑第一个会让它安静地发错号。
+    T5.8 之后新投的作业都把账号写进了 ``unit_ref``（``platform:account_id``），
+    所以这一条只会被**加第二个账号之前投的老作业**撞上 —— 报错文案因此直接告诉
+    操作员"重投一次即可"（重投会按新格式生成作业）。
     """
     enabled = [a for a in config.enabled_accounts if a.platform == platform]
     if account_id:
@@ -784,12 +853,12 @@ def resolve_account(
         )
     if len(enabled) > 1:
         raise StudioError(
-            f"平台 {platform} 有 {len(enabled)} 个启用账号，而发布单元是「一任务一平台一次」（§03.3.10）",
+            f"平台 {platform} 有 {len(enabled)} 个启用账号，而这条作业没说它是发给谁的",
             code=ErrorCode.CONFIG_INVALID,
             context={"platform": platform, "accounts": [a.account_id for a in enabled]},
             remediation=(
-                "一个平台上只启用一个账号，或给 payload 指定 account_id；"
-                "多账号分发（一条任务发到多个账号）归 T5.8"
+                "这条作业是加第二个账号之前投的（unit_ref 里没有账号）—— "
+                "重投一次即可：新的作业会写成 platform:account_id"
             ),
         )
     return enabled[0]
@@ -801,21 +870,32 @@ def enqueue_publications(
     task_id: str,
     config: PublishConfig,
     platforms: Sequence[str] | None = None,
-    account_id: str | None = None,
+    account_ids: Sequence[str] | None = None,
     dry_run: bool | None = None,
     scheduled_at: str | None = None,
 ) -> EnqueueReport:
     """把这条任务排进发布池（幂等；返回**这次真投出去**的条数）。
 
-    ``platforms`` 缺省 = 所有**启用账号**所在的平台（出厂配置就是 ``douyin`` 一个）。
-    显式给平台时，未启用的平台落进 ``skipped`` 而**不抛**：二线平台 ``enabled=false``
-    是出厂状态（Q9），一条"把这些平台都发一遍"的批量指令不该整批失败。
+    目标 = ``平台 × 账号``（T5.8 · §06.2.4）
+    --------------------------------------
+    ``platforms`` 缺省 = :func:`default_targets`（每个启用账号一个目标，演练台除外）；
+    ``account_ids`` 缺省 = 这些平台下的**全部**启用账号。所以"出厂配置 + 什么都不传"
+    仍然只投一条（douyin 一个账号），而"加了第二个账号 + 什么都不传"会投两条 ——
+    后者正是矩阵运营要的，且它**不需要调用方改一个字**。
+
+    ``platforms`` 给定时，未启用的平台落进 ``skipped`` 而**不抛**：二线平台
+    ``enabled=false`` 是出厂状态（Q9），一条"把这些平台都发一遍"的批量指令不该整批失败。
+    点名了某个平台下**不存在**的账号，同样落 ``skipped``（文案里带上那个平台有哪些账号）
+    —— 同一个理由：批量指令里"有一路发不出去"是常态，把它做成异常，调用方就得为
+    "投一批"写 try/except。
 
     ``publications`` 那一行**不在这里建**：它要的是"这一版成片的路径与哈希、这一版的
     标题与文案"，而那是发布**那一刻**的事实（worker 手里才有）。这里只投作业。
 
     幂等由 ``JobStore.enqueue`` 保证（``(task_id, pool, unit_type, unit_ref)`` 上有唯一
     约束，冲突即 ``DO NOTHING``）—— 所以"任务完成后自动投一遍 + 人工再点一遍"是安全的。
+    单元标识是 ``platform:account_id``（T5.8），因此**同一条任务在两个账号上是两条作业**，
+    互不顶掉（§06.2.4 的幂等键里也算进了账号）。
     """
     store = JobStore(connection)
     tasks = TaskService(connection)
@@ -838,24 +918,34 @@ def enqueue_publications(
         if not platform_cfg.enabled:
             skipped.append(f"{platform}：平台未启用（§06.2.1 · Q9）")
             continue
-        account = resolve_account(config, platform=platform, account_id=account_id)
-        payload: dict[str, Any] = {"account_id": account.account_id}
-        if dry_run is not None:
-            payload["dry_run"] = bool(dry_run)
-        if scheduled_at:
-            payload["scheduled_at"] = scheduled_at
-        job_id = store.enqueue(
-            task_id=task_id,
-            pool=PUBLISH_POOL,
-            unit_type=UnitType.PUBLISH.value,
-            unit_ref=platform,
-            payload=payload,
-        )
-        if job_id is None:
-            skipped.append(f"{platform}：已经投过（幂等命中）")
-            duplicates.append(platform)
+        try:
+            accounts = resolve_accounts(config, platform=platform, account_ids=account_ids)
+        except StudioError as exc:
+            # 只可能是"点名的账号在这个平台下不存在"（``resolve_accounts`` 的另一种抛法
+            # 是"这个平台一个启用账号都没有"，那一条同样该跳过 —— 判据与面板上的
+            # ``selectable`` 是同一套：没有账号的平台点不动）。
+            skipped.append(f"{platform}：{exc.message}")
             continue
-        queued += 1
+        for account in accounts:
+            payload: dict[str, Any] = {"account_id": account.account_id}
+            if dry_run is not None:
+                payload["dry_run"] = bool(dry_run)
+            if scheduled_at:
+                payload["scheduled_at"] = scheduled_at
+            job_id = store.enqueue(
+                task_id=task_id,
+                pool=PUBLISH_POOL,
+                unit_type=UnitType.PUBLISH.value,
+                unit_ref=unit_ref(platform, account.account_id),
+                payload=payload,
+            )
+            if job_id is None:
+                # 幂等命中的条目**带账号**：同一个平台上两个账号，一个是"早就发过"、
+                # 另一个是"刚投出去"，只写平台代号的话这两件事在面板上长得一样。
+                skipped.append(f"{platform}/{account.account_id}：已经投过（幂等命中）")
+                duplicates.append(f"{platform}/{account.account_id}")
+                continue
+            queued += 1
     logger.info(
         "publish.enqueued",
         task_id=task_id,
@@ -952,8 +1042,12 @@ def platform_options(config: PublishConfig) -> tuple[PlatformOption, ...]:
     return tuple(out)
 
 
-def default_platforms(config: PublishConfig) -> tuple[str, ...]:
-    """出厂口径的目标平台 = 启用账号所在的平台（顺序按 ``accounts`` 的书写顺序）。
+def default_targets(config: PublishConfig) -> tuple[tuple[str, str], ...]:
+    """出厂口径的目标 = **每个启用账号**（顺序按 ``accounts`` 的书写顺序）。
+
+    T5.8 起返回的是 ``(平台, 账号)`` 对而不是平台代号：一个平台上配了两个账号时，
+    默认就该发两条（§06.2.4「同任务可安全分发到多账号」）—— 只发第一个会让矩阵运营
+    每天安静地少发一半，而面板上那条 ``published`` 看起来完全正常。
 
     **演练台不在默认目标里**（T5.9）：``platforms.other`` 的发布器是
     :data:`~studio.publish.base.REHEARSAL_PUBLISHER`，它发的是本地靶页。把它算进默认
@@ -961,14 +1055,25 @@ def default_platforms(config: PublishConfig) -> tuple[str, ...]:
     长得一样（只差平台代号），而"我没让它发，它自己发了一条"是最难解释的一类问题。
     要演练就显式点名（``platforms=("other",)``），见 ``docs/runbook`` 与 T5.9 的说明。
     """
-    out: list[str] = []
+    out: list[tuple[str, str]] = []
     for account in config.enabled_accounts:
-        if account.platform in out:
-            continue
         platform_cfg = config.platforms.get(account.platform)
         if platform_cfg is not None and platform_cfg.publisher == REHEARSAL_PUBLISHER:
             continue
-        out.append(account.platform)
+        out.append((str(account.platform), account.account_id))
+    return tuple(out)
+
+
+def default_platforms(config: PublishConfig) -> tuple[str, ...]:
+    """默认目标里的**平台**（去重、保持书写顺序）—— 面板勾选默认值用。
+
+    与 :func:`default_targets` 同源：面板上"默认勾哪几个平台"与投递期"默认发到哪儿"
+    必须是同一份答案，分成两份算迟早会出现"面板勾着的平台，投出去没发"。
+    """
+    out: list[str] = []
+    for platform, _account_id in default_targets(config):
+        if platform not in out:
+            out.append(platform)
     return tuple(out)
 
 
@@ -1160,7 +1265,11 @@ def mark_manual_done(
 
 
 def _requeue_publication_job(connection: sqlite3.Connection, row: PublicationRow) -> bool:
-    """把这条发布的作业重排进待办；没有这条作业 ⇒ 现投一条。"""
+    """把这条发布的作业重排进待办；没有这条作业 ⇒ 现投一条。
+
+    单元标识由 ``row`` 反推（``platform:account_id``）—— 这条发布记录**自己知道**
+    它属于哪个账号，所以重投时不需要任何人再告诉它一次。
+    """
     store = JobStore(connection)
     job = _find_publication_job(connection, row)
     if job is None:
@@ -1168,7 +1277,7 @@ def _requeue_publication_job(connection: sqlite3.Connection, row: PublicationRow
             task_id=row.task_id,
             pool=PUBLISH_POOL,
             unit_type=UnitType.PUBLISH.value,
-            unit_ref=row.platform,
+            unit_ref=unit_ref(row.platform, row.account_id),
             payload={"account_id": row.account_id},
         )
         return True
@@ -1176,7 +1285,7 @@ def _requeue_publication_job(connection: sqlite3.Connection, row: PublicationRow
         task_id=row.task_id,
         pool=PUBLISH_POOL,
         unit_type=UnitType.PUBLISH.value,
-        unit_ref=row.platform,
+        unit_ref=unit_ref(row.platform, row.account_id),
         payload={"account_id": row.account_id},
     )
     return True
@@ -1202,10 +1311,24 @@ def _cancel_publication_job(
 
 
 def _find_publication_job(connection: sqlite3.Connection, row: PublicationRow) -> Job | None:
-    """找这条发布对应的作业（``(task_id, publish, publish, platform)``）。"""
+    """找这条发布对应的作业（``(task_id, publish, publish, platform:account_id)``）。
+
+    先按**带账号**的单元标识找；找不到再退回只认平台的老格式（T5.8 之前投的作业行
+    长那样）。不退回的话，"加第二个账号之前投的那条作业"会永远找不到 —— 表现出来是
+    重投时**又投一条新的**，而那一条与老的会一起去跑同一条发布。
+    """
+    want = unit_ref(row.platform, row.account_id)
     jobs = JobStore(connection).list_jobs(pool=PUBLISH_POOL, task_id=row.task_id, limit=100)
     for job in jobs:
-        if job.unit_type == UnitType.PUBLISH.value and job.unit_ref == row.platform:
+        if job.unit_type != UnitType.PUBLISH.value:
+            continue
+        if job.unit_ref == want:
+            return job
+    for job in jobs:
+        if job.unit_type != UnitType.PUBLISH.value:
+            continue
+        platform, account_id = parse_unit_ref(job.unit_ref)
+        if platform == row.platform and account_id is None:
             return job
     return None
 

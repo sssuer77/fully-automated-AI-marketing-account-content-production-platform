@@ -139,6 +139,15 @@ _INSIGHT_KIND_BY_DIMENSION: Final[Mapping[str, str]] = {
     "by_duration": "quality",
 }
 
+#: **只进报告正文、不进建议列表**的维度（T5.8 · §06.2.4）。
+#:
+#: 账号归因回答的是「哪个号更能跑」。它进 ``data_json``（面板、CSV 读的都是那一份），
+#: 但**不参与** :func:`_build_insights`：建议列表里每一条都指向一个能改的东西
+#: （选题偏好 / 时段 / 稿件标准），而「换个号发」不是 —— 把一条操作员执行不了的
+#: 动作项塞进列表，只会让他下次连真能执行的那几条也一起跳过。
+RENDER_ONLY_DIMENSIONS: Final[tuple[str, ...]] = ("by_account",)
+
+
 _ACTION_BY_KIND: Final[Mapping[str, str]] = {
     "topic": "下轮选题把这个钩子类型的占比提上来（改的是选题偏好，不是某一篇稿子）",
     "timing": "把发布时段往这个时段靠（定时计划的窗口改到这一段）",
@@ -265,6 +274,9 @@ def build_report(
             lambda row: None if row["hour"] is None else f"{int(row['hour']):02d}:00",
         )
         data["by_platform"] = _group_stats(metrics_rows, lambda row: row["platform"])
+        # 账号归因（T5.8）：``account_id`` 在配置里是**全局唯一**的（``PublishConfig``
+        # 校验重复），所以这里不必再拼平台前缀来消歧。
+        data["by_account"] = _group_stats(metrics_rows, lambda row: row["account_id"])
         data["by_duration"] = _group_stats(
             metrics_rows,
             lambda row: None if row["duration_ms"] is None else _duration_bucket(int(row["duration_ms"])),
@@ -575,6 +587,7 @@ _DIMENSION_LABEL: Final[Mapping[str, str]] = {
     "by_hook_type": "选题类型",
     "by_hour": "发布时段",
     "by_platform": "平台",
+    "by_account": "账号",
     "by_duration": "时长",
     "by_grade": "稿件评分",
 }
@@ -719,7 +732,7 @@ def report_markdown(bundle: ReportBundle, *, generated_at: str, trigger: str) ->
         "",
     ]
     data = bundle.data
-    for dimension in DIMENSIONS:
+    for dimension in (*DIMENSIONS, *RENDER_ONLY_DIMENSIONS):
         groups = data.get(dimension)
         if not isinstance(groups, list) or not groups:
             continue
@@ -1133,7 +1146,7 @@ def _report_csv(row: ReportRow) -> str:
     """
     header = "dimension,key,n,views_median,views_avg,likes_avg,completion_avg"
     lines = [header]
-    for dimension in DIMENSIONS:
+    for dimension in (*DIMENSIONS, *RENDER_ONLY_DIMENSIONS):
         groups = row.data.get(dimension)
         if not isinstance(groups, list):
             continue

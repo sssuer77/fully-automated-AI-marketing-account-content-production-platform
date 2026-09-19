@@ -18,6 +18,7 @@ import {
   actionBody,
   activeWork,
   configurePublishApi,
+  enqueueBody,
   enqueueText,
   formatStamp,
   manualCount,
@@ -174,6 +175,23 @@ function platforms(overrides: Partial<PublishPlatformsView> = {}): PublishPlatfo
     publish_enabled: true,
     dry_run: false,
     ...overrides,
+  };
+}
+
+/**
+ * 多账号平台清单（T5.8）：`douyin` 挂两个号 —— 真机上就是"加第二个账号"之后的样子。
+ *
+ * 出厂口径是**一个平台一个号**，所以单账号那份夹具留着不动；这两份的差别本身就是
+ * "T5.8 加了什么"。
+ */
+function multiAccountPlatforms(): PublishPlatformsView {
+  const view = platforms();
+  const items = view.items ?? [];
+  return {
+    ...view,
+    items: items.map((item) =>
+      item.code === "douyin" ? { ...item, accounts: ["acc_main", "acc_second"] } : item,
+    ),
   };
 }
 
@@ -368,6 +386,25 @@ describe("纯函数", () => {
     expect(skipped).toContain("目标 douyin / xiaohongshu");
     expect(skipped).toContain("跳过：xiaohongshu：平台未启用");
     expect(enqueueText(enqueueReport({ platforms: [], queued: 0 }))).toContain("目标 无");
+  });
+
+  it("请求体：没勾平台 ⇒ 空体；勾了但没动账号 ⇒ **不发** account_ids（缺省就是全部）", () => {
+    const items = multiAccountPlatforms().items ?? [];
+    expect(enqueueBody([], {}, items)).toEqual({});
+    expect(enqueueBody(["douyin"], {}, items)).toEqual({ platforms: ["douyin"] });
+  });
+
+  it("请求体：缩到部分账号 ⇒ 发并集（后端按平台取交集，谁都不会被整条跳过）", () => {
+    const items = multiAccountPlatforms().items ?? [];
+    expect(enqueueBody(["douyin"], { douyin: ["acc_second"] }, items)).toEqual({
+      platforms: ["douyin"],
+      account_ids: ["acc_second"],
+    });
+    // 一个平台缩了、另一个没缩 ⇒ 没缩的那个按**全勾**参与并集
+    expect(enqueueBody(["douyin", "other"], { douyin: ["acc_second"] }, items)).toEqual({
+      platforms: ["douyin", "other"],
+      account_ids: ["acc_second", "_rehearsal"],
+    });
   });
 });
 
@@ -652,6 +689,69 @@ describe("usePublishStore", () => {
 
     store.toggleEnqueuePlatform("other");
     expect(store.enqueuePick).toEqual(["douyin"]);
+  });
+
+  it("账号细分：取消一个号 ⇒ 只投剩下的那个（请求体带 account_ids）", async () => {
+    const enqueueTask = vi.fn(async () => enqueueReport());
+    configurePublishApi({ enqueueTask, fetchPlatforms: vi.fn(async () => multiAccountPlatforms()) });
+    const store = usePublishStore();
+    await store.loadPlatforms();
+
+    store.setEnqueueTaskId(TASK);
+    store.toggleEnqueuePlatform("douyin");
+    expect(store.enqueueAccounts("douyin")).toEqual(["acc_main", "acc_second"]);
+
+    store.toggleEnqueueAccount("douyin", "acc_main");
+    expect(store.enqueueAccounts("douyin")).toEqual(["acc_second"]);
+    expect(store.enqueueNarrowed).toBe(1);
+    expect(await store.enqueue()).toBe(true);
+    expect(enqueueTask).toHaveBeenCalledWith(TASK, {
+      platforms: ["douyin"],
+      account_ids: ["acc_second"],
+    });
+  });
+
+  it("账号细分：又勾回全部 ⇒ 把「缩小」这件事忘掉（与从来没动过完全等价）", async () => {
+    configurePublishApi({ fetchPlatforms: vi.fn(async () => multiAccountPlatforms()) });
+    const store = usePublishStore();
+    await store.loadPlatforms();
+
+    store.toggleEnqueuePlatform("douyin");
+    store.toggleEnqueueAccount("douyin", "acc_main");
+    expect(store.enqueueNarrowed).toBe(1);
+
+    store.toggleEnqueueAccount("douyin", "acc_main");
+    expect(store.enqueueAccounts("douyin")).toEqual(["acc_main", "acc_second"]);
+    expect(store.enqueueNarrowed).toBe(0);
+    expect(store.enqueueAccountPick).toEqual({});
+  });
+
+  it("账号细分：取消到一个不剩 ⇒ 这个平台从勾选里摘掉（不留「勾了但一个都不投」）", async () => {
+    configurePublishApi({ fetchPlatforms: vi.fn(async () => multiAccountPlatforms()) });
+    const store = usePublishStore();
+    await store.loadPlatforms();
+
+    store.toggleEnqueuePlatform("douyin");
+    store.toggleEnqueueAccount("douyin", "acc_main");
+    store.toggleEnqueueAccount("douyin", "acc_second");
+
+    expect(store.enqueuePick).toEqual([]);
+    expect(store.enqueueAccountPick).toEqual({});
+  });
+
+  it("账号细分：取消平台会连缩小一起清掉（否则重勾时它会少发几个号）", async () => {
+    configurePublishApi({ fetchPlatforms: vi.fn(async () => multiAccountPlatforms()) });
+    const store = usePublishStore();
+    await store.loadPlatforms();
+
+    store.toggleEnqueuePlatform("douyin");
+    store.toggleEnqueueAccount("douyin", "acc_main");
+    store.toggleEnqueuePlatform("douyin");
+    expect(store.enqueueAccountPick).toEqual({});
+
+    store.toggleEnqueuePlatform("douyin");
+    expect(store.enqueueAccounts("douyin")).toEqual(["acc_main", "acc_second"]);
+    expect(store.enqueueNarrowed).toBe(0);
   });
 
   it("没填任务号 ⇒ 一个请求都不发，并给出那句话", async () => {

@@ -3,8 +3,8 @@
 ``publish/publish`` 单元 = 「把这一期发到某个平台的那个账号上」
 --------------------------------------------------------------
 ```text
-claim(publish/publish, unit_ref = <平台代号>)
-   ├─ 解析账号（payload.account_id ⇒ 该平台上第一个启用的账号）
+claim(publish/publish, unit_ref = <平台代号>:<账号>)
+   ├─ 解析账号（unit_ref 里的账号 ⇒ payload.account_id ⇒ 该平台唯一的启用账号）
    ├─ 限频守卫：≤3 条/天/账号 + 间隔 ≥30min
    │     └─ 不过 ⇒ UnitDeferred（回 pending + not_before，**不计 attempts**）
    ├─ 幂等登记 publications（sha256(task_id|platform|account_id) 上有 UNIQUE）
@@ -90,7 +90,7 @@ from studio.db.repositories.publication_repo import (
     PublicationRow,
 )
 from studio.domain.enums import UnitType
-from studio.domain.publish import build_caption, fit_text, render_tags
+from studio.domain.publish import build_caption, fit_text, parse_unit_ref, render_tags
 from studio.domain.task_service import TaskService
 from studio.pools.worker_base import UnitContext, UnitDeferred
 from studio.publish.base import (
@@ -248,9 +248,9 @@ class PublishPlatformHandler:
                 context={"unit_type": ctx.unit_type, "accepted": sorted(self.unit_types)},
             )
         started_at = now_iso()
-        platform = (ctx.unit_ref or "").strip()
+        platform, account_hint = parse_unit_ref(ctx.unit_ref)
         platform_cfg = self._platform_config(platform)
-        account = self._account(platform, ctx.payload)
+        account = self._account(platform, ctx.payload, account_hint=account_hint)
 
         # 幂等短路排在限频**之前**：已经发过的记录再去问「今天额度够不够」没有意义，
         # 而额度用满时它会先被顺延 —— 一次重投变成一次白等。判定只读，不改库。
@@ -561,14 +561,31 @@ class PublishPlatformHandler:
             )
         return cfg
 
-    def _account(self, platform: str, payload: Mapping[str, Any]) -> AccountConfig:
-        """payload 指定 ⇒ 那个账号；否则该平台**唯一**启用的那个（出厂单账号）。
+    def _account(
+        self,
+        platform: str,
+        payload: Mapping[str, Any],
+        *,
+        account_hint: str | None = None,
+    ) -> AccountConfig:
+        """这一条发给哪个账号：``unit_ref`` 里的账号 ⇒ 它；否则 payload 里的；再否则配置。
+
+        优先级 ``unit_ref > payload > 配置``
+        ----------------------------------
+        ``unit_ref``（``platform:account_id``）是**作业自己带的**身份，它比 payload 更权威：
+        payload 是投递那一刻抄进去的一份快照，而 unit_ref 就是队列幂等键的一部分 ——
+        两者不一致时，按 unit_ref 走才能保证"重投的还是那一条作业、还是那个账号"
+        （按 payload 走会让作业换个账号发出去，而队列认为它还是同一条）。
 
         与投递侧共用 :func:`~studio.services.publish_service.resolve_account`：
         两边对"该平台配了几个账号"必须给出同一个结论 —— 一边挑第一个、一边报错的话，
         投递时看着没事，执行时作业直接失败。
         """
-        return resolve_account(self._publish, platform=platform, account_id=_opt_str(payload, "account_id"))
+        return resolve_account(
+            self._publish,
+            platform=platform,
+            account_id=account_hint or _opt_str(payload, "account_id"),
+        )
 
     def _guard_switch(self, *, dry_run: bool, platform_cfg: PlatformConfig, ctx: UnitContext) -> None:
         """``publish.enabled=false`` ⇒ 真发布一律拒绝（R14）；演练与**演练台**放行。

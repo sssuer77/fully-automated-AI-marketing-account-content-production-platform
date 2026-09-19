@@ -2517,7 +2517,8 @@ def publish_enqueue(
         typer.Option("--platform", help="目标平台，可重复传；缺省 = 所有启用账号所在的平台"),
     ] = None,
     account: Annotated[
-        str | None, typer.Option("--account", help="账号 id（缺省 = 该平台唯一启用的那个）")
+        list[str] | None,
+        typer.Option("--account", help="账号 id，可重复传；缺省 = 这些平台下的全部启用账号"),
     ] = None,
     dry_run: Annotated[
         bool | None,
@@ -2530,8 +2531,11 @@ def publish_enqueue(
 ) -> None:
     """把这条任务排进发布池（T5.3 · §03.3.10）。
 
-    **幂等**：``(task_id, publish, publish, <平台>)`` 上有唯一约束 ⇒ "任务完成后自动投一遍
-    + 人工再点一遍"不会发两次，第二次会出现在 ``skipped`` 里。
+    **幂等**：``(task_id, publish, publish, <平台>:<账号>)`` 上有唯一约束 ⇒ "任务完成后自动
+    投一遍 + 人工再点一遍"不会发两次，第二次会出现在 ``skipped`` 里。
+
+    一个平台上配了几个账号就投几条（T5.8 · §06.2.4）：``--account`` 不给 ⇒ 全发；
+    给一次或多次 ⇒ 只发点名的那些。
 
     这条命令**只投作业**，不发布、不看 ``publish.enabled``：开关关着时作业照样进队列，
     由 worker 那一侧带 ``PUBLISH_DISABLED`` 进死信（R14：不可逆的动作必须有人点头）。
@@ -2551,7 +2555,7 @@ def publish_enqueue(
                 task_id=task_id,
                 config=config,
                 platforms=tuple(platform) if platform else None,
-                account_id=account,
+                account_ids=tuple(account) if account else None,
                 dry_run=dry_run,
                 scheduled_at=scheduled_at,
             )

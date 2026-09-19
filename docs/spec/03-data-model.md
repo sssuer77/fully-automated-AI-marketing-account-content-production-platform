@@ -448,7 +448,7 @@ CREATE TABLE jobs (
   pool            TEXT NOT NULL CHECK (pool IN ('draft','voice','render','publish')),
   unit_type       TEXT NOT NULL CHECK (unit_type IN (
                     'task','sentence','scene','final','topic_batch','publish')),
-  unit_ref        TEXT NOT NULL,                              -- task_id|sentence_id|scene_seq|'final'|platform
+  unit_ref        TEXT NOT NULL,                              -- task_id|sentence_id|scene_seq|'final'|'platform:account_id'
   status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (
                     'pending','blocked','claimed','succeeded','failed','dead','canceled')),
   priority        INTEGER NOT NULL DEFAULT 100,               -- 数值越小越优先
@@ -492,7 +492,19 @@ END;
 | voice | `sentence` | `sentence_id` | N（≈20–40 句） | **句子级续传/重试** |
 | render | `scene` | `scene_seq` | M（5–9 段） | 场景级缓存与重试 |
 | render | `final` | `'final'` | 1 | 合流只做一次 |
-| publish | `publish` | `platform`（如 `douyin`） | 每平台 1 | **一任务一平台只发一次** |
+| publish | `publish` | `platform:account_id`（如 `douyin:acc_main`） | 每平台**每账号** 1 | **一任务一平台一账号只发一次**（T5.8） |
+
+> **发布单元的标识为什么要带账号**（T5.8 · §06.2.4）：唯一键是
+> ``(task_id, pool, unit_type, unit_ref)`` ⇒ 单元标识只写平台代号时，**一条任务在一个平台上
+> 一辈子只有一条作业**，第二个账号根本投不出来（第一条把它顶掉）。带上账号之后，
+> 「同任务可安全分发到多账号」才是真的 —— 与 ``publications`` 的幂等键
+> ``sha256(task_id|platform|account_id)`` 是同一个口径。
+>
+> **老格式（只有平台代号）仍然认**：真机库里已经有一批 ``unit_ref='other'`` 的作业行。
+> ``parse_unit_ref()`` 在没有分隔符时返回 ``account_id=None``，调用方回落到 payload 或配置；
+> ``_find_publication_job()`` 也先按新格式找、找不到再退回只认平台的老格式。把老格式当成
+> "另一个单元"会让重投凭空多出一条作业 —— 那条不会重复发布（``publications`` 的幂等键兜着），
+> 但它会白跑一次，并在死信/日志里多一行看不懂的东西。
 
 ### 3.3.10 `template_definitions` / `template_scenes` / `template_components`（三层模板）
 

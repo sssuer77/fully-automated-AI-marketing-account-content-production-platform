@@ -33,6 +33,7 @@ idempotency_key = publication_idempotency_key
 
 __all__ = [
     "IDEMPOTENCY_SEP",
+    "UNIT_REF_SEP",
     "CaptionPlan",
     "ReadbackDiff",
     "TagPlan",
@@ -41,8 +42,50 @@ __all__ = [
     "compare_readback",
     "fit_text",
     "idempotency_key",
+    "parse_unit_ref",
     "render_tags",
+    "unit_ref",
 ]
+
+#: 发布作业单元标识里平台与账号之间的分隔符（T5.8）。
+#:
+#: **为什么单元标识必须带账号**：``jobs`` 的幂等键是
+#: ``(task_id, pool, unit_type, unit_ref)`` —— 一条任务在一个平台上**一辈子只有一条**
+#: 作业。而 §06.2.4 要求「同任务可安全分发到多账号」（两个账号是两件不同的事，
+#: 幂等键里也算进了 ``account_id``）。单元标识不带账号，第二条作业根本投不出来。
+#:
+#: 用 ``:`` 而不是 ``|``：``|`` 已经被发布幂等键占用（§03.3.15 逐字
+#: ``sha256(task_id|platform|account_id)``），两个键长得像会让人以为它们同源。
+UNIT_REF_SEP = ":"
+
+
+def unit_ref(platform: str, account_id: str) -> str:
+    """发布作业的单元标识 ``platform:account_id``（T5.8 · §06.2.4）。
+
+    **老格式（只有平台代号）仍然认**，见 :func:`parse_unit_ref` —— 真机库里
+    已经有一批 ``unit_ref='other'`` 的作业行，把老格式当成"另一个单元"会让重投
+    凭空多出一条作业。多出来的那条不会重复发布（``publications`` 的幂等键兜着），
+    但它会白跑一次、并在死信/日志里多一行看不懂的东西。
+    """
+    return f"{platform}{UNIT_REF_SEP}{account_id}"
+
+
+def parse_unit_ref(ref: str | None) -> tuple[str, str | None]:
+    """``platform:account_id`` ⇒ ``(platform, account_id)``。
+
+    **只切第一个分隔符**：``account_id`` 是人在配置里写的标识符，含 ``:`` 也照样还原。
+    ``platform`` 是枚举（``douyin`` / ``other`` …），天然不含分隔符。
+
+    没有分隔符 ⇒ 当作**老格式**（只有平台代号），账号给 ``None`` 让调用方回落到
+    payload 或配置（:func:`~studio.services.publish_service.resolve_account`）。
+    这一条是**向后兼容的全部实现**：老作业行重投时照常能跑。
+    """
+    text = (ref or "").strip()
+    if UNIT_REF_SEP not in text:
+        return (text, None)
+    platform, _, account_id = text.partition(UNIT_REF_SEP)
+    return (platform.strip(), account_id.strip() or None)
+
 
 #: 回读比对的取景半径（不一致处左右各取这么多字符）。取 12 是因为一个中文标题
 #: 在日志里折一行大约就是 20 出头 —— 再宽，日志里那条证据本身就得折行看。

@@ -50,6 +50,7 @@ from studio.db.repositories.audit_repo import AuditRepo
 from studio.db.repositories.publication_repo import PublicationRepo
 from studio.db.repositories.schedule_repo import ScheduleRepo
 from studio.domain.enums import TaskKind, TaskStatus
+from studio.domain.publish import unit_ref
 from studio.domain.schedule import next_run_at, window_moment
 from studio.domain.task_service import TaskService
 from studio.services.metrics_service import ResourceSnapshot
@@ -383,7 +384,7 @@ def test_due_creates_job_without_occupying_worker(
     job = JobStore(connection).get(report.job_ids[0])
     assert job.pool == "publish"
     assert job.unit_type == "publish"
-    assert job.unit_ref == REHEARSAL
+    assert job.unit_ref == unit_ref(REHEARSAL, REHEARSAL_ACCOUNT)
     assert job.task_id == task_id
     assert job.status == "pending"
     assert job.lease_owner is None and job.lease_expires_at is None

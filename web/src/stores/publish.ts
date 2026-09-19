@@ -47,6 +47,7 @@ import {
   type Publication,
   type PublicationList,
   type PublishActionBody,
+  type PublishEnqueueBody,
   type PublishEnqueueResponse,
   type PublishPlatformOption,
   type PublishPlatformsView,
@@ -313,6 +314,36 @@ export function optionText(option: PublishPlatformOption): string {
 }
 
 /**
+ * 勾选 → 投递请求体（**纯函数**，方便单测直接钉住它）。
+ *
+ * 三条规则，一条都不能少
+ * ----------------------
+ * ① 一个平台都不勾 ⇒ 返回 `{}`（让后端用它自己的缺省目标）。发空数组在服务端是
+ *    "一个都不投"，两者差得很远。
+ * ② 没动过账号勾选 ⇒ **不发 `account_ids`**：缺省就是"这些平台下的全部启用账号"，
+ *    显式发一份与缺省等价的名单只会让请求变长、并在后端加账号时立刻过期。
+ * ③ 动过 ⇒ 发**并集**。`account_ids` 是一份全局名单，后端按平台取交集
+ *    （`resolve_accounts`）：所以"勾了 douyin 的 acc_b、同时也要发 kuaishou"
+ *    能靠一份并集表达出来，谁都不会被整条跳过。
+ */
+export function enqueueBody(
+  pick: string[],
+  accountPick: Record<string, string[]>,
+  items: PublishPlatformOption[],
+): PublishEnqueueBody {
+  if (pick.length === 0) return {};
+  const narrowed = pick.some((code) => accountPick[code] !== undefined);
+  if (!narrowed) return { platforms: [...pick] };
+  const wanted = new Set<string>();
+  for (const code of pick) {
+    const option = items.find((item) => item.code === code);
+    const all = option?.accounts ?? [];
+    for (const account of accountPick[code] ?? all) wanted.add(account);
+  }
+  return { platforms: [...pick], account_ids: [...wanted] };
+}
+
+/**
  * 投递的结论 → 一行人话。
  *
  * `queued: 0` 与"按钮坏了"是两件事：幂等命中（已经投过）也会是 0，而 `skipped` 里
@@ -414,6 +445,14 @@ export const usePublishStore = defineStore("publish", () => {
   const enqueueTaskId = ref("");
   /** 勾中的平台（**空 = 投后端给的缺省目标**，不是"都不发"）。 */
   const enqueuePick = ref<string[]>([]);
+  /**
+   * 每个平台**被缩小**到哪几个账号（缺键 = 这个平台全勾）。
+   *
+   * 为什么不直接存"勾了哪几个"：缺省是**全勾**，而"全勾"这件事在配置加账号那天
+   * 会自己变（新账号自动参与）—— 存一份当时的快照，新账号就永远进不来，
+   * 而面板上看起来一切正常。存"缩小了多少"才是与配置同源的读法。
+   */
+  const enqueueAccountPick = ref<Record<string, string[]>>({});
   const enqueueBusy = ref(false);
   const enqueueResult = ref<PublishEnqueueResponse | null>(null);
   const enqueueError = ref<string | null>(null);
@@ -476,6 +515,15 @@ export const usePublishStore = defineStore("publish", () => {
       "发布面板上不会出现记录（去「四池调度」看死信）。只验证链路请勾「本地演练台」。"
     );
   });
+  /** 某个平台**当前生效**的账号（缺键 = 全勾，见 `enqueueAccountPick`）。 */
+  function enqueueAccounts(code: string): string[] {
+    const option = platformItems.value.find((item) => item.code === code);
+    return enqueueAccountPick.value[code] ?? option?.accounts ?? [];
+  }
+  /** 勾中的平台里，有几个被缩小过（0 = 一个都没动过）。 */
+  const enqueueNarrowed = computed<number>(
+    () => enqueuePick.value.filter((code) => enqueueAccountPick.value[code] !== undefined).length,
+  );
   const canEnqueue = computed(() => {
     const wanted = enqueueTaskId.value.trim();
     return wanted !== "" && wanted.length <= MAX_TASK_ID_CHARS;
@@ -688,12 +736,58 @@ export const usePublishStore = defineStore("publish", () => {
     enqueueError.value = null;
   }
 
-  /** 勾 / 取消勾一个平台。 */
+  /**
+   * 勾 / 取消勾一个平台。
+   *
+   * 无论勾上还是取消，这个平台的**账号缩小**都一并清掉：取消时它是没人要的残留，
+   * 勾上时它会让新勾的平台**少发几个号**（而勾选框上写的是"全部"）—— 两种都是
+   * "面板上看着对、投出去不对"。
+   */
   function toggleEnqueuePlatform(code: string): void {
     const picked = enqueuePick.value;
     enqueuePick.value = picked.includes(code)
       ? picked.filter((item) => item !== code)
       : [...picked, code];
+    if (enqueueAccountPick.value[code] !== undefined) {
+      const next = { ...enqueueAccountPick.value };
+      delete next[code];
+      enqueueAccountPick.value = next;
+    }
+    enqueueResult.value = null;
+    enqueueError.value = null;
+  }
+
+  /**
+   * 勾 / 取消勾**一个平台下的一个账号**。
+   *
+   * 三种收尾各对应一件真事
+   * ----------------------
+   * * 取消到**一个不剩** ⇒ 这个平台从勾选里摘掉。留着一个"勾了但一个号都不投"的平台，
+   *   投递期会被后端按"没有账号"跳过 —— 而面板上那个勾还在。
+   * * 又回到**全勾** ⇒ 把缩小记下来这件事**忘掉**（删键），于是配置里新加的账号
+   *   当天就自动参与（与"从来没动过"完全等价）。
+   * * 其余 ⇒ 记下这一份缩小。
+   */
+  function toggleEnqueueAccount(code: string, accountId: string): void {
+    const option = platformItems.value.find((item) => item.code === code);
+    const all = option?.accounts ?? [];
+    const current = enqueueAccounts(code);
+    const next = all.filter((item) =>
+      item === accountId ? !current.includes(item) : current.includes(item),
+    );
+    const picked = enqueuePick.value;
+    const narrowing = { ...enqueueAccountPick.value };
+    if (next.length === 0) {
+      delete narrowing[code];
+      enqueuePick.value = picked.filter((item) => item !== code);
+    } else if (next.length === all.length) {
+      delete narrowing[code];
+      if (!picked.includes(code)) enqueuePick.value = [...picked, code];
+    } else {
+      narrowing[code] = next;
+      if (!picked.includes(code)) enqueuePick.value = [...picked, code];
+    }
+    enqueueAccountPick.value = narrowing;
     enqueueResult.value = null;
     enqueueError.value = null;
   }
@@ -714,7 +808,7 @@ export const usePublishStore = defineStore("publish", () => {
     enqueueError.value = null;
     clearMessages();
     try {
-      const body = enqueuePick.value.length > 0 ? { platforms: [...enqueuePick.value] } : {};
+      const body = enqueueBody(enqueuePick.value, enqueueAccountPick.value, platformItems.value);
       enqueueResult.value = await api.enqueueTask(wanted, body);
       notice.value = enqueueText(enqueueResult.value);
       await refresh();
@@ -787,6 +881,9 @@ export const usePublishStore = defineStore("publish", () => {
     enqueueWarning,
     enqueueTaskId,
     enqueuePick,
+    enqueueAccountPick,
+    enqueueAccounts,
+    enqueueNarrowed,
     enqueueBusy,
     enqueueResult,
     enqueueError,
@@ -794,6 +891,7 @@ export const usePublishStore = defineStore("publish", () => {
     loadPlatforms,
     setEnqueueTaskId,
     toggleEnqueuePlatform,
+    toggleEnqueueAccount,
     enqueue,
     // 交付包
     handoffTaskId,

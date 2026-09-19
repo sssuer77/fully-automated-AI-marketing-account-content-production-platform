@@ -56,6 +56,7 @@ from studio.db.queue import JobStore
 from studio.db.repositories import AuditRepo
 from studio.db.repositories.publication_repo import MANUAL_REQUIRED, PUBLISHED
 from studio.domain.enums import TaskStatus
+from studio.domain.publish import parse_unit_ref
 from studio.domain.task_service import TaskService
 from studio.pools import publish_worker
 from studio.pools.publish_worker import build_publish_handler
@@ -542,7 +543,7 @@ class TestPlatformOptions:
         jobs = [
             job
             for job in JobStore(rig.connection).list_jobs(pool="publish", task_id=task_id, limit=10)
-            if job.unit_ref == "douyin"
+            if parse_unit_ref(job.unit_ref)[0] == "douyin"
         ]
         assert len(jobs) == 1
         assert jobs[0].status == "dead"

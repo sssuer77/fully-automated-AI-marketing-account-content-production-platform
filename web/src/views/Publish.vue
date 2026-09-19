@@ -27,7 +27,7 @@ import AppButton from "@/components/AppButton.vue";
 import EmptyState from "@/components/EmptyState.vue";
 import PanelCard from "@/components/PanelCard.vue";
 import StatusDot from "@/components/StatusDot.vue";
-import type { Publication } from "@/api/endpoints/publish";
+import type { Publication, PublishPlatformOption } from "@/api/endpoints/publish";
 import {
   MAX_JITTER_MIN,
   SCHEDULE_MODES,
@@ -154,6 +154,18 @@ function onHandoffTask(event: Event): void {
 
 function onEnqueueTask(event: Event): void {
   publish.setEnqueueTaskId((event.target as HTMLInputElement).value);
+}
+
+/**
+ * 一个平台下「投哪几个号」的那行小字（**只有多账号平台才画**）。
+ *
+ * 全勾时说「全部 N 个号」而不是把 N 个名字再列一遍：勾选框旁边那行 `optionText`
+ * 已经写过这一份名单了，同一个平台写两遍名单会让人以为它们在说两件事。
+ */
+function accountCaption(option: PublishPlatformOption): string {
+  const all = option.accounts ?? [];
+  const picked = publish.enqueueAccounts(option.code).length;
+  return picked === all.length ? `全部 ${all.length} 个号` : `只投 ${picked} / ${all.length} 个号`;
 }
 
 function onReason(publicationId: string, event: Event): void {
@@ -294,7 +306,7 @@ function onCancelReason(publication: Publication): void {
       title="投递"
       :subtitle="
         defaultTargets.length > 0
-          ? `填任务号 → 勾平台 → 投进发布池；一个都不勾 = 投 ${defaultTargets.map(platformLabel).join(' / ')}`
+          ? `填任务号 → 勾平台（多账号的可以只勾其中几个号）→ 投进发布池；一个平台都不勾 = 投 ${defaultTargets.map(platformLabel).join(' / ')}`
           : '还没读到平台清单'
       "
     >
@@ -335,6 +347,27 @@ function onCancelReason(publication: Publication): void {
             />
             <span>{{ optionText(option) }}</span>
           </label>
+
+          <!-- 账号细分（T5.8）：勾中的平台**真有多个号**时才画。
+               勾上平台 = 这个平台下的号**全投**；取消某一个 = 只投剩下的。 -->
+          <div
+            v-if="publish.enqueuePick.includes(option.code) && (option.accounts ?? []).length > 1"
+            class="accounts"
+          >
+            <span class="accounts__key">{{ accountCaption(option) }}</span>
+            <ul class="checks checks--sub">
+              <li v-for="account in option.accounts ?? []" :key="account" class="checks__item">
+                <label class="check">
+                  <input
+                    type="checkbox"
+                    :checked="publish.enqueueAccounts(option.code).includes(account)"
+                    @change="publish.toggleEnqueueAccount(option.code, account)"
+                  />
+                  <span class="mono">{{ account }}</span>
+                </label>
+              </li>
+            </ul>
+          </div>
         </li>
       </ul>
       <p v-else class="hint">
@@ -349,6 +382,11 @@ function onCancelReason(publication: Publication): void {
       </p>
       <p v-else-if="publish.enqueueResult" class="alert alert--ok">
         {{ enqueueText(publish.enqueueResult) }}
+      </p>
+
+      <p v-if="publish.enqueueNarrowed > 0" class="hint">
+        只投了一部分账号：同一个任务在每个勾中的号上各是一条作业、各留一条发布记录
+        （限频、登录态都是按账号各算各的），所以少勾一个号 = 少发一条。
       </p>
 
       <p class="hint">
@@ -1128,6 +1166,24 @@ function onCancelReason(publication: Publication): void {
 </template>
 
 <style scoped>
+/* 账号细分（T5.8）：挂在平台勾选框下面，缩进一格 —— 它属于**上一个**平台。 */
+.accounts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-left: var(--space-5);
+  margin-top: var(--space-1);
+}
+
+.accounts__key {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.checks--sub {
+  margin-top: 0;
+}
+
 .publish {
   display: flex;
   flex-direction: column;
