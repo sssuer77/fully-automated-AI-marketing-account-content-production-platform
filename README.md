@@ -35,7 +35,7 @@
 | `docs/spec/02-project-layout.md` | 依赖方向、**文件级目录树**、目录设计裁决、命名约定、`.gitignore`、谁写谁读矩阵、GC 策略 |
 | `docs/spec/03-data-model.md` | ER 图、PRAGMA、**30 表 DDL（真机执行验证：30 表 / 61 索引 / 6 触发器）**、队列契约、Pydantic 模型、**定时 / 报告 / 报告周期 / BGM 素材**、三层模板 YAML（二期）、迁移与保留 |
 | `docs/spec/04-contracts.md` | 8 个 Agent 契约、**§4.2.8 一期单遍合成契约（CompositePlan + filter_complex）**、随机化协议、TTS 适配层、**WS 协议（8 通道 + 面板映射）**、发布/定时/报告契约、端到端时序 |
-| `docs/spec/05-roadmap-checklist.md` | **50 个原子任务**（T1 12 + T2 9 + T3 7 + T4 14 + T5 8）+ 追踪清单 + **192 条陷阱对照表** + 验收速查 |
+| `docs/spec/05-roadmap-checklist.md` | **50 个原子任务**（T1 12 + T2 9 + T3 7 + T4 14 + T5 8）+ 追踪清单 + **193 条陷阱对照表** + 验收速查 |
 | `docs/spec/06-publication.md` | **第六部分重建**：成片与发布（平台矩阵、**多账号**、封面、发布前审核、Playwright 发布、**定时调度**、数据回收、**报告与决策闭环**、记忆沉淀、风控合规、降级兜底） |
 | `full-execution-plan.md` | 需求权威原文 |
 | **`todolist.md`** | **施工 Todolist（分级可勾选）**：50 个原子任务拆成 377 个可勾选子项 + 优先级 P0/P1/P2 + 外部阻塞项 + 关键路径 + 陷阱速查 —— **施工时只看这一个文件** |

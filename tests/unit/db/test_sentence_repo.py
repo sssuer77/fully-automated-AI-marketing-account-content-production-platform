@@ -420,6 +420,72 @@ def test_progress_counts_every_status(
     assert progress.is_settled is False
 
 
+# ══════════════════════════════════════════════════════════════════════
+# 读：**只看生效那一版稿件**（陷阱 #193）
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _resave(connection: sqlite3.Connection, task_id: str, *, count: int) -> SavedScript:
+    """再落一版稿件（写稿每重写一次就是这个动作）。"""
+    sentences: list[dict[str, Any]] = [
+        {
+            "seq": index,
+            "text_raw": f"新第{index}句",
+            "text": f"新第{index}句",
+            "speaker": "littlebear",
+            "emotion": "neutral",
+            "pause_after_ms": 200,
+        }
+        for index in range(1, count + 1)
+    ]
+    return ScriptRepo(connection).save_draft(
+        task_id=task_id,
+        title="标题",
+        hook="钩子",
+        body_md="正文",
+        cta="关注",
+        word_count=700,
+        est_duration_ms=140_000,
+        speaker_ratio={"littlebear": 1.0},
+        outline={"hook_3s": "钩子", "segments": []},
+        sentences=sentences,
+    )
+
+
+def test_reads_ignore_the_previous_script_version(
+    connection: sqlite3.Connection, saved: SavedScript, task_id: str
+) -> None:
+    """重写过稿件的任务：句序**不许**出现两遍（1,1,2,2,…）。
+
+    句子的唯一键是 ``(script_id, seq)``，只按 ``task_id`` 读会把上一版一起读进来
+    —— 时间轴会报「句序不连续」把整条链路卡死，而队列还会替旧稿再建一轮作业。
+    """
+    fresh = _resave(connection, task_id, count=2)
+    repo = SentenceRepo(connection)
+
+    listed = repo.list_for_task(task_id)
+    pending = repo.pending_for_task(task_id)
+    progress = repo.progress(task_id)
+
+    assert [row.seq for row in listed] == [1, 2]
+    assert {row.script_id for row in listed} == {fresh.script_id}
+    assert [row.id for row in pending] == list(fresh.sentence_ids)
+    assert progress.total == 2
+
+
+def test_get_by_seq_answers_from_the_active_script(
+    connection: sqlite3.Connection, saved: SavedScript, task_id: str
+) -> None:
+    """按句序取一句时，答案必须来自生效那一版（试听 / 重配都走这条路）。"""
+    fresh = _resave(connection, task_id, count=2)
+    repo = SentenceRepo(connection)
+
+    assert repo.get_by_seq(task_id, 1) is not None
+    assert repo.get_by_seq(task_id, 1).id == fresh.sentence_ids[0]  # type: ignore[union-attr]
+    # 旧版有第 3 句、新版没有 —— 取到的必须是"没有"，而不是旧版那一行
+    assert repo.get_by_seq(task_id, 3) is None
+
+
 def test_progress_is_settled_when_only_done_and_skipped_remain(
     connection: sqlite3.Connection, saved: SavedScript, task_id: str
 ) -> None:

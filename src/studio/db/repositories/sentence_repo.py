@@ -68,6 +68,14 @@ SKIPPED_STATUS: Final[str] = "skipped"
 SYNTHESIZING_STATUS: Final[str] = "synthesizing"
 FAILED_STATUS: Final[str] = "failed"
 
+#: 「生效稿件」的判据 —— **每一个按 ``task_id`` 读句子的地方都要带上它**。
+#:
+#: 句子的唯一键是 ``(script_id, seq)``（§03.3.7），而一个任务可以有**多版**稿件：
+#: 写稿每重写一次就落一版，旧的置 ``is_active = 0`` 但**行还在**。只按 ``task_id``
+#: 读，会把上一版的句子一起读进来 —— ``seq`` 立刻重复（1,1,2,2,…），时间轴报
+#: 「句序不连续」把整条链路卡死，而队列还会替**旧稿**再建一轮作业（陷阱 #193）。
+_ACTIVE_SCRIPT_SQL: Final[str] = "script_id = (SELECT id FROM scripts WHERE task_id = ? AND is_active = 1)"
+
 
 @dataclass(frozen=True, slots=True)
 class SentenceProgress:
@@ -145,12 +153,15 @@ class SentenceRepo:
         """按 ``(task_id, seq)`` 找一句（试听端点的入口，T2.9）。
 
         为什么不复用 :meth:`get`：试听拿到的键是 ``voice/<task_id>/s00N.wav``
-        —— 它说的是"第几句"，不是"哪一行"。``(task_id, seq)`` 上有唯一约束
-        （§03.3.7），所以这个查找有且只有一个答案。
+        —— 它说的是"第几句"，不是"哪一行"。唯一约束落在 ``(script_id, seq)``
+        上，所以 ``seq`` 要配**生效稿件**才有唯一答案（陷阱 #193）：不配的话，
+        重写过稿件的任务会同时命中好几行，``fetchone()`` 取到哪一版全看运气
+        —— 试听念出来的可能是**上一版**的台词。
         """
         row = self._connection.execute(
-            f"SELECT {SENTENCE_COLUMNS} FROM script_sentences WHERE task_id = ? AND seq = ?",
-            (task_id, seq),
+            f"SELECT {SENTENCE_COLUMNS} FROM script_sentences "
+            f"WHERE task_id = ? AND {_ACTIVE_SCRIPT_SQL} AND seq = ?",
+            (task_id, task_id, seq),
         ).fetchone()
         return None if row is None else SentenceRow.from_row(row)
 
@@ -159,8 +170,9 @@ class SentenceRepo:
         placeholders = ", ".join("?" for _ in PENDING_STATUSES)
         rows = self._connection.execute(
             f"SELECT {SENTENCE_COLUMNS} FROM script_sentences "
-            f"WHERE task_id = ? AND tts_status IN ({placeholders}) ORDER BY seq",
-            (task_id, *PENDING_STATUSES),
+            f"WHERE task_id = ? AND {_ACTIVE_SCRIPT_SQL} "
+            f"AND tts_status IN ({placeholders}) ORDER BY seq",
+            (task_id, task_id, *PENDING_STATUSES),
         ).fetchall()
         return [SentenceRow.from_row(row) for row in rows]
 
@@ -173,8 +185,9 @@ class SentenceRepo:
         都会往前错一整句。
         """
         rows = self._connection.execute(
-            f"SELECT {SENTENCE_COLUMNS} FROM script_sentences WHERE task_id = ? ORDER BY seq",
-            (task_id,),
+            f"SELECT {SENTENCE_COLUMNS} FROM script_sentences "
+            f"WHERE task_id = ? AND {_ACTIVE_SCRIPT_SQL} ORDER BY seq",
+            (task_id, task_id),
         ).fetchall()
         return [SentenceRow.from_row(row) for row in rows]
 
@@ -182,8 +195,9 @@ class SentenceRepo:
         """逐句进度（一条 ``GROUP BY`` 拿全，不把句子行读进内存再数）。"""
         counts = dict.fromkeys(("pending", "synthesizing", "done", "skipped", "failed"), 0)
         rows = self._connection.execute(
-            "SELECT tts_status, COUNT(*) FROM script_sentences WHERE task_id = ? GROUP BY tts_status",
-            (task_id,),
+            "SELECT tts_status, COUNT(*) FROM script_sentences "
+            f"WHERE task_id = ? AND {_ACTIVE_SCRIPT_SQL} GROUP BY tts_status",
+            (task_id, task_id),
         ).fetchall()
         for row in rows:
             status = str(row[0])

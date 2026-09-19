@@ -452,6 +452,7 @@ def _tts_stats(connection: sqlite3.Connection, *, start: str, end: str) -> dict[
                sum(CASE WHEN s.tts_status = 'skipped' THEN 1 ELSE 0 END) AS skipped
           FROM script_sentences s
           JOIN tasks t ON t.id = s.task_id
+          JOIN scripts sc ON sc.id = s.script_id AND sc.is_active = 1
          WHERE t.finished_at >= ? AND t.finished_at < ?
         """,
         (start, end),

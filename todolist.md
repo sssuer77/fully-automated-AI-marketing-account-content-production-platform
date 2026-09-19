@@ -2416,6 +2416,23 @@ T1.12 ✅             （一键启动）
 >   ⇒ **全绿 · dist 0.40 MB**（本轮**没动前端**，契约无漂移）；
 > - **裁定 348–352 · 陷阱 189–192**。
 >
+> ㉛ **跑通「一条选题 → 成片」的端到端真机演练** ⇒ **跑通了，并顺手逮住一个会把核心链路卡死的真 bug**。
+> - **路线**：选题 `01M2SBX7Q48T47T9CM58HRZBPM` ⇒ `studio script draft`（真 LLM，447 字 / 34 句）⇒
+>   `studio pipeline run --until completed` ⇒ **`data/output/videos/20260919-182230_01M2WHG7X9TSYXWVRJ3CSSMFR9_final.mp4`**
+>   （**235,634,984 B** · 1080×1920@30 · h264 + aac 48k 立体声 · **357.0s**），音轨 `mean −20.2 dB / max −0.9 dB`（不是静音）、
+>   字幕烧进画面、**水印这次真的贴上了**（`watermark_applied=true`，E2 素材已就位）；母带 **356391 ms / 34 句**；
+>   QC 回填 `lufs=-16.76 / true_peak=-0.84 / degraded=false`（**0 句降级**）；
+> - **配音真的走 CosyVoice**：71 句全部 `tts_engine=cosyvoice2`（`bigbear` / `littlebear` 两个音色都在用）、0 句降级；
+>   其中一句先被**新加的音频 QC 判成 `TTS_SILENT`**（RMS −50.2 / 峰值 −25.1 dBFS）⇒ 决策表选 `RETRY_SIMPLIFIED`
+>   ⇒ 第 2 次就念出来了 —— **这正是 T2.3 本轮要的行为，在真机上第一次自己生效**；
+> - ⚠️ **逮住的 bug（陷阱 #193）**：这条任务的稿子**被重写过一版**（v1 37 句 / v2 34 句，旧的 `is_active=0` 但行还在），
+>   而按 `task_id` 读句子的四处查询都没带 `is_active` ⇒ 读到 **71 句**（`seq` 重复成 1,1,2,2,…）、队列替旧稿也建了一轮作业
+>   ⇒ 时间轴报「句序不连续」把整条链路卡死。修法：四处查询统一带上
+>   `script_id = (SELECT id FROM scripts WHERE task_id = ? AND is_active = 1)`（`report_service._tts_stats` 的 JOIN 一并补上）；
+> - **回归测试**：`tests/unit/db/test_sentence_repo.py` **+2**（重写一版后句序**不许**出现两遍 / `get_by_seq` 必须答生效那一版）；
+> - **门禁**：`.\tasks.ps1 check` ⇒ **4062 passed / 32 skipped / 28 deselected**（169s）；本轮**没动前端**，契约无漂移；
+> - **陷阱 193**。
+>
 > **当前关键路径**：`T2.1 ✅` ⇒ `T2.2 ✅` ⇒ `T2.3 ✅`（**T2 全绿**：`VoiceEngine` ABC + 三实现 + 熔断 + §04.3.3 决策表逐条落地）⇒ **`T2.4` 正式原声**（试听样本已补，2026-09-19）⇒ `T3.3`（🔶 只差语法预检 / 节点守卫 / `render plan` 三个非核心子项）。**T3.4–T3.7 与 T4 / T5 都已收口**；一期剩下的只有 T2.4 的正式原声与 T3.1 / T3.3 的非核心缺项。
 > ⇒ **没有任何硬阻塞**；E1/E2/E3/E4 只影响各自任务的真机验收，**不影响开发推进**。
 >
@@ -2609,7 +2626,8 @@ T1.12 ✅             （一键启动）
 | 190 | **集成用例把"每句挂满 3 次"钉成固定元组，认领顺序一变就红** | 断言写成 `attempts == (3, 3, 3)`，而熔断拉开后**不再重试** ⇒ 值随认领顺序变 | 断言**不变量**（`1 <= v <= 3` 且 `sum < 9`），不钉具体元组 | T2.3 |
 | 191 | **测试里前一个作业不收尾，后一个永远认领不到**（表现为"什么都没发生"） | `JobStore.claim` 有并发名额守卫（按 `max_concurrency` 过滤在跑的作业） | 测试里显式**收尾 / 释放**前一个作业，再认领下一个 | T2.3 |
 | 192 | **`assert picker.switched is False` 之后，`is True` 那句被 mypy 判成"不可达"** | mypy 会对**成员表达式**（`x.y`）做字面量收窄 ⇒ 后续 `is True` 直接判 unreachable | 先取局部变量（`first_switch: bool = picker.switched`）再 assert | T2.3 |
-> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 192 条见该处；跨文档引用按编号即可）。
+| 193 | **重写过稿件的任务，配音跑到一半整条链路卡死**（时间轴报「句序不连续：期望 1..71，实际 1,1,2,2,…」） | 句子的唯一键是 `(script_id, seq)`（§03.3.7），而**按 `task_id` 读句子**的四处查询（`pending_for_task` / `list_for_task` / `progress` / `get_by_seq`）都没带 `is_active` ⇒ 上一版稿件的句子一起被读进来，`seq` 立刻重复。后果不止是时间轴：队列还会替**旧稿**再建一轮作业（71 句变 108 句） | 按 `task_id` 读句子一律带上 `script_id = (SELECT id FROM scripts WHERE task_id = ? AND is_active = 1)`；判据：**凡是「一个任务一份」的东西，查询里都要有 `is_active`** | T2.3 |
+> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 193 条见该处；跨文档引用按编号即可）。
 
 ---
 
