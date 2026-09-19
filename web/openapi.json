@@ -11414,6 +11414,22 @@
             "title": "Id",
             "type": "string"
           },
+          "preview_state": {
+            "default": "missing",
+            "title": "Preview State",
+            "type": "string"
+          },
+          "preview_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Url"
+          },
           "source": {
             "title": "Source",
             "type": "string"
@@ -11475,6 +11491,91 @@
           "voices"
         ],
         "title": "VoiceOptions",
+        "type": "object"
+      },
+      "VoicePreview": {
+        "description": "一个音色的试听样本现在什么样（T2.4）。\n\n``status`` 四态：``missing``（还没生成，点一下就生成）· ``running``（正在生成，\n真机上一次十几秒）· ``ready``（盘上有，可以播）· ``failed``（生成失败了，\n``error`` 里是引擎原话）。\n\n``missing`` 与 ``failed`` **必须分开**：前者点一下就行，后者再点一下大概率还是\n失败 —— 得先看那句话。合成一个\"没有\"会让用户反复点一个注定失败的按钮。",
+        "properties": {
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "engine": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          },
+          "voice_id": {
+            "title": "Voice Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "voice_id",
+          "status"
+        ],
+        "title": "VoicePreview",
         "type": "object"
       },
       "WatchdogServiceModel": {
@@ -13006,6 +13107,48 @@
         "summary": "Export Logs",
         "tags": [
           "logs"
+        ]
+      }
+    },
+    "/api/v1/media/voice_preview/{name}": {
+      "get": {
+        "description": "试听样本的音频（``<audio>`` 直接取这个 url，Range 由 Starlette 处理）。\n\n与逐句试听同一条纪律：**只发盘上已经有的那一份**。``{name}`` 由\n:func:`~studio.core.paths.preview_slug` 生成（形如 ``bigbear_d3f9f8b0.wav``），\n路由正则把它卡死成\"一个文件名\"—— ``/`` 与 ``..`` 在那一步就进不来，而不是靠\n``resolve()`` 之后的比较兜底（与 ``assets.py::get_asset_media`` 同一手法）。",
+        "operationId": "get_voice_preview_media_api_v1_media_voice_preview__name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9A-Za-z_-]{1,64}\\.wav$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Voice Preview Media",
+        "tags": [
+          "voice"
         ]
       }
     },
@@ -16222,6 +16365,92 @@
           }
         },
         "summary": "List Voice Options",
+        "tags": [
+          "voice"
+        ]
+      }
+    },
+    "/api/v1/voices/{voice_id}/preview": {
+      "get": {
+        "description": "这个音色的试听样本现在什么样（**只读，不合成**）。\n\n面板每次刷新都会调它 —— 让它顺带合成，就是\"每刷新一次念一句\"（T2.9 那条硬要求\n在试听这件事上的翻版）。",
+        "operationId": "get_voice_preview_api_v1_voices__voice_id__preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "voice_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[^/\\\\\\x00-\\x1f\\x7f]{1,64}$",
+              "title": "Voice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoicePreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Voice Preview",
+        "tags": [
+          "voice"
+        ]
+      },
+      "post": {
+        "description": "生成这个音色的试听样本（**立刻返回**，真念在后台线程里）。\n\n为什么要先在服务端把音色卡一遍\n------------------------------\n``voice_id`` 进的是**路径段**、落的是**文件名**、还会被交给引擎当音色名。三处都\n不该收一个来路不明的字符串：\n\n- 不在候选里（``usable_voices``）⇒ ``TTS_VOICE_MISSING``：这个名字本机压根没有，\n  拼错一个字母与\"音色没入库\"看起来一模一样，得说清是哪一个；\n- 在候选里、但**当前引擎念不出来**（``speakable_voices``）⇒ ``TTS_ENGINE_UNAVAILABLE``：\n  与配音面板那条\"当前引擎念不出来\"是**同一份判据**（陷阱 #154）。这里的处置与\n  配音不同 —— 配音会退回兜底音色（裁定 314），试听**必须**如实失败：试听的全部\n  意义就是\"听听这个嗓子\"，换成兜底音色念出来的是**另一个人的声音**，而面板上\n  什么都不会说。\n\n已经在生成 / 已经生成好的，重复点都是安全的（``ensure`` 幂等）。",
+        "operationId": "create_voice_preview_api_v1_voices__voice_id__preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "voice_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[^/\\\\\\x00-\\x1f\\x7f]{1,64}$",
+              "title": "Voice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoicePreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Voice Preview",
         "tags": [
           "voice"
         ]

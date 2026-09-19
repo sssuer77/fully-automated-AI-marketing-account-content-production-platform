@@ -127,7 +127,10 @@ def protected_roots(paths: StudioPaths) -> tuple[Path, ...]:
     - ``hot/archive`` —— 已消费热点（复盘依据，规则是"移动而非删除"）；
     - ``backups`` —— 备份与迁移前检查点（删了它等于把回滚能力删了）；
     - ``assets`` —— MC 跑酷素材与 BGM 素材库（**人工提供**，删了没法重建）；
-    - ``voice_src`` —— 零样本复刻的参考音（同上）。
+    - ``voice_src`` —— 零样本复刻的参考音（同上）；
+    - ``output/voice_preview`` —— 音色试听样本（T2.4）。它很小（几十 KB），而重新生成
+      要十几秒（真机冷加载 ~20s）：清掉它的收益是零，代价是"面板上所有试听按钮
+      一夜之间变回没生成"。
 
     注意 ``output/voice`` **不在**这里：§03.7.5 明确给了句子 WAV 24 小时 TTL，
     它是白名单唯一的例外（见 :mod:`studio.gc.media`）。
@@ -139,6 +142,7 @@ def protected_roots(paths: StudioPaths) -> tuple[Path, ...]:
         paths.hot_archive_dir,
         paths.topics_dir,
         paths.videos_dir,
+        paths.voice_preview_dir,
         paths.voice_src_dir,
     )
 

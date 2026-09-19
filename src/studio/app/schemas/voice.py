@@ -48,6 +48,7 @@ __all__ = [
     "VoiceMapResponse",
     "VoiceOption",
     "VoiceOptions",
+    "VoicePreview",
     "progress_view",
     "sentence_voice_view",
 ]
@@ -93,6 +94,30 @@ class SentenceProgressModel(BaseModel):
     ratio: float
 
 
+class VoicePreview(BaseModel):
+    """一个音色的试听样本现在什么样（T2.4）。
+
+    ``status`` 四态：``missing``（还没生成，点一下就生成）· ``running``（正在生成，
+    真机上一次十几秒）· ``ready``（盘上有，可以播）· ``failed``（生成失败了，
+    ``error`` 里是引擎原话）。
+
+    ``missing`` 与 ``failed`` **必须分开**：前者点一下就行，后者再点一下大概率还是
+    失败 —— 得先看那句话。合成一个"没有"会让用户反复点一个注定失败的按钮。
+    """
+
+    voice_id: str
+    status: str
+    #: 能播的时候才有（`<audio src>` 直接用它；面板**不自己拼**这个 url）
+    url: str | None = None
+    duration_ms: int | None = None
+    #: 这一份是**哪台引擎**念的（``cosyvoice2`` / ``sapi``）—— "换了参考音但听起来
+    #: 还是旧嗓子"时，第一件要看的就是它
+    engine: str | None = None
+    generated_at: str | None = None
+    error: str | None = None
+    note: str | None = None
+
+
 class VoiceOption(BaseModel):
     """音色下拉框的一行。
 
@@ -110,6 +135,12 @@ class VoiceOption(BaseModel):
     id: str
     source: str
     speakable: bool
+    #: 试听样本的四态（见 :class:`VoicePreview`）。下拉框旁边那颗「试听」按钮按它画：
+    #: ``missing`` 显示「生成试听」、``running`` 转圈、``ready`` 可直接播。
+    preview_state: str = "missing"
+    #: 样本的 url（``ready`` 时才有）。**由后端给** —— 面板自己拼路径的话，
+    #: 后端一改目录就变成"点了播放没反应"，且不报错。
+    preview_url: str | None = None
 
 
 class VoiceOptions(BaseModel):

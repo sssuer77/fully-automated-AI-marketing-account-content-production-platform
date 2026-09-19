@@ -87,6 +87,11 @@ HTTP_STATUS_BY_CODE: Final[Mapping[ErrorCode, int]] = {
     # 配音操作面（T2.9）：音色名是**入参**，写错了改一个字符串重提交就好 ⇒ 422，
     # 面板据此把红字标在音色下拉框上，并在 `context.available` 里给出能用的那些。
     ErrorCode.TTS_VOICE_MISSING: 422,
+    # 「这台引擎现在念不出来」是**服务端此刻的能力**问题，不是请求写错了 ⇒ 503：
+    # 请求一个字都没错（音色就在本机），换一台引擎 / 把常驻服务起起来就会好 ——
+    # 与 422 那条的修复动作完全不同。试听这条路上它尤其重要：合成 500 会让面板
+    # 把它当成"我们崩了"，而用户该做的事是"去总览看一眼 tts 的就绪状态"。
+    ErrorCode.TTS_ENGINE_UNAVAILABLE: 503,
     # 「会重配 N 句」是**状态**问题而不是入参问题：请求一个字都没写错，缺的是
     # "你确认过这个代价了" ⇒ 409，与 `PERSONA_EXISTS` 的「覆盖 / 换个 id」同一条。
     ErrorCode.VOICE_MAP_CONFIRM_REQUIRED: 409,

@@ -41,6 +41,7 @@ export type ResynthResponse = OkJson<"/api/v1/sentences/{sentence_id}/resynth", 
 export type VoiceMapRequest = BodyJson<"/api/v1/tasks/{task_id}/voice_map", "patch">;
 export type VoiceMapResponse = OkJson<"/api/v1/tasks/{task_id}/voice_map", "patch">;
 export type VoiceChange = VoiceMapResponse["changes"][number];
+export type VoicePreview = OkJson<"/api/v1/voices/{voice_id}/preview", "get">;
 
 const SENTENCES_PATH = "/api/v1/sentences";
 const VOICES_PATH = "/api/v1/voices";
@@ -65,6 +66,31 @@ export function fetchVoiceOptions(taskId: string, signal?: AbortSignal): Promise
 export function resynthSentence(sentenceId: string, signal?: AbortSignal): Promise<ResynthResponse> {
   return apiPost<ResynthResponse>(
     `${SENTENCES_PATH}/${encodeURIComponent(sentenceId)}/resynth`,
+    {},
+    { signal },
+  );
+}
+
+/**
+ * 某个音色的试听样本现在什么样（**只读**，不会触发合成）。
+ *
+ * 面板刷新下拉框时，`GET /voices` 里已经带了每个音色的 `preview_state` —— 这个端点
+ * 是**生成过程中**用来轮询的那一个（那段时间里下拉框不会重拉）。
+ */
+export function fetchVoicePreview(voiceId: string, signal?: AbortSignal): Promise<VoicePreview> {
+  return apiGet<VoicePreview>(`${VOICES_PATH}/${encodeURIComponent(voiceId)}/preview`, { signal });
+}
+
+/**
+ * 生成试听样本（**立刻返回**，真念在服务端的后台线程里）。
+ *
+ * 真机上一次要十几秒（CosyVoice 冷加载 20s + 推理）：同步做完，一次点击就是一个
+ * 挂住二十几秒的请求。所以这里拿到的是 `running`，面板按 `fetchVoicePreview` 轮询。
+ * 已经有样本 / 正在生成时重复调用都是安全的。
+ */
+export function createVoicePreview(voiceId: string, signal?: AbortSignal): Promise<VoicePreview> {
+  return apiPost<VoicePreview>(
+    `${VOICES_PATH}/${encodeURIComponent(voiceId)}/preview`,
     {},
     { signal },
   );

@@ -41,8 +41,10 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 
 import {
+  createVoicePreview,
   fetchSentences,
   fetchVoiceOptions,
+  fetchVoicePreview,
   patchVoiceMap,
   resynthSentence,
   type SentenceProgress,
@@ -52,6 +54,7 @@ import {
   type VoiceMapResponse,
   type VoiceOption,
   type VoiceOptions,
+  type VoicePreview,
 } from "@/api/endpoints/voice";
 import { ApiError } from "@/api/http";
 import { describeError } from "@/stores/overview";
@@ -60,6 +63,15 @@ import type { StatusTone } from "@/components/tone";
 
 /** 有活在跑时的轮询周期。1 秒：够快（一句几百毫秒）也不至于把后端问爆。 */
 export const VOICE_POLL_MS = 1_000;
+
+/** 等试听样本生成时的轮询周期。1 秒：真机上一次十几秒，够快也不至于把后端问爆。 */
+export const PREVIEW_POLL_MS = 1_000;
+
+/**
+ * 等试听样本的上限。**两分钟**：真机实测冷加载 20s + 推理十几秒，正常远到不了；
+ * 到点就如实说"还在生成"，而不是永远转圈（转圈的按钮看起来像坏了）。
+ */
+export const PREVIEW_TIMEOUT_MS = 120_000;
 
 /** 任务号长度上限（与后端 `RenderJobRequest.task_id` 同源）。 */
 export const MAX_TASK_ID_CHARS = 64;
@@ -73,9 +85,18 @@ export interface VoiceApi {
   fetchVoiceOptions: typeof fetchVoiceOptions;
   resynthSentence: typeof resynthSentence;
   patchVoiceMap: typeof patchVoiceMap;
+  fetchVoicePreview: typeof fetchVoicePreview;
+  createVoicePreview: typeof createVoicePreview;
 }
 
-let api: VoiceApi = { fetchSentences, fetchVoiceOptions, resynthSentence, patchVoiceMap };
+let api: VoiceApi = {
+  fetchSentences,
+  fetchVoiceOptions,
+  resynthSentence,
+  patchVoiceMap,
+  fetchVoicePreview,
+  createVoicePreview,
+};
 
 /** 换掉部分实现（**只用于测试**：生产代码不调用它）。 */
 export function configureVoiceApi(overrides: Partial<VoiceApi>): void {
@@ -123,6 +144,42 @@ const SOURCE_LABELS: Record<string, string> = {
 /** 音色来源 → 人话（`sapi` / `profile` 是后端的词，不是用户能看懂的东西）。 */
 export function voiceSourceLabel(source: string): string {
   return SOURCE_LABELS[source] ?? source;
+}
+
+const PREVIEW_LABELS: Record<string, string> = {
+  missing: "生成试听",
+  running: "生成中…",
+  ready: "试听",
+  failed: "重新生成",
+};
+
+/**
+ * 试听按钮上的字（四态各一句）。
+ *
+ * `missing` 与 `failed` **必须分开**：前者点一下就行，后者再点一下大概率还是失败
+ * —— 得先看那句话。都写成"试听"，用户会反复点一个注定失败的按钮。
+ */
+export function previewLabel(state: string): string {
+  return PREVIEW_LABELS[state] ?? "试听";
+}
+
+/**
+ * 试听样本现在是什么状况（按钮的 `title`）。
+ *
+ * `engine` 一定要说出来：参考音是**零样本复刻**，同一段文本换个引擎念出来是**两个人的
+ * 嗓子**。听出来"不像"的时候，第一件要确认的就是"这一份是谁念的"。
+ */
+export function previewHint(state: string, engine: string | null): string {
+  switch (state) {
+    case "ready":
+      return engine === null ? "播这个音色的试听样本" : `试听样本（由 ${engine} 念的）`;
+    case "running":
+      return "正在生成试听样本（真机上一次十几秒）—— 好了会自动播";
+    case "failed":
+      return "上一次生成失败了，点一下重试；失败原因在下面那行红字里";
+    default:
+      return "还没有试听样本 —— 点一下让当前引擎念一句（十几秒），好了会自动播";
+  }
 }
 
 /**
@@ -365,6 +422,14 @@ export function validateTaskId(raw: string): string | null {
 // store
 // ══════════════════════════════════════════════════════════════════════
 
+/** 睡一会儿（试听轮询用）。抽出来是为了让 `previewVoice` 的主线读起来还是一件事。 */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+
 export const useVoiceStore = defineStore("voice", () => {
   /** 面板上那个任务号输入框（用户直接改它）。 */
   const taskId = ref("");
@@ -376,6 +441,12 @@ export const useVoiceStore = defineStore("voice", () => {
   const confirm = ref<ConfirmPrompt | null>(null);
   /** 后端关于时间轴的那句话（重配 / 换音色之后才出现）。 */
   const hint = ref<string | null>(null);
+  /** 最近一次试听的样本状态（`null` = 这次进面板还没试听过）。 */
+  const preview = ref<VoicePreview | null>(null);
+  /** 正在生成 / 试听哪个音色（`null` = 没有在途的）。 */
+  const previewId = ref<string | null>(null);
+  const previewBusy = ref(false);
+  const previewError = ref<string | null>(null);
 
   const loading = ref(false);
   const loadError = ref<string | null>(null);
@@ -404,6 +475,11 @@ export const useVoiceStore = defineStore("voice", () => {
   const anyBusy = computed(() => busy.value || busyId.value !== null);
   const problem = computed(() => validateTaskId(taskId.value));
   const canLoad = computed(() => problem.value === null && !loading.value);
+
+  /** 某个音色现在有没有试听样本（下拉框那一行按它画按钮）。 */
+  function previewState(voiceId: string): string {
+    return voices.value.find((option) => option.id === voiceId)?.preview_state ?? "missing";
+  }
 
   // ── 轮询 ────────────────────────────────────────────────────────────
 
@@ -634,6 +710,71 @@ export const useVoiceStore = defineStore("voice", () => {
     confirm.value = null;
   }
 
+  /**
+   * 试听一个音色：盘上没有就先让它生成（真机上一次十几秒），好了返回可播的 url。
+   *
+   * 为什么要在这里轮询、而不是让面板自己轮
+   * --------------------------------------
+   * "生成中"这件事要跨按钮重绘（用户可能已经点去改别的框了），状态必须落在 store 里；
+   * 面板只负责拿 url 去喂 `<audio>`。
+   *
+   * 返回 `null` = 没成（原因在 `previewError` 里）。**不抛** —— 调用方是按钮的点击
+   * 处理器，抛出去只会在控制台留一行没人看的栈。
+   */
+  async function previewVoice(voiceId: string): Promise<string | null> {
+    if (voiceId.trim() === "") {
+      previewError.value = "这个角色还没有选音色 —— 先在左边那个下拉框里挑一个。";
+      return null;
+    }
+    previewId.value = voiceId;
+    previewBusy.value = true;
+    previewError.value = null;
+    try {
+      let sample = await api.fetchVoicePreview(voiceId);
+      // 只有 missing / failed 才去点生成：running 是"别人已经点过了"，再 POST 一次
+      // 也没坏处（后端幂等），但会白多一个请求。
+      if (sample.status !== "ready" && sample.status !== "running") {
+        sample = await api.createVoicePreview(voiceId);
+      }
+      const deadline = Date.now() + PREVIEW_TIMEOUT_MS;
+      while (sample.status === "running" && Date.now() < deadline) {
+        await sleep(PREVIEW_POLL_MS);
+        sample = await api.fetchVoicePreview(voiceId);
+      }
+      preview.value = sample;
+      applyPreview(sample);
+      // `url` 在契约里是可选的 ⇒ `undefined` 与 `null` 都当"没有"（不写 `!== null`：
+      // 那会让 `undefined` 漏过去，返回一个 `undefined` 给 `<audio src>`）。
+      if (sample.status === "ready" && sample.url) return sample.url;
+      previewError.value =
+        sample.error ??
+        (sample.status === "running"
+          ? "试听样本还在生成（超过两分钟）—— 面板上那颗按钮会继续显示「生成中」，过一会儿再点一次。"
+          : "试听样本没生成出来。");
+      return null;
+    } catch (failure) {
+      previewError.value = describeError(failure);
+      return null;
+    } finally {
+      previewBusy.value = false;
+      previewId.value = null;
+    }
+  }
+
+  /** 把样本状态写回下拉框那一行（不写的话按钮会一直显示"生成试听"）。 */
+  function applyPreview(sample: VoicePreview): void {
+    const current = options.value;
+    if (current === null) return;
+    options.value = {
+      ...current,
+      voices: current.voices.map((option) =>
+        option.id === sample.voice_id
+          ? { ...option, preview_state: sample.status, preview_url: sample.url ?? null }
+          : option,
+      ),
+    };
+  }
+
   /** 把草稿退回库里的映射（"我改了几个框，还是别动了"）。 */
   function resetDraft(): void {
     confirm.value = null;
@@ -694,6 +835,13 @@ export const useVoiceStore = defineStore("voice", () => {
     confirmVoiceChange,
     cancelVoiceChange,
     resetDraft,
+    // 试听
+    preview,
+    previewId,
+    previewBusy,
+    previewError,
+    previewState,
+    previewVoice,
     refresh,
     reload,
     start,

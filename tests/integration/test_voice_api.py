@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+import time
 import wave
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -41,16 +42,19 @@ from studio.app.deps import AppState, build_state
 from studio.app.main import create_app
 from studio.core.clock import now_iso
 from studio.core.config import load_outputs_config, load_pools_config
-from studio.core.paths import StudioPaths
+from studio.core.errors import ErrorCode, StudioError
+from studio.core.paths import StudioPaths, preview_slug
 from studio.db import connect
 from studio.db.migrate import migrate
 from studio.db.queue import JobStore
 from studio.db.repositories import AuditRepo, ScriptRepo, SentenceRepo
 from studio.domain.enums import TaskStatus
 from studio.domain.task_service import TaskService
+from studio.gc.policy import protected_roots
 from studio.pools.voice_worker import build_voice_handler
 from studio.pools.worker_base import PoolWorker
 from studio.services.metrics_service import ResourceSnapshot
+from studio.services.voice_preview import PREVIEW_TEXT, VoicePreviewService
 from studio.services.voice_service import settle_voice
 from studio.ws.hub import HubSettings
 
@@ -850,3 +854,202 @@ def test_voice_map_reports_the_sentences_it_could_not_touch(
     ]
     # 映射**已经**换了：下一轮收口与之后的重配都按新音色走
     assert body["voice_map"]["bigbear"] == VOICE_XIAO
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 音色试听样本（T2.4）
+# ══════════════════════════════════════════════════════════════════════
+
+#: 试听样本要花多久才"生成好"（假引擎是即时的，这个数是**轮询等待的上限**）
+PREVIEW_WAIT_SEC = 10.0
+
+
+class PreviewEngine:
+    """试听样本用的假引擎：写一段固定时长的静音，并数得出被念过几次。
+
+    数得出来是这条链路的**主要不变量**：``GET`` 只读盘、绝不合成（T2.9 的硬要求在
+    试听这件事上的翻版）。没有这个计数，"点一下刷新面板就念了一句"是验不出来的。
+    """
+
+    name = "preview-fake"
+    revision = "test"
+
+    def __init__(self, *, duration_ms: int = 900, fail: str | None = None) -> None:
+        self.calls: list[tuple[str, str | None]] = []
+        self.duration_ms = duration_ms
+        self.fail = fail
+
+    def synthesize(self, text: str, out_path: Path, *, voice: str | None, rate: int) -> None:
+        del rate
+        self.calls.append((text, voice))
+        if self.fail is not None:
+            raise StudioError(self.fail, code=ErrorCode.TTS_ENGINE_DOWN)
+        frames = max(1, round(SAMPLE_RATE * self.duration_ms / 1000))
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(out_path), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(SAMPLE_RATE)
+            handle.writeframes(b"\x00\x00" * frames)
+
+
+@pytest.fixture
+def preview_engine(state: AppState) -> PreviewEngine:
+    """把试听服务换成"假引擎"那一个。
+
+    不换的话它会去问常驻推理服务 / 起 PowerShell 列系统音色 —— 用例于是变成
+    "这台机器上装了什么"，而不是"这条链路对不对"。
+    """
+    engine = PreviewEngine()
+    state.voice_previews = VoicePreviewService(state.paths, engine_factory=lambda: (engine, VOICE_DA))
+    return engine
+
+
+def _preview_url(voice_id: str) -> str:
+    return f"{VOICES_URL}/{voice_id}/preview"
+
+
+def _wait_for_preview(client: TestClient, voice_id: str, *, want: str) -> dict[str, Any]:
+    """轮询到 ``want`` 那一态（真机上一次十几秒，这里假引擎是毫秒级）。"""
+    deadline = time.monotonic() + PREVIEW_WAIT_SEC
+    payload: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        payload = client.get(_preview_url(voice_id)).json()
+        if payload["status"] == want:
+            return payload
+        time.sleep(0.02)
+    raise AssertionError(f"等了 {PREVIEW_WAIT_SEC}s 还没到 {want}：{payload}")
+
+
+def test_the_dropdown_carries_the_preview_state(client: TestClient, preview_engine: PreviewEngine) -> None:
+    """下拉框那一行要**一起**带上试听状态。
+
+    分两次请求的话，第一帧上每一行都会显示成"还没生成"（哪怕样本早在盘上），
+    而那颗按钮会在这半秒里看起来是坏的。
+    """
+    voices = client.get(VOICES_URL).json()["voices"]
+    # 顺序是 ``usable_voices`` 那份 ``sorted``（不是 INSTALLED 的书写顺序）
+    assert [row["id"] for row in voices] == sorted(INSTALLED)
+    assert {row["preview_state"] for row in voices} == {"missing"}
+    assert all(row["preview_url"] is None for row in voices)
+
+
+def test_get_never_synthesizes(client: TestClient, preview_engine: PreviewEngine) -> None:
+    """★ 查询**不触发合成**：面板每次刷新都会调它，顺带合成就是"每刷新一次念一句"。"""
+    payload = client.get(_preview_url(VOICE_DA)).json()
+    assert payload["status"] == "missing"
+    assert payload["url"] is None
+    assert preview_engine.calls == [], "查一下状态就把引擎叫起来了"
+
+
+def test_generate_then_play(client: TestClient, preview_engine: PreviewEngine, state: AppState) -> None:
+    """★ 生成 → 落盘 → 能播：面板上那颗按钮走的就是这条。"""
+    started = client.post(_preview_url(VOICE_DA))
+    assert started.status_code == 200
+    # 立刻返回（真念在后台线程里）——真机上一次十几秒，同步做完就是一个挂住的请求
+    assert started.json()["status"] in {"running", "ready"}
+
+    ready = _wait_for_preview(client, VOICE_DA, want="ready")
+    assert ready["duration_ms"] == 900
+    assert ready["engine"] == "preview-fake"
+    assert ready["url"] == f"/api/v1/media/voice_preview/{preview_slug(VOICE_DA)}.wav"
+    # 引擎**真的**被叫了一次，而且带的是"试听那一段固定文本 + 这个音色"
+    assert preview_engine.calls == [(PREVIEW_TEXT, VOICE_DA)]
+
+    # 盘上真有一份，而且能通过媒资端点取回来（`<audio src>` 走的就是它）
+    sample = state.paths.voice_preview_wav(VOICE_DA)
+    assert sample.is_file() and sample.stat().st_size > 0
+    media = client.get(ready["url"])
+    assert media.status_code == 200
+    assert media.headers["content-type"].startswith("audio/")
+    assert media.content == sample.read_bytes()
+
+    # 下拉框那一行也跟着变（按钮下一次重绘才会显示「试听」）
+    rows = {row["id"]: row for row in client.get(VOICES_URL).json()["voices"]}
+    assert rows[VOICE_DA]["preview_state"] == "ready"
+    assert rows[VOICE_DA]["preview_url"] == ready["url"]
+
+
+def test_a_second_click_does_not_synthesize_again(client: TestClient, preview_engine: PreviewEngine) -> None:
+    """已经有了就**不重念**：重复点一下不该再花十几秒。"""
+    client.post(_preview_url(VOICE_DA))
+    _wait_for_preview(client, VOICE_DA, want="ready")
+    assert len(preview_engine.calls) == 1
+
+    again = client.post(_preview_url(VOICE_DA)).json()
+    assert again["status"] == "ready"
+    assert len(preview_engine.calls) == 1, "第二次点击又念了一遍"
+
+
+def test_a_failure_is_reported_not_hidden(client: TestClient, state: AppState) -> None:
+    """引擎失败 ⇒ 如实说（原话带出来），而不是永远转圈。
+
+    "永远转圈"是最坏的一种失败：面板上看不出哪里不对，用户只会反复点。
+    """
+    engine = PreviewEngine(fail="TTS_ENGINE_DOWN: 常驻服务连不上")
+    state.voice_previews = VoicePreviewService(state.paths, engine_factory=lambda: (engine, None))
+
+    client.post(_preview_url(VOICE_DA))
+    failed = _wait_for_preview(client, VOICE_DA, want="failed")
+    assert "TTS_ENGINE_DOWN" in (failed["error"] or "")
+    # 半成品**不许**留在盘上（陷阱 #9：半截 wav 被当成样本 = 试听放出来是一声爆音）
+    assert not state.paths.voice_preview_wav(VOICE_DA).exists()
+    assert list(state.paths.voice_preview_dir.glob("*.partial*")) == []
+
+
+def test_an_unknown_voice_is_refused_before_anything_is_written(
+    client: TestClient, preview_engine: PreviewEngine, state: AppState
+) -> None:
+    """本机没有的音色 ⇒ 422，**且一个字节都没写**。
+
+    拼错一个字母与"音色没入库"看起来一模一样，所以错误里要把候选列出来。
+    """
+    response = client.post(_preview_url("ghost-voice"))
+    assert response.status_code == 422
+    assert response.json()["code"] == "TTS_VOICE_MISSING"
+    assert preview_engine.calls == []
+    assert not state.paths.voice_preview_dir.exists()
+
+
+def test_a_voice_the_current_engine_cannot_speak_is_refused(
+    client: TestClient, preview_engine: PreviewEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """★ 「本机有」但「这台引擎念不出来」⇒ 另一种错误码。
+
+    这一条与配音**故意不一样**：配音会退回兜底音色（裁定 314），试听**必须**如实失败
+    —— 试听的全部意义就是"听听这个嗓子"，换成兜底音色念出来的是**另一个人的声音**，
+    而面板上什么都不会说（陷阱 #154 的形状）。
+    """
+    monkeypatch.setattr("studio.app.routers.voice.speakable_voices", lambda *_a, **_k: (VOICE_XIAO,))
+
+    response = client.post(_preview_url(VOICE_DA))
+    assert response.status_code == 503
+    assert response.json()["code"] == "TTS_ENGINE_UNAVAILABLE"
+    assert preview_engine.calls == []
+
+
+def test_the_media_endpoint_refuses_anything_but_a_sample_name(client: TestClient) -> None:
+    """媒资键**必须**是"一个样本文件名"：``..`` 与子目录在路由那一步就进不来。
+
+    越界的形状有两种，两种都**不是** 404
+    ----------------------------------
+    ``..%2F..%2Fstudio.db``（编码过的斜杠）在路径参数校验那一步就被拒 ⇒ **422**，
+    而不是"盘上没有这个文件"的 404。这两个码在这里不能混：404 说的是"这个名字合法、
+    只是没有那一份"，422 说的是"这压根不是一个样本名"。真按 404 处理，排查的人会去
+    ``voice_preview/`` 目录里找一个叫 ``../../studio.db`` 的文件。
+    ``nope.wav`` 才是真正的 404（形状对、盘上没有）。
+    """
+    assert client.get("/api/v1/media/voice_preview/..%2F..%2Fstudio.db").status_code == 422
+    assert client.get("/api/v1/media/voice_preview/not-a-wav.txt").status_code == 422
+    assert client.get("/api/v1/media/voice_preview/nope.wav").status_code == 404
+
+
+def test_the_preview_dir_is_not_the_sentence_audio_dir(state: AppState) -> None:
+    """两个目录**必须**分开：``output/voice`` 有 24 小时 TTL，样本没有。
+
+    混在一起的后果是"第二天所有试听按钮都变回没生成"，而没有任何东西提示
+    "是被 GC 清掉的"。
+    """
+    assert state.paths.voice_preview_dir != state.paths.voice_out_dir
+    assert state.paths.voice_out_dir not in state.paths.voice_preview_dir.parents
+    assert state.paths.voice_preview_dir in protected_roots(state.paths)

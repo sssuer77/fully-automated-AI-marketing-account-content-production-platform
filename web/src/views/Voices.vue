@@ -26,7 +26,7 @@
 // 面板刚打开时任务号是空的。这时候拉一次 `GET /sentences?task_id=` 只会换来一个 422，
 // 然后面板上挂一条红字 —— 而那根本不是错误，是"还没填"。空着就画空状态。
 
-import { computed, onMounted, onUnmounted } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 
 import AppButton from "@/components/AppButton.vue";
 import EmptyState from "@/components/EmptyState.vue";
@@ -39,6 +39,8 @@ import {
   VOICE_POLL_MS,
   durationText,
   outstanding,
+  previewHint,
+  previewLabel,
   progressText,
   spanText,
   statusLabel,
@@ -78,6 +80,35 @@ function onLoad(): void {
 
 function onVoice(speaker: string, event: Event): void {
   voice.draft[speaker] = (event.target as HTMLSelectElement).value;
+}
+
+/** 试听用的那个 `<audio>`（没有可见控件：播 / 不播由那一行的按钮决定）。 */
+const player = ref<HTMLAudioElement | null>(null);
+
+/**
+ * 试听某个音色（试的是**下拉框里现在选着的那个**，不是库里存着的那个）。
+ *
+ * 生成要十几秒 ⇒ 用户手势早就过期了，浏览器可能拒绝自动播放。这里如实处理：
+ * 播不了就说"样本好了，再点一次" —— 而**不**假装播了（那看起来像没声音的音色，
+ * 用户会以为这个音色坏了）。
+ */
+async function onPreview(voiceId: string): Promise<void> {
+  const url = await voice.previewVoice(voiceId);
+  if (url === null) return;
+  const element = player.value;
+  if (element === null) return;
+  element.src = url;
+  try {
+    await element.play();
+  } catch {
+    voice.previewError = "试听样本已经生成好了 —— 再点一下这颗按钮就能播（浏览器拦了自动播放）。";
+  }
+}
+
+/** 那一行按钮的 `title`：样本是哪台引擎念的，只有当前试听的那个音色知道。 */
+function hintFor(voiceId: string): string {
+  const engine = voice.preview?.voice_id === voiceId ? (voice.preview.engine ?? null) : null;
+  return previewHint(voice.previewState(voiceId), engine);
 }
 
 /** 文本列只给一行；完整的那句在 `title` 里（表格里塞整段稿子会把行高撑到看不清）。 */
@@ -344,6 +375,15 @@ function mapSubtitle(): string {
               {{ voiceOptionLabel(option) }}
             </option>
           </select>
+          <AppButton
+            size="sm"
+            :disabled="voice.previewBusy || row.current === ''"
+            :loading="voice.previewId === row.current"
+            :title="hintFor(row.current)"
+            @click="onPreview(row.current)"
+          >
+            {{ previewLabel(voice.previewState(row.current)) }}
+          </AppButton>
           <span class="map__was mono">
             现在用的是
             {{ row.was === "" ? "（还没有映射，配音时会落到第一个可用音色）" : row.was }}
@@ -352,6 +392,9 @@ function mapSubtitle(): string {
           <span v-else-if="row.current !== row.was" class="map__diff">改</span>
         </div>
       </div>
+
+      <p v-if="voice.previewError" class="alert alert--error">{{ voice.previewError }}</p>
+      <audio ref="player" class="player" />
 
       <div v-if="voice.confirm" class="confirm">
         <p class="confirm__title">确认换音色？</p>
@@ -376,6 +419,8 @@ function mapSubtitle(): string {
       </div>
 
       <p class="hint">
+        拿不准换哪一个就先**试听**：点那一行的按钮，当前引擎会念一句固定的样本（真机上一次
+        十几秒，生成好会自动播）。试听**不占任务、不改任何东西** —— 听完了再去点「提交换音色」。
         换音色**只**动那个角色名下的句子（别的角色的音频一个字节都不改）。正被念着的那几句
         动不了 —— 后端不去和 worker 抢同一个文件，它们会在上面的黄色横幅里列出来。改完
         时间轴是**过期**的：成片时长以下一轮配音收口的全量重算为准。
@@ -549,6 +594,10 @@ function mapSubtitle(): string {
   height: 24px;
   max-width: 200px;
   vertical-align: middle;
+}
+
+.player {
+  display: none;
 }
 
 .map {

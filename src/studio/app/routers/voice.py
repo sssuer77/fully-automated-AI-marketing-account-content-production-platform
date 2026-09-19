@@ -34,6 +34,8 @@ from __future__ import annotations
 
 import mimetypes
 import re
+import sqlite3
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Query, Request
@@ -50,10 +52,12 @@ from studio.app.schemas.voice import (
     VoiceMapResponse,
     VoiceOption,
     VoiceOptions,
+    VoicePreview,
     progress_view,
     sentence_voice_view,
 )
 from studio.core.errors import ErrorCode, StudioError
+from studio.core.paths import StudioPaths
 from studio.db.repositories import SentenceRepo, VoiceProfileRepo
 from studio.domain.task_service import TaskService
 from studio.services.voice_service import (
@@ -79,14 +83,32 @@ _SENTENCE_ID = PathParam(pattern=r"^[0-9A-Za-z]{1,64}$")
 #: ``ui-20260915-120000`` —— 按 ``[0-9A-Za-z]`` 卡的话，面板自己创建的任务号一进
 #: 配音面板就整屏 422，而 422 报的是"路径不合法"，排查的人会去查任务号存不存在，
 #: 不会想到是这条正则（陷阱 #122）。
-#: 放开的边界：字母 / 数字 / ``-`` / ``_``。其它字符（空格、点、中文）在**换音色**与
-#: **试听**这两条路径上仍然进不来 —— 它们要拼进 URL 路径。真要放开，落点是把这里的
-#: 字符集与 ``RenderJobRequest.task_id`` 的校验**合并成一处**，而不是各自放宽。
+#: 放开的边界：字母 / 数字 / ``-`` / ``_``。其它字符（空格、点、中文）进不来 —— 任务号要
+#: 拼进 URL 路径（``/media/voice/<task_id>/s00N.wav``）。真要放开，落点是把这里的字符集与
+#: ``RenderJobRequest.task_id`` 的校验**合并成一处**，而不是各自放宽。
 _TASK_ID = PathParam(pattern=r"^[0-9A-Za-z_-]{1,64}$")
 
 #: 媒资键：``voice/<task_id>/s00N.wav``。**必须整串匹配** —— 这一条同时挡住了
 #: ``../``、绝对路径（``C:\...``）与盘上其它任何文件。
 _MEDIA_KEY = re.compile(r"^voice/(?P<task_id>[0-9A-Za-z_-]{1,64})/s(?P<seq>[0-9]{3,6})\.wav$", re.IGNORECASE)
+
+#: 试听样本的媒资键：``voice_preview/<slug>.wav``。**与上面那条是两个命名空间** ——
+#: ``voice/<task_id>/`` 是逐句交付音频（24 小时 TTL），``voice_preview/`` 是音色样本
+#: （永不清理）。合成一条正则会让"任务号叫 voice_preview 的任务"把两者搅在一起。
+_PREVIEW_KEY = re.compile(r"^voice_preview/(?P<name>[0-9A-Za-z_-]{1,64}\.wav)$")
+
+#: 音色 id 的形状。**不按字符集卡** —— 它必须能收下 ``GET /api/v1/voices`` 发出去的
+#: 每一行：参考音的 id 是**用户自己起的名**（真机上就有中文），SAPI 的音色名带空格与点
+#: （``Microsoft Huihui Desktop``）。按 ``[0-9A-Za-z]`` 卡的话，下拉框里明明列着那个
+#: 音色、点「生成试听」却是一个 422，而 422 报的是"路径不合法"，排查的人会去查音色在
+#: 不在库里，不会想到是这条正则（陷阱 #122 的形状）。
+#: 这里只挡**真的进不来**的两类：``/`` 与 ``\``（会把路径段切开）、控制字符。
+#: 路径安全**不靠这条正则**：落盘的名字由 :func:`~studio.core.paths.preview_slug` 归一化
+#: 出来（空格与 ``.`` 在那里就变成了别的字符），这条只是不给它一个越界的输入。
+_VOICE_ID = PathParam(pattern=r"^[^/\\\x00-\x1f\x7f]{1,64}$")
+
+#: 试听样本的文件名（由 ``preview_slug`` 生成，见那里的命名规则）。
+_PREVIEW_NAME = PathParam(pattern=r"^[0-9A-Za-z_-]{1,64}\.wav$")
 
 
 def _media_url(task_id: str, seq: int) -> str:
@@ -114,12 +136,17 @@ def list_voice_options(
     voice_map: dict[str, str] = {}
     if task_id:
         voice_map = dict(TaskService(connection).get(task_id).payload.voice_map)
+    # 试听样本的状态**跟着下拉框一起发**：分两次请求的话，第一帧上每一行都会显示成
+    # "还没生成"（哪怕样本早就在盘上），而那颗按钮会在这半秒里看起来是坏的。
+    previews = {name: state.voice_previews.get(name) for name in available}
     return VoiceOptions(
         voices=[
             VoiceOption(
                 id=name,
                 source="profile" if name in profiles else "sapi",
                 speakable=name in speakable,
+                preview_state=previews[name].status,
+                preview_url=previews[name].url,
             )
             for name in available
         ],
@@ -206,6 +233,20 @@ def patch_voice_map(request: Request, body: VoiceMapRequest, task_id: str = _TAS
     return VoiceMapResponse.model_validate(report.to_dict())
 
 
+def _preview_file(state: AppState, name: str) -> FileResponse:
+    """试听样本那一条（两条媒资键共用一个入口，各自判各自的）。"""
+    path: Path = state.paths.voice_preview_dir / name
+    if not path.is_file():
+        raise StudioError(
+            f"试听样本不在盘上：{name}",
+            code=ErrorCode.PATH_MISSING,
+            context={"name": name, "dir": state.paths.voice_preview_dir.as_posix()},
+            remediation="回配音面板点一次「生成试听」；样本可能被手工清理过",
+        )
+    media_type, _ = mimetypes.guess_type(name)
+    return FileResponse(path, media_type=media_type or "audio/wav")
+
+
 @router.get("/api/v1/media/{path:path}")
 def get_media(request: Request, path: str) -> FileResponse:
     """单句试听（``<audio>`` 直接取这个 url，Range 由 Starlette 处理）。
@@ -213,13 +254,21 @@ def get_media(request: Request, path: str) -> FileResponse:
     **只发盘上已经有的那一份**，一次合成都不触发。
     """
     state: AppState = request.app.state.studio
+    preview = _PREVIEW_KEY.match(path)
+    if preview is not None:
+        # 音色试听样本走**同一条**媒资入口（T2.4）：url 的形状与盘上那份文件的名字
+        # 一一对应，排查"这一下播的是哪个文件"不用跳两次。
+        return _preview_file(state, preview.group("name"))
     matched = _MEDIA_KEY.match(path)
     if matched is None:
         raise StudioError(
             f"不是合法的媒资键：{path}",
             code=ErrorCode.VALIDATION_FAILED,
             context={"path": path},
-            remediation="媒资键形如 voice/<task_id>/s003.wav（逐句列表里的 audio_url 就是它）",
+            remediation=(
+                "媒资键形如 voice/<task_id>/s003.wav（逐句列表里的 audio_url）"
+                "或 voice_preview/<slug>.wav（音色试听样本）"
+            ),
         )
     task_id = matched.group("task_id")
     seq = int(matched.group("seq"))
@@ -243,3 +292,90 @@ def get_media(request: Request, path: str) -> FileResponse:
         )
     media_type, _ = mimetypes.guess_type(found[0].name)
     return FileResponse(found[0], media_type=media_type or "audio/wav")
+
+
+# ── 音色试听样本（T2.4）────────────────────────────────────────────────
+
+
+@router.get("/api/v1/voices/{voice_id}/preview", response_model=VoicePreview)
+def get_voice_preview(request: Request, voice_id: str = _VOICE_ID) -> VoicePreview:
+    """这个音色的试听样本现在什么样（**只读，不合成**）。
+
+    面板每次刷新都会调它 —— 让它顺带合成，就是"每刷新一次念一句"（T2.9 那条硬要求
+    在试听这件事上的翻版）。
+    """
+    state: AppState = request.app.state.studio
+    return VoicePreview.model_validate(state.voice_previews.get(voice_id).to_dict())
+
+
+@router.post("/api/v1/voices/{voice_id}/preview", response_model=VoicePreview)
+def create_voice_preview(request: Request, voice_id: str = _VOICE_ID) -> VoicePreview:
+    """生成这个音色的试听样本（**立刻返回**，真念在后台线程里）。
+
+    为什么要先在服务端把音色卡一遍
+    ------------------------------
+    ``voice_id`` 进的是**路径段**、落的是**文件名**、还会被交给引擎当音色名。三处都
+    不该收一个来路不明的字符串：
+
+    - 不在候选里（``usable_voices``）⇒ ``TTS_VOICE_MISSING``：这个名字本机压根没有，
+      拼错一个字母与"音色没入库"看起来一模一样，得说清是哪一个；
+    - 在候选里、但**当前引擎念不出来**（``speakable_voices``）⇒ ``TTS_ENGINE_UNAVAILABLE``：
+      与配音面板那条"当前引擎念不出来"是**同一份判据**（陷阱 #154）。这里的处置与
+      配音不同 —— 配音会退回兜底音色（裁定 314），试听**必须**如实失败：试听的全部
+      意义就是"听听这个嗓子"，换成兜底音色念出来的是**另一个人的声音**，而面板上
+      什么都不会说。
+
+    已经在生成 / 已经生成好的，重复点都是安全的（``ensure`` 幂等）。
+    """
+    state: AppState = request.app.state.studio
+    connection = state.connections.get()
+    _require_previewable(connection, paths=state.paths, voice_id=voice_id)
+    state.voice_previews.forget(voice_id)
+    return VoicePreview.model_validate(state.voice_previews.ensure(voice_id).to_dict())
+
+
+def _require_previewable(connection: sqlite3.Connection, *, paths: StudioPaths, voice_id: str) -> None:
+    """音色必须"本机有"且"这台引擎念得出来"（两道，理由见上面那个端点）。"""
+    if voice_id not in usable_voices(connection):
+        raise StudioError(
+            f"本机没有这个音色：{voice_id}",
+            code=ErrorCode.TTS_VOICE_MISSING,
+            context={"voice_id": voice_id, "available": list(usable_voices(connection))},
+            remediation=(
+                "参考音走 studio assets ingest --kind voice（目录 data/voice_src/<音色 id>/）；"
+                "系统音色在「设置 → 时间和语言 → 语音」里装"
+            ),
+        )
+    speakable = speakable_voices(connection, paths=paths)
+    if voice_id not in speakable:
+        raise StudioError(
+            f"当前引擎念不出这个音色：{voice_id}",
+            code=ErrorCode.TTS_ENGINE_UNAVAILABLE,
+            context={"voice_id": voice_id, "speakable": list(speakable)},
+            remediation=(
+                "参考音要 CosyVoice 才能念 —— 常驻推理服务没起时引擎会退回系统语音包。"
+                "先 studio service start --only tts，或在「总览」里看 tts 的就绪状态"
+            ),
+        )
+
+
+@router.get("/api/v1/media/voice_preview/{name}")
+def get_voice_preview_media(request: Request, name: str = _PREVIEW_NAME) -> FileResponse:
+    """试听样本的音频（``<audio>`` 直接取这个 url，Range 由 Starlette 处理）。
+
+    与逐句试听同一条纪律：**只发盘上已经有的那一份**。``{name}`` 由
+    :func:`~studio.core.paths.preview_slug` 生成（形如 ``bigbear_d3f9f8b0.wav``），
+    路由正则把它卡死成"一个文件名"—— ``/`` 与 ``..`` 在那一步就进不来，而不是靠
+    ``resolve()`` 之后的比较兜底（与 ``assets.py::get_asset_media`` 同一手法）。
+    """
+    state: AppState = request.app.state.studio
+    path: Path = state.paths.voice_preview_dir / name
+    if not path.is_file():
+        raise StudioError(
+            f"试听样本不在盘上：{name}",
+            code=ErrorCode.PATH_MISSING,
+            context={"name": name, "dir": state.paths.voice_preview_dir.as_posix()},
+            remediation="回配音面板点一次「生成试听」；样本可能被手工清理过",
+        )
+    media_type, _ = mimetypes.guess_type(name)
+    return FileResponse(path, media_type=media_type or "audio/wav")

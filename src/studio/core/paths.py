@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -18,6 +20,7 @@ __all__ = [
     "StudioPaths",
     "data_relative",
     "is_on_system_drive",
+    "preview_slug",
     "system_drive",
 ]
 
@@ -37,6 +40,34 @@ def is_on_system_drive(path: Path | str) -> bool:
     except OSError:
         return False
     return resolved.drive.upper() == system_drive().upper()
+
+
+#: 音色 id 里**原样保留**的字符（与配音路由的 ``_TASK_ID`` 同一套：字母 / 数字 /
+#: ``-`` / ``_``）。其余字符换成 ``_`` —— 参考音的 id 是 ``[a-z0-9_]``，而 SAPI 的音色名
+#: 长这样：``Microsoft Huihui Desktop``（有空格）。
+_SAFE_SLUG = re.compile(r"[^0-9A-Za-z_-]+")
+
+
+def preview_slug(voice_id: str) -> str:
+    """音色 id ⇒ 试听样本的文件名主干（**不含扩展名**）。
+
+    为什么不是"直接用音色 id 当文件名"
+    ----------------------------------
+    SAPI 的音色名里有空格，而它是**一个 URL 路径段**（``/media/voice_preview/<名字>.wav``）。
+    归一化一次，两边（写盘 / 读盘 / 拼 url）就永远指同一个文件。
+
+    为什么末尾还要缀一段 sha1
+    ------------------------
+    ``A B`` 与 ``A_B`` 归一化之后同名，而它们是**两个音色** —— 撞名的后果是"试听放的是
+    别人的嗓子"，而且看起来一切正常（点一下、有声音、就是不像）。前 8 位足够，因为它只
+    需要在"同一个家目录里的几十个音色"之间不撞。
+
+    这个函数是**纯的**，而且放在 ``core/paths.py``：它是**命名规则**，写盘的、拼 url 的、
+    写测试的三处必须用同一份（自己拼一遍就是"点了播放没反应"，而且不报错）。
+    """
+    slug = _SAFE_SLUG.sub("_", voice_id).strip("_")[:48] or "voice"
+    digest = hashlib.sha1(voice_id.encode("utf-8")).hexdigest()[:8]
+    return f"{slug}_{digest}"
 
 
 def data_relative(path: Path | str, data_dir: Path) -> str:
@@ -242,6 +273,26 @@ class StudioPaths:
     @property
     def topics_dir(self) -> Path:
         return self.output_dir / "topics"
+
+    @property
+    def voice_preview_dir(self) -> Path:
+        """音色试听样本 ``data/output/voice_preview/``（T2.4）。
+
+        **与 ``output/voice`` 是两个目录**：那一个是逐句交付音频（24 小时 TTL，
+        ``gc/media.py`` 明确要清），这一个是"这个嗓子像不像"的一次性样本 ——
+        它很小（几十 KB），而重新生成要十几秒（真机冷加载 ~20s）。
+        混进 ``output/voice`` 的后果是：第二天面板上所有试听按钮都变回"还没生成"，
+        而没有任何东西提示"是被 GC 清掉的"。
+        """
+        return self.output_dir / "voice_preview"
+
+    def voice_preview_wav(self, voice_id: str) -> Path:
+        """某个音色的试听样本（路径由 :func:`preview_slug` 决定，见那里的"为什么缀哈希"）。"""
+        return self.voice_preview_dir / f"{preview_slug(voice_id)}.wav"
+
+    def voice_preview_meta(self, voice_id: str) -> Path:
+        """试听样本的旁车（时长 / 引擎 / 生成时刻）—— 面板读它，**不**每次去 ffprobe。"""
+        return self.voice_preview_dir / f"{preview_slug(voice_id)}.json"
 
     @property
     def voice_out_dir(self) -> Path:

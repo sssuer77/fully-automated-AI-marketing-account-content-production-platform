@@ -326,6 +326,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/media/voice_preview/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Voice Preview Media
+         * @description 试听样本的音频（``<audio>`` 直接取这个 url，Range 由 Starlette 处理）。
+         *
+         *     与逐句试听同一条纪律：**只发盘上已经有的那一份**。``{name}`` 由
+         *     :func:`~studio.core.paths.preview_slug` 生成（形如 ``bigbear_d3f9f8b0.wav``），
+         *     路由正则把它卡死成"一个文件名"—— ``/`` 与 ``..`` 在那一步就进不来，而不是靠
+         *     ``resolve()`` 之后的比较兜底（与 ``assets.py::get_asset_media`` 同一手法）。
+         */
+        get: operations["get_voice_preview_media_api_v1_media_voice_preview__name__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/media/{path}": {
         parameters: {
             query?: never;
@@ -1782,6 +1807,48 @@ export interface paths {
         get: operations["list_voice_options_api_v1_voices_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/voices/{voice_id}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Voice Preview
+         * @description 这个音色的试听样本现在什么样（**只读，不合成**）。
+         *
+         *     面板每次刷新都会调它 —— 让它顺带合成，就是"每刷新一次念一句"（T2.9 那条硬要求
+         *     在试听这件事上的翻版）。
+         */
+        get: operations["get_voice_preview_api_v1_voices__voice_id__preview_get"];
+        put?: never;
+        /**
+         * Create Voice Preview
+         * @description 生成这个音色的试听样本（**立刻返回**，真念在后台线程里）。
+         *
+         *     为什么要先在服务端把音色卡一遍
+         *     ------------------------------
+         *     ``voice_id`` 进的是**路径段**、落的是**文件名**、还会被交给引擎当音色名。三处都
+         *     不该收一个来路不明的字符串：
+         *
+         *     - 不在候选里（``usable_voices``）⇒ ``TTS_VOICE_MISSING``：这个名字本机压根没有，
+         *       拼错一个字母与"音色没入库"看起来一模一样，得说清是哪一个；
+         *     - 在候选里、但**当前引擎念不出来**（``speakable_voices``）⇒ ``TTS_ENGINE_UNAVAILABLE``：
+         *       与配音面板那条"当前引擎念不出来"是**同一份判据**（陷阱 #154）。这里的处置与
+         *       配音不同 —— 配音会退回兜底音色（裁定 314），试听**必须**如实失败：试听的全部
+         *       意义就是"听听这个嗓子"，换成兜底音色念出来的是**另一个人的声音**，而面板上
+         *       什么都不会说。
+         *
+         *     已经在生成 / 已经生成好的，重复点都是安全的（``ensure`` 幂等）。
+         */
+        post: operations["create_voice_preview_api_v1_voices__voice_id__preview_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6199,6 +6266,13 @@ export interface components {
         VoiceOption: {
             /** Id */
             id: string;
+            /**
+             * Preview State
+             * @default missing
+             */
+            preview_state: string;
+            /** Preview Url */
+            preview_url?: string | null;
             /** Source */
             source: string;
             /** Speakable */
@@ -6219,6 +6293,35 @@ export interface components {
             };
             /** Voices */
             voices: components["schemas"]["VoiceOption"][];
+        };
+        /**
+         * VoicePreview
+         * @description 一个音色的试听样本现在什么样（T2.4）。
+         *
+         *     ``status`` 四态：``missing``（还没生成，点一下就生成）· ``running``（正在生成，
+         *     真机上一次十几秒）· ``ready``（盘上有，可以播）· ``failed``（生成失败了，
+         *     ``error`` 里是引擎原话）。
+         *
+         *     ``missing`` 与 ``failed`` **必须分开**：前者点一下就行，后者再点一下大概率还是
+         *     失败 —— 得先看那句话。合成一个"没有"会让用户反复点一个注定失败的按钮。
+         */
+        VoicePreview: {
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /** Engine */
+            engine?: string | null;
+            /** Error */
+            error?: string | null;
+            /** Generated At */
+            generated_at?: string | null;
+            /** Note */
+            note?: string | null;
+            /** Status */
+            status: string;
+            /** Url */
+            url?: string | null;
+            /** Voice Id */
+            voice_id: string;
         };
         /**
          * WatchdogServiceModel
@@ -6882,6 +6985,37 @@ export interface operations {
             };
             header?: never;
             path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_voice_preview_media_api_v1_media_voice_preview__name__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -9136,6 +9270,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VoiceOptions"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_voice_preview_api_v1_voices__voice_id__preview_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                voice_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VoicePreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_voice_preview_api_v1_voices__voice_id__preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                voice_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VoicePreview"];
                 };
             };
             /** @description Validation Error */

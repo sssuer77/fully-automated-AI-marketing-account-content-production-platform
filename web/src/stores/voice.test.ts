@@ -8,9 +8,11 @@ import type {
   SentenceVoiceList,
   VoiceMapResponse,
   VoiceOptions,
+  VoicePreview,
 } from "@/api/endpoints/voice";
 import { ApiError } from "@/api/http";
 import {
+  PREVIEW_POLL_MS,
   VOICE_POLL_MS,
   busyNotice,
   busySeqs,
@@ -20,6 +22,8 @@ import {
   confirmPrompt,
   durationText,
   outstanding,
+  previewHint,
+  previewLabel,
   progressText,
   skipNotes,
   spanText,
@@ -101,9 +105,9 @@ function snapshot(overrides: Partial<SentenceVoiceList> = {}): SentenceVoiceList
 function options(overrides: Partial<VoiceOptions> = {}): VoiceOptions {
   return {
     voices: [
-      { id: HUIHUI, source: "sapi", speakable: true },
-      { id: ZIRA, source: "sapi", speakable: true },
-      { id: "ref-voice-01", source: "profile", speakable: false },
+      { id: HUIHUI, source: "sapi", speakable: true, preview_state: "ready", preview_url: "/p/a.wav" },
+      { id: ZIRA, source: "sapi", speakable: true, preview_state: "missing" },
+      { id: "ref-voice-01", source: "profile", speakable: false, preview_state: "failed" },
     ],
     task_id: TASK_ID,
     voice_map: { bigbear: HUIHUI, littlebear: ZIRA },
@@ -163,6 +167,8 @@ let fetchSentences = vi.fn(async () => snapshot());
 let fetchVoiceOptions = vi.fn(async () => options());
 let resynthSentence = vi.fn(async () => resynthReport());
 let patchVoiceMap = vi.fn(async () => mapReport());
+let fetchVoicePreview = vi.fn(async () => previewSample());
+let createVoicePreview = vi.fn(async () => previewSample());
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -170,7 +176,16 @@ beforeEach(() => {
   fetchVoiceOptions = vi.fn(async () => options());
   resynthSentence = vi.fn(async () => resynthReport());
   patchVoiceMap = vi.fn(async () => mapReport());
-  configureVoiceApi({ fetchSentences, fetchVoiceOptions, resynthSentence, patchVoiceMap });
+  fetchVoicePreview = vi.fn(async () => previewSample());
+  createVoicePreview = vi.fn(async () => previewSample());
+  configureVoiceApi({
+    fetchSentences,
+    fetchVoiceOptions,
+    resynthSentence,
+    patchVoiceMap,
+    fetchVoicePreview,
+    createVoicePreview,
+  });
 });
 
 afterEach(() => {
@@ -203,13 +218,15 @@ describe("纯函数", () => {
     expect(voiceSourceLabel("sapi")).toBe("系统音色");
     expect(voiceSourceLabel("profile")).toBe("参考音");
     expect(voiceSourceLabel("future")).toBe("future");
-    expect(voiceOptionLabel({ id: HUIHUI, source: "sapi", speakable: true })).toBe(
+    expect(voiceOptionLabel({ id: HUIHUI, source: "sapi", speakable: true, preview_state: "ready" })).toBe(
       `${HUIHUI} · 系统音色`,
     );
   });
 
   it("念不出来的参考音照旧列出，但那一行必须写明（否则会选中一支没人声的成片）", () => {
-    expect(voiceOptionLabel({ id: "ref-voice-01", source: "profile", speakable: false })).toBe(
+    expect(
+      voiceOptionLabel({ id: "ref-voice-01", source: "profile", speakable: false, preview_state: "ready" }),
+    ).toBe(
       "ref-voice-01 · 参考音 · 当前引擎念不出来",
     );
   });
@@ -277,7 +294,7 @@ describe("纯函数", () => {
   });
 
   it("音色映射行：库里记的音色本机找不到时要**说出来**，不能让下拉框空着", () => {
-    const voices = [{ id: HUIHUI, source: "sapi", speakable: true }];
+    const voices = [{ id: HUIHUI, source: "sapi", speakable: true, preview_state: "ready" }];
     const rows = voiceMapRows(
       ["bigbear", "littlebear"],
       { bigbear: "bigbear", littlebear: HUIHUI },
@@ -604,5 +621,141 @@ describe("store", () => {
     store.resetDraft();
     expect(store.changes).toEqual([]);
     expect(store.confirm).toBeNull();
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// 试听样本（T2.4）
+// ══════════════════════════════════════════════════════════════════════
+
+function previewSample(overrides: Partial<VoicePreview> = {}): VoicePreview {
+  return {
+    voice_id: HUIHUI,
+    status: "ready",
+    url: "/api/v1/media/voice_preview/huihui_12345678.wav",
+    duration_ms: 2_400,
+    engine: "cosyvoice2",
+    generated_at: "2026-09-19T06:00:00.000Z",
+    error: null,
+    note: null,
+    ...overrides,
+  };
+}
+
+describe("试听：纯函数", () => {
+  it("四态各有各的字：`missing` 与 `failed` 不能都写成「试听」", () => {
+    expect(previewLabel("missing")).toBe("生成试听");
+    expect(previewLabel("running")).toBe("生成中…");
+    expect(previewLabel("ready")).toBe("试听");
+    expect(previewLabel("failed")).toBe("重新生成");
+    expect(previewLabel("whatever")).toBe("试听");
+  });
+
+  it("提示里必须写出「这一份是哪台引擎念的」——换个引擎是另一个人的嗓子", () => {
+    expect(previewHint("ready", "cosyvoice2")).toContain("cosyvoice2");
+    // 引擎名不知道时**不编一个**（只说"播这个音色的样本"）
+    expect(previewHint("ready", null)).not.toContain("undefined");
+    expect(previewHint("running", null)).toContain("十几秒");
+    expect(previewHint("failed", null)).toContain("重试");
+    expect(previewHint("missing", null)).toContain("点一下");
+  });
+});
+
+describe("试听：动作", () => {
+  it("已经有样本：只查一次，**不**触发合成（真念一次要十几秒）", async () => {
+    fetchVoicePreview = vi.fn(async () => previewSample());
+    createVoicePreview = vi.fn(async () => previewSample());
+    configureVoiceApi({ fetchVoicePreview, createVoicePreview });
+    const store = useVoiceStore();
+    store.setTaskId(TASK_ID);
+    await store.reload();
+
+    const url = await store.previewVoice(HUIHUI);
+    expect(url).toBe(previewSample().url);
+    expect(createVoicePreview).not.toHaveBeenCalled();
+    expect(store.previewError).toBeNull();
+  });
+
+  it("没有样本：点生成 → 轮询 → 拿到 url，并把状态写回下拉框那一行", async () => {
+    vi.useFakeTimers();
+    // 第一次查：盘上没有 ⇒ 面板去点生成；生成完了再查：好了
+    fetchVoicePreview = vi
+      .fn<() => Promise<VoicePreview>>()
+      .mockResolvedValueOnce(previewSample({ status: "missing", url: null }))
+      .mockResolvedValueOnce(previewSample());
+    createVoicePreview = vi.fn(async () => previewSample({ status: "running", url: null }));
+    configureVoiceApi({ fetchVoicePreview, createVoicePreview });
+    const store = useVoiceStore();
+    store.setTaskId(TASK_ID);
+    await store.reload();
+
+    const pending = store.previewVoice(HUIHUI);
+    await vi.advanceTimersByTimeAsync(PREVIEW_POLL_MS * 3);
+    const url = await pending;
+
+    expect(createVoicePreview).toHaveBeenCalledWith(HUIHUI);
+    expect(url).toBe(previewSample().url);
+    // 按钮下一次重绘要变成「试听」——状态不写回的话它会一直显示「生成试听」
+    expect(store.previewState(HUIHUI)).toBe("ready");
+    expect(store.previewId).toBeNull();
+    expect(store.previewBusy).toBe(false);
+  });
+
+  it("别人已经在生成了（`running`）：**不再 POST 一次**，直接接着轮询", async () => {
+    fetchVoicePreview = vi
+      .fn<() => Promise<VoicePreview>>()
+      .mockResolvedValueOnce(previewSample({ status: "running", url: null }))
+      .mockResolvedValueOnce(previewSample());
+    createVoicePreview = vi.fn(async () => previewSample({ status: "running", url: null }));
+    configureVoiceApi({ fetchVoicePreview, createVoicePreview });
+    const store = useVoiceStore();
+    store.setTaskId(TASK_ID);
+    await store.reload();
+
+    const url = await store.previewVoice(HUIHUI);
+    expect(url).toBe(previewSample().url);
+    expect(createVoicePreview).not.toHaveBeenCalled();
+  });
+
+  it("生成失败：把引擎那句话原样带出来，而不是只说「失败了」", async () => {
+    fetchVoicePreview = vi.fn(async () => previewSample({ status: "missing", url: null }));
+    createVoicePreview = vi.fn(async () =>
+      previewSample({ status: "failed", url: null, error: "TTS_ENGINE_DOWN: 服务连不上" }),
+    );
+    configureVoiceApi({ fetchVoicePreview, createVoicePreview });
+    const store = useVoiceStore();
+    store.setTaskId(TASK_ID);
+    await store.reload();
+
+    expect(await store.previewVoice(HUIHUI)).toBeNull();
+    expect(store.previewError).toContain("TTS_ENGINE_DOWN");
+    expect(store.previewState(HUIHUI)).toBe("failed");
+  });
+
+  it("后端拒了（音色本机没有 / 当前引擎念不出来）：照常报错，不假装在生成", async () => {
+    fetchVoicePreview = vi.fn(async () => previewSample({ status: "missing", url: null }));
+    createVoicePreview = vi.fn(async () => {
+      throw new ApiError("本机没有这个音色：ghost", 422, { code: "TTS_VOICE_MISSING" });
+    });
+    configureVoiceApi({ fetchVoicePreview, createVoicePreview });
+    const store = useVoiceStore();
+    store.setTaskId(TASK_ID);
+    await store.reload();
+
+    expect(await store.previewVoice("ghost")).toBeNull();
+    expect(store.previewError).toContain("本机没有这个音色");
+    expect(store.previewBusy).toBe(false);
+  });
+
+  it("角色还没选音色：**不发请求**，直接说清楚要做什么", async () => {
+    fetchVoicePreview = vi.fn(async () => previewSample());
+    configureVoiceApi({ fetchVoicePreview });
+    const store = useVoiceStore();
+    store.setTaskId(TASK_ID);
+    await store.reload();
+
+    expect(await store.previewVoice("  ")).toBeNull();
+    expect(fetchVoicePreview).not.toHaveBeenCalled();
+    expect(store.previewError).toContain("还没有选音色");
   });
 });

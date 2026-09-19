@@ -78,6 +78,7 @@ from studio.services.script_service import ScriptService
 from studio.services.service_manager import ServiceManager
 from studio.services.settings_service import SettingsService
 from studio.services.topic_service import TopicService
+from studio.services.voice_preview import VoicePreviewService
 from studio.services.watchdog_service import WatchdogService
 from studio.ws.hub import Hub, HubSettings
 from studio.ws.snapshots import TASK_SNAPSHOT_ROWS, SnapshotFn, SnapshotRegistry
@@ -178,6 +179,10 @@ class AppState:
     #: （从任务当前状态出发，该投配音就投、该拼母带就拼、该渲染就渲染）。
     #: `lifespan` 起停它的工作线程。
     pipeline_jobs: PipelineJobService
+    #: 音色试听样本（T2.4）。**进程内单例**：它的状态就是"哪几个音色正在生成"，
+    #: 每次请求现造一份等于"刚点完生成、下一次刷新就查不到了"，面板会一直转圈。
+    #: 生成跑在它自己的后台线程里（与 `render_jobs` 同一条：重启即丢，产物不受影响）。
+    voice_previews: VoicePreviewService
     snapshots: SnapshotRegistry = field(default_factory=SnapshotRegistry)
     #: 素材库的外部工具（T4.8）。**由 `build_state` 注入**：REST 面每次现造服务，
     #: 注入点只有这一处，测试换一次假件就够（不必去 patch 路由模块的内部名字）。
@@ -276,6 +281,10 @@ def build_state(
         # `outputs=None` 与上面同一条：出片每次现读 `config/outputs.yaml`，于是
         # "在合成配置面板改完档位、下一次出片就用新档"这句话在整条链路上也成立。
         pipeline_jobs=PipelineJobService(paths=paths, connection_factory=pool.get),
+        # 音色试听（T2.4）：**与任务无关**，所以不进队列（`jobs.task_id` 有外键，
+        # 硬塞一条作业就得先造一条假任务）。它只读 `paths` —— 引擎判据自己现问，
+        # 于是"服务起来了没有"这件事在每一次生成时都是最新的。
+        voice_previews=VoicePreviewService(paths=paths),
         snapshots=snapshots,
         asset_tools=asset_tools or AssetTools(),
     )
