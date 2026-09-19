@@ -63,6 +63,7 @@ from studio.domain.models import QualityReport
 from studio.render.assets import pick_bgm, pick_parkour_clip
 from studio.render.cache import reusable_output
 from studio.render.composite import (
+    PROGRESS_TOTAL,
     CompositeRequest,
     CompositeResult,
     duration_ms_for,
@@ -420,7 +421,7 @@ def produce_video(
         detail = f"{profile.name} · {duration_ms}ms"
         if subtitle.enabled:
             detail += f" · 字幕 {len(cues)} 句"
-        on_progress("render", 0, 1, detail)
+        on_progress("render", 0, PROGRESS_TOTAL, detail)
 
     composite_request = CompositeRequest(
         profile=profile,
@@ -476,7 +477,7 @@ def produce_video(
         # （本次新增的只有下面 manifest 里的 `reused` / `rendered_at` 两个字段。）
         warnings: list[str] = list(cached.warnings)
         if on_progress is not None:
-            on_progress("render", 1, 1, f"命中渲染缓存，复用 {final.name}")
+            on_progress("render", PROGRESS_TOTAL, PROGRESS_TOTAL, f"命中渲染缓存，复用 {final.name}")
     else:
         delivery = deliver(
             composite_request,

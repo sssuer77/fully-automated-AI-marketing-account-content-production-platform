@@ -35,6 +35,8 @@ ffmpeg。
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final
@@ -48,14 +50,20 @@ from studio.render.watermark import WatermarkPlan
 __all__ = [
     "BG_FILL_BLACK",
     "BG_FILL_BROLL",
+    "PROGRESS_MIN_INTERVAL_SEC",
+    "PROGRESS_STATS_PERIOD_SEC",
+    "PROGRESS_TOTAL",
     "RENDER_TIMEOUT_SEC",
     "CompositeRequest",
     "CompositeResult",
+    "ProgressThrottle",
     "bg_fill",
     "build_composite_argv",
     "build_filter_graph",
     "duration_ms_for",
     "filter_path_arg",
+    "parse_out_time_us",
+    "progress_percent",
     "run_composite",
     "video_label",
 ]
@@ -63,6 +71,22 @@ __all__ = [
 #: 一次合成的超时。给 30 分钟：1080×1920 的单遍编码在 8 核机器上大约 1–3 倍实时，
 #: 一条 2 分钟的片子几分钟内能出；超时是"卡死了"的信号，不是"有点慢"。
 RENDER_TIMEOUT_SEC: Final[int] = 1800
+
+#: ffmpeg 进度流的节拍（秒）。0.5s ⇒ **2Hz**（T3.4）：这是"机器可读的进度"该有的频率 ——
+#: 更密只是把同一句话重复给面板看，更疏会让进度条一跳一跳。
+PROGRESS_STATS_PERIOD_SEC: Final[float] = 0.5
+
+#: 渲染这一段进度的分母。它是**百分比**，不是"第几段"：编码是一条连续的动作，
+#: 说"第 1 段 / 共 1 段"等于没说（T3.4 之前就是这个样子）。
+PROGRESS_TOTAL: Final[int] = 100
+
+#: 两拍之间至少隔多久（秒）—— 2Hz 限流。见 :class:`ProgressThrottle` 里"为什么 ffmpeg
+#: 那边已经有节拍了还要再限一道"。
+PROGRESS_MIN_INTERVAL_SEC: Final[float] = 0.5
+
+#: 编码期间能报到的最大百分比。**100 只在 ffmpeg 退出、``.partial`` 改名之后报**：
+#: 提前报满会得到"进度条 100% 而成片还没落盘"，而那一刻用户已经在点播放了。
+_ENCODE_CEILING: Final[int] = 99
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,7 +302,18 @@ def build_filter_graph(req: CompositeRequest, *, warn: list[str] | None = None) 
 def build_composite_argv(req: CompositeRequest) -> list[str]:
     """把请求翻成 ffmpeg 的 argv（纯函数；测试直接断言这一份）。"""
     input_argv, _indices = _inputs(req)
-    argv: list[str] = [ffmpeg_binary(), "-hide_banner", "-nostats", "-y"]
+    # ``-nostats`` 保留：给人看的那行统计仍然关掉（stderr 只留真正的报错）。机器可读的进度
+    # 另开一路走 **stdout**（``-progress pipe:1``），节拍 2Hz —— 见 :class:`ProgressThrottle`。
+    argv: list[str] = [
+        ffmpeg_binary(),
+        "-hide_banner",
+        "-nostats",
+        "-progress",
+        "pipe:1",
+        "-stats_period",
+        f"{PROGRESS_STATS_PERIOD_SEC:g}",
+        "-y",
+    ]
     argv += input_argv
     argv += ["-filter_complex", build_filter_graph(req)]
 
@@ -291,6 +326,87 @@ def build_composite_argv(req: CompositeRequest) -> list[str]:
     return argv
 
 
+def parse_out_time_us(line: str) -> int | None:
+    """``out_time_us=123456`` ⇒ ``123456``；其余行（含 ``N/A``）⇒ ``None``。
+
+    ``-progress pipe:1`` 每拍吐一小块 ``key=value``，其中 ``out_time_us`` 是"已经编到第几
+    微秒"。只认这一行：``progress=continue/end`` 那行不带时间，而 ``out_time_ms`` 在不少
+    版本里其实是**微秒**（名字骗人，两个字段值一模一样），按毫秒读会得到一个 1000 倍的
+    进度。实测第一拍就可能是 ``out_time_us=N/A``（ffmpeg 还没算出第一帧的时间戳）——
+    那不是错误，跳过就是。
+    """
+    key, separator, value = line.strip().partition("=")
+    if not separator or key != "out_time_us":
+        return None
+    try:
+        return max(0, int(value))
+    except ValueError:
+        return None
+
+
+def progress_percent(out_time_us: int, duration_ms: int) -> int:
+    """已编时长 ⇒ 百分比（**封顶 99**，见 :data:`_ENCODE_CEILING`）。
+
+    ``duration_ms <= 0`` ⇒ ``0``：没有分母就不编一个出来（与面板 ``percent`` 同一条纪律）。
+    """
+    if duration_ms <= 0:
+        return 0
+    percent = out_time_us // (duration_ms * 10)
+    return max(0, min(_ENCODE_CEILING, percent))
+
+
+class ProgressThrottle:
+    """把 ffmpeg 的进度流折成"百分比"，并按 **2Hz** 限流后推给上游（T3.4）。
+
+    为什么 ffmpeg 那边已经有节拍了还要再限一道
+    -----------------------------------------
+    ``-stats_period 0.5`` 是 **ffmpeg 的选项**。每收一拍，上游就要写一次
+    ``jobs.result_json``（一条 SQLite UPDATE）并在作业日志里追加一行 —— "写库的频率"该由
+    **我们**决定，而不是由一个第三方命令行选项决定：换个 ffmpeg 版本、或者哪天有人把那
+    个参数删了，节拍就没了，而症状是"渲染时数据库突然很忙"这种查不出源头的事。
+
+    两条判据一起用：**百分比真的变了**，且**距上一拍 ≥ 0.5s**。
+
+    - 只按时间限流：一个 20 分钟的片子会每半秒推一次一模一样的 37%；
+    - 只按变化限流：``out_time_us`` 抖一下就是一拍，频率完全不可控。
+
+    上限因此是"一次渲染最多 100 拍"，而面板本来也显示不出更细的粒度。
+    """
+
+    __slots__ = ("_clock", "_duration_ms", "_last_at", "_last_percent", "_min_interval", "_report")
+
+    def __init__(
+        self,
+        report: Callable[[int, int, str], None],
+        *,
+        duration_ms: int,
+        min_interval_sec: float = PROGRESS_MIN_INTERVAL_SEC,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._report = report
+        self._duration_ms = duration_ms
+        self._min_interval = min_interval_sec
+        self._clock = clock
+        # ``-inf`` ⇒ **第一拍一定过**：否则"开始了"这件事要等半秒才看得见。
+        self._last_at = float("-inf")
+        self._last_percent = -1
+
+    def feed(self, line: str) -> None:
+        """喂一行 ffmpeg 的进度输出（不是 ``out_time_us`` 的行直接忽略）。"""
+        out_time_us = parse_out_time_us(line)
+        if out_time_us is None:
+            return
+        percent = progress_percent(out_time_us, self._duration_ms)
+        if percent == self._last_percent:
+            return
+        now = self._clock()
+        if now - self._last_at < self._min_interval:
+            return
+        self._last_percent = percent
+        self._last_at = now
+        self._report(percent, PROGRESS_TOTAL, f"合成中 {percent}%")
+
+
 def _partial_of(output: Path) -> Path:
     """临时产物路径（同目录、同扩展名 —— ffmpeg 靠扩展名推封装格式）。"""
     return output.with_name(f"{output.stem}.partial{output.suffix}")
@@ -301,6 +417,7 @@ def run_composite(
     *,
     timeout: int = RENDER_TIMEOUT_SEC,
     measure: bool = True,
+    on_progress: Callable[[int, int, str], None] | None = None,
 ) -> CompositeResult:
     """真跑一次 ffmpeg（外加一次纯音频的响度测量）。
 
@@ -309,6 +426,10 @@ def run_composite(
 
     :param measure: 要不要先跑 loudnorm 第一遍。``req.loudness`` 已经有值 ⇒ 不重复量
         （测试与"同一条片子重渲"都走这条路）。
+    :param on_progress: 编码进度（``(done, total, note)``，``total`` 恒为
+        :data:`PROGRESS_TOTAL`）。**只在真正调 ffmpeg 这一趟里有**，而且最多 2Hz
+        （见 :class:`ProgressThrottle`）；响度测量那趟不发进度 —— 它是"开跑前的准备"，
+        把它算进百分比只会让进度条先跳到一半再退回来。
     """
     warnings: list[str] = []
     if req.loudness is None and measure:
@@ -336,7 +457,14 @@ def run_composite(
 
     executed = list(argv)
     executed[-1] = str(partial)
-    result = run_command(executed, timeout=timeout)
+    # 有进度回调 ⇒ 边跑边读（`-progress pipe:1` 吐在 stdout 上）；没人看进度就走老路径，
+    # 不必为它付两条读线程的钱。
+    throttle = None if on_progress is None else ProgressThrottle(on_progress, duration_ms=req.duration_ms)
+    result = run_command(
+        executed,
+        timeout=timeout,
+        on_stdout_line=None if throttle is None else throttle.feed,
+    )
 
     if not result.ok or not partial.is_file():
         if partial.exists():
@@ -356,6 +484,10 @@ def run_composite(
 
     req.output.parent.mkdir(parents=True, exist_ok=True)
     partial.replace(req.output)
+
+    if on_progress is not None:
+        # 100 只在这里报：**文件已经躺在目标路径上了**才配叫"合成完成"（见 `_ENCODE_CEILING`）。
+        on_progress(PROGRESS_TOTAL, PROGRESS_TOTAL, "合成完成")
 
     return CompositeResult(
         output=req.output,

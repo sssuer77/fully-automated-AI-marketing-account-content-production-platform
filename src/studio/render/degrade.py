@@ -37,7 +37,12 @@ from pathlib import Path
 from typing import Final
 
 from studio.core.errors import ErrorCode, RenderError
-from studio.render.composite import CompositeRequest, CompositeResult, run_composite
+from studio.render.composite import (
+    PROGRESS_TOTAL,
+    CompositeRequest,
+    CompositeResult,
+    run_composite,
+)
 from studio.render.profiles import CompositeProfile
 
 __all__ = [
@@ -88,17 +93,27 @@ def deliver(
     :param fallback_output: 保底档的落盘路径。文件名带 ``_720p``，是为了让"哪支是保底
         产物"在**文件列表里**就看得出来 —— 只写在 manifest 里，人翻目录时看不到。
     """
+
+    def relay(done: int, total: int, note: str) -> None:
+        """合成器的 ``(done, total, note)`` ⇒ 上游的 ``("render", done, total, note)``。
+
+        "哪一档在渲"由上游那几句说明负责；这里只搬运"编到哪儿了"。重试时百分比**从头数**：
+        换了档就是另一次编码，让进度条接着往上涨会得到"100% 了又回到 0%"。
+        """
+        if on_progress is not None:
+            on_progress("render", done, total, note)
+
     attempts: list[str] = []
     try:
-        result = run_composite(request)
+        result = run_composite(request, on_progress=relay)
     except RenderError as error:
         if fallback_profile is None or fallback_output is None or error.code not in _RETRYABLE:
             raise
         attempts.append(f"{request.profile.name}: {error.code.value}")
         if on_progress is not None:
-            on_progress("render", 0, 1, f"正常档失败（{error.code.value}），换 720P 保底档重试")
+            on_progress("render", 0, PROGRESS_TOTAL, f"正常档失败（{error.code.value}），换 720P 保底档重试")
         retry = replace(request, profile=fallback_profile, output=fallback_output)
-        result = run_composite(retry)
+        result = run_composite(retry, on_progress=relay)
         warnings = (
             *result.warnings,
             f"正常档（{request.profile.name}）失败，已用 720P 保底档出片：{error.message}",

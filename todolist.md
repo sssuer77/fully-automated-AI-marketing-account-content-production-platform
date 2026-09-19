@@ -934,24 +934,28 @@
 - ⚠️ 陷阱 #7 命令行超长 ⇒ ~~`-filter_complex_script` 文件~~ **一期未做**：`build_composite_argv()` 用的是内联 `-filter_complex`（`composite.py:283`）。单底片滤镜图只有十来二十个节点，离命令行长度上限很远；滤镜图仍会落盘到 `graphs/` 供手工重跑（`_record_graph()`）
 - ⚠️ 陷阱 #28 素材比人声短 ⇒ `loop` + `trim=duration=total_ms` 补齐；素材为空 ⇒ 纯黑底仍出片
 
-### T3.4 单遍合成执行器 · **P0** 🔶 **部分完成（2026-09-17 核对；`composite_hash` 缓存当日接上）**
+### T3.4 单遍合成执行器 · **P0** ✅ **已完成（2026-09-19：ffmpeg 进度流 + 2Hz 限流 + 优先级类接上）**
 - 依赖：T3.3 ｜ 里程碑：M3 ｜ 契约：§01.5.2
 - [x] **argv 数组**调用（**不用 shell 拼接**，防注入与转义地狱）—— `build_composite_argv()` 返回 `list[str]`，经 `run_command()` 走 `subprocess.run(argv, …)`
-- [ ] `-progress pipe:1 -stats_period 0.5` 进度解析（`out_time_us` → 百分比）—— **一期未做**：argv 里写的是 `-nostats`（`composite.py:281`）。渲染面板的进度是**粗粒度**的（`render 0/1` 那种），不是 ffmpeg 百分比
-- [ ] 进度推送限流 2Hz —— **一期未做**（没有 ffmpeg 进度流，也就没有可限流的东西）
+- [x] `-progress pipe:1 -stats_period 0.5` 进度解析（`out_time_us` → 百分比）—— `build_composite_argv()` 带上了 `-progress pipe:1 -stats_period 0.5`，**`-nostats` 保留**（给人看的那行统计照关，stderr 里就只剩真正的报错）；`parse_out_time_us()` 只认 `out_time_us`（**陷阱 #187**：`out_time_ms` 名字骗人，它其实也是**微秒**；第一拍实测就是 `out_time_us=N/A`）；`progress_percent()` 折算成 **0–99**（`_ENCODE_CEILING`），**100 只在 `.partial` 改名成功之后报** —— 提前报满会得到「进度条满了而成片还没落盘」，而那一刻用户已经在点播放。为此 `core/media.py` 的 `run_command()` 新增 `on_stdout_line=` 走**边跑边读**（`_run_streaming()`：两条守护读线程 + 主线程轮询，回调**留在主线程**上跑 —— SQLite 连接有线程亲和，而 `ctx.check_alive()` 就在这个回调里）
+- [x] 进度推送限流 **2Hz** —— `ProgressThrottle`（`composite.py`）：**百分比真的变了** 且 **距上一拍 ≥0.5s** 才推。ffmpeg 那边的 `-stats_period 0.5` 只是节拍的一半理由：每推一拍，上游就要写一次 `jobs.result_json`（一条 SQLite UPDATE）再追加一行作业日志 —— **写库的频率该由我们决定**，而不是由一个第三方命令行选项决定（换个版本、或者谁把那个参数删了，症状是「渲染时数据库突然很忙」这种查不出源头的事）。上限因此是「一次渲染最多 100 拍」，而面板本来也显示不出更细的粒度（**裁定 344**）
 - [x] 超时 / 取消 ⇒ **杀进程树**（`taskkill /PID <pid> /T /F`）—— `core/media.py` 的 `run_command()` 从 `subprocess.run(timeout=)` 换成 `Popen` + `_kill_tree()`：Windows 走 `taskkill /PID <pid> /T /F`（§01.5.2 的「取消/超时」约定），POSIX 走 `killpg`（子进程 `start_new_session` 自成一组）；树杀失败时退回只杀直接子进程，**并在报错里如实说明**（`已终止进程` vs `已终止进程树`）。半成品的清理（`.partial` 被删）本来就有
 - [x] `.partial` → 原子改名（`partial.replace(req.output)`，`composite.py:358`）
 - [x] stderr 尾部截断留痕 + 错误码映射（`CommandResult.tail()`；超时 ⇒ `RENDER_TIMEOUT`，其余 ⇒ `RENDER_FAILED`）
 - [x] **`composite_hash` 整片缓存**（同哈希二次运行**不调用 ffmpeg**）—— `src/studio/render/cache.py` + `produce_video` 合成前先比一次指纹：命中 ⇒ 复用盘上那一支（连响度都从上一轮 manifest 里读回来，**一次 ffmpeg 都不起**）。判据是「**这个文件是这批输入渲出来的**」，不是「文件在不在」——后者正是 `pools/render_worker.py` 纪律 2 否掉的短路；manifest 只在成片原子改名 + 量完响度**之后**才写，所以「manifest 在」本身就等于「那一轮跑到底了」。命中时 manifest 记 `reused=true` + `rendered_at`（比 `created_at` 早），`ProduceResult.reused` 与进度文案一起告诉面板；`--force-render` 可强制重渲（`ProduceRequest.force_render`）
-- [ ] Windows 用 `BELOW_NORMAL_PRIORITY_CLASS` 启动 —— **未做**：`core/media.py:126` 用的是 `CREATE_NO_WINDOW`（消黑框），没设优先级类
+- [x] Windows 用 `BELOW_NORMAL_PRIORITY_CLASS` 启动 —— `_creation_flags()` = `CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS`（`core/media.py`）：渲染是**分钟级**的 CPU 大户，而**用户就坐在同一台机器前看面板**；降到「低于正常」让桌面与别的服务不被它挤掉（渲染慢 20% 没人看得出来，面板点不动才是问题）。`taskkill` 那条控制路径**不降** —— 它要立刻生效
 - ✅ `pytest tests/integration/test_composite_runner.py -q`：①进度可解析 ②超时杀进程树且不留子进程 ③中断 ⇒ 目标文件不存在但 `.partial` 被清理 ④argv 不含 shell 拼接（静态断言）⑤同 `composite_hash` 二次运行**不调用 ffmpeg**（Mock 计数）⑥人声或素材改动 ⇒ 哈希变化 ⇒ 重渲
-- 📌 **`tests/integration/test_composite_runner.py` 不存在**；上面那条集成验收**未落地**（它的 ⑤「同哈希二次运行不调用 ffmpeg」已由 `tests/unit/services/test_render_cache.py` 以 Mock 计数覆盖；②「超时杀进程树且不留子进程」已由 `tests/unit/core/test_media.py::test_a_killed_tree_leaves_no_grandchild` 用真两级进程树覆盖）。其余已落地部分由 `tests/unit/render/test_degrade.py`（**8 passed**）与 `tests/unit/render/test_composite.py`（**23 passed**，含 argv 静态断言）覆盖
+- 📌 **`tests/integration/test_composite_runner.py` 不存在**；那条集成验收**未落地**（它的 ①「进度可解析」由 `test_composite_reports_a_percentage` 真跑 ffmpeg 覆盖、⑤「同哈希二次运行不调用 ffmpeg」由 `tests/unit/services/test_render_cache.py` 以 Mock 计数覆盖、②「超时杀进程树且不留子进程」由 `tests/unit/core/test_media.py::test_a_killed_tree_leaves_no_grandchild` 用真两级进程树覆盖）。其余由 `tests/unit/render/test_degrade.py`（**8 passed**）与 `tests/unit/render/test_composite.py`（**47 passed**，含 argv 静态断言）覆盖
 - ⚠️ 陷阱 #9 崩溃留「假完成」⇒ `.partial` + 原子改名
 - ⚠️ **陷阱 #149 超时后调用方永远不返回**（2026-09-17 实测，已修）：`subprocess.run(timeout=)` 超时后只杀直接子进程，**然后（Windows 上）又调了一次不带超时的 `communicate()`** 去读管道 —— 只要有一个继承了我们管道的孙进程还活着，它就永远等不到 EOF。实测：`timeout=2` 的命令 **12 秒后仍挂着**，日志里只有一句超时，渲染 worker 就是这么卡死的。⇒ 超时改走 `_kill_tree()`，收尸那一步自己也带超时（`REAP_TIMEOUT_SEC`），收不干净就关掉我们这一端的管道
 - ⚠️ 陷阱 #8 缓存复用旧产物 ⇒ 哈希含 canonical plan + 输入 sha256 + 水印/字幕参数（**已接**：见上条）
 - 📌 **命中面如实说**：底片是**随机**挑的（陷阱 #14 反搬运），所以不带 `--seed` 的重跑通常挑到另一条底片 ⇒ 哈希不同 ⇒ **照常重渲**（设计如此，不是缓存失效）。会命中的是带 `seed` 的重跑 / 复现、以及队列把同一条 `render/final` 重投（payload 里带着同一个 seed）
 - 📌 **实测（2026-09-17 真机 · 同一条命令连跑）**：`studio render make --task-id t34cache-smoke --text … --seed 7` ⇒ 第一次 **6.8s**、第二次 **1.96s**（省下的正是 ffmpeg 那一段 + 响度测量），manifest 记 `reused=true`、`rendered_at=06:36:48Z` 早于 `created_at=06:36:59Z`、`final` 仍是第一次那一支（**没有**另存一个新时间戳的文件）；`--force-render` ⇒ 5.9s、`reused=false`、**哈希不变**（`916ef67a…`）；换文案 ⇒ 哈希变（`b0d4b163…`）、6.0s、`reused=false`。**注意**：这两次都没带 `--reuse-voice`，人声重新合成后母带 sha256 仍然一致 ⇒ 命中（SAPI 的母语带是确定性的）
 - 📌 **单测**：`tests/unit/render/test_cache.py`（**35 passed**：哈希不同 / 产物被清理 / 被截断 / 变长 / manifest 缺字段 / 字段类型不对 / `bool` 冒充整数 / 换家目录，逐条判「不命中」）+ `tests/unit/services/test_render_cache.py`（**8 passed**：第二次不调 `deliver`/`measure_file`、QC 读数读得回来、manifest 记 `reused`、进度文案、人声变了失效、成片被清理/截断失效、`--force-render`）
+- 📌 **单测（T3.4 本轮）**：`tests/unit/render/test_composite.py` ⇒ **47 passed**（argv 带 `-progress pipe:1` / `-stats_period 0.5` 且仍带 `-nostats`；`parse_out_time_us` 11 条含 `N/A` 与 `out_time_ms`；`progress_percent` 7 条含封顶 99 与「没有分母」；`ProgressThrottle` 6 条：第一拍必过 / 半秒内塌掉 / 同百分比不重推 / 非进度行忽略 / 一次渲染最多 100 拍）+ `tests/unit/core/test_media.py` ⇒ **59 passed**（`on_stdout_line`：逐行回调、**回调在命令跑完之前就被调到**、超时仍 `-2` 且已读到的行不丢、**回调抛 ⇒ 连孙进程一起带走**、负返回码语义不变、`_creation_flags()` 两个旗标）+ `tests/integration/test_render_pipeline.py::test_composite_reports_a_percentage`（**真跑 ffmpeg**，标 `slow`）
+- 📌 **真机（2026-09-19）**：`run_composite(..., on_progress=…)` 跑一条 20s 的片子 ⇒ **8 拍**：`1% @1.19s · 16% @1.70 · 31% @2.20 · 46% @2.72 · 62% @3.23 · 74% @3.78 · 99% @4.45 · 100%「合成完成」@4.50`（节拍 ~0.5s，100 落在改名之后）；再走**面板那条路**（`POST /api/v1/render/jobs` ⇒ 轮询 `GET /api/v1/render/jobs/{id}`）实测：`render 0/100 → 8 → 21 → 34 → 48 → 62 → 73 → 96 → 100/100「合成完成」`，面板读的 `percent` 字段同步在涨 —— **GUI 上这条进度条现在是真的在走**
+- ⚠️ **陷阱 #187**：ffmpeg `-progress` 的 `out_time_ms` 其实也是**微秒**（实测 `out_time_us=6000000` 与 `out_time_ms=6000000` 同时出现）⇒ 按毫秒读会得到 **1000 倍**的进度，而且它看起来"只是个字段名"，不会报错
+- 📌 **一个刻意留下的粗糙**（裁定 344）：面板上的百分比是**分段**的 —— 配音 `0/4…4/4`（100%）之后渲染又从 `0/100` 起。**不做加权合并**：两段的耗时占比取决于片子长度与机器，编一个权重只会得到"更不准的平滑"；阶段名就在旁边写着（`配音 4/4` → `渲染 0/100`），看得出这是换了一段
 - ⚠️ NVENC 失败 ⇒ 回退 `libx264`
 
 ### T3.5 字幕生成（Q11：**开启**）· **P0** ✅ **已完成（2026-09-15）**
@@ -2112,11 +2116,11 @@ T1.12 ✅             （一键启动）
 | --- | --- | --- | --- | --- |
 | **T1** 基座 + 脚手架 + 选题池 | 12 | **12**（T1.1–T1.12 全部 ✅） | M1 | [ ] |
 | **T2** CosyVoice 配音 | 9 | **7**（**T2.1 ✅ T2.2 ✅** T2.5 ✅ T2.6 ✅ T2.7 ✅ T2.8 ✅ T2.9 ✅）+ **2 部分**（T2.3 🔶 T2.4 🔶） | M2 | [ ] |
-| **T3** 渲染（一期单遍合成） | 7 | **4**（T3.2 ✅ T3.5 ✅ T3.6 ✅ T3.7 ✅）+ **3 部分**（T3.1 🔶 T3.3 🔶 T3.4 🔶） | M3 | [ ] |
+| **T3** 渲染（一期单遍合成） | 7 | **5**（T3.2 ✅ **T3.4 ✅** T3.5 ✅ T3.6 ✅ T3.7 ✅）+ **2 部分**（T3.1 🔶 T3.3 🔶） | M3 | [ ] |
 | **T4** 操作台 + 四池 + 无人值守 | 14 | **14**（T4.1 ✅ T4.2 ✅ T4.3 ✅ T4.4 ✅ **T4.5 ✅** T4.6 ✅ T4.7 ✅ T4.8 ✅ T4.9 ✅ T4.10 ✅ T4.11 ✅ T4.12 ✅ T4.13 ✅ **T4.14 ✅** —— **T4 齐了**） | M4 | [ ] |
-| **T5** 发布 + 定时 + 报告 | 8 | **6**（T5.1 ✅ T5.2 ✅ T5.3 ✅ **T5.5 ✅** **T5.6 ✅** **T5.8 ✅**） | M5 | [ ] |
+| **T5** 发布 + 定时 + 报告 | 8 | **7**（T5.1 ✅ T5.2 ✅ T5.3 ✅ **T5.5 ✅** **T5.6 ✅** **T5.7 ✅** **T5.8 ✅**） | M5 | [ ] |
 | **T6** 追加任务（设置面板） | 1 | **1**（T6.1 ✅） | — | *不占一期工期* |
-| **合计（一期）** | **50** | **43**（另有 **5** 项部分完成） | — | — |
+| **合计（一期）** | **50** | **45**（另有 **4** 项部分完成） | — | — |
 | *T3-P1…T3-P4* | *4（二期）* | *0* | — | *不占一期工期* |
 
 **外部阻塞项**：~~E1 跑酷素材~~ ✅ **已入库 2026-09-18（58 条）** / ~~E2 水印 PNG~~ ✅ **已做 2026-09-18（640×150 rgba）** / ~~E3 BGM~~ ✅ **已有占位** / E4 原声 🟡（占位素材无音轨，不影响出片） / ~~E5 CosyVoice 权重~~ ✅ **已就位 2026-09-17** / ~~E6 LLM Key~~ ✅ **面板可配 2026-09-17** / E7 persona 🟡 / **E8 字体 🟡（唯一还需要你出手的一项）**
@@ -2127,10 +2131,9 @@ T1.12 ✅             （一键启动）
 
 > **「部分完成」口径（2026-09-17 核对）**：总表只把**整块做完**的任务计进「已完成」；主干已落地、但仍有明确缺口
 > 的记作 **🔶 部分完成**（未做的子项在任务块里逐条标 `[ ]` 并写了理由与落点）—— **不计入**「已完成」，也**不算未开工**。
-> 当前 T3 有 3 项部分完成：
+> 当前 T3 有 2 项部分完成：
 > ① `T3.1` 素材入库 —— 缺 pHash + 帧哈希、黑帧段落排除、`studio assets ingest` / `stats` CLI、`tests/integration/test_broll_ingest.py`（**前两项用户已裁定为非核心**）；
-> ② `T3.3` 单遍编译器 —— 缺语法预检、节点守卫 / 分块降级（**刻意不做**，见 `src/studio/render/degrade.py`）、`studio render plan`；规格里的 `CompositePlan` 实际名为 `CompositeRequest`；
-> ③ `T3.4` 单遍合成执行器 —— `composite_hash` 整片缓存与**超时杀进程树**均已接上（2026-09-17），仍缺 ffmpeg 进度解析与 2Hz 限流、`BELOW_NORMAL_PRIORITY_CLASS`。
+> ② `T3.3` 单遍编译器 —— 缺语法预检、节点守卫 / 分块降级（**刻意不做**，见 `src/studio/render/degrade.py`）、`studio render plan`；规格里的 `CompositePlan` 实际名为 `CompositeRequest`。
 
 > 另 `T2.3` 引擎路由为 **🔶 部分完成（2026-09-18）**：**配音池 → 常驻服务**这根管子已打通并真机验证
 > （成片里念的是 CosyVoice 的 `bigbear`，不再是系统语音包），未做的是正式 `VoiceEngine` ABC、
@@ -2294,7 +2297,29 @@ T1.12 ✅             （一键启动）
 > - **裁定 341–343 · 陷阱 185–186**。本轮**修掉一个真问题**：单元标识不带账号 ⇒ 第二个账号
 >   投不出来，而面板上看起来一切正常（陷阱 185）。
 
-> **当前关键路径**：`T2.1 ✅` ⇒ `T2.2 ✅` ⇒ `T2.3 🔶`（**管子已通**，剩熔断与决策表）⇒ **`T2.4` 正式音色** ⇒ `T3.3`（时间轴 ✅，可直接开工）⇒ T3.4–T3.7 ⇒ `T4.6` 与 `T5.1` 起全部。
+> ㉘ **`T3.4` ffmpeg 进度流 + 2Hz 限流** ⇒ **已完成（2026-09-19）**：渲染这一段从「粗粒度」变成
+> **真的百分比** —— 面板上那条进度条第一次会自己走。
+> - **本轮真正的缺口只有一个**：`build_composite_argv()` 里写着 `-nostats`，而进度回调这条链
+>   **早就通了**（`produce_video(on_progress=…)` → `deliver()` —— 就差 `run_composite()` 这一跳
+>   没接），所以面板一直只显示 `render 0/1`；
+> - **`core/media.py` 新增「边跑边读」**（`on_stdout_line=` / `_run_streaming()`）：两条守护读线程
+>   把 stdout 与 stderr 同时抽干（只读一条会写满缓冲区、把子进程卡死在 `write` 上 ——
+>   "为了看到进度"反而换来一次死锁），**回调留在主线程**（SQLite 连接有线程亲和，而
+>   `ctx.check_alive()` 就在这个回调里 ⇒ 不能扔进读线程）；回调抛 ⇒ **先杀进程树再原样抛**
+>   （它抛的时候 ffmpeg 还在写 `.partial`）；
+> - **`-nostats` 保留**、进度另走 `-progress pipe:1`：stderr 里只剩真正的报错，而进度是机器可读的；
+> - **100 只在 `.partial` 改名之后报**：提前报满会得到「进度条满了而成片还没落盘」，
+>   而那一刻用户已经在点播放了；
+> - **2Hz 限流放在应用层**（`ProgressThrottle`，两条判据：百分比真的变了 + 距上一拍 ≥0.5s）：
+>   写库频率该由我们决定，而不是由 ffmpeg 的一个命令行选项决定；
+> - **`BELOW_NORMAL_PRIORITY_CLASS`**（清单里最后一条 `[ ]`）一并接上：渲染不跟桌面抢 CPU；
+> - **真机**：面板那条路（`POST /api/v1/render/jobs` ⇒ 轮询）实测
+>   `render 0/100 → 8 → 21 → 34 → 48 → 62 → 73 → 96 → 100/100「合成完成」`，`percent` 同步在涨；
+> - **门禁**：`.\tasks.ps1 check` ⇒ **3957 passed / 32 skipped**（+30）；`.\tasks.ps1 web:verify`
+>   ⇒ **全绿 · dist 0.39 MB**（前端**一行没改** —— `stageText()` 本来就在画 `done/total`）；
+> - **裁定 344 · 陷阱 187**。
+
+> **当前关键路径**：`T2.1 ✅` ⇒ `T2.2 ✅` ⇒ `T2.3 🔶`（**管子已通**，剩熔断与决策表）⇒ **`T2.4` 正式音色** ⇒ `T3.3`（🔶 只差语法预检 / 节点守卫 / `render plan` 三个非核心子项）。**T3.4–T3.7 与 T4 / T5 都已收口**；一期剩下的只有 T2.3 / T2.4 这两条 🔶 与 T3.1 / T3.3 的非核心缺项。
 > ⇒ **没有任何硬阻塞**；E1/E2/E3/E4 只影响各自任务的真机验收，**不影响开发推进**。
 >
 > 注 4：**口吻 / 受众 / 禁区是数据，不是代码**（本轮的明确要求，现状核对如下）——
@@ -2482,7 +2507,7 @@ T1.12 ✅             （一键启动）
 | 185 | **第二个账号永远发不出去，而面板上看起来一切正常** | `jobs` 的唯一键是 `(task_id, pool, unit_type, unit_ref)`，而发布单元的 `unit_ref` 只写了平台代号（`douyin`）⇒ 一条任务在一个平台上**只有一条作业**，第二个账号那条**建不出来**（不是发错，是建不出来） | 单元标识带上账号：`unit_ref = platform:account_id`（`domain/publish.py` 的 `unit_ref` / `parse_unit_ref`）；**老格式仍认**（无分隔符 ⇒ 账号 `None`，回落到 payload / 配置）—— 把老格式当成「另一个单元」会让重投凭空多一条作业 | T5.8 |
 | 186 | **`rg` 的输出会把 `unit_ref` 显示成 `n`，照着它改代码会改错地方** | 本机 `rg.exe` 对含 `ref` 的标识符做了某种改写（`unit_ref=row.id` 显示成 `n=row.id`），**文件真值无误**、只有输出被改写 —— 看起来像「代码里根本没有这个变量」，于是去搜一个不存在的东西 | 搜含 `ref` 的标识符改用 `Select-String -Path <paths> -Pattern 'unit_ref'`；或先 `git diff` 确认文件真值再动手 | T5.8 |
 | 178 | **面板 / 文档说「开关关着时投递进来的作业会转人工」，实际是死信** —— 操作员去「待人工」里找一个永远不出现的记录 | 开关守卫（`_guard_switch`）跑在**建 `publications` 那一行之前** ⇒ 既没有待人工记录、发布面板上也什么都不出现；而三处文案（路由 docstring / CLI / runbook）写的是「转人工」，§04-contracts ① 自己写的是「死信」 | 文案与**代码的真实落点**对齐：死信（去「四池调度」看）。投递面板把这句话写在**真平台选项旁边**（出厂就是这一档，不说的话按一次投递会得到「什么都没发生」） | T5.10 |
-> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 186 条见该处；跨文档引用按编号即可）。
+> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 187 条见该处；跨文档引用按编号即可）。
 
 ---
 

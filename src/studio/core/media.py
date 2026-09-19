@@ -28,13 +28,16 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import queue
 import shutil
 import signal
 import subprocess
-from collections.abc import Mapping, Sequence
+import threading
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import IO, Any, Final
 
 from studio.core.errors import ErrorCode, StudioError
 
@@ -76,6 +79,10 @@ TASKKILL_TIMEOUT_SEC: Final[int] = 10
 #: 所以取一次默认值；这个常量只在 POSIX 分支被用到。
 _SIGKILL: Final[int] = getattr(signal, "SIGKILL", signal.SIGTERM)
 
+#: 流式读取时主线程多久醒一次去看"有新行了吗 / 进程退了吗"（见 :func:`_run_streaming`）。
+#: 50ms 是给**进度上报**用的：比它更快只是在空转，比它更慢会让最后那几行拖到收尾才被看见。
+_STREAM_POLL_SEC: Final[float] = 0.05
+
 #: 带 alpha 通道的像素格式（水印必须落在这些里，否则叠上去是黑底方块）。
 ALPHA_PIX_FMTS: Final[frozenset[str]] = frozenset(
     {
@@ -115,7 +122,12 @@ class CommandResult:
         return text[-limit:]
 
 
-def run_command(argv: Sequence[str], *, timeout: int = PROBE_TIMEOUT_SEC) -> CommandResult:
+def run_command(
+    argv: Sequence[str],
+    *,
+    timeout: int = PROBE_TIMEOUT_SEC,
+    on_stdout_line: Callable[[str], None] | None = None,
+) -> CommandResult:
     """执行外部命令；**不抛异常**，失败也返回一个 :class:`CommandResult`。
 
     负的返回码是我们自己给的，与进程真实退出码区分开：
@@ -142,6 +154,12 @@ def run_command(argv: Sequence[str], *, timeout: int = PROBE_TIMEOUT_SEC) -> Com
 
     为什么不抛：调用方（探测 / 入库 / 渲染）都要把失败**记进报告**继续跑完其余条目，
     而不是让一个坏文件中断整批扫描。真正的硬门禁（"ffmpeg 在不在"）在 ``doctor`` 那侧。
+    :param on_stdout_line: 给了就**边跑边读** stdout，每读到一行调一次 —— ffmpeg 的
+        ``-progress pipe:1`` 走这条路（T3.4，见 :func:`_run_streaming`）。回调跑在
+        **调用方自己的线程**上；它抛的异常会先杀掉进程树、再原样抛出去，理由见那里。
+        不给 ⇒ 老路径（``communicate`` 一把读完），stdout 整份进
+        :attr:`CommandResult.stdout`。
+
     """
     try:
         process = subprocess.Popen(
@@ -151,7 +169,7 @@ def run_command(argv: Sequence[str], *, timeout: int = PROBE_TIMEOUT_SEC) -> Com
             text=True,
             encoding="utf-8",
             errors="replace",
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            creationflags=_creation_flags(),
             # POSIX 上让子进程自成会话，`killpg` 才能只打我们这一支（否则会打到调用方
             # 自己所在的组）。Windows 忽略这个参数 —— 它靠 taskkill 遍历父子关系找树。
             start_new_session=os.name != "nt",
@@ -161,13 +179,153 @@ def run_command(argv: Sequence[str], *, timeout: int = PROBE_TIMEOUT_SEC) -> Com
     except OSError as exc:
         return CommandResult(-3, "", f"命令无法启动：{exc}")
 
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        killed = "进程树" if _kill_tree(process) else "进程"
+    if on_stdout_line is None:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            killed = "进程树" if _kill_tree(process) else "进程"
+            _reap(process)
+            return CommandResult(-2, "", f"命令超时（{timeout}s，已终止{killed}）：{' '.join(argv)}")
+        return CommandResult(process.returncode, stdout or "", stderr or "")
+
+    return _run_streaming(process, argv, timeout=timeout, on_stdout_line=on_stdout_line)
+
+
+def _run_streaming(
+    process: subprocess.Popen[str],
+    argv: Sequence[str],
+    *,
+    timeout: int,
+    on_stdout_line: Callable[[str], None],
+) -> CommandResult:
+    """边跑边读 stdout 的版本 —— ffmpeg 的 ``-progress pipe:1`` 走这条路（T3.4）。
+
+    为什么两条管道各要一个读线程
+    ---------------------------
+    Windows 上 ``select`` 对管道不可用，而只读一条会让另一条**写满缓冲区**、把子进程永远
+    卡在 ``write`` 上 —— 于是"为了看到进度"反而换来一次死锁。
+
+    为什么回调不在读线程里跑
+    ------------------------
+    这个回调要写 ``jobs.result_json``（SQLite）并做租约存活检查，而 SQLite 连接是有线程
+    亲和的。把回调留在**主线程**上，与"没有进度流"时就是同一套语义：不必给连接开
+    ``check_same_thread=False``，也不会有两个线程共用同一条连接。
+
+    回调抛异常 ⇒ **先杀进程树、再原样抛出**。那个回调正是渲染链路上的存活检查点（租约丢了 /
+    单元要取消时靠它中断）；让它带着一个还在写 ``.partial`` 的 ffmpeg 继续跑，就是本模块
+    开头那段注释里说的"两个写者抢同一个文件"。
+    """
+    stdout = process.stdout
+    stderr = process.stderr
+    if stdout is None or stderr is None:  # 只有传了 PIPE 才有管道；防御性分支
         _reap(process)
-        return CommandResult(-2, "", f"命令超时（{timeout}s，已终止{killed}）：{' '.join(argv)}")
-    return CommandResult(process.returncode, stdout or "", stderr or "")
+        return CommandResult(-3, "", "命令没有可读的输出管道")
+
+    lines: queue.SimpleQueue[str] = queue.SimpleQueue()
+    stderr_chunks: list[str] = []
+    readers = (
+        threading.Thread(target=_pump_lines, args=(stdout, lines), daemon=True),
+        threading.Thread(target=_pump_text, args=(stderr, stderr_chunks), daemon=True),
+    )
+    for reader in readers:
+        reader.start()
+
+    stdout_chunks: list[str] = []
+    deadline = time.monotonic() + timeout
+    timed_out = False
+    try:
+        while True:
+            _take_lines(lines, stdout_chunks, on_stdout_line)
+            if process.poll() is not None:
+                break
+            if time.monotonic() >= deadline:
+                timed_out = True
+                break
+            time.sleep(_STREAM_POLL_SEC)
+    except BaseException:
+        # 回调抛了（存活检查失败 / 单元被取消）⇒ 把 ffmpeg 一起带走，别留一个孤儿在写 .partial
+        _kill_tree(process)
+        _join_readers(readers, stdout, stderr)
+        raise
+
+    if timed_out:
+        killed = "进程树" if _kill_tree(process) else "进程"
+        _join_readers(readers, stdout, stderr)
+        _take_lines(lines, stdout_chunks)
+        return CommandResult(
+            -2,
+            "".join(stdout_chunks),
+            f"命令超时（{timeout}s，已终止{killed}）：{' '.join(argv)}",
+        )
+
+    _join_readers(readers, stdout, stderr)
+    # 收尾：进程已经退出，但管道里可能还剩最后几行（ffmpeg 的 `progress=end`）
+    _take_lines(lines, stdout_chunks, on_stdout_line)
+    return CommandResult(process.returncode, "".join(stdout_chunks), "".join(stderr_chunks))
+
+
+def _pump_lines(stream: IO[str], lines: queue.SimpleQueue[str]) -> None:
+    """读线程的活：把 ``stream`` 一行行塞进队列（读到 EOF / 管道被关就收工）。"""
+    try:
+        for line in stream:
+            lines.put(line)
+    except (OSError, ValueError):
+        pass
+
+
+def _pump_text(stream: IO[str], sink: list[str]) -> None:
+    """:func:`_pump_lines` 的"只要文本、不要队列"版本（stderr 不走回调）。"""
+    try:
+        for line in stream:
+            sink.append(line)
+    except (OSError, ValueError):
+        pass
+
+
+def _take_lines(
+    lines: queue.SimpleQueue[str],
+    sink: list[str],
+    on_line: Callable[[str], None] | None = None,
+) -> None:
+    """把队列里攒下的行搬进 ``sink``，顺便逐行回调（回调抛 ⇒ 原样往外抛）。"""
+    while True:
+        try:
+            line = lines.get_nowait()
+        except queue.Empty:
+            return
+        sink.append(line)
+        if on_line is not None:
+            on_line(line)
+
+
+def _join_readers(
+    readers: Sequence[threading.Thread],
+    stdout: IO[str],
+    stderr: IO[str],
+) -> None:
+    """等读线程收工（**自己带超时**，与 :func:`_reap` 同一个理由）。
+
+    读线程是守护线程，收不干净也不会把调用方永远挂住 —— 最坏情况是少读几行日志。
+    只关**已经收工**的那条管道：还有线程堵在 ``read`` 上时关它，等于去抢同一把锁，把
+    "读不完"升级成"关不掉"。
+    """
+    deadline = time.monotonic() + REAP_TIMEOUT_SEC
+    for reader, stream in zip(readers, (stdout, stderr), strict=True):
+        reader.join(max(0.0, deadline - time.monotonic()))
+        if not reader.is_alive():
+            with contextlib.suppress(OSError, ValueError):
+                stream.close()
+
+
+def _creation_flags() -> int:
+    """Windows 上启动子进程的旗标（POSIX 上两个常量都不存在 ⇒ 返回 0）。
+
+    - ``CREATE_NO_WINDOW``：不闪黑框 —— 不加的话每探一个素材就在屏幕上闪一个窗口；
+    - ``BELOW_NORMAL_PRIORITY_CLASS``：渲染是**分钟级**的 CPU 大户，而用户就坐在同一台
+      机器前看着面板。降到"低于正常"让桌面与别的服务不被它挤掉：渲染慢一点无所谓，
+      面板点不动才是问题（T3.4）。
+    """
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 
 
 def _kill_tree(process: subprocess.Popen[str]) -> bool:

@@ -17,11 +17,16 @@ from studio.core.paths import StudioPaths
 from studio.render.composite import (
     BG_FILL_BLACK,
     BG_FILL_BROLL,
+    PROGRESS_STATS_PERIOD_SEC,
+    PROGRESS_TOTAL,
     CompositeRequest,
+    ProgressThrottle,
     bg_fill,
     build_composite_argv,
     build_filter_graph,
     duration_ms_for,
+    parse_out_time_us,
+    progress_percent,
 )
 from studio.render.mixdown import MixSettings
 from studio.render.profiles import resolve_profile
@@ -265,3 +270,133 @@ def test_bg_fill_reports_which_source_was_used(outputs: OutputsConfig, tmp_path:
     """留痕：``bg_fill`` 是 ``broll`` 还是 ``black``，下游靠它判 ``degraded``。"""
     assert bg_fill(_request(outputs, tmp_path)) == BG_FILL_BROLL
     assert bg_fill(_request(outputs, tmp_path, clip=None)) == BG_FILL_BLACK
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 进度流（T3.4）
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_argv_asks_for_a_machine_readable_progress_stream(outputs: OutputsConfig, tmp_path: Path) -> None:
+    """★ 进度走 **stdout**（``-progress pipe:1``），不是让人去正则匹配 stderr 那行统计。
+
+    ``-nostats`` 仍然留着：给人看的那行统计一关，stderr 里就只剩真正的报错 ——
+    报错信息里混着几十行 ``frame=…`` 是最难读的一种现场。
+    """
+    argv = build_composite_argv(_request(outputs, tmp_path))
+    assert argv[argv.index("-progress") + 1] == "pipe:1"
+    assert argv[argv.index("-stats_period") + 1] == f"{PROGRESS_STATS_PERIOD_SEC:g}" == "0.5"
+    assert "-nostats" in argv
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("out_time_us=123456", 123_456),
+        ("out_time_us=0", 0),
+        ("  out_time_us=42  ", 42),
+        ("out_time_us=N/A", None),  # 第一拍就是它（ffmpeg 还没算出时间戳）
+        ("out_time_ms=123456", None),  # 名字骗人：按毫秒读会得到一个 1000 倍的进度
+        ("progress=continue", None),
+        ("frame=180", None),
+        ("out_time_us=", None),
+        ("out_time_us=abc", None),
+        ("", None),
+        ("out_time_us=-5", 0),  # 负数当 0：进度不该往回走
+    ],
+)
+def test_parse_out_time_us(line: str, expected: int | None) -> None:
+    assert parse_out_time_us(line) == expected
+
+
+@pytest.mark.parametrize(
+    ("out_time_us", "duration_ms", "expected"),
+    [
+        (0, 10_000, 0),
+        (5_000_000, 10_000, 50),
+        (9_999_999, 10_000, 99),  # 还差一点点 ⇒ 不给 100
+        (10_000_000, 10_000, 99),  # 编完了也还是 99：100 归"改名成功"那一刻
+        (20_000_000, 10_000, 99),  # 超出分母（`-t` 与流时长对不齐）⇒ 仍然封顶
+        (1_000, 0, 0),  # 没有分母 ⇒ 0，不编一个出来
+        (1_000, -5, 0),
+    ],
+)
+def test_progress_percent(out_time_us: int, duration_ms: int, expected: int) -> None:
+    assert progress_percent(out_time_us, duration_ms) == expected
+
+
+class _FakeClock:
+    """手摇的时钟：限流用例不该靠 ``time.sleep`` 去等节拍（那既慢又看机器脸色）。"""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _throttle(
+    *, duration_ms: int = 10_000
+) -> tuple[ProgressThrottle, list[tuple[int, int, str]], _FakeClock]:
+    """一个接了假时钟的限流器 + 它推出去的那些拍。"""
+    ticks: list[tuple[int, int, str]] = []
+    clock = _FakeClock()
+    throttle = ProgressThrottle(
+        lambda done, total, note: ticks.append((done, total, note)),
+        duration_ms=duration_ms,
+        clock=clock,
+    )
+    return throttle, ticks, clock
+
+
+def test_the_first_tick_always_goes_through() -> None:
+    """★ 第一拍不设门槛：否则"开始了"这件事要等半秒才看得见。"""
+    throttle, ticks, _clock = _throttle()
+    throttle.feed("out_time_us=0")
+    assert ticks == [(0, PROGRESS_TOTAL, "合成中 0%")]
+
+
+def test_two_ticks_closer_than_the_interval_collapse() -> None:
+    """2Hz：半秒内的第二拍直接丢掉（它只是"同一句话又说了一遍"）。"""
+    throttle, ticks, clock = _throttle()
+    throttle.feed("out_time_us=3_000_000")  # 30% —— 第一拍，过
+    clock.advance(0.2)
+    throttle.feed("out_time_us=4_000_000")  # 40% —— 才过 0.2s，丢
+    assert [done for done, _t, _n in ticks] == [30]
+    clock.advance(0.3)  # 距上一拍刚好 0.5s
+    throttle.feed("out_time_us=4_000_000")
+    assert [done for done, _t, _n in ticks] == [30, 40]
+
+
+def test_the_same_percentage_is_never_pushed_twice() -> None:
+    """百分比没变就不推 —— 一个 20 分钟的片子不该每半秒报一次一模一样的 37%。"""
+    throttle, ticks, clock = _throttle()
+    throttle.feed("out_time_us=3_700_000")
+    for _ in range(20):
+        clock.advance(1.0)
+        throttle.feed("out_time_us=3_700_000")
+    assert len(ticks) == 1
+
+
+def test_non_progress_lines_are_ignored() -> None:
+    """ffmpeg 那一小块 kv 里只有 ``out_time_us`` 有用，别的行不该被当成进度。"""
+    throttle, ticks, clock = _throttle()
+    for line in ("frame=1", "fps=0.00", "progress=continue", "out_time_ms=999999", ""):
+        throttle.feed(line)
+    clock.advance(1.0)
+    throttle.feed("progress=end")
+    assert ticks == []
+
+
+def test_a_render_never_pushes_more_than_a_hundred_ticks() -> None:
+    """★ 上限就是"一次渲染最多 100 拍"：面板显示不出更细的粒度，而每一拍都要写一次库。"""
+    throttle, ticks, clock = _throttle()
+    for step in range(1000):
+        clock.advance(1.0)
+        throttle.feed(f"out_time_us={step * 10_000}")
+    assert len(ticks) == 100
+    assert ticks[-1] == (99, PROGRESS_TOTAL, "合成中 99%")
+    assert PROGRESS_TOTAL not in [done for done, _t, _n in ticks], "编码期间不许报 100%"

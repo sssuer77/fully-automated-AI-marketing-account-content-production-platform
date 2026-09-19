@@ -27,7 +27,13 @@ from studio.core.errors import ErrorCode, RenderError
 from studio.core.media import probe_media, run_command
 from studio.core.paths import StudioPaths
 from studio.render import degrade
-from studio.render.composite import CompositeRequest, CompositeResult, build_filter_graph, run_composite
+from studio.render.composite import (
+    PROGRESS_TOTAL,
+    CompositeRequest,
+    CompositeResult,
+    build_filter_graph,
+    run_composite,
+)
 from studio.render.mixdown import MixSettings
 from studio.render.profiles import FALLBACK_PROFILE_NAME, resolve_profile
 from studio.services.render_service import ProduceRequest, produce_video
@@ -425,3 +431,55 @@ def test_injected_encode_failure_falls_back_to_720p(tmp_path: Path, monkeypatch:
     manifest = json.loads(result.manifest.read_text(encoding="utf-8"))
     assert manifest["profile"] == FALLBACK_PROFILE_NAME
     assert manifest["attempts"] == ["douyin_1080x1920_30fps_v1: RENDER_FAILED"]
+
+
+@pytest.mark.slow
+def test_composite_reports_a_percentage(tmp_path: Path) -> None:
+    """★ 合成过程中的进度是**百分比**（T3.4）：编码期间 1..99，100 只在成片落盘之后。
+
+    真跑 ffmpeg：拿假数据喂一个进度流，测不出"ffmpeg 到底吐不吐这些行" —— 而那正是这次
+    改动唯一可能悄悄失效的地方（换个 ffmpeg 版本、``-progress`` 被谁删掉，打桩的用例全都
+    照样绿，面板上的进度条却永远停在 0%）。
+    """
+    paths = _stage_home(tmp_path)
+    outputs = _outputs(paths)
+    clip = _make_clip(tmp_path / "clip.mp4", seconds=4.0)
+    voice = tmp_path / "voice.wav"
+    _run(
+        [
+            _ffmpeg(),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=3",
+            "-ac",
+            "2",
+            "-y",
+            str(voice),
+        ]
+    )
+
+    ticks: list[tuple[int, int, str]] = []
+    result = run_composite(
+        CompositeRequest(
+            profile=resolve_profile(outputs),
+            clip=clip,
+            voice=voice,
+            output=tmp_path / "final.mp4",
+            duration_ms=3000,
+            graph_path=tmp_path / "graphs" / "composite.txt",
+        ),
+        on_progress=lambda done, total, note: ticks.append((done, total, note)),
+    )
+
+    assert result.output.is_file() and result.output.stat().st_size > 0
+    # ① 分母是百分比，不是"第几段"
+    assert {total for _done, total, _note in ticks} == {PROGRESS_TOTAL}, ticks
+    # ② 至少有一拍落在**编码期间**（0 < done < 100）—— 否则"进度"就只剩收尾那一下
+    assert [done for done, _t, _n in ticks if 0 < done < PROGRESS_TOTAL], ticks
+    # ③ 单调不减；收尾那一拍是 100 + "合成完成"
+    assert [done for done, _t, _n in ticks] == sorted(done for done, _t, _n in ticks)
+    assert ticks[-1] == (PROGRESS_TOTAL, PROGRESS_TOTAL, "合成完成")

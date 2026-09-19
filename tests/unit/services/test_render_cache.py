@@ -22,7 +22,7 @@ from studio.core.config import OutputsConfig, load_outputs_config
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.media import MediaInfo
 from studio.core.paths import StudioPaths
-from studio.render.composite import CompositeRequest, CompositeResult, bg_fill
+from studio.render.composite import PROGRESS_TOTAL, CompositeRequest, CompositeResult, bg_fill
 from studio.render.degrade import Delivery
 from studio.render.mixdown import LoudnessMeasurement
 from studio.services import render_service
@@ -213,6 +213,8 @@ def test_the_panel_is_told_that_the_delivery_was_reused(rig: Rig) -> None:
 
     notes = [row[3] for row in rig.progress]
     assert any("命中渲染缓存" in note for note in notes), notes
+    # 分母也是百分比（T3.4）：命中缓存 = 100%，而不是"第 1 段 / 共 1 段"
+    assert (PROGRESS_TOTAL, PROGRESS_TOTAL) in [(row[1], row[2]) for row in rig.progress]
 
 
 # ══════════════════════════════════════════════════════════════════════

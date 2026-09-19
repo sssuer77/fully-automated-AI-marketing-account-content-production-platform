@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import threading
 import time
@@ -227,6 +229,17 @@ _HEARTBEAT_SCRIPT = (
 )
 
 
+#: 与 :data:`_PARENT_SCRIPT` 同一套，只是**先往 stdout 吐一行** —— 用来验"回调抛了以后
+#: 整棵树都被带走"（回调是渲染链路的存活检查点，它抛的时候 ffmpeg 还活着）。
+_PARENT_TALKING_SCRIPT = (
+    "import subprocess, sys, time\n"
+    "child = subprocess.Popen([sys.executable, sys.argv[1], sys.argv[2]])\n"
+    "open(sys.argv[3], 'w').write(str(child.pid))\n"
+    "print('go', flush=True)\n"
+    "time.sleep(60)\n"
+)
+
+
 def _process_tree(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     """造一套两级进程树的脚本；返回 ``(父脚本, 心跳脚本, 心跳文件, pid 文件)``。"""
     parent = tmp_path / "parent.py"
@@ -261,6 +274,20 @@ def _kill_leftovers(pid_file: Path) -> None:
         process.kill()
     except (psutil.Error, ValueError):
         pass
+
+
+def test_creation_flags_keep_the_console_hidden_and_the_render_polite() -> None:
+    """①不闪黑框 ②渲染不跟桌面抢 CPU（T3.4）。
+
+    第二个旗标是"用户就坐在同一台机器前"这条前提的落地：没有它，一条 1080×1920 的
+    片子会把整台机器占满，面板点一下就转圈 —— 而渲染慢 20% 根本没人看得出来。
+    """
+    flags = media_module._creation_flags()
+    if os.name != "nt":
+        assert flags == 0
+        return
+    assert flags & subprocess.CREATE_NO_WINDOW
+    assert flags & subprocess.BELOW_NORMAL_PRIORITY_CLASS
 
 
 class TestRunCommand:
@@ -340,6 +367,98 @@ class TestRunCommand:
         assert len(result.tail(limit=10)) == 10
         assert result.tail(limit=10) == "x" * 10
         assert CommandResult(1, "only stdout", "  ").tail() == "only stdout"
+
+
+class _CallbackError(RuntimeError):
+    """回调抛出来的异常（"存活检查失败"的替身）。"""
+
+
+def _explode(line: str) -> None:
+    raise _CallbackError(f"回调炸了：{line.strip()}")
+
+
+class TestRunCommandWithProgress:
+    """``on_stdout_line``：边跑边读（T3.4 —— ffmpeg 的 ``-progress pipe:1`` 走这条）。
+
+    这一层要验的其实只有一件事：**回调是在进程还活着的时候被调到的**。做到它需要两条读
+    线程加一个轮询的主线程，而这三样东西各自都能写出"平时看不出、一出事就挂住"的 bug ——
+    所以下面每一条都对着一种具体故障，而不是"能跑通就行"。
+    """
+
+    def test_every_stdout_line_reaches_the_callback(self) -> None:
+        seen: list[str] = []
+        result = run_command(
+            [sys.executable, "-c", "print('a'); print('b')"],
+            on_stdout_line=seen.append,
+        )
+        assert result.ok
+        assert [line.strip() for line in seen] == ["a", "b"]
+        # 回调看到的与 CommandResult.stdout 里的是**同一份**（收尾时不许把最后几行丢掉）
+        assert seen == result.stdout.splitlines(keepends=True)
+
+    def test_the_callback_runs_while_the_command_is_still_running(self) -> None:
+        """★ 回调必须在命令**跑完之前**被调到 —— 否则那不是进度，是事后通知。"""
+        marks: list[float] = []
+        started = time.monotonic()
+        result = run_command(
+            [sys.executable, "-c", "import time\nprint('tick', flush=True)\ntime.sleep(2)"],
+            timeout=30,
+            on_stdout_line=lambda _line: marks.append(time.monotonic() - started),
+        )
+        assert result.ok
+        assert len(marks) == 1
+        assert marks[0] < 1.5, "回调等到命令退出才被调到 ⇒ 进度条会在最后一下跳满"
+
+    def test_timeout_keeps_what_was_already_read(self) -> None:
+        seen: list[str] = []
+        result = run_command(
+            [sys.executable, "-c", "import time\nprint('tick', flush=True)\ntime.sleep(30)"],
+            timeout=1,
+            on_stdout_line=seen.append,
+        )
+        assert result.returncode == -2
+        assert "超时" in result.stderr
+        assert [line.strip() for line in seen] == ["tick"]
+        assert "tick" in result.stdout, "已经读到的行在超时分支里被丢掉了（报错要能带上现场）"
+
+    def test_a_raising_callback_takes_the_tree_with_it(self, tmp_path: Path) -> None:
+        """★ 回调抛 ⇒ **先杀进程树、再原样抛**。
+
+        这个回调就是渲染链路上唯一的存活检查点（租约丢了 / 单元要取消时靠它中断）。它抛的
+        时候 ffmpeg 还在写 ``.partial``，而调用方马上会拿着异常去清理半成品 —— 留下一个还在
+        写的进程，就是 :func:`run_command` 注释里说的"两个写者抢同一个文件"。
+        """
+        parent, heartbeat, _target, pid_file = _process_tree(tmp_path)
+        parent.write_text(_PARENT_TALKING_SCRIPT, encoding="utf-8")
+        outcome: list[BaseException] = []
+
+        def call() -> None:
+            try:
+                run_command(
+                    [sys.executable, str(parent), str(heartbeat), str(_target), str(pid_file)],
+                    timeout=30,
+                    on_stdout_line=_explode,
+                )
+            except BaseException as exc:
+                outcome.append(exc)
+
+        worker = threading.Thread(target=call, daemon=True)
+        worker.start()
+        worker.join(timeout=30)
+        try:
+            assert not worker.is_alive(), "回调抛了，run_command 却没返回"
+            assert len(outcome) == 1, outcome
+            assert isinstance(outcome[0], _CallbackError), outcome
+            assert pid_file.is_file(), "孙进程压根没起来 ⇒ 这条用例没测到东西"
+            assert _pid_gone(int(pid_file.read_text(encoding="utf-8")))
+        finally:
+            _kill_leftovers(pid_file)
+
+    def test_missing_binary_is_still_minus_one(self) -> None:
+        """可执行文件不存在时连读线程都不用起（负返回码语义与老路径完全一致）。"""
+        result = run_command(["definitely-not-a-real-binary-xyz"], on_stdout_line=_explode)
+        assert result.returncode == -1
+        assert "未找到可执行文件" in result.stderr
 
 
 class TestBinaryResolution:
