@@ -132,7 +132,15 @@ TRACK_PATCH_FIELDS: Final[frozenset[str]] = frozenset(
     }
 )
 
-VOICE_PATCH_FIELDS: Final[frozenset[str]] = frozenset({"license", "source_url", "licensed_to", "enabled"})
+#: 音色可改的列。
+#:
+#: ``proof_path`` 在列表里**是有原因的**：合规快照（``publish/compliance.py``）把音色的
+#: 来源登记读成 ``proof_path``（目录里的 ``profile.json``），而它是三条素材线里**唯一**
+#: 一条"面板上没有入口去补"的留痕 —— 一条入库时还没有 ``profile.json`` 的音色，于是
+#: 永远补不上。补它不是"多给一个可改字段"，是让那一栏的红字**有地方修**。
+VOICE_PATCH_FIELDS: Final[frozenset[str]] = frozenset(
+    {"license", "source_url", "proof_path", "licensed_to", "enabled"}
+)
 
 #: PATCH 的字段名 ⇄ 列名（只有需要换名的才在这里；其余同名直通）
 _RENAMED_COLUMNS: Final[dict[str, str]] = {"tags": "tags_json"}
@@ -397,6 +405,16 @@ class BrollClipRepo:
             return None
         return self.get(clip_id)
 
+    def delete(self, clip_id: str) -> bool:
+        """删掉这一行（**只删库里的行** —— 盘上那个文件由调用方决定，见 ``AssetService.delete``）。
+
+        返回是否命中：没命中就是 id 打错了，调用方据此回 404，而不是回一句
+        "删掉了"、而列表里那一行还亮着。``broll_usage`` 是 ``ON DELETE CASCADE``，
+        所以这一条的历史用量跟着一起走（外键在 ``migrate.py`` 里已开）。
+        """
+        cursor = self._connection.execute("DELETE FROM broll_clips WHERE id = ?", (clip_id,))
+        return cursor.rowcount > 0
+
     def stats(self) -> AssetStats:
         return _stats(self._connection, "broll_clips", "duration_ms")
 
@@ -517,6 +535,11 @@ class BgmTrackRepo:
             return None
         return self.get(track_id)
 
+    def delete(self, track_id: str) -> bool:
+        """删掉这一行（**只删库里的行**，盘上那个文件由调用方决定）。"""
+        cursor = self._connection.execute("DELETE FROM bgm_tracks WHERE id = ?", (track_id,))
+        return cursor.rowcount > 0
+
     def stats(self) -> AssetStats:
         return _stats(self._connection, "bgm_tracks", "duration_ms")
 
@@ -628,6 +651,16 @@ class VoiceProfileRepo:
         ):
             return None
         return self.get(voice_id)
+
+    def delete(self, voice_id: str) -> bool:
+        """删掉这一行（**只删库里的行** —— 参考音目录由调用方决定）。
+
+        这一条与跑酷 / BGM 有一处**实质差别**：配音只认 ``voice_profiles`` 表，
+        所以删了行 = 这个音色立刻从配音池里消失；而跑酷删了行照样会被出片挑到
+        （渲染器只列目录）。面板上那句话得跟着分开说。
+        """
+        cursor = self._connection.execute("DELETE FROM voice_profiles WHERE id = ?", (voice_id,))
+        return cursor.rowcount > 0
 
     def stats(self) -> AssetStats:
         return _stats(self._connection, "voice_profiles", "total_duration_ms")

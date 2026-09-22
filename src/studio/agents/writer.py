@@ -31,6 +31,7 @@ from typing import ClassVar
 from studio.agents.base import AgentContext, AgentResult, BaseAgent, bullet_block
 from studio.core.errors import ErrorCode
 from studio.domain.script import (
+    OUTLINE_UNSET,
     REWRITE_LIMIT,
     DirectorOutput,
     ScriptReport,
@@ -76,6 +77,8 @@ class WriterAgent(BaseAgent[WriterInput, WriterOutput]):
                 outline_hook=payload.outline.hook_3s,
                 outline_segments=_render_segments(payload.outline),
                 outline_cta=payload.outline.cta,
+                outline_title=payload.outline_title or OUTLINE_UNSET,
+                core_argument=payload.core_argument or OUTLINE_UNSET,
                 word_count_min=str(rules.word_count_min),
                 word_count_max=str(rules.word_count_max),
                 catchphrase_min_hits=str(rules.catchphrase_min_hits),

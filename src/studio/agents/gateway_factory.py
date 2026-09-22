@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from studio.agents.budget import TokenBudget
 from studio.agents.circuit import CircuitBreaker
@@ -31,6 +31,7 @@ def build_gateway(
     *,
     connection: sqlite3.Connection,
     llm: LlmConfig,
+    config_provider: Callable[[], LlmConfig] | None = None,
     paths: StudioPaths | None = None,
     transport: LlmTransport | None = None,
     settings: GatewaySettings | None = None,
@@ -38,7 +39,12 @@ def build_gateway(
     env: Mapping[str, str] | None = None,
     secrets: SecretLookup | None = None,
 ) -> LlmGateway:
-    """装配一个可直接使用的网关（预算闸门 + 熔断 + 记账全部就位）。"""
+    """装配一个可直接使用的网关（预算闸门 + 熔断 + 记账全部就位）。
+
+    :param config_provider: 动态配置入口（``None`` ⇒ 用 ``llm`` 这一份冻结快照）。
+        常驻进程（写稿池 worker）**应该**传它 —— 否则在设置页换了模型名，
+        那个进程直到重启都还在用旧模型（见 ``core.config.llm_config_provider``）。
+    """
     resolved = paths or StudioPaths.from_env()
     # 密钥的第二来源：面板填的 Key 落在 config/secrets.yaml，网关每次调用现取一次
     # ⇒ 填完立刻生效。调用方（如 `app/deps.py`）传了自己那一个 store 就用它的 ——
@@ -50,6 +56,7 @@ def build_gateway(
         lookup = store.lookup
     return LlmGateway(
         config=llm,
+        config_provider=config_provider,
         transport=transport or HttpLlmTransport(),
         calls=LlmCallStore(connection),
         budget=TokenBudget(llm.budget, LlmCallStore(connection)),

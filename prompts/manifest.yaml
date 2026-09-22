@@ -42,18 +42,25 @@ prompts:
     sha256: 6d194e02666fd8fdc77193b98841ab6e70cadff019d4f2832044f47bdd1fb71a
     description: 批量选题（单方向 3–5 个 + 禁重复）
 
+  outliner:
+    system: outliner/system.md
+    user: outliner/user.jinja
+    version: "1"
+    sha256: 965c0aca1af57069ee3af05e7aa882834818fd14d26a7b30e103310bd3493406
+    description: 选题定稿（视频标题 + 核心论点 · 文案三级流水线的二级）
+
   director:
     system: director/system.md
     user: director/user.jinja
     version: "1"
-    sha256: f07ac21fe34f8ce4b9f2a979a702eca8c165498371c852fe268708b423eb68dd
+    sha256: 20271ade4d785786fc7cc516244035bd5c8f08187dd3b8a8b3468ecb2f6db949
     description: 内容导演（钩子 + 3–5 段大纲 + CTA + 时长预估）
 
   writer:
     system: writer/system.md
     user: writer/user.jinja
     version: "1"
-    sha256: a81047ed1ce5128a77d045df94b24f48b7b9144dae9597792706ce30f4641a7d
+    sha256: 04a2fca560c8778eb239fca8df587b335b6b84327d1fcaeebb01d99a2ee45db7
     description: 口播编剧（600–800 字 + 逐句表 + 口癖/禁区自检）
 
   reviewer:

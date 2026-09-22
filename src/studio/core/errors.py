@@ -206,6 +206,8 @@ class ErrorCode(StrEnum):
     HOT_TEXT_EMPTY = "HOT_TEXT_EMPTY"
 
     # ── 写稿（T1.10 · §04.1.4 / §04.1.5）────────────────────────
+    #: 二级产物（视频标题 + 核心论点）不合法：空 / 超长（文案三级流水线的中间一级）
+    OUTLINE_INVALID = "OUTLINE_INVALID"
     SCRIPT_FORBIDDEN = "SCRIPT_FORBIDDEN"
     SCRIPT_NOT_FOUND = "SCRIPT_NOT_FOUND"
     SCRIPT_WORD_COUNT = "SCRIPT_WORD_COUNT"
@@ -267,6 +269,10 @@ class ErrorCode(StrEnum):
     ASSET_INVALID = "ASSET_INVALID"
     #: 素材库里没有这个 id（面板点了一个刚被删掉的条目）。
     ASSET_NOT_FOUND = "ASSET_NOT_FOUND"
+    #: 上传的目标文件名已经被占了（409）。与 ``PERSONA_EXISTS`` 同一条裁定：
+    #: "那个 id 已经有人了"是**状态**问题，不是入参写错了 —— 面板据此提示
+    #: 「覆盖 / 换个名字」，而不是让用户对着 422 猜哪个字写错了。
+    ASSET_EXISTS = "ASSET_EXISTS"
 
     # ── 兜底 ────────────────────────────────────────────────
     INTERNAL = "INTERNAL"

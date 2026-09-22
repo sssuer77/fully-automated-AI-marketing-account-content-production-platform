@@ -42,11 +42,13 @@ import { computed, ref } from "vue";
 
 import {
   createVoicePreview,
+  enqueueVoice,
   fetchSentences,
   fetchVoiceOptions,
   fetchVoicePreview,
   patchVoiceMap,
   resynthSentence,
+  type EnqueueVoiceResponse,
   type SentenceProgress,
   type SentenceVoice,
   type SentenceVoiceList,
@@ -56,6 +58,7 @@ import {
   type VoiceOptions,
   type VoicePreview,
 } from "@/api/endpoints/voice";
+import { createPipelineJob } from "@/api/endpoints/pipeline";
 import { ApiError } from "@/api/http";
 import { describeError } from "@/stores/overview";
 import { formatDurationMs } from "@/stores/render";
@@ -83,19 +86,23 @@ export const MAX_TASK_ID_CHARS = 64;
 export interface VoiceApi {
   fetchSentences: typeof fetchSentences;
   fetchVoiceOptions: typeof fetchVoiceOptions;
+  enqueueVoice: typeof enqueueVoice;
   resynthSentence: typeof resynthSentence;
   patchVoiceMap: typeof patchVoiceMap;
   fetchVoicePreview: typeof fetchVoicePreview;
   createVoicePreview: typeof createVoicePreview;
+  createPipelineJob: typeof createPipelineJob;
 }
 
 let api: VoiceApi = {
   fetchSentences,
   fetchVoiceOptions,
+  enqueueVoice,
   resynthSentence,
   patchVoiceMap,
   fetchVoicePreview,
   createVoicePreview,
+  createPipelineJob,
 };
 
 /** 换掉部分实现（**只用于测试**：生产代码不调用它）。 */
@@ -212,6 +219,24 @@ export function progressText(progress: SentenceProgress): string {
 /** 还有没有"会自己变"的句子（决定轮询开不开）。失败与跳过都是**定局**。 */
 export function outstanding(progress: SentenceProgress | null): number {
   return progress === null ? 0 : progress.pending + progress.synthesizing;
+}
+
+/**
+ * 「开始配音」之后那句话（投了几条 + 还有几条在池子里）。
+ *
+ * `queued === 0` 要**单独说**：那不是失败，是"这些句子的作业早就排过了"（幂等键
+ * `(task_id, pool, unit_type, unit_ref)` 让重复投递什么都不做）。照抄一个 0 出去，
+ * 用户会以为按钮坏了。
+ */
+export function startNotice(report: EnqueueVoiceResponse): string {
+  const tail =
+    report.outstanding > 0
+      ? `还有 ${report.outstanding} 句在池子里排着，念完自己出现在这一列里`
+      : "这条任务没有待投的句子";
+  if (report.queued === 0) {
+    return `这次新排了 0 条（${tail}）—— 作业早就在 voice 池里了，投递是幂等的。`;
+  }
+  return `已把 ${report.queued} 句排进 voice 池（${tail}）。`;
 }
 
 /** 一句"没配成"的记录（面板要**逐条**说清，不能只显示一个计数）。 */
@@ -476,6 +501,27 @@ export const useVoiceStore = defineStore("voice", () => {
   const problem = computed(() => validateTaskId(taskId.value));
   const canLoad = computed(() => problem.value === null && !loading.value);
 
+  /**
+   * 现在该不该显示那颗「开始配音」主按钮。
+   *
+   * 判据是**任务状态**，不是"还有几句待办"：句子全定局、任务却停在 `queued_voice`
+   * 时（投递之后、收口之前被打断），仍然要把它推到 `voicing` —— 按"还有几句待办"
+   * 判的话，那一刻按钮消失，用户就没路可走了。
+   */
+  const canStart = computed(() => taskStatus.value === "queued_voice");
+  /** 待投的句子数（`pending + failed`，与后端 `SentenceRepo.pending_for_task` 同一条判据）。 */
+  const toEnqueue = computed(() => (progress.value?.pending ?? 0) + (progress.value?.failed ?? 0));
+  /** 配音已经念完（全部定局）⇒ 下一步是收口 + 渲染（**母带还没拼**）。 */
+  const voiced = computed(() => {
+    const current = progress.value;
+    return (
+      taskStatus.value === "voicing" &&
+      current !== null &&
+      current.total > 0 &&
+      current.settled === current.total
+    );
+  });
+
   /** 某个音色现在有没有试听样本（下拉框那一行按它画按钮）。 */
   function previewState(voiceId: string): string {
     return voices.value.find((option) => option.id === voiceId)?.preview_state ?? "missing";
@@ -624,6 +670,68 @@ export const useVoiceStore = defineStore("voice", () => {
       return false;
     } finally {
       busyId.value = null;
+    }
+  }
+
+  /**
+   * ★ 「开始配音」：把这条任务待配音的句子**一次**投进 voice 池（T4.5 补的那个入口）。
+   *
+   * 为什么面板上必须有它
+   * --------------------
+   * `queued_voice` 只是**一个状态**：没有任何东西会因为到了这个状态而投递作业。
+   * 投递原先只写在 `pipeline_service.run_task` 里（CLI 与「一键出片」走那条路），
+   * 于是面板上只剩每一行那颗「重配」—— 54 句就是 54 次点击，而用户完全有理由以为
+   * "这就是设计"（真机原话：「这是要我一个一个点重配吗」）。
+   *
+   * 立刻返回：投递 54 句是毫秒级的事，念完要十几分钟 —— 那是 voice 池的活。
+   * 投完之后任务变 `voicing`，本屏按 `VOICE_POLL_MS` 自己刷新。
+   */
+  async function startVoicing(): Promise<boolean> {
+    busy.value = true;
+    clearMessages();
+    try {
+      const report = await api.enqueueVoice(taskId.value.trim());
+      hint.value = report.hint;
+      notice.value = startNotice(report);
+      await refresh();
+      return true;
+    } catch (failure) {
+      error.value = describeError(failure);
+      return false;
+    } finally {
+      busy.value = false;
+    }
+  }
+
+  /**
+   * 收口并出片：把这条任务从 `voicing` 一路推到 `final.mp4`（提交一条一键出片）。
+   *
+   * 为什么配音面板上要有这一颗
+   * --------------------------
+   * 配音念完之后盘上**还没有母带**（母带是收口那一步拼的），所以那一刻点「去渲染」
+   * 会失败（`produce_video` 报"配音没有产出母带"）。收口 + 渲染是 `run_task` 的事，
+   * 它的 REST 面就是一键出片 —— 这里替用户按一次，人再到那一屏看实时进度。
+   *
+   * 不带音色 / 种子：那些是**渲染层**的参数，归「一键出片」与「合成配置」两块面板。
+   * 在这里再放一遍，就会多出一个"看着是关的、实际是跟随配置"的假开关。
+   */
+  async function finishToVideo(): Promise<boolean> {
+    busy.value = true;
+    clearMessages();
+    try {
+      const result = await api.createPipelineJob({
+        task_id: taskId.value.trim(),
+        until: "completed",
+      });
+      notice.value = result.deduped
+        ? `任务 ${result.job.task_id} 已经有一条在跑了（${result.job.id}）—— 去「一键出片」看它的实时进度。`
+        : `已登记 ${result.job.id}：配音收口 → 母带 → 渲染 → final.mp4。去「一键出片」看实时进度。`;
+      return true;
+    } catch (failure) {
+      error.value = describeError(failure);
+      return false;
+    } finally {
+      busy.value = false;
     }
   }
 
@@ -830,6 +938,11 @@ export const useVoiceStore = defineStore("voice", () => {
     error,
     notice,
     warn,
+    canStart,
+    toEnqueue,
+    voiced,
+    startVoicing,
+    finishToVideo,
     resynth,
     requestVoiceChange,
     confirmVoiceChange,

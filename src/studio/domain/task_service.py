@@ -38,11 +38,15 @@ from studio.domain.errors import ConcurrentModification, TaskNotFound
 from studio.domain.models import QualityReport, TaskEventRead, TaskPayload, TaskRead
 from studio.domain.state_machine import RETRY_FROM_WHITELIST, RETRY_SOURCES, assert_allowed
 
-__all__ = ["TaskService", "TransitionResult"]
+__all__ = ["HUMAN_GATE_KEY", "TaskService", "TransitionResult"]
 
 _SELECT_TASK: Final[str] = "SELECT * FROM tasks WHERE id = ?"
 _SELECT_TASK_BY_KEY: Final[str] = "SELECT * FROM tasks WHERE idempotency_key = ?"
 _SELECT_EVENT: Final[str] = "SELECT * FROM task_events WHERE id = ?"
+
+#: ``tasks.context_json`` 里的「人工送审」标记（见 :meth:`TaskService.require_human_gate`）。
+#: 值必须是**布尔真** —— 审稿侧判的是 ``is True``。
+HUMAN_GATE_KEY: Final[str] = "human_gate"
 
 #: 「待发布池」的查询（T5.6）：出片完成、还没被发布计划挑走过的那些。
 _SELECT_COMPLETED: Final[str] = (
@@ -531,6 +535,32 @@ class TaskService:
             payload["cover_path"] = None if cover_path is None else cover_path.as_posix()
             if plan is not None:
                 payload["cover_plan"] = dict(plan)
+            self._connection.execute(
+                "UPDATE tasks SET context_json = ? WHERE id = ?",
+                (json.dumps(payload, ensure_ascii=False), task_id),
+            )
+            return TaskRead.from_row(self._row(task_id))
+
+    def require_human_gate(self, task_id: str) -> TaskRead:
+        """给这条任务打上「人工送审」标记（``context_json.human_gate = true``）。
+
+        为什么需要它
+        ------------
+        ``approval.auto_approve_policy``（默认 ``grade_a``）是给**批量**流水线用的
+        旋钮：勾选入队的稿子 A 级自动放行，人不必逐条看。而面板上「生成文案并送审」
+        那一下是人**亲手**点的 —— 那一下的语义就是「我要自己看」。同一把旋钮把它
+        自动放行掉，按钮就成了假的：点了送审，确认闸里什么都没有。
+
+        审稿侧读到这个标记会把放行策略降为 ``off``（见 ``ReviewService.review``），
+        于是这条任务无论什么等级都停在确认闸等人。
+
+        与 :meth:`set_cover_path` 同一条纪律：**合并**进 ``context_json``（不整体覆盖、
+        不动 ``version`` —— 那是状态迁移的乐观锁）。
+        """
+        with transaction(self._connection, immediate=True):
+            row = self._row(task_id)  # 不存在 ⇒ TaskNotFound
+            payload: dict[str, Any] = json.loads(row["context_json"] or "{}")
+            payload[HUMAN_GATE_KEY] = True
             self._connection.execute(
                 "UPDATE tasks SET context_json = ? WHERE id = ?",
                 (json.dumps(payload, ensure_ascii=False), task_id),

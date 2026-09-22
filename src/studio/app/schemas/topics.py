@@ -19,38 +19,58 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from studio.db.models import DirectionRow, TopicRow
+from studio.db.models import DirectionRow, TopicOutlineRow, TopicRow
+from studio.domain.script import OUTLINE_ARGUMENT_MAX, OUTLINE_TITLE_MAX
 from studio.services.input_service import ImportReport
+from studio.services.script_service import DraftReviewOutcome, OutlineReport
 from studio.services.topic_service import (
     AnalyzeReport,
+    DirectionDeleteOutcome,
+    DirectionEditOutcome,
     DirectionOutcome,
     IdeateReport,
+    ManualDirectionOutcome,
     ManualTopicOutcome,
+    TopicDeleteOutcome,
+    TopicEditOutcome,
 )
 
 __all__ = [
     "AnalyzeBody",
     "AnalyzeResult",
     "DirectionCard",
+    "DirectionDeleteResult",
+    "DirectionEditResult",
     "DirectionItem",
     "DirectionList",
     "DirectionOutcomeModel",
+    "DirectionPatchBody",
     "DraftItem",
+    "DraftReviewResult",
     "HotImportBody",
     "HotSubmitBody",
     "IdeateBody",
     "IdeateResult",
     "ImportResult",
+    "ManualDirectionBody",
+    "ManualDirectionResult",
     "ManualTopicBody",
     "ManualTopicResult",
+    "OutlineItem",
+    "OutlineResult",
+    "OutlineSaveBody",
+    "OutlineView",
     "SelectBody",
     "SelectFailure",
     "SelectItem",
     "SelectResult",
+    "TopicDeleteResult",
+    "TopicEditResult",
     "TopicItem",
     "TopicList",
+    "TopicPatchBody",
 ]
 
 #: 选题池单页上限（瀑布流是"人一条条看"的东西，给太多反而看不完）
@@ -156,6 +176,72 @@ class DirectionList(BaseModel):
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 写 · 人工写方向 / 改方向 / 删方向（左列那一栏）
+# ══════════════════════════════════════════════════════════════════════
+
+
+class ManualDirectionBody(_Body):
+    """人工写一个方向（**不经模型**；与「人工加选题」同一手法）。"""
+
+    title: str = Field(min_length=1, max_length=120, description="方向标题")
+    rationale: str = Field(default="", max_length=500, description="为什么做这个方向")
+    priority: int = Field(default=100, ge=0, le=10_000, description="越小越优先（模型产出的是 100）")
+    batch_id: str | None = Field(default=None, description="落进哪个批次（缺省=最近一批）")
+
+
+class DirectionPatchBody(_Body):
+    """改一个方向（**只列你要改的字段**；与 ``TopicPatchBody`` 同一手法）。"""
+
+    title: str | None = Field(default=None, min_length=1, max_length=120, description="方向标题")
+    rationale: str | None = Field(default=None, max_length=500, description="为什么做这个方向")
+    priority: int | None = Field(default=None, ge=0, le=10_000, description="越小越优先")
+    risk_flags: list[str] | None = Field(default=None, max_length=20, description="风险标记")
+
+    @model_validator(mode="after")
+    def _require_a_change(self) -> DirectionPatchBody:
+        if not self.model_fields_set:
+            raise ValueError("至少要给一个要改的字段（title / rationale / priority / risk_flags）")
+        return self
+
+    def changes(self) -> dict[str, Any]:
+        return {name: getattr(self, name) for name in self.model_fields_set}
+
+
+class ManualDirectionResult(BaseModel):
+    """人工写方向的结果（返回**落库之后**那一行）。"""
+
+    direction: DirectionCard
+
+    @classmethod
+    def from_outcome(cls, outcome: ManualDirectionOutcome) -> ManualDirectionResult:
+        return cls(direction=DirectionCard.from_row(outcome.direction))
+
+
+class DirectionEditResult(BaseModel):
+    """改完之后的那一行 + 改了哪几列（``changed`` 为空 ⇒ 什么都没变）。"""
+
+    direction: DirectionCard
+    changed: list[str]
+
+    @classmethod
+    def from_outcome(cls, outcome: DirectionEditOutcome) -> DirectionEditResult:
+        return cls(direction=DirectionCard.from_row(outcome.direction), changed=list(outcome.changed))
+
+
+class DirectionDeleteResult(BaseModel):
+    """删掉的那个方向 + **被它带走的候选条数**（级联删除要如实报数）。"""
+
+    direction_id: str
+    title: str
+    deleted: bool
+    cascaded_topics: int = 0
+
+    @classmethod
+    def from_outcome(cls, outcome: DirectionDeleteOutcome) -> DirectionDeleteResult:
+        return cls(**outcome.to_dict())
+
+
+# ══════════════════════════════════════════════════════════════════════
 # 触发 · 分析与生成
 # ══════════════════════════════════════════════════════════════════════
 
@@ -206,7 +292,7 @@ class IdeateBody(_Body):
 
     batch_id: str | None = Field(default=None, description="批次 id（默认取最近一批）")
     direction_ids: list[str] | None = Field(default=None, description="只跑指定方向（空=全部）")
-    per_direction: int = Field(default=4, ge=1, le=10, description="每方向目标选题数")
+    per_direction: int = Field(default=4, ge=1, le=20, description="每方向目标选题数")
 
 
 class DirectionOutcomeModel(BaseModel):
@@ -268,6 +354,32 @@ class DraftItem(BaseModel):
     warnings: list[str]
     error_code: str | None = None
     error_message: str | None = None
+
+
+class DraftReviewResult(BaseModel):
+    """「生成完整文案并移交审核」的结果（面板上选中一条候选的那一下）。
+
+    ``reused=true`` 表示库里**已经有生效稿件**，这一次一个 token 都没烧 ——
+    面板据此把提示语从"已生成"改成"已有稿件，直接送审"，而不是假装又写了一遍。
+    """
+
+    ok: bool
+    topic_id: str
+    task_id: str
+    script_id: str | None = None
+    title: str = ""
+    sentence_count: int = 0
+    word_count: int = 0
+    #: 交接完成时任务停在哪（``reviewing`` ⇒ 写稿池接着跑审稿 + 确认闸）
+    task_status: str = ""
+    reused: bool = False
+    warnings: list[str] = Field(default_factory=list)
+    error_code: str | None = None
+    error_message: str | None = None
+
+    @classmethod
+    def from_outcome(cls, outcome: DraftReviewOutcome) -> DraftReviewResult:
+        return cls.model_validate(outcome.to_dict())
 
 
 class SelectBody(_Body):
@@ -338,6 +450,134 @@ class ManualTopicResult(BaseModel):
     @classmethod
     def from_outcome(cls, outcome: ManualTopicOutcome) -> ManualTopicResult:
         return cls(**outcome.to_dict())
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 写 · 改选题 / 删选题
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TopicPatchBody(_Body):
+    """改一条选题（**只列你要改的字段**；显式给 ``null`` = 把那一列清空）。
+
+    为什么用 ``model_fields_set`` 判「有没有给」而不是判 ``is not None``：
+    ``hook_type=null`` 与「根本没提 hook_type」是两件事 —— 前者是「把钩子标签清掉」，
+    后者是「别动它」。Pydantic 已经把这件事记下来了，再引入一个 ``UNSET`` 哨兵只是
+    把同一份信息写第二遍。
+    """
+
+    title: str | None = Field(default=None, min_length=1, max_length=50, description="选题标题")
+    angle: str | None = Field(default=None, max_length=120, description="角度差异化说明")
+    hook_type: Literal["conflict", "suspense", "contrast", "number", "other"] | None = None
+    score: float | None = Field(default=None, ge=0, le=10, description="自评分（``null`` = 不打分）")
+    reason: str | None = Field(default=None, max_length=200, description="评分理由")
+
+    @model_validator(mode="after")
+    def _require_a_change(self) -> TopicPatchBody:
+        if not self.model_fields_set:
+            raise ValueError("至少要给一个要改的字段（title / angle / hook_type / score / reason）")
+        return self
+
+    def changes(self) -> dict[str, Any]:
+        """只把**显式给过**的字段翻成 ``{列名: 新值}``（没提的字段不进字典）。"""
+        return {name: getattr(self, name) for name in self.model_fields_set}
+
+
+class TopicEditResult(BaseModel):
+    """改完之后的那一行 + 改了哪几列 + 去重提示（``changed`` 为空 ⇒ 什么都没变）。"""
+
+    topic: TopicItem
+    changed: list[str]
+    warnings: list[str]
+
+    @classmethod
+    def from_outcome(cls, outcome: TopicEditOutcome) -> TopicEditResult:
+        return cls(
+            topic=TopicItem.from_row(outcome.topic),
+            changed=list(outcome.changed),
+            warnings=list(outcome.warnings),
+        )
+
+
+class TopicDeleteResult(BaseModel):
+    """删掉的那一条（``deleted=False`` = 服务层到这一步时它已经不在了）。"""
+
+    topic_id: str
+    title: str
+    deleted: bool
+
+    @classmethod
+    def from_outcome(cls, outcome: TopicDeleteOutcome) -> TopicDeleteResult:
+        return cls(**outcome.to_dict())
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 二级产物 · 视频标题 + 核心论点（文案三级流水线的中间一级）
+# ══════════════════════════════════════════════════════════════════════
+
+
+class OutlineItem(BaseModel):
+    """二级产物（``topic_outlines`` 的展示字段）。"""
+
+    topic_id: str
+    title: str
+    core_argument: str
+    llm_model: str | None = None
+    prompt_version: str | None = None
+    updated_at: str | None = None
+
+    @classmethod
+    def from_row(cls, row: TopicOutlineRow) -> OutlineItem:
+        return cls(
+            topic_id=row.topic_id,
+            title=row.title,
+            core_argument=row.core_argument,
+            llm_model=row.llm_model,
+            prompt_version=row.prompt_version,
+            updated_at=row.updated_at,
+        )
+
+
+class OutlineView(BaseModel):
+    """一个选题的二级产物（``outline=null`` = 还没定 —— **不是错误**）。
+
+    为什么读接口不 404
+    ------------------
+    「这一级还没定」是**正常状态**（三级会照旧自由发挥）。用 404 表达它，前端就得把一次
+    注定失败的网络往返当成流程的一部分 —— 而那不是错误，只是「还没做」。
+    """
+
+    topic_id: str
+    outline: OutlineItem | None = None
+
+
+class OutlineResult(BaseModel):
+    """一次二级产物的读写结果（生成 / 定稿 / 清空都返回它）。"""
+
+    ok: bool
+    topic_id: str
+    title: str = ""
+    core_argument: str = ""
+    llm_model: str | None = None
+    prompt_version: str | None = None
+    generated: bool = False
+    changed: list[str]
+    warnings: list[str]
+    error_code: str | None = None
+    error_message: str | None = None
+
+    @classmethod
+    def from_report(cls, report: OutlineReport) -> OutlineResult:
+        return cls(**report.to_dict())
+
+
+class OutlineSaveBody(_Body):
+    """手工定稿二级产物（**两个字段一起给**：这一级只有这两样东西）。"""
+
+    title: str = Field(min_length=1, max_length=OUTLINE_TITLE_MAX, description="视频标题")
+    core_argument: str = Field(
+        min_length=1, max_length=OUTLINE_ARGUMENT_MAX, description="核心论点（一句话）"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -22,7 +22,7 @@ from studio.agents.gateway import LlmGateway
 from studio.agents.prompts import PromptLibrary
 from studio.core.paths import StudioPaths
 from studio.db import connect, migrate
-from studio.domain.script import DirectorInput, DirectorOutput
+from studio.domain.script import OUTLINE_UNSET, DirectorInput, DirectorOutput
 from studio.domain.topics import TopicSpec
 from tests.unit.agents.fakes import (
     Reply,
@@ -125,6 +125,26 @@ class TestHappyPath:
         assert "只讲那一跳" in user
         assert "150000" in user  # 目标时长（毫秒）
         assert persona().name in messages[0].content
+
+    async def test_a_locked_title_and_core_argument_reach_the_prompt(
+        self, paths: StudioPaths, connection: sqlite3.Connection
+    ) -> None:
+        """二级产物在 system 侧：大纲要围着「已经定死的标题与论点」展开。"""
+        transport = ScriptedTransport(replies=[Reply(text=director_json())])
+        agent, _ = build(transport, paths, connection)
+        await run(agent, outline_title="二级定死的标题", core_argument="二级定死的论点")
+        system = transport.calls[0][1][0].content
+        assert "二级定死的标题" in system
+        assert "二级定死的论点" in system
+
+    async def test_an_undefined_outline_is_spelled_out_not_left_blank(
+        self, paths: StudioPaths, connection: sqlite3.Connection
+    ) -> None:
+        """二级还没定 ⇒ 显式写「未定」，与「上游给了个空标题」区分开。"""
+        transport = ScriptedTransport(replies=[Reply(text=director_json())])
+        agent, _ = build(transport, paths, connection)
+        await run(agent)
+        assert OUTLINE_UNSET in transport.calls[0][1][0].content
 
     async def test_five_segments_are_accepted(
         self, paths: StudioPaths, connection: sqlite3.Connection

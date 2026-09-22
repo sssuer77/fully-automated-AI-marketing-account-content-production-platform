@@ -14,6 +14,15 @@
    只能记账（与 ``persona_service`` 同一条）。
 3. **没变就不留痕**：填了同一把 Key ⇒ ``changed=false``，不写盘也不写审计 ——
    不假装做了一次操作，也不给审计表灌噪音。
+
+同一屏里的两件事
+----------------
+① **密钥**（走 ``secret_store``，明文只在那一处出现）；
+② **通道参数**（模型名 / base_url，走 ``core.config.set_llm_profile_model``，
+   按行改写 ``config/llm.yaml``，注释原样保留）。
+
+两件事的"生效"方式不同，必须如实区分：密钥是**每次调用现取**，通道参数靠
+``llm_config_provider`` 的 mtime 热重载 —— 都是"存完立刻生效"，**都不需要重启**。
 """
 
 from __future__ import annotations
@@ -21,7 +30,8 @@ from __future__ import annotations
 from typing import Any, Final
 
 from studio.core.clock import format_iso, utc_now
-from studio.core.config import load_config
+from studio.core.config import load_llm_config, set_llm_profile_model
+from studio.core.errors import ErrorCode, StudioError
 from studio.core.logging import get_logger
 from studio.core.paths import StudioPaths
 from studio.core.secret_store import (
@@ -68,7 +78,7 @@ class SettingsService:
 
     def read(self) -> dict[str, Any]:
         """一次读全：通道卡片 + 路由表 + 密钥状态 + 上下限。"""
-        llm = load_config(self._paths).bundle.llm
+        llm = load_llm_config(self._paths)
         return {
             "generated_at": format_iso(utc_now()),
             "default_profile": llm.default_profile,
@@ -145,6 +155,94 @@ class SettingsService:
             "reason": reason,
         }
 
+    def write_profile(
+        self,
+        *,
+        profile: str,
+        model: str | None = None,
+        base_url: str | None = None,
+        reason: str | None = None,
+        source: str = "webui",
+    ) -> dict[str, Any]:
+        """改写某条通道的**模型名 / base_url**（**先校验、后落盘**）。
+
+        为什么模型名要能在面板上改：``llm.yaml`` 是入库的基线配置，而"这个月用哪个
+        模型"是会变的（换服务商、换档位、临时降本）。不能改的话，用户只能去手改
+        YAML —— 而那份文件的注释正是"为什么这么配"的唯一记录，手改迟早改坏。
+
+        与 :meth:`write_key` 同一条纪律：**没变就不写盘、不留痕**（同一件事做两次
+        不该在审计里出现两行），变了才记 ``before/after``。
+
+        :raises StudioError: 通道名不存在 / ``model`` 与 ``base_url`` 一个都没给
+        """
+        llm = load_llm_config(self._paths)
+        current = llm.profiles.get(profile)
+        if current is None:
+            raise StudioError(
+                f"没有这条通道：{profile}",
+                code=ErrorCode.CONFIG_INVALID,
+                context={"profile": profile, "available": sorted(llm.profiles)},
+                remediation="通道名见设置页的通道卡片（唯一真相是 config/llm.yaml 的 profiles:）",
+            )
+        if model is None and base_url is None:
+            raise StudioError(
+                "至少要给 model 或 base_url 之一",
+                code=ErrorCode.VALIDATION_FAILED,
+                context={"profile": profile},
+                remediation="填新的模型名即可；base_url 只有换服务商时才需要改",
+            )
+
+        before = {"model": current.model, "base_url": current.base_url}
+        after = {
+            "model": current.model if model is None else model,
+            "base_url": current.base_url if base_url is None else base_url,
+        }
+        changed = before != after
+        if changed:
+            set_llm_profile_model(self._paths, profile=profile, model=model, base_url=base_url)
+            self._record_profile(profile=profile, before=before, after=after, reason=reason, source=source)
+        return {
+            **self.read(),
+            "changed": changed,
+            "profile": profile,
+            "model": after["model"],
+            "base_url": after["base_url"],
+            "reason": reason,
+        }
+
+    def _record_profile(
+        self,
+        *,
+        profile: str,
+        before: dict[str, Any],
+        after: dict[str, Any],
+        reason: str | None,
+        source: str,
+    ) -> None:
+        """通道参数留痕（与 :meth:`_record` 同一纪律：先落盘、再留痕，失败只记账）。"""
+        action = "settings.llm_profile_updated"
+        if self._audit is not None:
+            try:
+                self._audit.record(
+                    actor="user",
+                    action=action,
+                    target_type="config",
+                    target_id=f"llm.profiles.{profile}",
+                    before=dict(before),
+                    after=dict(after),
+                    reason=reason,
+                    source=source,
+                )
+            except Exception:  # 配置已经落盘：这里只能记账，不能回滚文件
+                logger.exception("settings.audit_failed", action=action)
+        if self._log is not None:
+            self._log(
+                level="info",
+                source=LOG_SOURCE,
+                message=f"LLM 通道 {profile} 已更新（model={after['model']}）",
+                payload={"action": action, "profile": profile, "reason": reason, **after},
+            )
+
     def _record(
         self,
         *,
@@ -185,7 +283,7 @@ class SettingsService:
 
     async def probe(self) -> dict[str, Any]:
         """按需探测各通道（**只发只读 GET**，不产生一次计费调用）。"""
-        llm = load_config(self._paths).bundle.llm
+        llm = load_llm_config(self._paths)
         rows = await probe_profiles(llm.profiles, self._store)
         return {
             "generated_at": format_iso(utc_now()),

@@ -40,6 +40,7 @@ from studio.core.config import OutputsConfig
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.logging import get_logger
 from studio.core.paths import StudioPaths
+from studio.db.models import SentenceRow
 from studio.domain.errors import TaskNotFound
 from studio.domain.task_service import TaskService
 from studio.services.asset_service import DisabledAssets, disabled_assets
@@ -50,6 +51,7 @@ from studio.services.render_service import (
     quality_report,
 )
 from studio.services.script_service import read_active_script
+from studio.services.voice_service import active_script_voices
 
 __all__ = [
     "MAX_JOBS_KEPT",
@@ -454,11 +456,21 @@ class RenderJobService:
     ) -> ProduceResult:
         """调出片服务。文案缺省时从库里读生效稿件（与 CLI 同一条规则）。"""
         text = request.text
+        sentences = request.sentences
+        sentence_voices = request.sentence_voices
         if not text.strip():
-            text = self._script_text(request.task_id)
+            rows = self._script_rows(request.task_id)
+            text = "".join(row.text for row in rows)
+            sentences = tuple(row.text for row in rows)
+            # 逐句音色（多角色稿子：整篇套一个嗓子会把旁白也念成熊大）。
+            # 没有连接工厂 ⇒ 空元组（`_script_rows` 上面已经拦过这种情况，这里是类型收窄）。
+            factory = self._connection_factory
+            sentence_voices = (
+                () if factory is None else active_script_voices(factory(), request.task_id, paths=self._paths)
+            )
 
         return produce_video(
-            replace(request, text=text),
+            replace(request, text=text, sentences=sentences, sentence_voices=sentence_voices),
             paths=self._paths,
             outputs=self._outputs,
             outputs_source=self._paths.config_dir / "outputs.yaml",
@@ -477,8 +489,13 @@ class RenderJobService:
             return None
         return disabled_assets(self._connection_factory())
 
-    def _script_text(self, task_id: str) -> str:
-        """库里那一版生效稿件的正文（**逐句拼接**，与配音要读的东西一致）。"""
+    def _script_rows(self, task_id: str) -> list[SentenceRow]:
+        """库里那一版生效稿件的**逐句**（与配音池读的是同一批行）。
+
+        原先这里把句子拼成一整段交给 ``synthesize_script``，而它会拿
+        ``split_for_tts`` 再切一遍 —— 切出来的句数与配音池逐句念的那个数
+        对不上，字幕 / 时间轴从此与音频错位（真机 2026-09-21：55 句 vs 58 句）。
+        """
         if self._connection_factory is None:
             raise StudioError(
                 f"任务 {task_id} 没有给文案，而这一路又没有数据库连接",
@@ -495,7 +512,7 @@ class RenderJobService:
                 remediation="先在「稿件」面板出一版稿，或在本面板直接填口播文案",
             )
         _script, sentences = payload
-        return "".join(row.text for row in sentences)
+        return list(sentences)
 
 
 def _request_summary(request: ProduceRequest) -> dict[str, Any]:

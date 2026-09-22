@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -311,6 +311,7 @@ def build_gateway(
     *,
     connection: sqlite3.Connection,
     config: LlmConfig | None = None,
+    config_provider: Callable[[], LlmConfig] | None = None,
     settings: GatewaySettings | None = None,
     with_budget: bool = False,
     env: dict[str, str] | None = None,
@@ -324,6 +325,7 @@ def build_gateway(
     budget = TokenBudget(config.budget, store) if (with_budget and config is not None) else None
     return LlmGateway(
         config=config or llm_config(),
+        config_provider=config_provider,
         transport=transport,
         calls=store,
         budget=budget,

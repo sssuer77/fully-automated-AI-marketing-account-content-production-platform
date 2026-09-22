@@ -15,6 +15,7 @@ import Overview from "@/views/Overview.vue";
 import Personas from "@/views/Personas.vue";
 import Pipeline from "@/views/Pipeline.vue";
 import Pools from "@/views/Pools.vue";
+import Prompts from "@/views/Prompts.vue";
 import Publish from "@/views/Publish.vue";
 import Renders from "@/views/Renders.vue";
 import Scripts from "@/views/Scripts.vue";
@@ -26,23 +27,38 @@ const ui = useUiStore();
 const logs = useLogsStore();
 const overview = useOverviewStore();
 
+/**
+ * 一屏 = 一个组件 + 它要的入参。
+ *
+ * 素材库的三个菜单是**同一个组件**（`Assets.vue`）带不同的 `kind` —— 三类的字段不同，
+ * 但"翻页 / 筛选 / 上传 / 入库 / 启停 / 编辑"这套动作一模一样，抄三份只会让它们在
+ * 第四次改动时开始分叉。
+ */
+interface PanelView {
+  view: Component;
+  props?: Record<string, unknown>;
+}
+
 /** 每交付一块面板就加一行；其余面板点进去仍是"待 T4.x"的占位。 */
-const VIEWS: Partial<Record<PanelId, Component>> = {
-  overview: Overview,
-  topics: Topics,
-  scripts: Scripts,
-  voices: Voices,
-  logs: Logs,
-  templates: Outputs,
-  renders: Renders,
-  pipeline: Pipeline,
-  assets: Assets,
-  pools: Pools,
-  metrics: Metrics,
-  audit: Audit,
-  personas: Personas,
-  publish: Publish,
-  settings: Settings,
+const VIEWS: Partial<Record<PanelId, PanelView>> = {
+  overview: { view: Overview },
+  topics: { view: Topics },
+  scripts: { view: Scripts },
+  voices: { view: Voices },
+  logs: { view: Logs },
+  templates: { view: Outputs },
+  renders: { view: Renders },
+  pipeline: { view: Pipeline },
+  assets_broll: { view: Assets, props: { kind: "broll" } },
+  assets_voice: { view: Assets, props: { kind: "voice" } },
+  assets_bgm: { view: Assets, props: { kind: "bgm" } },
+  pools: { view: Pools },
+  metrics: { view: Metrics },
+  audit: { view: Audit },
+  personas: { view: Personas },
+  publish: { view: Publish },
+  settings: { view: Settings },
+  prompts: { view: Prompts },
 };
 
 const activeView = computed(() => VIEWS[ui.activePanel] ?? null);
@@ -84,7 +100,10 @@ onMounted(() => {
     </header>
 
     <main class="content">
-      <component :is="activeView" v-if="activeView" />
+      <!-- `:key` 是必须的：三个素材菜单是**同一个组件**，不加 key 时 Vue 会就地复用
+           那个实例（类型相同），`onMounted` 不会重跑 ⇒ 从"跑酷素材"点到"音色库"，
+           屏幕上还是跑酷那一屏。 -->
+      <component :is="activeView.view" v-bind="activeView.props" v-if="activeView" :key="ui.activePanel" />
       <EmptyState
         v-else
         :title="`${activeDef.label} 面板尚未施工`"

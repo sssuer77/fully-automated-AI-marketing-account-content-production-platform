@@ -55,6 +55,7 @@ from studio.core.logging import get_logger
 from studio.core.paths import StudioPaths
 from studio.core.proto import Severity
 from studio.db import connect
+from studio.db.models import SentenceRow
 from studio.db.queue import JobStore
 from studio.domain.enums import UnitType
 from studio.domain.errors import TaskNotFound
@@ -69,6 +70,7 @@ from studio.services.render_service import (
     quality_report,
 )
 from studio.services.script_service import read_active_script
+from studio.services.voice_service import active_script_voices
 
 __all__ = [
     "RENDER_UNIT_TYPES",
@@ -206,7 +208,13 @@ class RenderFinalHandler:
         """跑一次 ``render/final``：文案 ⇒ 配音 ⇒ 合成 ⇒ 成片 + QC 回填。"""
         request = _request_from(ctx.payload, task_id=ctx.task_id)
         if not request.text.strip():
-            request = replace(request, text=self._script_text(ctx.task_id))
+            rows = self._script_rows(ctx.task_id)
+            request = replace(
+                request,
+                text="".join(row.text for row in rows),
+                sentences=tuple(row.text for row in rows),
+                sentence_voices=active_script_voices(self._connection, ctx.task_id, paths=self._paths),
+            )
 
         started_at = now_iso()
         # 进度**累计**在一份 dict 里、每次整份覆写 `result_json`：进度是"当前状态"，
@@ -262,8 +270,15 @@ class RenderFinalHandler:
         """把进度整份写进 ``jobs.result_json``（写不进去只说明租约丢了，**不是错误**）。"""
         self._store.report_progress(job_id=ctx.job_id, worker_id=ctx.worker_id, result=state)
 
-    def _script_text(self, task_id: str) -> str:
-        """库里那一版生效稿件的正文（**逐句拼接**，与配音要读的东西一致）。"""
+    def _script_rows(self, task_id: str) -> list[SentenceRow]:
+        """库里那一版生效稿件的**逐句**（与配音池读的是同一批行）。
+
+        为什么返回行而不是拼好的长字符串（真机 2026-09-21）
+        --------------------------------------------------
+        原先这里把 55 句拼成一整段交给 ``synthesize_script``，而它拿
+        ``split_for_tts`` 又切了一遍 ⇒ 切出 58 句，与配音池逐句念的 55 句对不上，
+        字幕 / 时间轴从此与音频错位。句子边界在库里已经有了，不该在路上重算。
+        """
         payload = read_active_script(self._connection, task_id)
         if payload is None:
             raise StudioError(
@@ -273,7 +288,7 @@ class RenderFinalHandler:
                 remediation="先在「稿件」面板出一版稿，或把文案放进入队 payload 的 text 字段",
             )
         _script, sentences = payload
-        return "".join(row.text for row in sentences)
+        return list(sentences)
 
     def _backfill_quality(self, task_id: str, result: ProduceResult) -> bool:
         """把 QC 结论写回 ``tasks.quality_json``；任务不在库里 ⇒ ``False``（**不报错**）。
@@ -348,6 +363,7 @@ def _request_from(payload: Mapping[str, Any], *, task_id: str) -> ProduceRequest
     return ProduceRequest(
         task_id=task_id,
         text=text if isinstance(text, str) else "",
+        sentences=_opt_sentences(payload, "sentences"),
         profile_name=_opt_str(payload, "profile_name"),
         voice=_opt_str(payload, "voice"),
         reuse_voice=payload.get("reuse_voice") is True,
@@ -355,6 +371,14 @@ def _request_from(payload: Mapping[str, Any], *, task_id: str) -> ProduceRequest
         seed=_opt_int(payload, "seed"),
         subtitle=_opt_bool(payload, "subtitle"),
     )
+
+
+def _opt_sentences(payload: Mapping[str, Any], key: str) -> tuple[str, ...]:
+    """payload 里的逐句文案（入队时写进去的稿件句子）。不是字符串列表 ⇒ 空元组。"""
+    value = payload.get(key)
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str) and item.strip())
 
 
 def _opt_str(payload: Mapping[str, Any], key: str) -> str | None:

@@ -49,6 +49,52 @@ from tests.unit.agents.fakes import (
 )
 
 # ══════════════════════════════════════════════════════════════════════
+# 动态配置（设置页换了模型名 ⇒ 下一次调用就走新的）
+# ══════════════════════════════════════════════════════════════════════
+
+
+async def test_config_provider_is_read_per_call(
+    harness_factory: Callable[..., Harness], tmp_path: Path
+) -> None:
+    """``config_provider`` 非空 ⇒ **每次调用现取**：记账行里的 model 跟着变。
+
+    这条守的是"面板显示新模型、实际还在用旧模型"那次静默失效 —— 常驻的写稿 worker
+    起一次跑到关停，配置冻在构造那一刻的话，用户改了模型名要等重启才生效，
+    而界面上（设置页读的是文件）**看起来已经生效了**。
+    """
+
+    def with_model(name: str) -> LlmConfig:
+        base = llm_config()
+        return base.model_copy(
+            update={
+                "profiles": {
+                    "cloud": base.profiles["cloud"].model_copy(update={"model": name}),
+                    "local": base.profiles["local"],
+                }
+            }
+        )
+
+    holder = [with_model("cloud-model")]
+    harness = harness_factory(config=holder[0], config_provider=lambda: holder[0])
+
+    await harness.run()
+    assert harness.rows()[-1].model == "cloud-model"
+
+    holder[0] = with_model("cloud-model-2")  # 等价于"设置页把模型名改了"
+    await harness.run()
+    assert harness.rows()[-1].model == "cloud-model-2"
+
+
+async def test_frozen_config_ignores_later_changes(
+    harness_factory: Callable[..., Harness], tmp_path: Path
+) -> None:
+    """没有 provider ⇒ 就是构造那一刻那一份（``config=`` 的老行为不能变）。"""
+    harness = harness_factory()
+    await harness.run()
+    assert harness.rows()[-1].model == "cloud-model"
+
+
+# ══════════════════════════════════════════════════════════════════════
 # 夹具
 # ══════════════════════════════════════════════════════════════════════
 
@@ -95,6 +141,7 @@ def harness_factory(tmp_path: Path) -> Iterator[Callable[..., Harness]]:
         *,
         replies: list[Reply] | None = None,
         config: LlmConfig | None = None,
+        config_provider: Callable[[], LlmConfig] | None = None,
         settings: GatewaySettings | None = None,
         with_budget: bool = False,
         env: dict[str, str] | None = None,
@@ -110,6 +157,7 @@ def harness_factory(tmp_path: Path) -> Iterator[Callable[..., Harness]]:
             transport,
             connection=connection,
             config=config,
+            config_provider=config_provider,
             settings=settings,
             with_budget=with_budget,
             env=env,

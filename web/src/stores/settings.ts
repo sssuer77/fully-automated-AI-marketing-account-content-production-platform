@@ -26,11 +26,14 @@ import {
   fetchLlmSettings,
   probeLlm,
   saveLlmKey,
+  saveLlmProfile,
   type LlmKeyOutcome,
   type LlmKeyStatus,
   type LlmProbe,
   type LlmProbeRow,
   type LlmProfile,
+  type LlmProfileBody,
+  type LlmProfileOutcome,
   type LlmSettings,
 } from "@/api/endpoints/settings";
 import { describeError } from "@/stores/overview";
@@ -106,6 +109,17 @@ export function saveNotice(outcome: LlmKeyOutcome): string {
   return `已保存到 ${where}，立刻生效（不需要重启）`;
 }
 
+/**
+ * 改完通道参数之后的一句话（说清楚**改成了什么**、**什么时候生效**）。
+ *
+ * 为什么必须说"立刻生效"：这一条与密钥不同（密钥靠每次现取，模型名靠 mtime 热重载），
+ * 不说的话用户会去重启 worker —— 而重启解决不了任何问题，只会打断在跑的任务。
+ */
+export function profileNotice(outcome: LlmProfileOutcome): string {
+  if (!outcome.changed) return `${outcome.profile} 与现在这一份相同，没有改动`;
+  return `${outcome.profile} 已改为 ${outcome.model}，立刻生效（常驻 worker 不需要重启）`;
+}
+
 // ══════════════════════════════════════════════════════════════════════
 // 注入点（单测用假件替换，生产用真实现）
 // ══════════════════════════════════════════════════════════════════════
@@ -114,10 +128,11 @@ export interface SettingsApi {
   fetchLlmSettings: typeof fetchLlmSettings;
   saveLlmKey: typeof saveLlmKey;
   clearLlmKey: typeof clearLlmKey;
+  saveLlmProfile: typeof saveLlmProfile;
   probeLlm: typeof probeLlm;
 }
 
-let api: SettingsApi = { fetchLlmSettings, saveLlmKey, clearLlmKey, probeLlm };
+let api: SettingsApi = { fetchLlmSettings, saveLlmKey, clearLlmKey, saveLlmProfile, probeLlm };
 
 /** 换掉部分实现（**只用于测试**：生产代码不调用它）。 */
 export function configureSettingsApi(overrides: Partial<SettingsApi>): void {
@@ -133,6 +148,8 @@ export const useSettingsStore = defineStore("settings", () => {
   const probe = ref<LlmProbe | null>(null);
   const loading = ref(false);
   const saving = ref(false);
+  //: 正在保存**哪条通道**（``null`` ⇒ 没有在保存）—— 面板据此只转那一行的按钮
+  const savingProfile = ref<string | null>(null);
   const probing = ref(false);
   const error = ref<string | null>(null);
   const notice = ref<string | null>(null);
@@ -198,6 +215,39 @@ export const useSettingsStore = defineStore("settings", () => {
     }
   }
 
+  /**
+   * 改通道参数（模型名 / base_url）。
+   *
+   * 两个字段**都是选填**：只改模型名就只传模型名。传空串等于"没给"（后端 422），
+   * 所以这里在提交前先摘掉空值 —— 但**不做别的本地拦截**：真正的判定在服务端。
+   */
+  async function saveProfile(profile: string, model: string, baseUrl: string): Promise<boolean> {
+    const body: LlmProfileBody = { profile };
+    const trimmedModel = model.trim();
+    const trimmedUrl = baseUrl.trim();
+    if (trimmedModel !== "") body.model = trimmedModel;
+    if (trimmedUrl !== "") body.base_url = trimmedUrl;
+    if (body.model === undefined && body.base_url === undefined) {
+      error.value = "模型名与 base_url 至少填一个";
+      return false;
+    }
+
+    savingProfile.value = profile;
+    error.value = null;
+    notice.value = null;
+    try {
+      const outcome = await api.saveLlmProfile(body);
+      data.value = outcome;
+      notice.value = profileNotice(outcome);
+      return true;
+    } catch (reason_) {
+      error.value = describeError(reason_);
+      return false;
+    } finally {
+      savingProfile.value = null;
+    }
+  }
+
   async function runProbe(): Promise<void> {
     probing.value = true;
     error.value = null;
@@ -221,10 +271,12 @@ export const useSettingsStore = defineStore("settings", () => {
     limits,
     key,
     envOverridden,
+    savingProfile,
     reset,
     load,
     saveKey,
     clearKey,
+    saveProfile,
     runProbe,
   };
 });

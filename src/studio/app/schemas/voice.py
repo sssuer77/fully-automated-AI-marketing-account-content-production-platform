@@ -6,6 +6,8 @@
 ② "重配这一句之后会怎样？" ⇒ :class:`ResynthResponse`（回到 ``pending`` + 时间轴已过期）
 ③ "换音色要付什么代价？" ⇒ :class:`VoiceMapRequest` / :class:`VoiceMapResponse`
    （``confirm`` 与 ``affected`` 是一对：服务端先算代价，面板据此弹确认框）
+④ "待配音那一步谁来推？" ⇒ :class:`EnqueueVoiceResponse`
+   （``queued_voice`` 只是个状态：把 54 句投进 voice 池的是这个端点）
 
 为什么 ``audio_url`` 由服务端拼
 -------------------------------
@@ -36,9 +38,11 @@ from studio.db.models import SentenceRow
 from studio.db.repositories.sentence_repo import SKIPPED_STATUS, SYNTHESIZING_STATUS
 
 __all__ = [
+    "ENQUEUE_HINT",
     "NO_VOICE_HINT",
     "PROFILE_UNSPEAKABLE_HINT",
     "TIMELINE_HINT",
+    "EnqueueVoiceResponse",
     "ResynthResponse",
     "SentenceProgressModel",
     "SentenceVoice",
@@ -204,6 +208,32 @@ class ResynthResponse(BaseModel):
     timeline_stale: bool = False
     timeline_total_ms: int | None = None
     hint: str = TIMELINE_HINT
+
+
+#: 「开始配音」之后那句话 —— 面板直接显示它（下一站在哪，用户不用猜）
+ENQUEUE_HINT: str = (
+    "作业已经排进 voice 池：常驻池在跑就会接着念，这一屏每 1 秒自己刷新一次。"
+    "全部定局之后，去「一键出片」把母带与渲染推完（那一步会出 final.mp4）"
+)
+
+
+class EnqueueVoiceResponse(BaseModel):
+    """「开始配音」的结果：把这条任务待配音的句子一次投进 voice 池。
+
+    ``queued`` 与 ``outstanding`` 是**两个数**，面板两个都要说：前者是"这一下真投出去
+    几条"，后者是"这条任务还有几条没定局"。只有前者，用户看到 0 会以为按钮坏了
+    （其实那 54 条早就在池子里排着）。
+    """
+
+    task_id: str
+    status_before: str
+    status: str
+    queued: int
+    outstanding: int
+    progress: SentenceProgressModel
+    timeline_stale: bool = False
+    timeline_total_ms: int | None = None
+    hint: str = ENQUEUE_HINT
 
 
 class VoiceMapRequest(BaseModel):

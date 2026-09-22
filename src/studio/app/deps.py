@@ -24,6 +24,7 @@ from studio.agents.feedback_classifier import FeedbackClassifierAgent
 from studio.agents.gateway import LogSink
 from studio.agents.gateway_factory import build_gateway
 from studio.agents.ideator import IdeatorAgent
+from studio.agents.outliner import OutlinerAgent
 from studio.agents.planner import PlannerAgent
 from studio.agents.prompts import PromptLibrary
 from studio.agents.writer import WriterAgent
@@ -37,6 +38,7 @@ from studio.core.config import (
     PoolsConfig,
     PublishConfig,
     RuntimeSettings,
+    llm_config_provider,
     load_app_config,
     load_config,
     load_pools_config,
@@ -72,6 +74,7 @@ from studio.services.overview_service import OverviewService
 from studio.services.persona_service import PersonaService
 from studio.services.pipeline_job_service import PipelineJobService
 from studio.services.pool_service import PoolService
+from studio.services.prompt_service import PromptService
 from studio.services.render_job_service import RenderJobService
 from studio.services.review_service import ReviewService
 from studio.services.script_service import ScriptService
@@ -483,6 +486,19 @@ def settings_service_for(state: AppState) -> SettingsService:
     )
 
 
+def prompt_service_for(state: AppState) -> PromptService:
+    """装配提示词面板服务（**必须**带上覆盖目录 `data/prompts`）。
+
+    不带覆盖目录的话，`write_override` 会直接报错 —— 那是故意的：没有覆盖目录的
+    入口不该悄悄去改仓库里那份入库文件（`prompts verify` 逐字校验它）。
+    """
+    return PromptService(
+        PromptLibrary.load(state.paths.prompts_dir, override_root=state.paths.prompts_override_dir),
+        audit=AuditRepo(state.connections.get()),
+        log=state.logs.append,
+    )
+
+
 def topic_service_for(state: AppState) -> TopicService:
     """装配选题服务（配置 → 提示词 → 网关 → 三个 Agent）。
 
@@ -492,10 +508,11 @@ def topic_service_for(state: AppState) -> TopicService:
     """
     connection = state.connections.get()
     loaded = load_config(state.paths)
-    prompts = PromptLibrary.load(state.paths.prompts_dir)
+    prompts = PromptLibrary.load(state.paths.prompts_dir, override_root=state.paths.prompts_override_dir)
     gateway = build_gateway(
         connection=connection,
         llm=loaded.bundle.llm,
+        config_provider=llm_config_provider(state.paths),
         paths=state.paths,
         log=_gateway_log_sink(state.logs),
         secrets=state.secrets.lookup,
@@ -522,10 +539,11 @@ def script_service_for(state: AppState, *, with_agents: bool = True) -> ScriptSe
     if not with_agents:
         return ScriptService(connection, paths=state.paths, log=state.logs.append)
     loaded = load_config(state.paths)
-    prompts = PromptLibrary.load(state.paths.prompts_dir)
+    prompts = PromptLibrary.load(state.paths.prompts_dir, override_root=state.paths.prompts_override_dir)
     gateway = build_gateway(
         connection=connection,
         llm=loaded.bundle.llm,
+        config_provider=llm_config_provider(state.paths),
         paths=state.paths,
         log=_gateway_log_sink(state.logs),
         secrets=state.secrets.lookup,
@@ -534,6 +552,7 @@ def script_service_for(state: AppState, *, with_agents: bool = True) -> ScriptSe
         connection,
         director=DirectorAgent(gateway, prompts),
         writer=WriterAgent(gateway, prompts),
+        outliner=OutlinerAgent(gateway, prompts),
         paths=state.paths,
         log=state.logs.append,
     )

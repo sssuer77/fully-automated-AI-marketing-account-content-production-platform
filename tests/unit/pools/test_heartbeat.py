@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from studio.core.clock import format_iso
+from studio.core.clock import format_iso, utc_now
 from studio.db.engine import connect
 from studio.db.migrate import migrate
 from studio.pools.heartbeat import (
@@ -303,6 +303,69 @@ def test_forget_removes_row(store: HeartbeatStore) -> None:
     assert store.forget("draft#1@4242") is True
     assert store.read("draft#1@4242") is None
     assert store.forget("draft#1@4242") is False
+
+
+def test_forget_orphans_removes_rows_of_dead_pids(store: HeartbeatStore) -> None:
+    """强杀留下的尸体行：pid 不在了就是垃圾（"行存在 ⇔ 进程应当在跑"）。"""
+    _beat(store, "draft#1@100", pid=100)
+    _beat(store, "draft#1@200", pid=200)
+    _beat(store, "voice#1@300", pool="voice", pid=300)
+
+    gone = store.forget_orphans(alive=lambda pid: pid == 300)
+
+    assert gone == ("draft#1@100", "draft#1@200")
+    assert store.read("draft#1@100") is None
+    assert store.read("voice#1@300") is not None
+
+
+def test_forget_orphans_keeps_rows_without_pid(store: HeartbeatStore) -> None:
+    """没有 pid 的行核对不了 ⇒ 不猜、不动它（留给 purge 按保留期处理）。"""
+    _beat(store, "draft#1@1")
+
+    assert store.forget_orphans(alive=lambda pid: False) == ()
+    assert store.read("draft#1@1") is not None
+
+
+def test_forget_orphans_treats_broken_probe_as_alive(store: HeartbeatStore) -> None:
+    """探针自己炸了 ⇒ 当作活着：宁可多留一行，不可误删活行。"""
+    _beat(store, "draft#1@7", pid=7)
+
+    def boom(pid: int) -> bool:
+        raise ValueError(pid)
+
+    assert store.forget_orphans(alive=boom) == ()
+    assert store.read("draft#1@7") is not None
+
+
+def test_forget_orphans_is_quiet_when_all_alive(store: HeartbeatStore) -> None:
+    """全活 / 空表 ⇒ 空元组（调用方靠它判断"要不要说一句"）。"""
+    assert store.forget_orphans(alive=lambda pid: True) == ()
+    _beat(store, "draft#1@9", pid=9)
+    assert store.forget_orphans(alive=lambda pid: True) == ()
+
+
+def test_forget_orphans_clears_reused_pid(store: HeartbeatStore) -> None:
+    """pid 被复用（别人占了这号）也算尸体 —— 否则这条"疑似猝死"永远清不掉。
+
+    拿本进程自己的 pid 当样本：它一定活着，而"进程创建时间晚于 ``started_at``"
+    正是复用的定义。
+    """
+    pid = os.getpid()
+    worker_id = f"draft#1@{pid}"
+    _beat(store, worker_id, pid=pid, started_at=format_iso(T0))
+
+    assert store.forget_orphans() == (worker_id,)
+    assert store.read(worker_id) is None
+
+
+def test_forget_orphans_keeps_live_worker_row(store: HeartbeatStore) -> None:
+    """真活行必须留下：pid 在 **且** 进程创建时间不晚于 ``started_at``。"""
+    pid = os.getpid()
+    worker_id = f"draft#1@{pid}"
+    _beat(store, worker_id, pid=pid, started_at=format_iso(utc_now()))
+
+    assert store.forget_orphans() == ()
+    assert store.read(worker_id) is not None
 
 
 def test_purge_removes_only_old_dead_rows(store: HeartbeatStore) -> None:

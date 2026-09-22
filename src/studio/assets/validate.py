@@ -67,8 +67,19 @@ BROLL_MIN_USABLE_MS: Final[int] = 4_500
 VOICE_MIN_SEGMENTS: Final[int] = 2
 VOICE_MAX_SEGMENTS: Final[int] = 3
 
-#: 单段参考音时长（§4.3.1：10–30 秒）。
-VOICE_SEGMENT_MIN_MS: Final[int] = 10_000
+#: 单段参考音时长（**裁定 369**：下限从 §4.3.1 原文的 10s 改成 2s）。
+#:
+#: 原文写的是 10–30 秒，但那个下限**在引擎里没有对应物**，是我们自己加的：
+#: - 上游只有**上限**那一条 —— ``cosyvoice/cli/frontend.py`` 里
+#:   ``assert speech.shape[1] / 16000 <= 30``（"超过 30 秒的提取不了 speech token"），
+#:   全文没有任何"太短"的判据；
+#: - 真机实测（2026-09-22 · RTX 2080 SUPER）：拿一条 **2.978 秒**的参考音跑
+#:   ``POST /synth``（``cosyvoice2``）⇒ ``ok=true``、出 4.48 秒音频、RTF 1.137。
+#:
+#: 零样本克隆本来就是"给一小段原声"，不是"给一整段朗读"。把下限压在 10 秒上，
+#: 代价是**手边只有一句台词的人永远入不了库**，而那句话的效果并不差。
+#: 30 秒上限保留（那是引擎的硬约束）。
+VOICE_SEGMENT_MIN_MS: Final[int] = 2_000
 VOICE_SEGMENT_MAX_MS: Final[int] = 30_000
 
 #: 参考音采样率下限（§4.3.1：≥ 16 kHz）。
@@ -227,7 +238,8 @@ def check_voice(
     probe: Callable[..., MediaInfo] = probe_media,
     volume: Callable[..., VolumeStats] = analyze_volume,
 ) -> AssetCheck:
-    """零样本参考音：段数 2–3、单段 10–30s、采样率 ≥ 16kHz、峰值 ≤ −1.0 dBFS（§4.3.1）。
+    """零样本参考音：段数 2–3、单段 2–30s（下限见裁定 369）、采样率 ≥ 16kHz、
+    峰值 ≤ −1.0 dBFS（§4.3.1）。
 
     旁车文件（``ref.txt`` / ``profile.json``）缺失或对不上记 **warning**：
     它们不阻止入库（引擎仍能跑），但会让复刻质量与合规留档打折 —— 这两件事
@@ -267,11 +279,17 @@ def check_voice(
             continue
         if info.duration_ms < VOICE_SEGMENT_MIN_MS:
             problems.append(
-                Problem(f"ref_{index:02d}_too_short", f"第 {index} 段只有 {info.duration_ms} ms（下限 10s）")
+                Problem(
+                    f"ref_{index:02d}_too_short",
+                    f"第 {index} 段只有 {info.duration_ms} ms（下限 {VOICE_SEGMENT_MIN_MS // 1000}s）",
+                )
             )
         elif info.duration_ms > VOICE_SEGMENT_MAX_MS:
             problems.append(
-                Problem(f"ref_{index:02d}_too_long", f"第 {index} 段有 {info.duration_ms} ms（上限 30s）")
+                Problem(
+                    f"ref_{index:02d}_too_long",
+                    f"第 {index} 段有 {info.duration_ms} ms（上限 {VOICE_SEGMENT_MAX_MS // 1000}s）",
+                )
             )
         if info.sample_rate is not None and info.sample_rate < VOICE_MIN_SAMPLE_RATE:
             problems.append(

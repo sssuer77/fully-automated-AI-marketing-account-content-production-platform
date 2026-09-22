@@ -43,7 +43,7 @@ from studio.agents.gateway_factory import build_gateway
 from studio.agents.prompts import PromptLibrary
 from studio.agents.reviewer import ReviewerAgent
 from studio.agents.writer import WriterAgent
-from studio.core.config import PersonaConfig, load_config
+from studio.core.config import PersonaConfig, llm_config_provider, load_config
 from studio.core.errors import ErrorCode, StudioError, WorkerError
 from studio.core.logging import get_logger
 from studio.core.paths import StudioPaths
@@ -355,10 +355,14 @@ def build_draft_handler(
         （`get_persona_store`），于是"面板上改了人物"对 worker 立刻生效。
     """
     loaded = load_config(paths)
-    prompts = PromptLibrary.load(paths.prompts_dir)
+    # 覆盖目录必须给：面板上改过的提示词要**写稿池也认**，否则
+    # 「面板改完、worker 还读仓库那份」——症状是改了没反应。
+    prompts = PromptLibrary.load(paths.prompts_dir, override_root=paths.prompts_override_dir)
     gateway = build_gateway(
         connection=connect(paths.db_file),
         llm=loaded.bundle.llm,
+        # 常驻进程：设置页换了模型名要**立刻**生效，不能等重启（`llm_config_provider`）
+        config_provider=llm_config_provider(paths),
         paths=paths,
         log=_log_sink(log),
     )

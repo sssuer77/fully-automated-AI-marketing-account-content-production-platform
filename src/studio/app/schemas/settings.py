@@ -6,6 +6,7 @@
 ② 「有哪几条通道、哪条现在能用、缺什么？」 ⇒ :class:`LlmProfileModel`
 ③ 「填进去 / 换一把 / 清掉」 ⇒ :class:`LlmKeyRequest`
 ④ 「填完真的通吗？」 ⇒ :class:`LlmProbeModel`（按需探测，只发只读 GET）
+⑤ 「用哪个模型？」 ⇒ :class:`LlmProfileRequest` / :class:`LlmProfileOutcome`
 
 为什么请求体用 ``clear`` 而不是「``api_key`` 传 null 就是清空」
 --------------------------------------------------------------
@@ -23,7 +24,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from studio.app.schemas.common import MAX_REASON
 from studio.core.secret_store import API_KEY_MAX_LEN
@@ -36,9 +37,18 @@ __all__ = [
     "LlmProbeModel",
     "LlmProbeRowModel",
     "LlmProfileModel",
+    "LlmProfileOutcome",
+    "LlmProfileRequest",
     "LlmRoutingModel",
     "LlmSettingsResponse",
 ]
+
+#: 模型名长度上限。给得宽松（有的服务商把版本与日期都塞进名字里），
+#: 但**必须有上限**：这是直接写进配置文件的一行，不能是任意长的输入。
+MODEL_MAX_LEN = 200
+
+#: base_url 长度上限
+BASE_URL_MAX_LEN = 500
 
 KeySourceLiteral = Literal["env", "file", "none"]
 ProbeStatusLiteral = Literal["ok", "no_key", "unreachable", "http_error"]
@@ -134,6 +144,60 @@ class LlmKeyRequest(BaseModel):
         if not wants_write and not self.clear:
             raise ValueError("要么提交 api_key，要么 clear=true")
         return self
+
+
+class LlmProfileRequest(BaseModel):
+    """改写某条通道的模型名 / base_url。
+
+    ``model`` 与 ``base_url`` **至少要给一个**：两个都不给 ⇒ 422（不知道你想改什么）。
+    与 :class:`LlmKeyRequest` 的 ``clear`` 同一条理由 —— "少带一个字段"绝不能变成
+    "把某个值改成空"。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile: str = Field(min_length=1, max_length=64)
+    model: str | None = Field(default=None, min_length=1, max_length=MODEL_MAX_LEN)
+    base_url: str | None = Field(default=None, min_length=1, max_length=BASE_URL_MAX_LEN)
+    reason: str | None = Field(default=None, max_length=MAX_REASON)
+
+    @field_validator("model")
+    @classmethod
+    def _model_is_not_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("模型名不能是空白")
+        return None if value is None else value.strip()
+
+    @field_validator("base_url")
+    @classmethod
+    def _base_url_is_http(cls, value: str | None) -> str | None:
+        """只收 http(s)：写一个 ``ftp://`` 进去的后果是**下一次调用才炸**。"""
+        if value is None:
+            return None
+        stripped = value.strip().rstrip("/")
+        if not stripped.startswith(("http://", "https://")):
+            raise ValueError("base_url 必须以 http:// 或 https:// 开头")
+        return stripped
+
+    @model_validator(mode="after")
+    def _at_least_one(self) -> LlmProfileRequest:
+        if self.model is None and self.base_url is None:
+            raise ValueError("至少要给 model 或 base_url 之一")
+        return self
+
+
+class LlmProfileOutcome(LlmSettingsResponse):
+    """一次通道参数写入的结果 = **刷新后的整屏** + 这次改了什么。
+
+    与 :class:`LlmKeyOutcome` 同一条：面板写完要立刻显示新模型名，只回 ``changed``
+    的话前端还得再发一次 GET，那两次请求之间显示的是**旧**模型。
+    """
+
+    changed: bool
+    profile: str
+    model: str
+    base_url: str
+    reason: str | None
 
 
 class LlmKeyOutcome(LlmSettingsResponse):

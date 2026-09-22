@@ -1399,7 +1399,7 @@ class VoiceProfileSpec(BaseModel):
 
 class VoiceProfile(VoiceProfileSpec):
     created_at: str
-    ref_duration_ms_each: list[int]  # 每段时长，校验 10–30s（原文 §3.1）
+    ref_duration_ms_each: list[int]  # 每段时长，校验 2–30s（原文 §3.1 写 10–30s，下限见裁定 369）
     ref_quality: RefQualityReport  # 质量校验报告
     engine: str
     engine_revision: str
@@ -1420,7 +1420,7 @@ class RefQualityReport(BaseModel):
 | 校验项 | 阈值 | 不通过 |
 | --- | --- | --- |
 | 段数 | 2–3 段 | **拒绝入库** |
-| 单段时长 | 10–30 秒 | **拒绝入库** |
+| 单段时长 | 2–30 秒（**裁定 369**：下限从原文的 10 秒降到 2 秒） | **拒绝入库** |
 | 无削波 | 峰值 ≤ −1.0 dBFS | **拒绝入库** |
 | 采样率 | ≥ 16 kHz | **拒绝入库** |
 | 无背景音乐 | 谱平坦度 + 静音段占比（启发式） | `warn`，需人工确认 |
@@ -1863,7 +1863,7 @@ class ApprovalDecision(StrEnum):
 | # | 面板（原文用语） | 订阅通道 | 主要 REST | 可执行操作 | 任务 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | **总览台** | `pools` `metrics` `system` `tasks` | `GET /api/v1/overview`、`POST /api/v1/overview/{pools,auto,start}` | 启动 / 暂停 / **一键全自动**（切 `GRADE_AB`） | T4.2 |
-| 2 | **选题面板** | `topics` | `GET /topics`、`GET /topics/directions`、`POST /hot/{import,submit}`、`POST /topics/{analyze,ideate,select,manual}` | 导入热点（扫盘 / 粘贴）/ 触发分析 / 生成选题 / 人工加选题 / 勾选入队 | T4.3 |
+| 2 | **选题面板** | `topics` | `GET /topics`、`GET /topics/directions`、`POST|PATCH|DELETE /topics/directions[/{id}]`、`POST /topics/{topic_id}/draft-review`、`POST /hot/{import,submit}`、`POST /topics/{analyze,ideate,select,manual}` | 导入热点（扫盘 / 粘贴）/ 触发分析 / 生成选题 / **手写·改·删方向（级联）** / 人工加选题 / 勾选入队 / **生成文案并送审** | T4.3 |
 | 3 | **稿件面板** | `tasks` | `GET /scripts/{task_id}`、`GET /scripts/{task_id}/versions`、`GET /scripts/{task_id}/diff`、`POST /tasks/{id}/approve\|reject\|discard\|rescue`、`POST /approvals/approve_batch` | 确认 / 退回 / 放弃（**确认闸**）/ 批量通过 / 捞回 | T4.4 |
 | 4 | **配音面板** | `tasks`（`sentence.updated`） | `GET /sentences?task_id=`、`POST /sentences/{id}/resynth`、`PATCH /tasks/{id}/voice_map` | 换音色 / 重配某句 / 试听单句 | T4.5 |
 | 5 | **渲染面板** ✅ | **不订阅**（进度走 REST 轮询，1s · 有活才轮） | `GET /api/v1/render/console`、`POST /api/v1/render/jobs`、`GET /api/v1/render/jobs/{id}`、`POST /api/v1/render/jobs/{id}/cancel`、`GET /api/v1/render/videos/{name}` | 填表单触发出片 / 看进度与日志尾巴 / **协作式取消** / 成片**在线播放**与下载 | T4.6 |
@@ -1873,6 +1873,8 @@ class ApprovalDecision(StrEnum):
 | 9 | **发布面板**（工程必需，原文未列） | `publish` | `GET /publish/queue`、`POST /publish/{id}/retry`、`POST /publish/{id}/cancel`（**端点在 T5.3 已落地**，见 §4.6.7） | 待发布 / 已发布 / 数据回流 / 待人工 | T5.5 |
 | 10 | **四池调度**（工程必需，原文未列） | `pools` | `GET /api/v1/pools`、`POST /api/v1/pools/{concurrency,requeue}` | 调并发（无需重启）/ 暂停恢复（复用面板 1 的入口）/ 死信重投 / 看自动降级 | T4.10 |
 | 11 | **人物库**（工程必需，原文未列） | `system`（`system.persona_changed`） | `GET /api/v1/persona`、`POST /api/v1/persona`、`POST /api/v1/persona/{activate,save-as,rollback}` | 改人设 / 口吻 / 口癖 / 禁区（**保存前强校验**）/ 一键切换（旧版自动备份）/ 另存为 / 回滚 | T4.13 |
+| 12 | **设置**（工程必需，原文未列） | — | `GET|PUT /api/v1/settings/llm`、`PUT /api/v1/settings/llm/profile`、`POST /api/v1/settings/llm/probe` | 填 / 换 / 清 LLM 密钥（**只有掩码**）/ 改模型名与 base_url / 测试连接 | T6.1 |
+| 13 | **提示词**（工程必需，原文未列） | — | `GET /api/v1/prompts`、`PUT /api/v1/prompts/{name}`、`DELETE /api/v1/prompts/{name}/override?file=` | 改某一段提示词（**先校验、后落盘**，落 `data/prompts/` 覆盖层）/ 还原某一段 / 看当前生效版本 | T6.2 |
 
 ### 4.4.6 背压、合并与重连
 
@@ -1919,6 +1921,7 @@ class ApprovalDecision(StrEnum):
 
 - 超时判定：`now - last_seen_at > 15s` ⇒ 标记 `dead` ⇒ supervisor 重启该 worker ⇒ 其租约由 sweeper 回收（**双保险**）。
 - WebUI 池监控直接消费 `pools` 通道的心跳数据。
+- `forget` 只在**优雅退出**时跑：`Ctrl+C` 关终端 / `taskkill` / 崩溃留下的 `idle` 行既不判死也不被 `purge`（只删 `dead`）带走 ⇒ worker **启动时**按 pid 核对一次（`HeartbeatStore.forget_orphans`）把上一代的尸体清掉，面板上不会堆成一片"疑似猝死"。
 - **不变式：行存在 ⇔ 该进程应当在跑**（T1.6 施工裁定 33）。优雅退出（`draining` 跑完当前单元）时 worker **删掉自己那行**（`HeartbeatStore.forget`）⇒ "行还在但 15s 没动静"就一定是猝死，不误报。
 - 写心跳与续 job 租约是**同一个后台脉冲线程**（T1.6 施工裁定 34）：心跳 5s、续租 `lease/3`、判超时共用一条 1s tick；**tick 异常一律吞掉继续** —— 脉冲线程死了就"看着还活着但不再续租"，比直接崩更危险。
 - `WORKER_DEAD` **不是** `system.alert.code`（§4.5.2 的告警码是**枚举**）：判死落 `system_logs` 的 `error` 行 + `payload_json.code='WORKER_DEAD'`，WS 层按"不在枚举内 ⇒ 走 `log.append`"处理（T1.6 施工裁定 39）。
@@ -2026,12 +2029,34 @@ structlog 的第一个位置参数就叫 `event`，`logger.info(msg, **payload)`
 | --- | --- | --- |
 | GET | `/api/v1/topics?status=&limit=` | 选题池瀑布流（`ORDER BY score DESC, seq`）+ 按状态计数；`status` 只接受 `candidate\|selected\|queued\|rejected\|expired`，非法 ⇒ 422 |
 | GET | `/api/v1/topics/directions?batch_id=` | 方向卡片 + **全部**历史批次（新到旧，上限 20）+ 每方向 `topic_count` / `selected_count` |
+| POST | `/api/v1/topics/directions` | 人工写一个方向（**不经模型**）；缺省落**最近一批**（没有批次才落 `manual`） |
+| PATCH | `/api/v1/topics/directions/{direction_id}` | 改一个方向（**只改显式给过的字段**；`batch_id` / `seq` / `status` 不可改） |
+| DELETE | `/api/v1/topics/directions/{direction_id}` | 删一个方向 ⇒ **候选级联一起走**（响应带 `cascaded_topics`）；已有候选派生任务 ⇒ 422 |
 | POST | `/api/v1/topics/analyze` | 扫盘导入 ⇒ Planner ⇒ 5–8 个方向（**长任务**） |
 | POST | `/api/v1/topics/ideate` | 逐方向产出 3–5 条选题（**长任务**；一个方向失败不影响其他） |
 | POST | `/api/v1/topics/select` | 勾选入队：逐条建任务（幂等键 `topic:<id>`），`draft_now` 才顺手写稿 |
 | POST | `/api/v1/topics/manual` | 人工加选题（直接入库 + `audit_ops`） |
+| POST | `/api/v1/topics/{topic_id}/draft-review` | 选中一条候选 ⇒ 生成完整文案 ⇒ 推 `reviewing`（**长任务**；已有生效稿件 ⇒ `reused=true`，**不重跑**） |
+| PATCH | `/api/v1/topics/{topic_id}` | 改一条选题（**只改显式给过的字段**；改标题 ⇒ 重算去重指纹与相似清单） |
+| DELETE | `/api/v1/topics/{topic_id}` | 删一条选题（**已派生过任务的不给删** ⇒ 422 `TOPIC_SELECT_INVALID` + 任务号） |
+| GET | `/api/v1/topics/{topic_id}/outline` | 读二级产物（视频标题 + 核心论点）；没有 ⇒ `outline=null`，**不是 404** |
+| POST | `/api/v1/topics/{topic_id}/outline` | 让模型定标题与核心论点（**长任务**，与 `analyze`/`ideate` 共用单飞守卫） |
+| PUT | `/api/v1/topics/{topic_id}/outline` | 手工定稿二级产物（**一次 LLM 都不调**：没配 Key 也能用） |
+| DELETE | `/api/v1/topics/{topic_id}/outline` | 清空二级产物（**幂等**）；清掉之后三级退回「按选题自由发挥」 |
 | POST | `/api/v1/hot/import` | 扫盘导入 `data/hot/*.md` + `data/feedback/*.md`（幂等） |
 | POST | `/api/v1/hot/submit` | 网页端粘贴一批输入源 ⇒ 落 `data/hot/webui-<ulid>.md` ⇒ 立刻导入 |
+
+**文案生成分三级**（口述：一级话题主体 → 二级视频标题 + 核心论点 → 三级对话文案）
+
+| 级 | 落点 | 谁产出 | 怎么改 |
+| --- | --- | --- | --- |
+| 一级 · 话题主体 | `topic_candidates` | 人工加（`/topics/manual`）或 Ideator | `PATCH /topics/{id}` / `DELETE /topics/{id}` |
+| 二级 · 视频标题 + 核心论点 | `topic_outlines`（§3.3.22） | Outliner（`POST .../outline`）或人手写（`PUT .../outline`） | `PUT .../outline` / `DELETE .../outline` |
+| 三级 · 对话文案 | `scripts` + `script_sentences` | `select{draft_now}` / `POST .../draft-review` / draft 池认领 | 稿件面板（`/scripts/{task_id}`） |
+
+**二级是可选的一级**：没有它，三级照旧按选题自由发挥；有它，成稿标题**锁定**用它、
+正文围绕核心论点展开。这条取舍的理由：少一张表不能变成「写不出稿」，而「标题被模型
+悄悄换掉」是最难发现的一类漂移（见 §3.3.22）。
 
 **五条落地口径**
 
@@ -2055,6 +2080,28 @@ structlog 的第一个位置参数就叫 `event`，`logger.info(msg, **payload)`
 5. **`hot/submit` 的文件名由服务端生成**（`webui-<ulid>.md`）：客户端给名字就意味着要校验
    路径穿越、非法字符、覆盖已有文件，而这三件事没有一件对用户有价值（他关心的是
    "这段热点进去了没有"）。
+6. **方向可手写、可改、可删（级联）**（T4.3 追加）：手写的方向落进**当前正在看的那个
+   批次**，而不是另起一个「手工批次」—— 后者会在写完那一刻顶到"最近一批"上，把模型
+   那批整个盖掉（再跑一次 `analyze` 又会反过来把人写的盖掉）。删除**级联带走候选**
+   （`ON DELETE CASCADE`），响应如实报 `cascaded_topics`；唯一的拦截是"那个方向下已经
+   有候选派生了任务"（422 `TOPIC_SELECT_INVALID` + `task_ids`）—— 那不是门禁，是
+   **断链**：候选没了，它那条任务就再也写不出稿。三个动作**一次 LLM 都不调**。
+7. **`draft-review` 与 `select{draft_now}` 不是一回事**：前者是**单条候选的下一步**
+   （写完之后推 `reviewing`，写稿池接着跑评分 + 确认闸），后者是"批量勾选，顺手写稿"
+   （跑完停在 `drafting`，交给写稿池）。`draft-review` 遇到"库里已经有生效稿件"⇒
+   **一个 token 都不再烧**，回 `reused=true` 与当前 `task_status`（任务若是在配音 /
+   渲染段挂的，照实回 `failed` 并附一条 `warnings`，而不是假装送审成功）。
+8. **「生成文案并送审」那一下必须真的进闸**（T4.3 追加 · 2026-09-20）：`auto_approve_policy`
+   默认 `grade_a`，A 级稿子自动放行 —— 那对**批量**流水线是对的，但人亲手点的送审被同一把
+   旋钮放行掉，按钮就成了假的（点了送审，确认闸里空空如也）。所以 `draft-review` 给任务打上
+   `tasks.context_json.human_gate = true`，审稿侧（`ReviewService.effective_policy`）据此把
+   放行策略降为 `off`。标记**只认更严的方向**：全局配 `off` 时它不会把稿子放开。
+   勾选入队（`select`）**不打**这个标记，照旧听 `config/app.yaml` 那把旋钮。
+9. **写稿作业在「就地写稿跑完之后」才投**（T4.3 追加 · 2026-09-20）：写稿池 ~1s 就来认领，
+   而一次就地写稿要跑几分钟的 LLM。作业要是随建任务一起投出去，两边就并发跑同一份
+   Director + Writer —— token 翻倍、预算烧穿（`budget_exceeded` ⇒ 云端熔断 ⇒ 评分降级到
+   本地小模型）。所以：`enqueue`（勾选入队，**不跑写稿**）立刻投；`draft`（就地写稿，含
+   `draft_now` 与 CLI）跑完/跑挂之后才投，池子认领到的是一条「稿件已在库里」的作业 ⇒ 只跑审稿。
 
 **响应模型的集合字段一律必填**（T4.3 施工中发现 · 裁定 135）
 
@@ -2520,6 +2567,7 @@ structlog 的第一个位置参数就叫 `event`，`logger.info(msg, **payload)`
 | GET | `/api/v1/assets/stats` | **只要数字**：三类家底 + 判据线 + 授权枚举（总览台的小卡片用它，不拖整库） |
 | POST | `/api/v1/assets/ingest` | 扫盘 / 入库；`dry_run=true` ⇒ **只读预览，一个字节都不写库** |
 | PATCH | `/api/v1/assets/{id}` | 改一条（启停 / 授权 / 标签 / 可用区间 / 情绪…） |
+| DELETE | `/api/v1/assets/{id}?kind=&purge=` | 删一条；`purge=true` 才动盘上那份（**裁定 369**，默认只删库里的行） |
 | GET | `/api/v1/assets/{id}/thumb` | 缩略图（跑酷抽帧图；没有 ⇒ 404，**不临时现抽**） |
 | GET | `/api/v1/assets/{id}/media` | 原文件（BGM 试听 / 跑酷预览；音色 ⇒ 422） |
 
@@ -2538,8 +2586,13 @@ structlog 的第一个位置参数就叫 `event`，`logger.info(msg, **payload)`
    它记的是人的声明。
 5. **坏文件不中断整批**：0 字节 / 截断 / 扩展名骗人的那一条标红、写清原因，其余照常入库。
    让整批扫描停在第一个坏文件上，等于 59 条好素材白扫。
-6. **只允许停用，不物理删除**（§T4.8 硬约束）。面板上没有「删除」按钮，这不是「还没做」：
-   误删一柜子素材不可逆，而停用随时能点回来。真要腾空间，是用户在资源管理器里的决定。
+6. **停用不动物理文件；删除是另一个动词，而且分两个开关**（§T4.8 硬约束 + **裁定 369**）。
+   停用的语义不变：只改一行，误删不可逆而停用随时能点回来。`DELETE /assets/{id}` 默认
+   **也只删库里的行**（重扫一次就回来），只有 `purge=true` 才连盘上那份一起删，且面板上
+   是二次确认。为什么音色那一栏默认勾上 `purge`：参考音目录留在盘上，下次扫盘又会变成
+   一条「盘上有、库里没有」，用户刚删掉的东西自己回来了；而跑酷删了行，文件还在、出片
+   照样挑得到，删掉的只是留痕。`purge` 前有一道路径守卫：解析后的绝对路径必须**严格在**
+   这一类根目录之下，否则一个字节都不动（行是能被人手改的）。
 7. **重扫只刷新机器事实**（陷阱 #92）：`upsert` 更新 `sha256` / 时长 / 宽高 / 帧率 /
    指纹，**绝不覆盖** `enabled` / `license` / `tags` / `usable_*` / `has_text` / `mood` / `bpm`
    —— 那些是人填的。反过来说，「重扫之后我标的可用区间没了」是一条**不该存在**的 bug。
@@ -2559,6 +2612,7 @@ structlog 的第一个位置参数就叫 `event`，`logger.info(msg, **payload)`
 | --- | --- | --- | --- |
 | 启用 / 停用 | `asset.enable` / `asset.disable` | 素材 id | `{"kind": "broll", "enabled": true → false}` |
 | 改字段 | `asset.update` | 素材 id | **只放被改的字段**（`{"license": "cc0" → "purchased"}`） |
+| 删除 | `asset.delete` | 素材 id | `before={"enabled": …}`，`after={"purged": [真的删掉的路径]}` |
 
 - `target_type="asset"`、`actor="user"`、`source="webui"`（脚本 / CLI 走 `actor="system"` + `source="cli"`）。
 - 留痕里带 `kind`：同一个 id 在不同类里出现时，审计页要能分清是哪一类。
@@ -2716,6 +2770,43 @@ studio publish precheck --task <id> [--json]
 
 `manifest.json` 的 `final` 字段**优先**（同一个任务可以有多个 `*_{task_id}_final*.mp4`，重合成一次多一个）；
 manifest 缺失或它指的那条不在盘上 ⇒ 退回目录里按名字找**最新**的一条。两个来源都没有 ⇒ 没有成片。
+### 4.5.16 提示词面板 REST 面契约（T6.2 · 已落地）
+
+> 提示词是**入库的**（`prompts/` + `manifest.yaml` 的 sha256 逐字校验它），而"这条
+> 文案读起来不对"只有人看着产出才说得出来。面板必须能当场改、当场生效，但不能改仓库
+> 文件 —— 做法是**运行期覆盖层**：面板写的每一份落 `data/prompts/<相对路径>`，
+> `PromptLibrary.read` 先看覆盖目录（见 §04.1.1 的 `override_root`）。
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| GET | `/api/v1/prompts` | 全部条目：`description` / `version` / `prompt_version` / `overridden` / 两段**生效**正文 / `variables`（允许引用的变量）+ `override_dir` |
+| PUT | `/api/v1/prompts/{name}` | 存一段覆盖（`system` / `user` **只给要改的那一段**，另一段留空 = 不动）；**先校验、后落盘** |
+| DELETE | `/api/v1/prompts/{name}/override?file=system\|user` | 还原一段（删掉覆盖文件 ⇒ 退回仓库那一份）；**幂等** |
+
+**四条落地口径**
+
+1. **覆盖不改仓库文件**：`prompts/` 是入库的，`prompts verify` 拿 `manifest.yaml` 的
+   sha256 逐字校验它。所以 `digest()` 走**生效**那一份（覆盖后 `prompt_version` 自动变，
+   落 `scripts.prompt_version`），而 `verify()` 比对的是**仓库**那一份（漂移检查的对象
+   是入库文件，运行期覆盖不该被报成漂移）。
+2. **覆盖目录由入口给**（`paths.prompts_override_dir`），不在 `PromptLibrary.load` 里
+   从 `root` 反推：测试里 `root` 常是 tmp，反推会去读**真的** `data/prompts`，于是一个
+   用例写的覆盖会悄悄影响另一个用例。API / CLI / 四个 worker **都要传**它 ——
+   漏一个的症状是"面板改完、那条链路还读仓库那份"。
+3. **保存前校验两件事**（422 `VALIDATION_FAILED`，**一个字节都不写**）：
+   ① 覆盖里引用的 `{{变量}}` 必须都在 `allowed_variables(name)` 里（= 自己的模板 ∪
+   全部 `shared.*` 注入块，**从仓库那一份读**）；② 模板语法合法（只支持 `{{变量}}`）。
+   这两种错不会在保存时自己暴露 —— 它们只会在**下一次生成**时炸，而那时人早忘了自己
+   改过什么。
+4. **`system: null` 是"这一段不动"，不是"清空"**：两者在 JSON 里长得一样，后果差很远
+   （某次请求少带一个字段 ⇒ 那一整段纪律被静默删掉）。整段清空会被 422 拦下；"改回
+   仓库原样"会被当成**还原**处理（删掉覆盖），免得「已覆盖」徽标永远亮着。
+
+「还原」按**段**而不是按条目：一个条目最多两段（两份独立文件），一次误点不该把两处
+改动一起丢掉。
+
+---
+
 ## 4.6 发布与数据回流契约（第六部分重建 · 原文 §1.1⑤ / §8 / §9.3）
 
 > 本节定义**接口与签名**；子系统的行为、平台矩阵、风控与合规策略见 **§06 成片与发布**。

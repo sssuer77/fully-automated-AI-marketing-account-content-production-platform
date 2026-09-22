@@ -21,6 +21,7 @@ from studio.core.errors import ErrorCode
 from studio.core.paths import StudioPaths
 from studio.db import connect, migrate
 from studio.domain.script import (
+    OUTLINE_UNSET,
     REWRITE_LIMIT,
     DirectorOutput,
     ScriptSegment,
@@ -149,6 +150,26 @@ class TestHappyPath:
         assert "熊大又整活了" in messages[-1].content
         assert "点个关注看下集" in messages[-1].content
         assert "这不科学" in messages[0].content  # 口癖清单在 system 侧
+
+    async def test_a_locked_title_and_core_argument_reach_the_prompt(
+        self, paths: StudioPaths, connection: sqlite3.Connection
+    ) -> None:
+        """二级产物（视频标题 + 核心论点）在 system 侧：三级拿到的是「已经定了什么」。"""
+        transport = ScriptedTransport(replies=[Reply(text=writer_json())])
+        agent = build(transport, paths, connection)
+        await run(agent, outline_title="二级定死的标题", core_argument="二级定死的论点")
+        system = transport.calls[0][1][0].content
+        assert "二级定死的标题" in system
+        assert "二级定死的论点" in system
+
+    async def test_an_undefined_outline_is_spelled_out_not_left_blank(
+        self, paths: StudioPaths, connection: sqlite3.Connection
+    ) -> None:
+        """二级还没定 ⇒ 显式写「未定」：空行会让模型以为上游给了一个空标题。"""
+        transport = ScriptedTransport(replies=[Reply(text=writer_json())])
+        agent = build(transport, paths, connection)
+        await run(agent)
+        assert OUTLINE_UNSET in transport.calls[0][1][0].content
 
     async def test_revision_notes_are_rendered(
         self, paths: StudioPaths, connection: sqlite3.Connection

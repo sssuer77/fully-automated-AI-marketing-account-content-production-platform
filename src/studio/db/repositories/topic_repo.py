@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 from studio.core.clock import now_iso
@@ -41,6 +41,15 @@ _SELECT_COLUMNS: Final[str] = (
 
 #: ``status`` 合法取值（与 DDL CHECK 逐字一致）
 STATUSES: Final[frozenset[str]] = frozenset({"candidate", "selected", "queued", "rejected", "expired"})
+
+#: 允许**人工改写**的列。
+#:
+#: ``seq`` / ``direction_id`` 是「模型在哪一批哪一位产出的」这个事实，改掉它等于伪造
+#: 溯源；``status`` / ``task_id`` / ``selected_*`` 属于流水线状态机，有自己的入口
+#: （``set_status``）与留痕口径 —— 都不该从「改一条选题」这里漏进来。
+EDITABLE_COLUMNS: Final[frozenset[str]] = frozenset(
+    {"title", "angle", "hook_type", "score", "reason", "dedup_hash", "similar_to"}
+)
 
 
 class TopicRepo:
@@ -148,6 +157,44 @@ class TopicRepo:
                 "WHERE id = ?",
                 (status, task_id, selected_by, stamp, topic_id),
             )
+            return self._connection.total_changes > before
+
+    def patch(self, *, topic_id: str, changes: Mapping[str, Any]) -> TopicRow | None:
+        """按列改写（只认 :data:`EDITABLE_COLUMNS`），返回**改完之后**那一行。
+
+        ``changes`` 为空 ⇒ 一个字节都不写（空 PATCH 不该假装改了一次），照常把当前行
+        读回来 —— 调用方拿到的形状因此永远一致。
+        """
+        unknown = sorted(set(changes) - EDITABLE_COLUMNS)
+        if unknown:
+            raise ValueError(f"不可改写的列：{unknown}（可改：{sorted(EDITABLE_COLUMNS)}）")
+        # ``similar_to`` 是**列表**（与 ``insert_many`` 同一口径），落库那一列叫
+        # ``similar_to_json``：JSON 这件事只在这里知道，调用方给的是 Python 对象。
+        normalized = {
+            ("similar_to_json" if column == "similar_to" else column): (
+                json.dumps(list(value), ensure_ascii=False) if column == "similar_to" else value
+            )
+            for column, value in changes.items()
+        }
+        if normalized:
+            assignments = ", ".join(f"{column} = ?" for column in normalized)
+            with transaction(self._connection, immediate=True):
+                self._connection.execute(
+                    f"UPDATE topic_candidates SET {assignments} WHERE id = ?",
+                    (*normalized.values(), topic_id),
+                )
+        return self.get(topic_id)
+
+    def delete(self, topic_id: str) -> bool:
+        """硬删一行（``True`` = 真的少了一行）。
+
+        库里没有别的表引用 ``topic_candidates``（``task_id`` 是**它指向**任务，不是任务
+        指向它），所以删除不会留下悬挂引用 —— 级联这件事在这里不存在，服务层只需要
+        拦住「已经派生过任务的那一条」。
+        """
+        with transaction(self._connection, immediate=True):
+            before = self._connection.total_changes
+            self._connection.execute("DELETE FROM topic_candidates WHERE id = ?", (topic_id,))
             return self._connection.total_changes > before
 
     def demote_candidates(self, *, direction_id: str, factor: float) -> int:

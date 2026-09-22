@@ -357,6 +357,29 @@ def test_graceful_exit_forgets_heartbeat(rig: Rig) -> None:
     assert beats.read("draft#1@4242") is None
 
 
+def test_boot_forgets_orphan_heartbeats(rig: Rig) -> None:
+    """上一代被强杀留下的行在**启动时**按 pid 清掉（否则面板上全是"疑似猝死"）。
+
+    ``forget`` 走不到的场景（``taskkill`` / 关终端）留下的行是 ``idle``：
+    它不超时判死、也不被 ``purge`` 带走，只会一直挂在池卡片上。
+    """
+    _enqueue(rig, "u1")
+    handler = FakeHandler(block=True)
+    worker = _worker(rig, handler, worker_id="draft#1@4242")
+    beats = HeartbeatStore(rig.connection)
+    # 必然不存在的 pid：Windows 的 pid 空间到不了这里，Linux 的 pid_max 也够不着
+    beats.upsert(worker_id="draft#1@999999999", pool="draft", status="idle", pid=999999999)
+
+    thread = _run_in_thread(worker)
+    assert _wait_for(lambda: beats.read("draft#1@4242") is not None), "没有等到心跳"
+    assert beats.read("draft#1@999999999") is None, "启动时必须清掉上一代的尸体行"
+
+    worker.request_stop("signal:SIGINT")
+    handler.release.set()
+    thread.join(15.0)
+    assert not thread.is_alive()
+
+
 def test_pulse_survives_failing_ticks(rig: Rig) -> None:
     """脉冲线程绝不能死：死了就"看着还活着但不再续租"，比直接崩更危险。"""
     _enqueue(rig, "u1")

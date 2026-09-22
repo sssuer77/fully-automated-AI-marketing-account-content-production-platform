@@ -54,6 +54,7 @@ HTTP_STATUS_BY_CODE: Final[Mapping[ErrorCode, int]] = {
     # 入参不合法
     ErrorCode.APPROVAL_COMMENT_REQUIRED: 422,
     ErrorCode.SCRIPT_WORD_COUNT: 422,
+    ErrorCode.OUTLINE_INVALID: 422,
     ErrorCode.TOPIC_DIRECTION_EMPTY: 422,
     ErrorCode.TOPIC_SELECT_INVALID: 422,
     ErrorCode.HOT_TEXT_EMPTY: 422,
@@ -80,6 +81,8 @@ HTTP_STATUS_BY_CODE: Final[Mapping[ErrorCode, int]] = {
     # 422 让面板把红字标到那一条上；"这条不在库里"是 404。
     ErrorCode.ASSET_INVALID: 422,
     ErrorCode.ASSET_NOT_FOUND: 404,
+    # 同名冲突（上传时目标已存在）= 状态问题 ⇒ 409（与 `PERSONA_EXISTS` 同一条）。
+    ErrorCode.ASSET_EXISTS: 409,
     ErrorCode.MEDIA_UNDECODABLE: 422,
     # 探不出来是**环境**问题（ffprobe 不在 PATH / 超时）⇒ 409：与 doctor 门禁
     # 「现在这台机器不能干这件事」同一条，而不是"我们崩了"。

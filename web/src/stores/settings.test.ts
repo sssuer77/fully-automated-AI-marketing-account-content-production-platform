@@ -6,6 +6,8 @@ import type {
   LlmKeyStatus,
   LlmProbe,
   LlmProfile,
+  LlmProfileBody,
+  LlmProfileOutcome,
   LlmSettings,
 } from "@/api/endpoints/settings";
 import { ApiError } from "@/api/http";
@@ -16,6 +18,7 @@ import {
   keyTone,
   probeSummary,
   probeTone,
+  profileNotice,
   profileTone,
   saveNotice,
   useSettingsStore,
@@ -77,6 +80,18 @@ function outcome(overrides: Partial<LlmKeyOutcome> = {}): LlmKeyOutcome {
     ...settings({ key: keyStatus({ configured: true, source: "file", source_label: "config/secrets.yaml", masked_key: "sk-…2345" }) }),
     changed: true,
     cleared: false,
+    reason: null,
+    ...overrides,
+  };
+}
+
+function profileOutcome(overrides: Partial<LlmProfileOutcome> = {}): LlmProfileOutcome {
+  return {
+    ...settings({ profiles: [profile({ model: "gpt-5.6-sol" })] }),
+    changed: true,
+    profile: "cloud",
+    model: "gpt-5.6-sol",
+    base_url: "https://api.openai.com/v1",
     reason: null,
     ...overrides,
   };
@@ -185,6 +200,19 @@ describe("saveNotice", () => {
   });
 });
 
+describe("profileNotice", () => {
+  it("没改动就说没改动（不假装做了一次操作）", () => {
+    expect(profileNotice(profileOutcome({ changed: false }))).toContain("没有改动");
+  });
+
+  it("改了要说清**改成了什么**，以及**立刻生效、不用重启**", () => {
+    const text = profileNotice(profileOutcome({ changed: true, model: "gpt-5.6-sol" }));
+    expect(text).toContain("gpt-5.6-sol");
+    expect(text).toContain("立刻生效");
+    expect(text).toContain("不需要重启");
+  });
+});
+
 // ══════════════════════════════════════════════════════════════════════
 // store
 // ══════════════════════════════════════════════════════════════════════
@@ -199,6 +227,7 @@ describe("useSettingsStore", () => {
       fetchLlmSettings: async () => settings(),
       saveLlmKey: async () => outcome(),
       clearLlmKey: async () => outcome(),
+      saveLlmProfile: async () => profileOutcome(),
       probeLlm: async () => probe(),
     });
     vi.restoreAllMocks();
@@ -295,5 +324,76 @@ describe("useSettingsStore", () => {
     });
     await store.load();
     expect(store.envOverridden).toBe(true);
+  });
+});
+
+describe("useSettingsStore · 通道参数", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  afterEach(() => {
+    configureSettingsApi({ saveLlmProfile: async () => profileOutcome() });
+    vi.restoreAllMocks();
+  });
+
+  it("只把**填了**的字段发出去（另一个不传，绝不是传空串）", async () => {
+    const calls: LlmProfileBody[] = [];
+    const store = useSettingsStore();
+    configureSettingsApi({
+      saveLlmProfile: async (body) => {
+        calls.push(body);
+        return profileOutcome({ changed: true, model: "new-model" });
+      },
+    });
+
+    const ok = await store.saveProfile("cloud", "  new-model  ", "");
+
+    expect(ok).toBe(true);
+    expect(calls).toEqual([{ profile: "cloud", model: "new-model" }]);
+    expect(store.notice).toContain("new-model");
+    expect(store.savingProfile).toBeNull();
+    expect(store.data?.profiles[0].model).toBe("gpt-5.6-sol");
+  });
+
+  it("两个都空 ⇒ 本地拦下、不发请求（省一次 422 来回）", async () => {
+    const spy = vi.fn();
+    const store = useSettingsStore();
+    configureSettingsApi({ saveLlmProfile: spy as never });
+
+    const ok = await store.saveProfile("cloud", "   ", "");
+
+    expect(ok).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
+    expect(store.error).toContain("至少填一个");
+  });
+
+  it("服务端拒绝 ⇒ 错误如实显示（不吞、不假装成功）", async () => {
+    const store = useSettingsStore();
+    configureSettingsApi({
+      saveLlmProfile: async () => {
+        throw new ApiError("没有这条通道：nope", 400, null);
+      },
+    });
+
+    const ok = await store.saveProfile("nope", "x", "");
+
+    expect(ok).toBe(false);
+    expect(store.error).toContain("没有这条通道");
+  });
+
+  it("base_url 也能单独改", async () => {
+    const calls: LlmProfileBody[] = [];
+    const store = useSettingsStore();
+    configureSettingsApi({
+      saveLlmProfile: async (body) => {
+        calls.push(body);
+        return profileOutcome({ changed: true, base_url: "http://127.0.0.1:9999/v1" });
+      },
+    });
+
+    await store.saveProfile("local", "", "http://127.0.0.1:9999/v1");
+
+    expect(calls).toEqual([{ profile: "local", base_url: "http://127.0.0.1:9999/v1" }]);
   });
 });

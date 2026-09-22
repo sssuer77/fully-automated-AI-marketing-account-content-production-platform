@@ -113,6 +113,13 @@ class ProduceRequest:
     #: 平时**不该**用它：命中缓存意味着输入一个字节都没变，重渲出来的还是同一支片子。
     #: 留给"我怀疑盘上那支是坏的"这种排查场景。
     force_render: bool = False
+    #: 稿件**逐句**正文（``script_sentences``）。给了它，配音就不再自己切句 ——
+    #: 与配音池读的是同一份句子（真机：重切会得到另一个句数，字幕从此与音频对不上）。
+    #: 空 ⇒ 退回「把 ``text`` 切一遍」的老口径（CLI 直接给文案那条路）。
+    sentences: tuple[str, ...] = ()
+    #: 逐句音色（与 ``sentences`` 同序；渲染这条路按角色解析出来的，见
+    #: ``voice_service.active_script_voices``）。空 ⇒ 整篇用 ``voice`` 那一个嗓子。
+    sentence_voices: tuple[str | None, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +209,8 @@ def reuse_or_synthesize_voice(
 
     return synthesize_script(
         request.text,
+        sentences=request.sentences or None,
+        voices=request.sentence_voices or None,
         paths=paths,
         task_id=request.task_id,
         voice=request.voice,
@@ -373,6 +382,10 @@ def produce_video(
 
     # 降级链自己产生的说明（与合成器的 warnings 汇总在一处，见下）
     warnings_seed: list[str] = []
+    if voice is not None:
+        # 音色退回（「这个音色这台引擎念不出来」）必须让人看得见：库里写着换音色
+        # 成功、听起来却是另一个嗓子时，这句话是唯一的线索。
+        warnings_seed.extend(voice.warnings)
 
     # 挑不到底片不再是失败：`clip=None` 会让合成器现造一块纯黑（§04.2.8.6）。
     # 被停用的从候选里剔除（`disabled=None` ⇒ 不排除任何东西）。

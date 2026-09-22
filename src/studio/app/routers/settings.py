@@ -25,6 +25,8 @@ from studio.app.schemas.settings import (
     LlmKeyOutcome,
     LlmKeyRequest,
     LlmProbeModel,
+    LlmProfileOutcome,
+    LlmProfileRequest,
     LlmSettingsResponse,
 )
 
@@ -54,6 +56,27 @@ def put_llm_key(request: Request, body: LlmKeyRequest) -> LlmKeyOutcome:
         reason=clean_reason(body.reason),
     )
     return LlmKeyOutcome.model_validate(payload)
+
+
+@router.put("/api/v1/settings/llm/profile", response_model=LlmProfileOutcome)
+def put_llm_profile(request: Request, body: LlmProfileRequest) -> LlmProfileOutcome:
+    """改写某条通道的模型名 / base_url（写回 ``config/llm.yaml``，**存完立刻生效**）。
+
+    为什么不是「把整份 llm.yaml 传上来」：那份文件每一行都带注释（通道用途、成本口径、
+    为什么 fallback 指向本地），整份替换等于让面板来负责保住它们 —— 它保不住。
+    这里只认三个字段，落盘时按行改写，段外的 routing / budget / 注释一个字节都不碰。
+
+    生效方式：网关每次取配置先做一次 ``stat``（``core.config.llm_config_provider``）
+    ⇒ 常驻的写稿 worker **不需要重启**。
+    """
+    state: AppState = request.app.state.studio
+    payload = settings_service_for(state).write_profile(
+        profile=body.profile,
+        model=body.model,
+        base_url=body.base_url,
+        reason=clean_reason(body.reason),
+    )
+    return LlmProfileOutcome.model_validate(payload)
 
 
 @router.post("/api/v1/settings/llm/probe", response_model=LlmProbeModel)

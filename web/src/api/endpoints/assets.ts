@@ -1,9 +1,16 @@
 // 素材库 REST 面（T4.8 · §3.3.14 / §4.3.1 / §04.5.12）。
 //
-// 六个端点对应面板上的六件事
+// 九个端点对应面板上的九件事
 // ------------------------
-// 看（`GET /assets`）、要数字（`GET /assets/stats`）、扫盘入库（`POST /assets/ingest`）、
-// 标记（`PATCH /assets/{id}`）、预览（`GET /assets/{id}/thumb`）、试听（`GET /assets/{id}/media`）。
+// 看（`GET /assets`）、要数字（`GET /assets/stats`）、**看一类的一页**（`GET /assets/list`）、
+// 扫盘入库（`POST /assets/ingest`）、标记（`PATCH /assets/{id}`）、预览（`GET /assets/{id}/thumb`）、
+// 试听（`GET /assets/{id}/media`）、上传（`POST /assets/upload` / `POST /assets/voice`）。
+//
+// 为什么"看"有两个端点
+// --------------------
+// `GET /assets` 一次给三类（每类的**全部**条目）：适合"我就要一眼看全"。
+// `GET /assets/list` 给一类的**一页**：素材库按类别分菜单之后，每一屏只需要自己那一类，
+// 而一柜子素材迟早会到几百条 —— 一次拖过来既慢又没人看得完。
 //
 // 为什么"扫盘"和"入库"是同一个端点
 // --------------------------------
@@ -22,7 +29,7 @@
 // 与响应一样从 `types.gen.ts` 里取（`BodyJson`）—— 手写一份形状，就等于在"后端改了
 // 字段名"这件事上自愿放弃了编译期保护。
 
-import { apiGet, apiPatch, apiPost, type OkJson } from "../http";
+import { apiDelete, apiGet, apiPatch, apiPost, apiUpload, type OkJson } from "../http";
 import type { paths } from "../types.gen";
 
 /** 某个操作的**请求体**类型（同样从生成的契约里取，不手写形状）。 */
@@ -42,11 +49,62 @@ export type AssetVoiceItem = Extract<AssetItem, { kind: "voice" }>;
 export type AssetKind = AssetItem["kind"];
 export type AssetThresholds = AssetsStats["thresholds"];
 
+/**
+ * 平铺素材（有文件名的那种）。
+ *
+ * 上传端点**不收** `voice`：音色是一个目录（`ref_NN` + `ref.txt`），它的表单字段
+ * （`voice_id` / `ref_text`）与跑酷 / BGM 完全不同，所以走自己的端点。用类型把这条
+ * 边界钉住，比在运行时 422 早一步。
+ */
+export type FlatKind = Exclude<AssetKind, "voice">;
+
+export type UploadResult = OkJson<"/api/v1/assets/upload", "post">;
+export type UploadedFile = UploadResult["files"][number];
+
+/** 一次平铺上传（面板把文件与当前设置攒成这个形状）。 */
+export interface UploadRequest {
+  kind: FlatKind;
+  files: File[];
+  /** 只对**本次新入库**的条目生效（与 `POST /assets/ingest` 同一条口径）。 */
+  license?: string | null;
+  /** 默认 `false` ⇒ 撞名逐条跳过，**绝不静默盖掉**已有素材。 */
+  overwrite?: boolean;
+}
+
+/** 一次音色上传：`voiceId` 是目录名，也**就是**素材 id。 */
+export interface VoiceUploadRequest {
+  voiceId: string;
+  files: File[];
+  /** 参考音文字稿，一行对应一段（第 1 行 ↔ `ref_01`）。 */
+  refText?: string | null;
+  license?: string | null;
+  overwrite?: boolean;
+}
+
+/** 一类素材的一页（素材库的每个菜单各取自己那一类）。 */
+export type AssetPage = OkJson<"/api/v1/assets/list", "get">;
+export type AssetPageItem = AssetPage["items"][number];
+export type AssetPageStats = AssetPage["stats"];
+
+/** 取一页的参数（`q` / `enabled` 是筛选，`page` 从 1 起）。 */
+export interface AssetPageParams {
+  kind: AssetKind;
+  page?: number;
+  page_size?: number;
+  /** 按 id 或标签筛（服务端不区分大小写）。 */
+  q?: string;
+  /** 只看启用 / 只看停用；`undefined` = 全部。 */
+  enabled?: boolean;
+}
+
 export type IngestReport = OkJson<"/api/v1/assets/ingest", "post">;
 export type IngestSection = IngestReport["sections"][number];
 export type ScannedAsset = IngestSection["assets"][number];
 export type IngestBody = BodyJson<"/api/v1/assets/ingest", "post">;
 export type AssetPatchBody = BodyJson<"/api/v1/assets/{asset_id}", "patch">;
+
+/** 一次删除的回执（`purged` 是**真的从盘上删掉的路径**，见后端 `AssetDeleteModel`）。 */
+export type AssetDeleteResult = OkJson<"/api/v1/assets/{asset_id}", "delete">;
 
 const ASSETS_PATH = "/api/v1/assets";
 
@@ -76,6 +134,113 @@ export function patchAsset(
   signal?: AbortSignal,
 ): Promise<AssetItem> {
   return apiPatch<AssetItem>(`${ASSETS_PATH}/${encodeURIComponent(assetId)}`, body, { signal });
+}
+
+/**
+ * 取一类素材的**一页**（素材库按类别分菜单 + 分页）。
+ *
+ * `page` 由**服务端钳**：翻过头（比如最后一页被筛空了）回的是最后一页 ——
+ * 所以调用方拿到结果后要把 `pageIndex` 同步成响应里的 `page`，不要自己算。
+ */
+export function fetchAssetPage(params: AssetPageParams, signal?: AbortSignal): Promise<AssetPage> {
+  return apiGet<AssetPage>(`${ASSETS_PATH}/list`, {
+    query: {
+      kind: params.kind,
+      page: params.page,
+      page_size: params.page_size,
+      q: params.q,
+      enabled: params.enabled,
+    },
+    signal,
+  });
+}
+
+/**
+ * 攒一个 multipart 表单。
+ *
+ * 三个"不发这个字段"的规则，各修一个坑：
+ * - `undefined` / `null` / `""` 一律**不发**：发一个空的 `license=` 会被后端当成
+ *   "本次授权是空字符串"，而不是"没填"；
+ * - `false` 不发（`overwrite` 缺席就是默认的 false，发 `"false"` 只是多几个字节）；
+ * - 文件用**同一个字段名**重复 append：FastAPI 侧的 `list[UploadFile]` 收的就是它。
+ */
+function uploadForm(
+  fields: Record<string, string | null | undefined | false>,
+  files: File[],
+): FormData {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined || value === null || value === "" || value === false) continue;
+    form.set(key, value);
+  }
+  for (const file of files) form.append("files", file);
+  return form;
+}
+
+/**
+ * 上传跑酷 / BGM 素材 —— **落盘与入库是一次请求**（§3.3.14）。
+ *
+ * 为什么不让面板"先传文件、再点一次扫描"：用户点的是"把这个文件放进素材库"，
+ * 两步的后果是面板上多出一批"盘上有、库里没有"的条目 —— 而那正是最容易被误读的
+ * 一种（"我明明传了啊"）。
+ */
+export function uploadAssets(request: UploadRequest, signal?: AbortSignal): Promise<UploadResult> {
+  return apiUpload<UploadResult>(
+    `${ASSETS_PATH}/upload`,
+    uploadForm(
+      {
+        kind: request.kind,
+        license: request.license,
+        overwrite: request.overwrite === true ? "true" : undefined,
+      },
+      request.files,
+    ),
+    { signal },
+  );
+}
+
+/**
+ * 删掉一条素材（裁定 369）。
+ *
+ * `purge` 决定**盘上那份**动不动：`false` 只删库里的行（重扫一次就回来），
+ * `true` 才连文件一起删。音色在面板上默认走 `true` —— 参考音目录留在盘上，
+ * 下次扫盘又会变成一条"盘上有、库里没有"，用户刚删掉的东西自己回来了。
+ *
+ * 为什么两个开关而不是一个：跑酷 / BGM 删了行，文件还在、出片照样挑得到（删的只是
+ * 留痕）；音色反过来，配音只认库里的行。把它们写成同一个动作，必然有一半是错的。
+ */
+export function deleteAsset(
+  assetId: string,
+  kind: AssetKind,
+  purge: boolean,
+  signal?: AbortSignal,
+): Promise<AssetDeleteResult> {
+  return apiDelete<AssetDeleteResult>(`${ASSETS_PATH}/${encodeURIComponent(assetId)}`, {
+    query: { kind, purge },
+    signal,
+  });
+}
+
+/**
+ * 上传一个音色的参考音（§4.3.1：2–3 段、每段 2–30 秒 —— 下限见裁定 369），并当场入库。
+ *
+ * 参考音的**顺序**由服务端按原文件名排序决定（`ref.txt` 第 N 行 ↔ 第 N 段），
+ * 面板要把"第 N 段 ← 哪个原文件"逐条显示出来。
+ */
+export function uploadVoice(request: VoiceUploadRequest, signal?: AbortSignal): Promise<UploadResult> {
+  return apiUpload<UploadResult>(
+    `${ASSETS_PATH}/voice`,
+    uploadForm(
+      {
+        voice_id: request.voiceId,
+        ref_text: request.refText,
+        license: request.license,
+        overwrite: request.overwrite === true ? "true" : undefined,
+      },
+      request.files,
+    ),
+    { signal },
+  );
 }
 
 /** 缩略图地址（交给 `<img src>`；**没有缩略图时是 404**，组件据此显示占位）。 */

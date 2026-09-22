@@ -34,7 +34,7 @@ from studio.core.config import PersonaConfig
 from studio.core.paths import StudioPaths
 from studio.core.proto import Severity
 from studio.db import connect, migrate
-from studio.db.repositories import FeedbackItemRepo, HotItemRepo, TopicRepo
+from studio.db.repositories import FeedbackItemRepo, HotItemRepo, OutlineRepo, TopicRepo
 from studio.domain.topics import (
     COMPLAINT_DEMOTION,
     DEDUP_SIMILARITY_PENALTY,
@@ -114,6 +114,10 @@ class Harness:
     @property
     def topics(self) -> TopicRepo:
         return TopicRepo(self.connection)
+
+    @property
+    def outlines(self) -> OutlineRepo:
+        return OutlineRepo(self.connection)
 
 
 def _planner_reply(hot_id: str, feedback_id: str) -> str:
@@ -387,3 +391,86 @@ async def test_ideator_isolates_a_failing_direction(harness: Harness) -> None:
 async def test_ideator_requires_a_known_batch(harness: Harness) -> None:
     with pytest.raises(Exception, match="选题批次"):
         await harness.service.run_ideator(persona=_persona(), batch_id=None)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 仓储 · 改一行 / 删一行（话题库可编辑、可删除）
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _seed(harness: Harness, title: str) -> str:
+    """借「人工加选题」落一条（它顺手懒建 ``manual`` 方向，省得这里再手搓一份方向载荷）。"""
+    return harness.service.add_manual_topic(title=title, angle="角度").topic_id
+
+
+def test_repo_patch_writes_only_the_named_columns(harness: Harness) -> None:
+    topic_id = _seed(harness, "一条老选题")
+
+    row = harness.topics.patch(topic_id=topic_id, changes={"title": "一条新选题", "similar_to": []})
+    assert row is not None
+    assert row.title == "一条新选题"
+    assert row.angle == "角度"  # 没点名的列一个字节都不动
+    assert row.similar_to == []  # 列表进、JSON 列出（与 ``insert_many`` 同一口径）
+
+    # 空 changes ⇒ 一个字节都不写，但照常把当前行读回来（形状永远一致）
+    assert harness.topics.patch(topic_id=topic_id, changes={}) is not None
+
+    # 流水线字段不在白名单里：``status`` 有自己的入口，不该从这里漏进来
+    with pytest.raises(ValueError):
+        harness.topics.patch(topic_id=topic_id, changes={"status": "queued"})
+
+
+def test_repo_delete_reports_whether_a_row_was_actually_removed(harness: Harness) -> None:
+    topic_id = _seed(harness, "待删选题")
+    assert harness.topics.delete(topic_id) is True
+    assert harness.topics.get(topic_id) is None
+    assert harness.topics.delete(topic_id) is False
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 仓储 · 二级产物（一个选题一行：再写一次是改写，不是又攒一版）
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_outline_repo_keeps_one_row_per_topic(harness: Harness) -> None:
+    topic_id = _seed(harness, "一条选题")
+
+    first = harness.outlines.upsert(
+        topic_id=topic_id,
+        title="旧标题",
+        core_argument="旧论点",
+        llm_model="m1",
+        prompt_version="v1",
+    )
+    again = harness.outlines.upsert(topic_id=topic_id, title="新标题", core_argument="新论点")
+
+    assert again.id == first.id  # 同一行被改写（不是又插一行）
+    assert again.title == "新标题"
+    assert again.core_argument == "新论点"
+    # 溯源信息在人工改写时**不覆盖**：这一行最初是哪个模型、哪版提示词产出的，查得到
+    assert again.llm_model == "m1"
+    assert again.prompt_version == "v1"
+    assert again.created_at == first.created_at
+
+    rows = harness.connection.execute("SELECT COUNT(*) FROM topic_outlines").fetchone()[0]
+    assert rows == 1
+
+
+def test_outline_repo_delete_reports_whether_a_row_was_actually_removed(
+    harness: Harness,
+) -> None:
+    topic_id = _seed(harness, "一条选题")
+    assert harness.outlines.delete(topic_id) is False  # 本来就没有
+
+    harness.outlines.upsert(topic_id=topic_id, title="标题", core_argument="论点")
+    assert harness.outlines.delete(topic_id) is True
+    assert harness.outlines.get(topic_id) is None
+
+
+def test_deleting_a_topic_takes_its_outline_with_it(harness: Harness) -> None:
+    """二级产物挂在选题上（``ON DELETE CASCADE``）：删了选题不留孤儿行。"""
+    topic_id = _seed(harness, "待删选题")
+    harness.outlines.upsert(topic_id=topic_id, title="标题", core_argument="论点")
+
+    assert harness.topics.delete(topic_id) is True
+    assert harness.outlines.get(topic_id) is None

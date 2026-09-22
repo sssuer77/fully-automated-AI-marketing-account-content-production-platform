@@ -204,6 +204,65 @@ export function apiDelete<T>(path: string, options: RequestOptions = {}): Promis
 }
 
 /**
+ * 上传的默认超时（T4.8：素材上传）。
+ *
+ * 它搬的是**字节**，不是"问一句状态"：默认那 10 秒在同一个局域网里传一个 200 MB 的
+ * 跑酷片段时**必然**超时，而超时的表现是"进度条走完了、什么都没发生"——最难查的一类。
+ */
+const UPLOAD_TIMEOUT_MS = 300_000;
+
+/**
+ * 发一个 multipart 表单（T4.8：素材上传）。
+ *
+ * **不要自己设 `content-type`**：multipart 的 boundary 是浏览器生成的，手写一个
+ * `content-type: multipart/form-data` 会让后端**解不出任何一个字段**，而报错只会说
+ * "缺 kind" —— 从"少一个请求头"查回"少一个请求头"要绕一大圈。
+ * 把 `FormData` 直接交给 `fetch`，它会自己补上带 boundary 的头。
+ *
+ * 与 `apiGet` / `sendJson` 共用超时与错误信封：这样"统一超时 / 统一错误信封 /
+ * 统一请求头"仍然只有一处需要维护（契约测试锁的就是这一点）。
+ */
+export async function apiUpload<T>(
+  path: string,
+  form: FormData,
+  options: RequestOptions = {},
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutMs = options.timeoutMs ?? UPLOAD_TIMEOUT_MS;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onAbort = (): void => controller.abort();
+  options.signal?.addEventListener("abort", onAbort);
+
+  try {
+    const response = await fetch(`${path}${buildQuery(options.query)}`, {
+      method: "POST",
+      headers: { accept: "application/json" },
+      body: form,
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    const payload: unknown = text ? JSON.parse(text) : null;
+    if (!response.ok) {
+      throw new ApiError(
+        errorMessage(payload, `${path} 返回 ${response.status}`),
+        response.status,
+        payload,
+      );
+    }
+    return payload as T;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new ApiError(`${path} 超时（${timeoutMs} ms）或被取消`, 0, null);
+    }
+    throw new ApiError(`${path} 请求失败：${String(error)}`, 0, null);
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+/**
  * 下载一个**流式**端点（T4.9 的 NDJSON 导出）。
  *
  * 与 `apiGet` 共用超时 / 错误信封，但返回文本与文件名而不是解析后的 JSON：

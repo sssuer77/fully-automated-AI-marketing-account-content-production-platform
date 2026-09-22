@@ -43,6 +43,7 @@ from studio.domain.scoring import (
     ReviewIssue,
 )
 from studio.domain.script import DirectorOutput, ScriptSegment, SentenceSpec, WriterOutput
+from studio.domain.task_service import HUMAN_GATE_KEY
 from studio.services import ReviewService, read_latest_review
 from tests.unit.agents.fakes import persona
 
@@ -359,6 +360,57 @@ class TestAutoPass:
         )
         assert report.action == "human_gate"
         assert TaskService(connection).get(task_id).status is TaskStatus.AWAITING_APPROVAL
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 人工送审标记：只认更严的方向
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestHumanGateMarker:
+    """``context_json.human_gate`` —— 人亲手点过「生成文案并送审」的那条任务。
+
+    全局那把旋钮（默认 ``grade_a``）是给**批量**流水线用的。人亲手点的送审必须
+    真的进闸：不然按钮就是假的（点了送审，确认闸里空空如也 —— 线上踩过一次）。
+    """
+
+    @pytest.mark.parametrize("policy", [AutoApprovePolicy.GRADE_A, AutoApprovePolicy.GRADE_AB])
+    async def test_a_manually_sent_script_always_reaches_the_gate(
+        self, connection: sqlite3.Connection, policy: AutoApprovePolicy
+    ) -> None:
+        task_id = seed_task(connection)
+        seed_script(connection, task_id)
+        TaskService(connection).require_human_gate(task_id)
+
+        report = await build(connection, policy=policy).review(task_id=task_id, persona=persona())
+
+        assert (report.action, report.grade) == ("human_gate", "A")
+        task = TaskService(connection).get(task_id)
+        assert task.status is TaskStatus.AWAITING_APPROVAL
+        assert task.approved_by is None
+
+    async def test_the_marker_does_not_loosen_the_off_policy(self, connection: sqlite3.Connection) -> None:
+        """标记只往严的方向拉：全局 ``off`` 时它不会把稿子放开。"""
+        task_id = seed_task(connection)
+        seed_script(connection, task_id)
+        TaskService(connection).require_human_gate(task_id)
+
+        report = await build(connection, policy=AutoApprovePolicy.OFF).review(
+            task_id=task_id, persona=persona()
+        )
+
+        assert report.action == "human_gate"
+
+    def test_the_marker_keeps_the_rest_of_the_context(self, connection: sqlite3.Connection) -> None:
+        """标记是**合并**进去的：``context_json`` 里还躺着成片路径、封面这些。"""
+        task_id = seed_task(connection)
+        tasks = TaskService(connection)
+        tasks.set_cover_path(task_id, cover_path=Path("/tmp/cover.png"))
+        tasks.require_human_gate(task_id)
+
+        context = tasks.get(task_id).context
+        assert context[HUMAN_GATE_KEY] is True
+        assert context["cover_path"] == "/tmp/cover.png"
 
 
 # ══════════════════════════════════════════════════════════════════════

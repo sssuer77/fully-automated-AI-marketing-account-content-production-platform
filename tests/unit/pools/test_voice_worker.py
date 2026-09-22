@@ -21,6 +21,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -46,6 +47,7 @@ from studio.pools.voice_worker import (
 )
 from studio.pools.worker_base import UnitContext, _Pulse
 from studio.services.log_service import LogService
+from studio.tts import engine_picker
 from studio.tts import sentence as sentence_module
 from studio.tts.cache import TtsCache
 from studio.tts.circuit import CircuitBreaker
@@ -308,7 +310,7 @@ def test_the_voice_pool_module_is_declared_for_the_launcher() -> None:
 
 def test_build_resolves_the_voice_at_assembly_time(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     """音色在**装配期**解析一次：放进单元里就是"每念一句先卡两秒"。"""
-    monkeypatch.setattr(voice_worker, "pick_voice", lambda: VOICE)
+    monkeypatch.setattr(engine_picker, "pick_voice", lambda: VOICE)
     handler = build_voice_handler(paths=rig.paths, connection=rig.connection)
     assert handler._voice == VOICE
     assert isinstance(handler._cache, TtsCache)
@@ -317,7 +319,7 @@ def test_build_resolves_the_voice_at_assembly_time(rig: Rig, monkeypatch: pytest
 
 def test_build_raises_when_no_voice_is_installed(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     """一个音色都没有 ⇒ **启动就报**，而不是"起来了，然后每句都失败"。"""
-    monkeypatch.setattr(voice_worker, "pick_voice", lambda: None)
+    monkeypatch.setattr(engine_picker, "pick_voice", lambda: None)
     with pytest.raises(StudioError) as excinfo:
         build_voice_handler(paths=rig.paths, connection=rig.connection)
     assert excinfo.value.code is ErrorCode.TTS_ENGINE_UNAVAILABLE
@@ -344,7 +346,7 @@ def test_the_resident_service_wins_when_it_is_up(rig: Rig, monkeypatch: pytest.M
         sample_rate=24_000,
         voices=("bigbear", "littlebear"),
     )
-    monkeypatch.setattr(voice_worker, "active_resident", lambda paths, **kwargs: found)
+    monkeypatch.setattr(engine_picker, "active_resident", lambda paths, **kwargs: found)
 
     handler = build_voice_handler(paths=rig.paths, connection=rig.connection)
 
@@ -356,8 +358,8 @@ def test_the_resident_service_wins_when_it_is_up(rig: Rig, monkeypatch: pytest.M
 def test_sapi_stays_the_fallback_when_the_service_is_down(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     """服务没起 ⇒ 退回 SAPI，**不是**报错退出：整条产线不能因为配音降级就停
     （§1.7；成片有人声优先于"用上模型"）。"""
-    monkeypatch.setattr(voice_worker, "active_resident", lambda paths, **kwargs: None)
-    monkeypatch.setattr(voice_worker, "pick_voice", lambda: VOICE)
+    monkeypatch.setattr(engine_picker, "active_resident", lambda paths, **kwargs: None)
+    monkeypatch.setattr(engine_picker, "pick_voice", lambda: VOICE)
 
     handler = build_voice_handler(paths=rig.paths, connection=rig.connection)
 
@@ -371,8 +373,8 @@ def test_an_injected_engine_is_never_probed_around(rig: Rig, monkeypatch: pytest
     def boom(paths: object, **kwargs: object) -> None:
         raise AssertionError("注入了引擎还去探服务")
 
-    monkeypatch.setattr(voice_worker, "active_resident", boom)
-    monkeypatch.setattr(voice_worker, "pick_voice", lambda: VOICE)
+    monkeypatch.setattr(engine_picker, "active_resident", boom)
+    monkeypatch.setattr(engine_picker, "pick_voice", lambda: VOICE)
     fake = FakeEngine()
 
     handler = build_voice_handler(paths=rig.paths, connection=rig.connection, engine=fake)
@@ -432,10 +434,10 @@ def _upgrading_pool(
     def probe(paths: object, **kwargs: object) -> ResidentStatus | None:
         return _resident(resident_voices) if state["up"] else None
 
-    monkeypatch.setattr(voice_worker, "active_resident", probe)
-    monkeypatch.setattr(voice_worker, "pick_voice", lambda: VOICE)
-    monkeypatch.setattr(voice_worker, "list_voices_cached", lambda: (VOICE, "Microsoft Huihui Desktop"))
-    monkeypatch.setattr(voice_worker, "ResidentEngine", _fake_resident_engine)
+    monkeypatch.setattr(engine_picker, "active_resident", probe)
+    monkeypatch.setattr(engine_picker, "pick_voice", lambda: VOICE)
+    monkeypatch.setattr(engine_picker, "list_voices_cached", lambda: (VOICE, "Microsoft Huihui Desktop"))
+    monkeypatch.setattr(engine_picker, "ResidentEngine", _fake_resident_engine)
     return state
 
 
@@ -491,9 +493,9 @@ def test_a_sleeping_resident_service_still_wins(rig: Rig, monkeypatch: pytest.Mo
         sample_rate=24_000,
         voices=("bigbear", "littlebear"),
     )
-    monkeypatch.setattr(voice_worker, "active_resident", lambda paths, **kwargs: sleeping)
-    monkeypatch.setattr(voice_worker, "pick_voice", lambda: VOICE)
-    monkeypatch.setattr(voice_worker, "ResidentEngine", _fake_resident_engine)
+    monkeypatch.setattr(engine_picker, "active_resident", lambda paths, **kwargs: sleeping)
+    monkeypatch.setattr(engine_picker, "pick_voice", lambda: VOICE)
+    monkeypatch.setattr(engine_picker, "ResidentEngine", _fake_resident_engine)
 
     handler = build_voice_handler(paths=rig.paths, connection=rig.connection)
 
@@ -510,9 +512,9 @@ def test_the_sapi_fallback_voice_is_resolved_only_once(rig: Rig, monkeypatch: py
         calls.append(VOICE)
         return VOICE
 
-    monkeypatch.setattr(voice_worker, "pick_voice", resolve)
+    monkeypatch.setattr(engine_picker, "pick_voice", resolve)
 
-    picker = voice_worker._EnginePicker(rig.paths)
+    picker = engine_picker.EnginePicker(rig.paths)
     assert picker()[1] == VOICE
     assert picker()[1] == VOICE
     assert calls == [VOICE]
@@ -549,6 +551,101 @@ def test_an_injected_engine_does_not_second_guess_the_voice(rig: Rig) -> None:
     handler = _handler(rig, fake)
 
     assert handler._current_engine() == (fake, VOICE, None)
+
+
+# ── 音色清单的时效（真机事故 2026-09-22 · 陷阱 203）────────────────────────
+
+
+def _voice_list_pool(
+    paths: StudioPaths,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    clock: dict[str, float],
+    probes: list[tuple[str, ...]],
+) -> tuple[engine_picker.EnginePicker, dict[str, tuple[str, ...]]]:
+    """搭一个"引擎自报的音色清单会变"的池子（导入 / 删除音色时就是它）。"""
+    now: dict[str, tuple[str, ...]] = {"voices": ("bigbear", "littlebear")}
+
+    def probe(paths: object, **kwargs: object) -> ResidentStatus | None:
+        probes.append(now["voices"])
+        return _resident(now["voices"])
+
+    monkeypatch.setattr(engine_picker, "active_resident", probe)
+    monkeypatch.setattr(engine_picker, "ResidentEngine", _fake_resident_engine)
+    monkeypatch.setattr(engine_picker, "pick_voice", lambda: VOICE)
+    # 换掉整个 `time` 模块而不是它的一个属性：`engine_picker.time` 不是它的显式导出
+    # （`--no-implicit-reexport` 下连读一下都算错），而它只用到 `monotonic` 一个函数。
+    monkeypatch.setattr(engine_picker, "time", SimpleNamespace(monotonic=lambda: clock["now"]))
+    return engine_picker.EnginePicker(paths), now
+
+
+def test_the_voice_list_is_not_frozen_at_assembly_time(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """★ 真机事故（2026-09-22）：刚导入的音色，池子**不认**。
+
+    用户导入 `sunxiaochuan`（入库、``/voices`` 里 ``usable: true``）之后点「开始配音」，
+    55 句里每一句都写着「音色 sunxiaochuan 当前引擎念不出来 ⇒ 改用 bigbear」——
+    池子拿的是**导入之前**那一份清单，而它兜底的那个音色刚被删掉 ⇒ 每句都失败 ⇒
+    熔断 ⇒ 18 句被静音占位。面板上"可用音色"里明明有它（那是**现问**的）。
+
+    冻住的是**档位**（裁定 314 的只升不降），不是清单：清单随素材库变。
+    """
+    clock = {"now": 1_000.0}
+    probes: list[tuple[str, ...]] = []
+    picker, now = _voice_list_pool(rig.paths, monkeypatch, clock=clock, probes=probes)
+
+    assert picker()[2] == ("bigbear", "littlebear")
+
+    now["voices"] = ("sunxiaochuan",)
+    clock["now"] += engine_picker.VOICE_LIST_TTL_SEC
+
+    engine, fallback, speakable = picker()
+
+    assert speakable == ("sunxiaochuan",), "导入之后池子必须认它，不然要重启进程才生效"
+    assert fallback == "sunxiaochuan"
+    assert engine is not None
+
+
+def test_the_voice_list_is_probed_at_most_once_per_ttl(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """TTL 之内不重复问：每句合成都会取几次引擎，逐次探测只会把日志刷满。"""
+    clock = {"now": 1_000.0}
+    probes: list[tuple[str, ...]] = []
+    picker, _now = _voice_list_pool(rig.paths, monkeypatch, clock=clock, probes=probes)
+
+    picker()
+    assert len(probes) == 1, "第一次取要问一遍"
+
+    clock["now"] += engine_picker.VOICE_LIST_TTL_SEC / 2
+    picker()
+    picker()
+    assert len(probes) == 1, "TTL 之内不再问"
+
+    clock["now"] += engine_picker.VOICE_LIST_TTL_SEC
+    picker()
+    assert len(probes) == 2, "TTL 过了要再问一遍"
+
+
+def test_a_failed_voice_refresh_keeps_the_old_list_and_the_tier(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """刷新时服务不可用 ⇒ 手里的清单照用（**不降档**，也不清空）。
+
+    降回 SAPI 会让同一支片子里两种嗓子（裁定 314）；而把清单清空会让
+    ``pick_speakable_voice`` 以为"这台引擎不肯自报家门"、原样放行 —— 于是
+    ``bigbear`` 被交给系统语音包，``SelectVoice`` 抛。
+    """
+    clock = {"now": 1_000.0}
+    probes: list[tuple[str, ...]] = []
+    picker, _now = _voice_list_pool(rig.paths, monkeypatch, clock=clock, probes=probes)
+    assert picker()[2] == ("bigbear", "littlebear")
+
+    monkeypatch.setattr(engine_picker, "active_resident", lambda paths, **kwargs: None)
+    clock["now"] += engine_picker.VOICE_LIST_TTL_SEC
+
+    engine, fallback, speakable = picker()
+
+    assert isinstance(engine, FakeResidentEngine), "档位不降"
+    assert speakable == ("bigbear", "littlebear")
+    assert fallback == "bigbear"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1083,7 +1180,7 @@ def test_oom_twice_switches_to_the_system_voice_pack(rig: Rig, monkeypatch: pyte
     常驻服务这台再试也没用（显存就那么多），系统语音包至少能保证成片有人声。
     """
     state = _upgrading_pool(monkeypatch)
-    monkeypatch.setattr(voice_worker, "ResidentEngine", lambda **_kwargs: FakeResidentOomEngine())
+    monkeypatch.setattr(engine_picker, "ResidentEngine", lambda **_kwargs: FakeResidentOomEngine())
     state["up"] = True
     handler = build_voice_handler(paths=rig.paths, connection=rig.connection)
     assert isinstance(handler._engine, FakeResidentOomEngine)

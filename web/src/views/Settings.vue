@@ -5,7 +5,14 @@
 // ① 现在配了没有、哪来的？—— 密钥状态（掩码 / 来源 / 文件路径 / 是否被环境变量盖住）；
 // ② 有哪几条通道、哪条能用、缺什么？—— 通道卡片（缺密钥的**直接写缺什么**）；
 // ③ 每个 Agent 走哪条？—— 路由表（只读：改它属于 `config/llm.yaml`）；
-// ④ 填完真的通吗？—— 「测试连接」（只发只读 GET，不产生一次计费调用）。
+// ④ 填完真的通吗？—— 「测试连接」（只发只读 GET，不产生一次计费调用）；
+// ⑤ 用哪个模型？—— 通道卡片上的模型名 / base_url（写回 `config/llm.yaml`）。
+//
+// 为什么模型名要能在面板上改
+// --------------------------
+// "这个月用哪个模型"是会变的（换服务商、换档位、临时降本），而 `llm.yaml` 是**入库**的
+// 基线配置。不能改的话，用户只能手改 YAML —— 而那份文件的注释正是"为什么这么配"的
+// 唯一记录，手改迟早改坏。后端按行改写，段外的 routing / budget / 注释一个字节都不碰。
 //
 // 三条必须写在面板上的话
 // ----------------------
@@ -21,8 +28,9 @@
 // 与人物库面板同一条：提交成功后要**主动清空**输入框（那把 Key 已经存进去了，
 // 留在输入框里既没必要、又会随截图 / 录屏一起漏出去）。显式事件更好控制这件事。
 
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 
+import type { LlmProfile } from "@/api/endpoints/settings";
 import AppButton from "@/components/AppButton.vue";
 import EmptyState from "@/components/EmptyState.vue";
 import PanelCard from "@/components/PanelCard.vue";
@@ -73,6 +81,64 @@ async function onClear(): Promise<void> {
     draft.value = "";
     reason.value = "";
   }
+}
+
+// ── 通道参数（模型名 / base_url）──────────────────────────────────────
+//
+// 草稿按通道名存：**用户正在敲的那一份不能被一次刷新冲掉**。所以只在"这条通道还没有
+// 草稿"时才用服务端值初始化，其余情况以草稿为准（还原按钮显式覆盖）。
+
+interface ProfileDraft {
+  model: string;
+  baseUrl: string;
+}
+
+const drafts = ref<Record<string, ProfileDraft>>({});
+
+watch(
+  () => settings.data?.profiles.map((item) => item.name).join("|") ?? "",
+  () => {
+    const next: Record<string, ProfileDraft> = { ...drafts.value };
+    for (const item of settings.data?.profiles ?? []) {
+      next[item.name] ??= { model: item.model, baseUrl: item.base_url };
+    }
+    drafts.value = next;
+  },
+  { immediate: true },
+);
+
+function draftOf(name: string): ProfileDraft {
+  return drafts.value[name] ?? { model: "", baseUrl: "" };
+}
+
+function onProfileInput(name: string, key: keyof ProfileDraft, event: Event): void {
+  const value = (event.target as HTMLInputElement).value;
+  drafts.value = { ...drafts.value, [name]: { ...draftOf(name), [key]: value } };
+}
+
+/** 草稿与服务端当前值不一致 ⇒ 这行有未保存的改动（按钮据此点亮）。 */
+function profileDirty(profile: LlmProfile): boolean {
+  const draft = draftOf(profile.name);
+  return draft.model.trim() !== profile.model || draft.baseUrl.trim() !== profile.base_url;
+}
+
+function profileReady(profile: LlmProfile): boolean {
+  const draft = draftOf(profile.name);
+  const filled = draft.model.trim() !== "" || draft.baseUrl.trim() !== "";
+  return filled && profileDirty(profile) && settings.savingProfile === null;
+}
+
+/** 把草稿还原成服务端当前值（放弃这一行的改动）。 */
+function restoreProfile(name: string): void {
+  const item = settings.data?.profiles.find((candidate) => candidate.name === name);
+  if (item === undefined) return;
+  drafts.value = { ...drafts.value, [name]: { model: item.model, baseUrl: item.base_url } };
+}
+
+async function onSaveProfile(profile: LlmProfile): Promise<void> {
+  const draft = draftOf(profile.name);
+  const ok = await settings.saveProfile(profile.name, draft.model, draft.baseUrl);
+  if (ok) restoreProfile(profile.name);
 }
 </script>
 
@@ -141,7 +207,10 @@ async function onClear(): Promise<void> {
       </div>
     </PanelCard>
 
-    <PanelCard title="通道" :subtitle="`默认通道：${settings.data?.default_profile ?? '-'}`">
+    <PanelCard
+      title="通道"
+      :subtitle="`默认通道：${settings.data?.default_profile ?? '-'} · 改完立刻生效，不需要重启`"
+    >
       <template #actions>
         <AppButton size="sm" :loading="settings.probing" @click="settings.runProbe()">
           测试连接
@@ -155,11 +224,41 @@ async function onClear(): Promise<void> {
       />
       <ul v-else class="profiles">
         <li v-for="profile in settings.data.profiles" :key="profile.name" class="profile">
-          <StatusDot :tone="profileTone(profile)" :label="profile.name" />
-          <span class="profile__model mono">{{ profile.engine }} · {{ profile.model }}</span>
-          <span v-if="profile.is_default" class="profile__badge">默认</span>
-          <span class="profile__detail">{{ profile.detail }}</span>
-          <span class="profile__url mono">{{ profile.base_url }}</span>
+          <div class="profile__head">
+            <StatusDot :tone="profileTone(profile)" :label="profile.name" />
+            <span class="profile__model mono">{{ profile.engine }} · {{ profile.model }}</span>
+            <span v-if="profile.is_default" class="profile__badge">默认</span>
+            <span class="profile__detail">{{ profile.detail }}</span>
+          </div>
+          <div class="profile__form">
+            <input
+              class="profile__field mono"
+              type="text"
+              spellcheck="false"
+              placeholder="模型名"
+              :value="draftOf(profile.name).model"
+              @input="onProfileInput(profile.name, 'model', $event)"
+            />
+            <input
+              class="profile__field profile__field--url mono"
+              type="text"
+              spellcheck="false"
+              placeholder="base_url"
+              :value="draftOf(profile.name).baseUrl"
+              @input="onProfileInput(profile.name, 'baseUrl', $event)"
+            />
+            <AppButton
+              size="sm"
+              :disabled="!profileReady(profile)"
+              :loading="settings.savingProfile === profile.name"
+              @click="onSaveProfile(profile)"
+            >
+              保存
+            </AppButton>
+            <AppButton size="sm" :disabled="!profileDirty(profile)" @click="restoreProfile(profile.name)">
+              还原
+            </AppButton>
+          </div>
         </li>
       </ul>
     </PanelCard>
@@ -298,6 +397,42 @@ async function onClear(): Promise<void> {
   padding: var(--space-2) var(--space-3);
   background: var(--bg-raised);
   border-radius: var(--radius-sm);
+}
+
+/* 通道卡片是**两行**的：上面一行说"现在是什么"，下面一行才是能改的输入框。
+   挤成一行的话，长模型名会把输入框压到看不见。 */
+.profile {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+
+.profile__head {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.profile__form {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.profile__field {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 var(--space-3);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  background: var(--bg-base, var(--bg-raised));
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.profile__field--url {
+  flex: 1.4;
 }
 
 .profile__model {

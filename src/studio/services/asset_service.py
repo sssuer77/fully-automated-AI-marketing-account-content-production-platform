@@ -27,9 +27,11 @@
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
+from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -72,15 +74,20 @@ from studio.db.repositories.audit_repo import AuditRepo
 from studio.services.log_service import LogSink
 
 __all__ = [
+    "DEFAULT_PAGE_SIZE",
     "LICENSES",
+    "MAX_PAGE_SIZE",
+    "AssetDelete",
     "AssetKindSection",
     "AssetLibrary",
+    "AssetPage",
     "AssetService",
     "DisabledAssets",
     "PendingAsset",
     "ScanReport",
     "ScanSection",
     "ScannedAsset",
+    "check_license",
     "disabled_assets",
     "row_to_dict",
 ]
@@ -93,9 +100,34 @@ LOG_SOURCE: str = "assets"
 #: ``audit_ops.target_type``
 TARGET_TYPE: str = "asset"
 
+#: 分页的默认每页条数（面板首屏那一页）。
+DEFAULT_PAGE_SIZE: int = 20
+
+#: 分页的**上限**。前端给 20 / 50 / 100 三个选项，但入参是任意的 ——
+#: 不钳住的话，一个 ``page_size=100000`` 就能让这个接口变成"把整库拖过来"，
+#: 而那正是分页要避免的事。
+MAX_PAGE_SIZE: int = 200
+
 #: DDL 的 ``license`` CHECK（§3.3.14）。写之前校验：让 CHECK 在运行期炸掉，
 #: 等于把"参数写错了"变成"入库失败"，而失败信息里只有一句 SQLite 的约束名。
 LICENSES: frozenset[str] = frozenset({"self_recorded", "authorized", "cc0", "purchased"})
+
+
+def check_license(license: str | None) -> None:
+    """授权类型必须落在 :data:`LICENSES` 里（``None`` = 本次不带，交给别处决定）。
+
+    为什么把它提出来当一个模块级函数：上传那条路要在**写盘之前**问清楚这件事。
+    写了一半才 422，会在素材目录里留下一批"没人认领"的文件 —— 而它们看上去
+    跟正常素材一模一样（这正是上传接口最容易踩的坑）。
+    """
+    if license is not None and license not in LICENSES:
+        raise StudioError(
+            f"授权类型不合法：{license}",
+            code=ErrorCode.ASSET_INVALID,
+            context={"license": license, "allowed": sorted(LICENSES)},
+            remediation="从 self_recorded / authorized / cc0 / purchased 里选一个",
+        )
+
 
 _AssetRow = BrollClipRow | BgmTrackRow | VoiceProfileRow
 type _AnyRepo = BrollClipRepo | BgmTrackRepo | VoiceProfileRepo
@@ -356,6 +388,94 @@ class AssetLibrary:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class AssetPage:
+    """一类素材的**一页**（T4.8：每个类别一个菜单，各自翻各自的页）。
+
+    为什么 ``stats`` 与 ``total`` 是两个数
+    --------------------------------------
+    ``stats`` 是**这一类的家底**（库里有几条、启用几条、多少时长），**不受筛选影响**；
+    ``total`` 是**这一页所在的筛选结果**有几条。合成一个数的后果很具体：筛到 3 条时
+    面板会说"这一类只有 3 条素材"，而库里明明有 60 条 —— 用户接着就去补素材了。
+
+    ``items`` 只装**这一页**。上一页 / 下一页的边界由 :meth:`AssetService.page` 钳住：
+    翻过头（比如删到只剩一页）返回的是最后一页，而不是一页空白。
+    """
+
+    kind: AssetKind
+    root: str
+    root_missing: bool
+    stats: AssetStats
+    usable: int
+    shortfall: str | None
+    disk_total: int
+    pending: tuple[PendingAsset, ...]
+    strays: tuple[str, ...]
+    items: tuple[_AssetRow, ...]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": str(self.kind),
+            "root": self.root,
+            "root_missing": self.root_missing,
+            "stats": self.stats.to_dict(),
+            "usable": self.usable,
+            "shortfall": self.shortfall,
+            "disk_total": self.disk_total,
+            "pending": [item.to_dict() for item in self.pending],
+            "strays": list(self.strays),
+            "items": [row_to_dict(item) for item in self.items],
+            "total": self.total,
+            "page": self.page,
+            "page_size": self.page_size,
+            "pages": self.pages,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AssetDelete:
+    """一次删除的结局（面板据此把"删了什么"说清楚）。
+
+    ``purged`` 是**真的从盘上删掉的那几个路径**（默认是空的）。它与请求里的
+    ``purge`` 分开报，因为两者可以不一致：``purge=true`` 但文件本来就不在盘上
+    ⇒ ``purge`` 是 ``true``、``purged`` 是空的。面板上写"已删除盘上文件"而其实
+    没删，与写"已从库里移除"而盘上还留着一个目录，是同一类谎话。
+    """
+
+    kind: AssetKind
+    id: str
+    purge: bool
+    purged: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": str(self.kind),
+            "id": self.id,
+            "purge": self.purge,
+            "purged": list(self.purged),
+        }
+
+
+def _matches(row: _AssetRow, query: str | None) -> bool:
+    """筛选：id 或标签里含这个子串（**不区分大小写**）。
+
+    为什么把标签也算进来：标签是**人自己填的**（"备用" / "雨天" / "夜景"），
+    按它筛是管理一柜子素材时最自然的一件事；而 id 是机器起的，记不住。
+    """
+    if query is None:
+        return True
+    wanted = query.strip().lower()
+    if wanted == "":
+        return True
+    if wanted in row.id.lower():
+        return True
+    return any(wanted in str(tag).lower() for tag in (getattr(row, "tags", None) or ()))
+
+
 def _on_disk(row: _AssetRow) -> bool:
     """这条素材的文件（音色是**目录**）还在不在盘上。
 
@@ -494,34 +614,7 @@ class AssetService:
         代价是这一屏多两次 ``iterdir`` 与每条一次 ``stat``。素材目录是人工维护的平铺
         目录（几十条），这个量级不值得为它做缓存，也不值得为它加一层"资产索引"。
         """
-        disabled = disabled_assets(self._connection)
-        sections: list[AssetKindSection] = []
-        for kind in AssetKind:
-            repo = self._repo(kind)
-            stats = repo.stats()
-            items: tuple[_AssetRow, ...] = tuple(repo.list_all())
-            discovery = discover(self._paths, kind)
-            known = {row.id for row in items}
-            pending = tuple(
-                PendingAsset(kind=kind, id=candidate.id, path=str(candidate.path))
-                for candidate in discovery.candidates
-                if candidate.id not in known
-            )
-            usable = self._usable(kind, discovery=discovery, stats=stats, disabled=disabled)
-            sections.append(
-                AssetKindSection(
-                    kind=kind,
-                    root=str(root_for(self._paths, kind)),
-                    stats=stats,
-                    items=items,
-                    shortfall=self._shortfall(kind, stats, usable=usable, pending=len(pending)),
-                    disk_total=len(discovery.candidates),
-                    pending=pending,
-                    strays=tuple(str(item) for item in discovery.strays),
-                    root_missing=discovery.root_missing,
-                    usable=usable,
-                )
-            )
+        sections = tuple(self._section(kind) for kind in AssetKind)
         broll = sections[0]
         # `degraded` 只回答一个问题：**出片会不会真的黑屏**。
         #
@@ -531,7 +624,7 @@ class AssetService:
         # "我到底该不该去补素材"。
         degraded = broll.usable == 0
         return AssetLibrary(
-            sections=tuple(sections),
+            sections=sections,
             degraded=degraded,
             note=(
                 "跑酷素材一条都挑不到（目录是空的，或者全被停用了）：当前为黑屏降级模式"
@@ -539,6 +632,85 @@ class AssetService:
                 if degraded
                 else None
             ),
+        )
+
+    def _section(self, kind: AssetKind) -> AssetKindSection:
+        """一类的「库里有什么 + 盘上有什么」（``library()`` 与 ``page()`` **共用这一份**）。
+
+        两处各写一遍的后果，是「一次拿全」与「一页一页看」在同一个类别上给出不同的
+        ``usable`` / ``shortfall`` —— 而面板正是拿它上色的。
+        """
+        repo = self._repo(kind)
+        stats = repo.stats()
+        items: tuple[_AssetRow, ...] = tuple(repo.list_all())
+        discovery = discover(self._paths, kind)
+        known = {row.id for row in items}
+        pending = tuple(
+            PendingAsset(kind=kind, id=candidate.id, path=str(candidate.path))
+            for candidate in discovery.candidates
+            if candidate.id not in known
+        )
+        usable = self._usable(
+            kind, discovery=discovery, stats=stats, disabled=disabled_assets(self._connection)
+        )
+        return AssetKindSection(
+            kind=kind,
+            root=str(root_for(self._paths, kind)),
+            stats=stats,
+            items=items,
+            shortfall=self._shortfall(kind, stats, usable=usable, pending=len(pending)),
+            disk_total=len(discovery.candidates),
+            pending=pending,
+            strays=tuple(str(item) for item in discovery.strays),
+            root_missing=discovery.root_missing,
+            usable=usable,
+        )
+
+    def page(
+        self,
+        kind: AssetKind,
+        *,
+        page: int = 1,
+        page_size: int = DEFAULT_PAGE_SIZE,
+        query: str | None = None,
+        enabled: bool | None = None,
+    ) -> AssetPage:
+        """一类素材的**一页**（每个类别一个菜单：跑酷 / 音色 / BGM 各看各的）。
+
+        三件事都在这里定，路由那一层不重复实现：
+
+        - ``page`` / ``page_size`` **钳在合法范围内**（页码翻过头 ⇒ 给最后一页，
+          而不是一页空白 —— "翻过头"最常见的成因正是"你刚删掉了一页的素材"）；
+        - ``query`` 匹配 id 或标签；
+        - ``enabled`` 三态（``None`` = 全部）：**筛的是"库里那一行"的开关**，
+          与"文件还在不在盘上"是两件事（后者由 ``items[].on_disk`` 单独报）。
+        """
+        section = self._section(kind)
+        size = max(1, min(int(page_size), MAX_PAGE_SIZE))
+        rows = tuple(
+            row
+            for row in section.items
+            if _matches(row, query) and (enabled is None or bool(row.enabled) == enabled)
+        )
+        total = len(rows)
+        pages = max(1, ceil(total / size))
+        current = min(max(int(page), 1), pages)
+        start = (current - 1) * size
+        return AssetPage(
+            kind=section.kind,
+            root=section.root,
+            root_missing=section.root_missing,
+            stats=section.stats,
+            usable=section.usable,
+            shortfall=section.shortfall,
+            disk_total=section.disk_total,
+            pending=section.pending,
+            strays=section.strays,
+            items=rows[start : start + size],
+            total=total,
+            page=current,
+            page_size=size,
+            pages=pages,
         )
 
     def get(self, kind: AssetKind, asset_id: str) -> _AssetRow | None:
@@ -586,13 +758,7 @@ class AssetService:
         license: str | None = None,
     ) -> ScanReport:
         """扫盘 + 入库（已入库的刷新机器事实，新的按 ``license`` 落库）。"""
-        if license is not None and license not in LICENSES:
-            raise StudioError(
-                f"授权类型不合法：{license}",
-                code=ErrorCode.ASSET_INVALID,
-                context={"license": license, "allowed": sorted(LICENSES)},
-                remediation="从 self_recorded / authorized / cc0 / purchased 里选一个",
-            )
+        check_license(license)
         report = self._run(kind=kind, ids=ids, license=license, dry_run=False)
         self._log_ingest(report)
         return report
@@ -866,6 +1032,78 @@ class AssetService:
         )
         return updated
 
+    def delete(
+        self,
+        kind: AssetKind,
+        asset_id: str,
+        *,
+        purge: bool = False,
+        actor: str = "user",
+        source: str = "webui",
+        request_id: str | None = None,
+    ) -> AssetDelete:
+        """把一条素材从库里删掉（``purge=True`` 时**连盘上那份一起删**）。
+
+        为什么默认不删盘上文件
+        ----------------------
+        §T4.8 的原文是"只允许禁用（不物理删除）"—— 误删一柜子素材不可逆。裁定 369
+        没有推翻它，而是把"删库里的行"与"删盘上的文件"**分成两件事**：默认只删行
+        （重扫一次就回来了），``purge=True`` 才是不可逆的那一步，面板上要二次确认。
+
+        音色为什么默认就该带上盘
+        ------------------------
+        跑酷 / BGM 删了行，文件还在、出片照样挑得到 —— 删掉的只是留痕。音色反过来：
+        参考音目录留在盘上，下次扫盘又会变成一条"盘上有、库里没有"，用户刚删掉的
+        东西自己回来了。所以音色的删除由面板默认勾上 ``purge``，把这件事说在明处，
+        而不是让服务端替他决定。
+        """
+        repo = self._repo(kind)
+        row = repo.get(asset_id)
+        if row is None:
+            raise _not_found(kind, asset_id)
+        if not repo.delete(asset_id):
+            # 行在、删不掉：并发下另一条请求刚删过。照样按"没这条"回，别假装成功。
+            raise _not_found(kind, asset_id)
+        purged = self._purge_files(kind, asset_id, row) if purge else ()
+        self._record(
+            kind,
+            asset_id,
+            action="asset.delete",
+            before={"enabled": row.enabled},
+            after={"purged": list(purged)},
+            actor=actor,
+            source=source,
+            request_id=request_id,
+        )
+        return AssetDelete(kind=kind, id=asset_id, purge=purge, purged=purged)
+
+    def _purge_files(self, kind: AssetKind, asset_id: str, row: _AssetRow) -> tuple[str, ...]:
+        """删掉盘上那份（**只在它确实落在这一类的根目录里时**）。
+
+        路径守卫不是形式主义：``row.path`` 是库里存的字符串，而音色的删除是
+        **递归删目录**。一条被手改过的、或从别的机器同步过来的行，会让"删一条素材"
+        变成"删掉另一个目录"。判据是"解析后的绝对路径**严格在**根目录之下"，
+        不满足就一个字节都不动，并留一条 warning。
+        """
+        root = root_for(self._paths, kind).resolve()
+        target = root / asset_id if kind is AssetKind.VOICE else Path(str(row.path))
+        try:
+            resolved = target.resolve()
+        except OSError as exc:
+            logger.warning("assets.purge_unresolvable", asset=asset_id, error=str(exc))
+            return ()
+        if resolved == root or not resolved.is_relative_to(root):
+            logger.warning("assets.purge_refused", asset=asset_id, path=str(resolved), root=str(root))
+            return ()
+        if not resolved.exists():
+            # 库里有一行、盘上早就没了：这不是错误（用户可能自己在资源管理器里删了）。
+            return ()
+        if kind is AssetKind.VOICE:
+            shutil.rmtree(resolved)
+        else:
+            resolved.unlink()
+        return (str(resolved),)
+
     # ── 内部 ────────────────────────────────────────────────────────
 
     def _repo(self, kind: AssetKind) -> _AnyRepo:
@@ -970,6 +1208,7 @@ class AssetService:
 
 #: 审计动作 ⇒ 日志里那句话的开头（审计页与日志面板看的是同一件事，用词要对得上）
 _ACTION_TEXT: dict[str, str] = {
+    "asset.delete": "素材删除",
     "asset.enable": "素材启用",
     "asset.disable": "素材停用",
     "asset.update": "素材更新",

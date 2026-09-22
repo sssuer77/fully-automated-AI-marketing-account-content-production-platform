@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,14 @@ from typing import Any
 import pytest
 
 from studio.core.errors import ErrorCode, StudioError
-from studio.tts.cosyvoice import CosyVoiceBackend, EngineState, looks_like_oom
+from studio.tts.cosyvoice import (
+    OUTPUT_PEAK_CEILING_DBFS,
+    CosyVoiceBackend,
+    EngineState,
+    looks_like_oom,
+    peak_trim_gain,
+)
+from studio.tts.sentence import CLIP_PEAK_DBFS
 
 
 @pytest.fixture
@@ -140,3 +148,30 @@ class TestOomDetection:
     @pytest.mark.parametrize("exc", [RuntimeError("shape mismatch"), ValueError("bad input")])
     def test_does_not_swallow_other_failures(self, exc: BaseException) -> None:
         assert looks_like_oom(exc) is False
+
+
+class TestOutputPeakCeiling:
+    """产物必须留余量（真机 2026-09-22：导入 `sunxiaochuan` 之后**每一句**都判破音）。"""
+
+    def test_a_hot_take_is_trimmed_down_to_the_ceiling(self) -> None:
+        """★ 峰值 −0.1 dBFS 的产物 ⇒ 压到 −1.0 dBFS。
+
+        这就是那一整条稿子「18 句跳过」的起点：门禁判它 ``TTS_CLIP``，而同一句
+        文本 + 同一个音色重试三次，输出当然一模一样 ⇒ 三次都失败 ⇒ 熔断。
+        """
+        hot = 10.0 ** (-0.1 / 20.0)
+        gain = peak_trim_gain(hot)
+        assert gain < 1.0
+        assert 20.0 * math.log10(hot * gain) == pytest.approx(OUTPUT_PEAK_CEILING_DBFS, abs=0.01)
+
+    def test_a_quiet_take_is_left_alone(self) -> None:
+        """只压不抬：引擎念得轻是素材的事，抬电平会把底噪一起抬起来。"""
+        assert peak_trim_gain(10.0 ** (-24.0 / 20.0)) == 1.0
+
+    def test_a_take_exactly_on_the_ceiling_is_left_alone(self) -> None:
+        """落在上限上的不压 —— 压一个恰好等于上限的值会把它推到上限之下，白损失电平。"""
+        assert peak_trim_gain(10.0 ** (OUTPUT_PEAK_CEILING_DBFS / 20.0)) == 1.0
+
+    def test_the_ceiling_leaves_room_under_the_clip_gate(self) -> None:
+        """上限必须**低于**句子级爆音门禁 —— 否则压完还是判破音，那就白压了。"""
+        assert OUTPUT_PEAK_CEILING_DBFS < CLIP_PEAK_DBFS

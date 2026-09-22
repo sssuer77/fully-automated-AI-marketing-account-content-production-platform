@@ -136,6 +136,17 @@ class StudioPaths:
         return self.home / "prompts"
 
     @property
+    def prompts_override_dir(self) -> Path:
+        """提示词**运行期覆盖**目录（``data/prompts/<相对路径>``）。
+
+        为什么不让人直接改 ``prompts/``：那两份文件是**入库的**，而且
+        ``manifest.yaml`` 的 ``sha256`` 逐字校验它们（P5「同输入同产物」）。
+        面板上改一个提示词就动仓库文件，等于让「这份产物是哪版提示词生成的」
+        从此对不上 git —— 而覆盖层是运行期产物，落 ``data/``（不入库）。
+        """
+        return self.data_dir / "prompts"
+
+    @property
     def glossary_file(self) -> Path:
         """读音纠正词表（T2.5 · §04.3.6）：`prompts/shared/glossary.yaml`。
 
@@ -428,6 +439,7 @@ class StudioPaths:
             self.cache_dir,
             self.tts_cache_dir,
             self.phash_cache_dir,
+            self.prompts_override_dir,
         )
 
     def ensure_runtime_dirs(self) -> list[Path]:

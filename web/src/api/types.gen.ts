@@ -87,6 +87,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/assets/list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Assets
+         * @description **一类素材的一页**（T4.8：素材库按类别分菜单 + 分页）。
+         *
+         *     与 ``GET /api/v1/assets`` 的分工
+         *     --------------------------------
+         *     那个端点一次给三类（每类的**全部**条目），适合"我就要一眼看全"；这个端点给一类
+         *     的**一页**，适合"我要管理一柜子素材"。两者的 ``usable`` / ``shortfall`` 走的是
+         *     **同一份** ``_section()``，所以同一类在两处不会给出不同的颜色。
+         *
+         *     为什么 ``page`` / ``page_size`` 在**入参**就卡范围
+         *     -------------------------------------------------
+         *     ``page_size`` 不设上限的话，一个 ``page_size=100000`` 就把这个接口变回"把整库拖
+         *     过来"—— 而那正是分页要避免的事。越界的页码**不报错**（服务层钳到最后一页）：
+         *     "翻过头"最常见的成因是"你刚把最后一页的素材停用/筛掉了"，报错只会让人以为接口坏了。
+         */
+        get: operations["list_assets_api_v1_assets_list_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/assets/stats": {
         parameters: {
             query?: never;
@@ -107,6 +139,72 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/assets/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload Assets
+         * @description 把文件传进跑酷 / BGM 目录，并**当场入库**（§3.3.14）。
+         *
+         *     为什么"上传"与"入库"是同一个动作
+         *     --------------------------------
+         *     用户点的是"把这个文件放进素材库"，不是"把文件放进一个目录、然后我再去点一次
+         *     扫描"。分成两步的后果，是面板上多出一批"盘上有、库里没有"的条目 —— 而那正是
+         *     最容易被误读的一种（"我明明传了啊"）。
+         *
+         *     为什么 `license` 在写盘**之前**校验
+         *     -----------------------------------
+         *     写了一半才 422，素材目录里会留下一批"没人认领"的文件，而它们看上去和正常素材
+         *     一模一样。
+         *
+         *     为什么冲突不是整体 409
+         *     ----------------------
+         *     一次拖 20 个文件进去，其中 1 个撞名就整批失败是最糟的交互。撞名的那个按
+         *     ``skipped`` 逐条报出来（带上原因），其余照常落盘 —— 与扫盘"坏文件不中断整批"
+         *     同一条。
+         */
+        post: operations["upload_assets_api_v1_assets_upload_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assets/voice": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload Voice
+         * @description 传一个音色的参考音（§4.3.1：``ref_01`` … + ``ref.txt``），并当场入库。
+         *
+         *     ``voice_id`` 就是目录名，也**就是**素材 id：与 ``ASSET_ID_PATTERN`` 同一条正则
+         *     （id 会进 SQL 参数、会拼进路径、会在 URL 里当 query，一个 ``..`` 都是事故）。
+         *
+         *     顺序为什么要排序
+         *     ----------------
+         *     ``ref.txt`` 的第 N 行对应第 N 段参考音，顺序是**契约的一部分**。而用户在文件
+         *     选择框里没法指定顺序，浏览器给的顺序每台机器还不一样 —— 按原文件名排序至少是
+         *     **可预期**的，并且面板会把"第 N 段 ← 哪个原文件"逐条报出来。
+         */
+        post: operations["upload_voice_api_v1_assets_voice_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/assets/{asset_id}": {
         parameters: {
             query?: never;
@@ -117,7 +215,14 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Asset
+         * @description 删掉一条素材（裁定 369：**默认只删库里的行**，``purge=true`` 才动盘上的文件）。
+         *
+         *     面板上这件事是二次确认的，而且对音色默认勾上 ``purge`` —— 理由见模块头部那条
+         *     裁定：音色不删盘，下次扫盘它自己就回来了。
+         */
+        delete: operations["delete_asset_api_v1_assets__asset_id__delete"];
         options?: never;
         head?: never;
         /**
@@ -758,6 +863,70 @@ export interface paths {
          */
         post: operations["requeue_dead_api_v1_pools_requeue_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/prompts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Prompts
+         * @description 全部提示词条目（含**生效**正文与 ``prompt_version``）。
+         */
+        get: operations["list_prompts_api_v1_prompts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/prompts/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Save Prompt
+         * @description 存一份覆盖：仓库文件一个字节都不动，改的是 ``data/prompts/`` 那一份。
+         *
+         *     校验不过 ⇒ 422 ``VALIDATION_FAILED``，**一个字节都不落盘**（``context.unknown``
+         *     会点名"你用了哪个没人填的变量"）。提交的内容与生效那份逐字相同 ⇒
+         *     ``changed=[]``、不写盘、不留痕。
+         */
+        put: operations["save_prompt_api_v1_prompts__name__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/prompts/{name}/override": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Restore Prompt
+         * @description 还原一段（删掉覆盖文件 ⇒ 退回仓库那一份）。**幂等**：本来就没覆盖也回 200。
+         */
+        delete: operations["restore_prompt_api_v1_prompts__name__override_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1562,6 +1731,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/settings/llm/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Llm Profile
+         * @description 改写某条通道的模型名 / base_url（写回 ``config/llm.yaml``，**存完立刻生效**）。
+         *
+         *     为什么不是「把整份 llm.yaml 传上来」：那份文件每一行都带注释（通道用途、成本口径、
+         *     为什么 fallback 指向本地），整份替换等于让面板来负责保住它们 —— 它保不住。
+         *     这里只认三个字段，落盘时按行改写，段外的 routing / budget / 注释一个字节都不碰。
+         *
+         *     生效方式：网关每次取配置先做一次 ``stat``（``core.config.llm_config_provider``）
+         *     ⇒ 常驻的写稿 worker **不需要重启**。
+         */
+        put: operations["put_llm_profile_api_v1_settings_llm_profile_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tasks/{task_id}/approve": {
         parameters: {
             query?: never;
@@ -1596,6 +1792,40 @@ export interface paths {
          * @description 放弃：``awaiting_approval → discarded``（可经 ``/rescue`` 捞回）。
          */
         post: operations["discard_task_api_v1_tasks__task_id__discard_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tasks/{task_id}/enqueue_voice": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enqueue Voice Endpoint
+         * @description ★ 「开始配音」：把这条任务**待配音的句子一次**投进 voice 池（**立刻返回**）。
+         *
+         *     为什么要有这个端点
+         *     ------------------
+         *     ``queued_voice`` 只是**一个状态**：把它推到 ``voicing`` 需要**投递**，而投递原先只
+         *     写在 ``pipeline_service.run_task`` 里（CLI 与「一键出片」会走那条路）。于是面板上
+         *     只剩每一行那颗「重配」—— 54 句就是 54 次点击，而用户完全有理由以为"这就是设计"
+         *     （真机上的原话：**"这是要我一个一个点重配吗"**）。
+         *
+         *     它**不合成**（与单句重配同一条）：投完就返回，真正念的是 voice 池；面板随后轮询
+         *     ``GET /sentences`` 看进度。投递 54 句是这个函数里最快的部分，念完要十几分钟 ——
+         *     把它们塞进同一个请求，一次点击就会变成一个挂住十几分钟的请求。
+         *
+         *     只认 ``queued_voice``（不是就 409）：``voicing`` 下再投一次是空操作（幂等键让
+         *     ``enqueue`` 什么都不做），返回 0 又不报错，面板上就是"点了没反应"。
+         */
+        post: operations["enqueue_voice_endpoint_api_v1_tasks__task_id__enqueue_voice_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1719,11 +1949,43 @@ export interface paths {
          */
         get: operations["list_directions_api_v1_topics_directions_get"];
         put?: never;
-        post?: never;
+        /**
+         * Add Manual Direction
+         * @description 人工写一个方向（**不经模型、不烧 token**）。缺省落进最近一批。
+         */
+        post: operations["add_manual_direction_api_v1_topics_directions_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/topics/directions/{direction_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Direction
+         * @description 删一个方向，**它下面的候选一起走**（级联）。
+         *
+         *     唯一拦下的情形：那个方向下已经有候选派生了任务 —— 那种候选被级联删掉之后，
+         *     它那条任务就再也写不出稿（不是门禁，是断链）。响应里带上 ``cascaded_topics``
+         *     让人看得见这一下删掉了多少条。
+         */
+        delete: operations["delete_direction_api_v1_topics_directions__direction_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Patch Direction
+         * @description 改一个方向（**只改显式给过的字段**；空 PATCH 在契约层就拦掉了）。
+         */
+        patch: operations["patch_direction_api_v1_topics_directions__direction_id__patch"];
         trace?: never;
     };
     "/api/v1/topics/ideate": {
@@ -1785,6 +2047,97 @@ export interface paths {
          */
         post: operations["select_topics_api_v1_topics_select_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/topics/{topic_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Topic
+         * @description 删一条选题（**已经派生过任务的那条不给删** —— 删了那条任务就再也写不出稿）。
+         */
+        delete: operations["delete_topic_api_v1_topics__topic_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Patch Topic
+         * @description 改一条选题（**只改显式给过的字段**；改标题会重算去重指纹）。
+         *
+         *     空 PATCH 在契约层就拦掉了（``TopicPatchBody`` 要求"至少给一个字段"）；而
+         *     "给了但跟原来一样"由服务层判 —— 那种情况回当前行、``changed`` 为空、不留痕，
+         *     不是错误（与 ``assets`` 的 PATCH 同一取舍）。
+         */
+        patch: operations["patch_topic_api_v1_topics__topic_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/topics/{topic_id}/draft-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Draft Topic For Review
+         * @description 选中一条候选 ⇒ 生成完整文案 ⇒ 移交审核（**长任务**：Director + Writer）。
+         *
+         *     与 ``select`` 的 ``draft_now`` 差在哪：那一个是"批量勾选，顺手写稿"（结果停在
+         *     ``drafting``，交给写稿池），这一个是**单条候选的下一步**（写完之后推到
+         *     ``reviewing``，写稿池接着跑评分 + 确认闸）。面板上这两个按钮挨着，但语义不同，
+         *     所以不合并。
+         *
+         *     共用单飞守卫：它和 ``analyze`` / ``ideate`` / ``outline`` 一样是"点下去等一会儿"
+         *     的长任务，同时跑只会让日志与预算互相打架。
+         */
+        post: operations["draft_topic_for_review_api_v1_topics__topic_id__draft_review_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/topics/{topic_id}/outline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Topic Outline
+         * @description 读一个选题的二级产物（没有 ⇒ ``outline=null``，**不是 404**）。
+         */
+        get: operations["get_topic_outline_api_v1_topics__topic_id__outline_get"];
+        /**
+         * Save Topic Outline
+         * @description 手工定稿二级产物（**一次 LLM 都不调**：没配 Key 也能用）。
+         */
+        put: operations["save_topic_outline_api_v1_topics__topic_id__outline_put"];
+        /**
+         * Generate Topic Outline
+         * @description 让模型给这条选题定标题与核心论点（**长任务**：一次 LLM）。
+         *
+         *     与 ``analyze`` / ``ideate`` 共用同一把单飞守卫：三者都是「点下去等一会儿」的长任务，
+         *     同时跑只会让日志与预算互相打架。
+         */
+        post: operations["generate_topic_outline_api_v1_topics__topic_id__outline_post"];
+        /**
+         * Clear Topic Outline
+         * @description 清空二级产物（**幂等**）。清掉之后三级退回「按选题自由发挥」。
+         */
+        delete: operations["clear_topic_outline_api_v1_topics__topic_id__outline_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2155,6 +2508,25 @@ export interface components {
             warnings: components["schemas"]["ProblemModel"][];
         };
         /**
+         * AssetDeleteModel
+         * @description 一次删除的结局（**库里那一行没了**，盘上那份要看 ``purged``）。
+         *
+         *     ``purge`` 是**请求里**那个开关，``purged`` 是**真的从盘上删掉的路径**。两者
+         *     分开报，因为可以不一致：``purge=true`` 但文件本来就不在盘上 ⇒ 前者 ``true``、
+         *     后者是空表。面板上写"盘上文件已删除"而其实什么都没删，与写"已移除"而盘上
+         *     还留着一个目录，是同一类谎话。
+         */
+        AssetDeleteModel: {
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Purge */
+            purge: boolean;
+            /** Purged */
+            purged: string[];
+        };
+        /**
          * AssetIngestRequest
          * @description 扫盘 / 入库请求。
          *
@@ -2254,6 +2626,57 @@ export interface components {
             note: string | null;
             /** Sections */
             sections: components["schemas"]["AssetKindSectionModel"][];
+        };
+        /**
+         * AssetPageModel
+         * @description 一类素材的**一页**（T4.8：跑酷 / 音色 / BGM **各一个菜单**，各翻各的页）。
+         *
+         *     为什么不是一个菜单看三类
+         *     ------------------------
+         *     三类素材的可管理字段**本来就不一样**（跑酷有可用区间与 `has_text`，BGM 有
+         *     `bpm` / `mood` / `loopable`，音色有 `ref_count` / `text_path`），放在一屏里
+         *     只能把三类字段摊成一张"大部分格子是空的"大表。分菜单之后，每一屏的表头与编辑器
+         *     都只画这一类真正有的东西。
+         *
+         *     ``stats`` 与 ``total`` **是两个数**，不能合并
+         *     -------------------------------------------
+         *     - ``stats``：这一类的**家底**（库里有几条 / 启用几条 / 共多少时长），**不受筛选影响**；
+         *     - ``total``：**这一页所在的筛选结果**有几条。
+         *
+         *     合成一个数的后果很具体：筛出 3 条时面板会说"这一类只有 3 条素材"，而库里明明有
+         *     60 条 —— 用户接着就去补素材了。
+         *
+         *     ``page`` 是**服务端钳过**的页码：翻过头（比如最后一页被删空了）返回的是最后一页，
+         *     而不是一页空白。前端照着它画页码，不要自己算。
+         */
+        AssetPageModel: {
+            /** Disk Total */
+            disk_total: number;
+            /** Items */
+            items: (components["schemas"]["BrollItemModel"] | components["schemas"]["BgmItemModel"] | components["schemas"]["VoiceItemModel"])[];
+            /** Kind */
+            kind: string;
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+            /** Pages */
+            pages: number;
+            /** Pending */
+            pending: components["schemas"]["PendingAssetModel"][];
+            /** Root */
+            root: string;
+            /** Root Missing */
+            root_missing: boolean;
+            /** Shortfall */
+            shortfall: string | null;
+            stats: components["schemas"]["AssetStatsModel"];
+            /** Strays */
+            strays: string[];
+            /** Total */
+            total: number;
+            /** Usable */
+            usable: number;
         };
         /**
          * AssetPatchRequest
@@ -2503,6 +2926,35 @@ export interface components {
             /** Use Count */
             use_count: number;
         };
+        /** Body_upload_assets_api_v1_assets_upload_post */
+        Body_upload_assets_api_v1_assets_upload_post: {
+            /** Files */
+            files: string[];
+            kind: components["schemas"]["AssetKind"];
+            /** License */
+            license?: string | null;
+            /**
+             * Overwrite
+             * @default false
+             */
+            overwrite: boolean;
+        };
+        /** Body_upload_voice_api_v1_assets_voice_post */
+        Body_upload_voice_api_v1_assets_voice_post: {
+            /** Files */
+            files: string[];
+            /** License */
+            license?: string | null;
+            /**
+             * Overwrite
+             * @default false
+             */
+            overwrite: boolean;
+            /** Ref Text */
+            ref_text?: string | null;
+            /** Voice Id */
+            voice_id: string;
+        };
         /**
          * BoundModel
          * @description 一个数值字段的上下限（``None`` = 这一侧没约束）。
@@ -2747,6 +3199,32 @@ export interface components {
             title: string;
         };
         /**
+         * DirectionDeleteResult
+         * @description 删掉的那个方向 + **被它带走的候选条数**（级联删除要如实报数）。
+         */
+        DirectionDeleteResult: {
+            /**
+             * Cascaded Topics
+             * @default 0
+             */
+            cascaded_topics: number;
+            /** Deleted */
+            deleted: boolean;
+            /** Direction Id */
+            direction_id: string;
+            /** Title */
+            title: string;
+        };
+        /**
+         * DirectionEditResult
+         * @description 改完之后的那一行 + 改了哪几列（``changed`` 为空 ⇒ 什么都没变）。
+         */
+        DirectionEditResult: {
+            /** Changed */
+            changed: string[];
+            direction: components["schemas"]["DirectionCard"];
+        };
+        /**
          * DirectionItem
          * @description 方向卡片 + 它下面的选题计数（"这个方向出了 4 条，选中 1 条"）。
          */
@@ -2841,6 +3319,32 @@ export interface components {
             title: string;
         };
         /**
+         * DirectionPatchBody
+         * @description 改一个方向（**只列你要改的字段**；与 ``TopicPatchBody`` 同一手法）。
+         */
+        DirectionPatchBody: {
+            /**
+             * Priority
+             * @description 越小越优先
+             */
+            priority?: number | null;
+            /**
+             * Rationale
+             * @description 为什么做这个方向
+             */
+            rationale?: string | null;
+            /**
+             * Risk Flags
+             * @description 风险标记
+             */
+            risk_flags?: string[] | null;
+            /**
+             * Title
+             * @description 方向标题
+             */
+            title?: string | null;
+        };
+        /**
          * DiscardBody
          * @description 放弃（``awaiting_approval → discarded``）。可被 :class:`RescueBody` 捞回。
          */
@@ -2911,6 +3415,87 @@ export interface components {
              * @default 0
              */
             word_count: number;
+        };
+        /**
+         * DraftReviewResult
+         * @description 「生成完整文案并移交审核」的结果（面板上选中一条候选的那一下）。
+         *
+         *     ``reused=true`` 表示库里**已经有生效稿件**，这一次一个 token 都没烧 ——
+         *     面板据此把提示语从"已生成"改成"已有稿件，直接送审"，而不是假装又写了一遍。
+         */
+        DraftReviewResult: {
+            /** Error Code */
+            error_code?: string | null;
+            /** Error Message */
+            error_message?: string | null;
+            /** Ok */
+            ok: boolean;
+            /**
+             * Reused
+             * @default false
+             */
+            reused: boolean;
+            /** Script Id */
+            script_id?: string | null;
+            /**
+             * Sentence Count
+             * @default 0
+             */
+            sentence_count: number;
+            /** Task Id */
+            task_id: string;
+            /**
+             * Task Status
+             * @default
+             */
+            task_status: string;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /** Topic Id */
+            topic_id: string;
+            /** Warnings */
+            warnings?: string[];
+            /**
+             * Word Count
+             * @default 0
+             */
+            word_count: number;
+        };
+        /**
+         * EnqueueVoiceResponse
+         * @description 「开始配音」的结果：把这条任务待配音的句子一次投进 voice 池。
+         *
+         *     ``queued`` 与 ``outstanding`` 是**两个数**，面板两个都要说：前者是"这一下真投出去
+         *     几条"，后者是"这条任务还有几条没定局"。只有前者，用户看到 0 会以为按钮坏了
+         *     （其实那 54 条早就在池子里排着）。
+         */
+        EnqueueVoiceResponse: {
+            /**
+             * Hint
+             * @default 作业已经排进 voice 池：常驻池在跑就会接着念，这一屏每 1 秒自己刷新一次。全部定局之后，去「一键出片」把母带与渲染推完（那一步会出 final.mp4）
+             */
+            hint: string;
+            /** Outstanding */
+            outstanding: number;
+            progress: components["schemas"]["SentenceProgressModel"];
+            /** Queued */
+            queued: number;
+            /** Status */
+            status: string;
+            /** Status Before */
+            status_before: string;
+            /** Task Id */
+            task_id: string;
+            /**
+             * Timeline Stale
+             * @default false
+             */
+            timeline_stale: boolean;
+            /** Timeline Total Ms */
+            timeline_total_ms?: number | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -3304,6 +3889,55 @@ export interface components {
             usable: boolean;
         };
         /**
+         * LlmProfileOutcome
+         * @description 一次通道参数写入的结果 = **刷新后的整屏** + 这次改了什么。
+         *
+         *     与 :class:`LlmKeyOutcome` 同一条：面板写完要立刻显示新模型名，只回 ``changed``
+         *     的话前端还得再发一次 GET，那两次请求之间显示的是**旧**模型。
+         */
+        LlmProfileOutcome: {
+            /** Base Url */
+            base_url: string;
+            /** Changed */
+            changed: boolean;
+            /** Default Profile */
+            default_profile: string;
+            /** Generated At */
+            generated_at: string;
+            key: components["schemas"]["LlmKeyModel"];
+            limits: components["schemas"]["LlmLimitsModel"];
+            /** Model */
+            model: string;
+            /** Notes */
+            notes: string[];
+            /** Profile */
+            profile: string;
+            /** Profiles */
+            profiles: components["schemas"]["LlmProfileModel"][];
+            /** Reason */
+            reason: string | null;
+            /** Routing */
+            routing: components["schemas"]["LlmRoutingModel"][];
+        };
+        /**
+         * LlmProfileRequest
+         * @description 改写某条通道的模型名 / base_url。
+         *
+         *     ``model`` 与 ``base_url`` **至少要给一个**：两个都不给 ⇒ 422（不知道你想改什么）。
+         *     与 :class:`LlmKeyRequest` 的 ``clear`` 同一条理由 —— "少带一个字段"绝不能变成
+         *     "把某个值改成空"。
+         */
+        LlmProfileRequest: {
+            /** Base Url */
+            base_url?: string | null;
+            /** Model */
+            model?: string | null;
+            /** Profile */
+            profile: string;
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
          * LlmRoutingModel
          * @description 一个 Agent 走哪条通道（只读展示；改它属于 ``llm.yaml``，不在这一屏）。
          */
@@ -3383,6 +4017,41 @@ export interface components {
             unit_ref?: string | null;
             /** Worker Id */
             worker_id?: string | null;
+        };
+        /**
+         * ManualDirectionBody
+         * @description 人工写一个方向（**不经模型**；与「人工加选题」同一手法）。
+         */
+        ManualDirectionBody: {
+            /**
+             * Batch Id
+             * @description 落进哪个批次（缺省=最近一批）
+             */
+            batch_id?: string | null;
+            /**
+             * Priority
+             * @description 越小越优先（模型产出的是 100）
+             * @default 100
+             */
+            priority: number;
+            /**
+             * Rationale
+             * @description 为什么做这个方向
+             * @default
+             */
+            rationale: string;
+            /**
+             * Title
+             * @description 方向标题
+             */
+            title: string;
+        };
+        /**
+         * ManualDirectionResult
+         * @description 人工写方向的结果（返回**落库之后**那一行）。
+         */
+        ManualDirectionResult: {
+            direction: components["schemas"]["DirectionCard"];
         };
         /**
          * ManualPoolTaskModel
@@ -3565,6 +4234,91 @@ export interface components {
              * @default false
              */
             yielded: boolean;
+        };
+        /**
+         * OutlineItem
+         * @description 二级产物（``topic_outlines`` 的展示字段）。
+         */
+        OutlineItem: {
+            /** Core Argument */
+            core_argument: string;
+            /** Llm Model */
+            llm_model?: string | null;
+            /** Prompt Version */
+            prompt_version?: string | null;
+            /** Title */
+            title: string;
+            /** Topic Id */
+            topic_id: string;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /**
+         * OutlineResult
+         * @description 一次二级产物的读写结果（生成 / 定稿 / 清空都返回它）。
+         */
+        OutlineResult: {
+            /** Changed */
+            changed: string[];
+            /**
+             * Core Argument
+             * @default
+             */
+            core_argument: string;
+            /** Error Code */
+            error_code?: string | null;
+            /** Error Message */
+            error_message?: string | null;
+            /**
+             * Generated
+             * @default false
+             */
+            generated: boolean;
+            /** Llm Model */
+            llm_model?: string | null;
+            /** Ok */
+            ok: boolean;
+            /** Prompt Version */
+            prompt_version?: string | null;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /** Topic Id */
+            topic_id: string;
+            /** Warnings */
+            warnings: string[];
+        };
+        /**
+         * OutlineSaveBody
+         * @description 手工定稿二级产物（**两个字段一起给**：这一级只有这两样东西）。
+         */
+        OutlineSaveBody: {
+            /**
+             * Core Argument
+             * @description 核心论点（一句话）
+             */
+            core_argument: string;
+            /**
+             * Title
+             * @description 视频标题
+             */
+            title: string;
+        };
+        /**
+         * OutlineView
+         * @description 一个选题的二级产物（``outline=null`` = 还没定 —— **不是错误**）。
+         *
+         *     为什么读接口不 404
+         *     ------------------
+         *     「这一级还没定」是**正常状态**（三级会照旧自由发挥）。用 404 表达它，前端就得把一次
+         *     注定失败的网络往返当成流程的一部分 —— 而那不是错误，只是「还没做」。
+         */
+        OutlineView: {
+            outline?: components["schemas"]["OutlineItem"] | null;
+            /** Topic Id */
+            topic_id: string;
         };
         /**
          * OutputsLimitsModel
@@ -4356,6 +5110,80 @@ export interface components {
             quality?: number | null;
             /** Width */
             width?: number | null;
+        };
+        /**
+         * PromptCatalogResponse
+         * @description 全部条目（面板的下拉框）。
+         */
+        PromptCatalogResponse: {
+            /** Count */
+            count: number;
+            /** Override Dir */
+            override_dir: string | null;
+            /** Prompts */
+            prompts: components["schemas"]["PromptEntryModel"][];
+        };
+        /**
+         * PromptEntryModel
+         * @description 面板上的一个提示词条目。
+         */
+        PromptEntryModel: {
+            /** Description */
+            description: string;
+            /** Files */
+            files: components["schemas"]["PromptFileModel"][];
+            /** Name */
+            name: string;
+            /** Overridden */
+            overridden: boolean;
+            /** Prompt Version */
+            prompt_version: string;
+            /** Variables */
+            variables: string[];
+            /** Version */
+            version: string;
+        };
+        /**
+         * PromptFileModel
+         * @description 一个条目里的一段（``system`` 或 ``user``）。
+         */
+        PromptFileModel: {
+            /** Overridden */
+            overridden: boolean;
+            /** Path */
+            path: string;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "system" | "user";
+            /** Text */
+            text: string;
+        };
+        /**
+         * PromptOutcome
+         * @description 一次保存 / 还原的结果（含**改完之后**的条目，省一次往返）。
+         */
+        PromptOutcome: {
+            /** Changed */
+            changed: string[];
+            entry: components["schemas"]["PromptEntryModel"];
+            /** Name */
+            name: string;
+            /** Restored */
+            restored: boolean;
+        };
+        /**
+         * PromptSaveBody
+         * @description 保存覆盖：**只处理显式给过的那一段**。
+         */
+        PromptSaveBody: {
+            /** Reason */
+            reason?: string | null;
+            /** System */
+            system?: string | null;
+            /** User */
+            user?: string | null;
         };
         /**
          * PublicationList
@@ -6048,6 +6876,29 @@ export interface components {
             window_start: string;
         };
         /**
+         * TopicDeleteResult
+         * @description 删掉的那一条（``deleted=False`` = 服务层到这一步时它已经不在了）。
+         */
+        TopicDeleteResult: {
+            /** Deleted */
+            deleted: boolean;
+            /** Title */
+            title: string;
+            /** Topic Id */
+            topic_id: string;
+        };
+        /**
+         * TopicEditResult
+         * @description 改完之后的那一行 + 改了哪几列 + 去重提示（``changed`` 为空 ⇒ 什么都没变）。
+         */
+        TopicEditResult: {
+            /** Changed */
+            changed: string[];
+            topic: components["schemas"]["TopicItem"];
+            /** Warnings */
+            warnings: string[];
+        };
+        /**
          * TopicItem
          * @description 瀑布流的一条选题（``topic_candidates`` 的展示字段）。
          */
@@ -6108,6 +6959,93 @@ export interface components {
             status: string;
             /** Topics */
             topics: components["schemas"]["TopicItem"][];
+        };
+        /**
+         * TopicPatchBody
+         * @description 改一条选题（**只列你要改的字段**；显式给 ``null`` = 把那一列清空）。
+         *
+         *     为什么用 ``model_fields_set`` 判「有没有给」而不是判 ``is not None``：
+         *     ``hook_type=null`` 与「根本没提 hook_type」是两件事 —— 前者是「把钩子标签清掉」，
+         *     后者是「别动它」。Pydantic 已经把这件事记下来了，再引入一个 ``UNSET`` 哨兵只是
+         *     把同一份信息写第二遍。
+         */
+        TopicPatchBody: {
+            /**
+             * Angle
+             * @description 角度差异化说明
+             */
+            angle?: string | null;
+            /** Hook Type */
+            hook_type?: ("conflict" | "suspense" | "contrast" | "number" | "other") | null;
+            /**
+             * Reason
+             * @description 评分理由
+             */
+            reason?: string | null;
+            /**
+             * Score
+             * @description 自评分（``null`` = 不打分）
+             */
+            score?: number | null;
+            /**
+             * Title
+             * @description 选题标题
+             */
+            title?: string | null;
+        };
+        /**
+         * UploadResultModel
+         * @description 一次上传的回执：逐文件结局 + 这一趟的入库报告。
+         *
+         *     ``report`` 可以缺席（``None``）：一个字节都没落盘时没有什么可入库的，此时回一份
+         *     空的 ``ScanReportModel`` 会假装"扫过了"（而它的 ``missing`` 字段还会把整个库
+         *     列成"不见了"）。
+         */
+        UploadResultModel: {
+            /** Files */
+            files: components["schemas"]["UploadedFileModel"][];
+            /** Kind */
+            kind: string;
+            /** Overwrite */
+            overwrite: boolean;
+            /** Replaced */
+            replaced: number;
+            report: components["schemas"]["ScanReportModel"] | null;
+            /** Root */
+            root: string;
+            /** Skipped */
+            skipped: number;
+            /** Stored */
+            stored: number;
+        };
+        /**
+         * UploadedFileModel
+         * @description 一个上传文件的结局（面板逐条画一行）。
+         *
+         *     ``status`` 只有三种，正好对应面板上的三种颜色：
+         *
+         *     - ``stored``：新写进去的；
+         *     - ``replaced``：覆盖了同名的旧文件（**只在用户勾了「覆盖同名」时才会出现**）；
+         *     - ``skipped``：一个字节都没写，``message`` 说清为什么（扩展名不对 / 目标已存在…）。
+         *
+         *     ``asset_id`` 是**落盘之后**的素材 id，不是原始文件名 —— 上传会把
+         *     ``跑酷 01.MP4`` 规范成 ``parkour_01``，面板要显示后者：否则用户回头在库里
+         *     按刚传的那个名字找不到东西。
+         *
+         *     ``message`` 里带上"原名 ⇒ 新名"这件事：改名是可以的，**静默**改名不行。
+         */
+        UploadedFileModel: {
+            /** Asset Id */
+            asset_id: string | null;
+            /** Filename */
+            filename: string;
+            /** Message */
+            message: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "stored" | "replaced" | "skipped";
         };
         /** ValidationError */
         ValidationError: {
@@ -6656,6 +7594,46 @@ export interface operations {
             };
         };
     };
+    list_assets_api_v1_assets_list_get: {
+        parameters: {
+            query: {
+                /** @description 哪一类（跑酷 / 音色 / BGM 各是一个菜单） */
+                kind: components["schemas"]["AssetKind"];
+                /** @description 第几页（1 起） */
+                page?: number;
+                /** @description 每页几条 */
+                page_size?: number;
+                /** @description 按 id 或标签筛（不区分大小写） */
+                q?: string | null;
+                /** @description 只看启用 / 只看停用；不给 = 全部 */
+                enabled?: boolean | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssetPageModel"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_asset_stats_api_v1_assets_stats_get: {
         parameters: {
             query?: never;
@@ -6672,6 +7650,108 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AssetStatsResponse"];
+                };
+            };
+        };
+    };
+    upload_assets_api_v1_assets_upload_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_assets_api_v1_assets_upload_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadResultModel"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_voice_api_v1_assets_voice_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_voice_api_v1_assets_voice_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadResultModel"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_asset_api_v1_assets__asset_id__delete: {
+        parameters: {
+            query?: {
+                /** @description 哪一类；不给就跨类反查 */
+                kind?: components["schemas"]["AssetKind"] | null;
+                /** @description 连盘上那份一起删（音色是目录，不可逆） */
+                purge?: boolean;
+            };
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssetDeleteModel"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -7623,6 +8703,95 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RequeueResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_prompts_api_v1_prompts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptCatalogResponse"];
+                };
+            };
+        };
+    };
+    save_prompt_api_v1_prompts__name__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PromptSaveBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptOutcome"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_prompt_api_v1_prompts__name__override_delete: {
+        parameters: {
+            query?: {
+                /** @description 还原哪一段 */
+                file?: string;
+            };
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptOutcome"];
                 };
             };
             /** @description Validation Error */
@@ -8879,6 +10048,39 @@ export interface operations {
             };
         };
     };
+    put_llm_profile_api_v1_settings_llm_profile_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LlmProfileRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmProfileOutcome"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     approve_task_api_v1_tasks__task_id__approve_post: {
         parameters: {
             query?: never;
@@ -8936,6 +10138,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApprovalResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enqueue_voice_endpoint_api_v1_tasks__task_id__enqueue_voice_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnqueueVoiceResponse"];
                 };
             };
             /** @description Validation Error */
@@ -9152,6 +10385,105 @@ export interface operations {
             };
         };
     };
+    add_manual_direction_api_v1_topics_directions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManualDirectionBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManualDirectionResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_direction_api_v1_topics_directions__direction_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                direction_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectionDeleteResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_direction_api_v1_topics_directions__direction_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                direction_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DirectionPatchBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectionEditResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     ideate_topics_api_v1_topics_ideate_post: {
         parameters: {
             query?: never;
@@ -9238,6 +10570,231 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SelectResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_topic_api_v1_topics__topic_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                topic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopicDeleteResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_topic_api_v1_topics__topic_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                topic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TopicPatchBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopicEditResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    draft_topic_for_review_api_v1_topics__topic_id__draft_review_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                topic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftReviewResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_topic_outline_api_v1_topics__topic_id__outline_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                topic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutlineView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_topic_outline_api_v1_topics__topic_id__outline_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                topic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OutlineSaveBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutlineResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generate_topic_outline_api_v1_topics__topic_id__outline_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                topic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutlineResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_topic_outline_api_v1_topics__topic_id__outline_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                topic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutlineResult"];
                 };
             };
             /** @description Validation Error */

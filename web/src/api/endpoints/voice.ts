@@ -1,8 +1,14 @@
 // 配音面板 REST 面（T4.5 · §04.3.7）。
 //
-// 四个端点对应面板上的四件事：看逐句状态（`GET /sentences`）、看有哪些音色
-// （`GET /voices`）、重配一句（`POST /sentences/{id}/resynth`）、换音色
-// （`PATCH /tasks/{id}/voice_map`）。
+// 五个端点对应面板上的五件事：看逐句状态（`GET /sentences`）、看有哪些音色
+// （`GET /voices`）、**开始配音**（`POST /tasks/{id}/enqueue_voice`）、重配一句
+// （`POST /sentences/{id}/resynth`）、换音色（`PATCH /tasks/{id}/voice_map`）。
+//
+// 为什么「开始配音」与「重配」是**两个**端点
+// ------------------------------------------
+// 重配一句是**单句**重跑（几秒），开始配音是**整条任务**的投递（一次 54 句）。
+// 原先只有前者，于是「待配音 54 句」在面板上的样子就是 54 颗按钮 —— 而用户完全有
+// 理由以为"这就是设计"（真机原话：「这是要我一个一个点重配吗」）。
 //
 // 试听**不走这里**
 // ----------------
@@ -38,6 +44,7 @@ export type SentenceProgress = SentenceVoiceList["progress"];
 export type VoiceOptions = OkJson<"/api/v1/voices", "get">;
 export type VoiceOption = VoiceOptions["voices"][number];
 export type ResynthResponse = OkJson<"/api/v1/sentences/{sentence_id}/resynth", "post">;
+export type EnqueueVoiceResponse = OkJson<"/api/v1/tasks/{task_id}/enqueue_voice", "post">;
 export type VoiceMapRequest = BodyJson<"/api/v1/tasks/{task_id}/voice_map", "patch">;
 export type VoiceMapResponse = OkJson<"/api/v1/tasks/{task_id}/voice_map", "patch">;
 export type VoiceChange = VoiceMapResponse["changes"][number];
@@ -60,6 +67,22 @@ export function fetchSentences(taskId: string, signal?: AbortSignal): Promise<Se
  */
 export function fetchVoiceOptions(taskId: string, signal?: AbortSignal): Promise<VoiceOptions> {
   return apiGet<VoiceOptions>(VOICES_PATH, { query: { task_id: taskId }, signal });
+}
+
+/**
+ * ★ 「开始配音」：把这条任务待配音的句子**一次**投进 voice 池（**立刻返回**）。
+ *
+ * 面板上「待配音 54 句」时该点的是这一个。立刻返回，念的是 voice 池 —— 投完之后
+ * 任务从 `queued_voice` 变成 `voicing`，面板按 `VOICE_POLL_MS` 自己刷新进度。
+ * 不在 `queued_voice` 上 ⇒ 后端 409（`STATE_TRANSITION_ILLEGAL`）：
+ * `voicing` 下再投一次是空操作，返回成功却不做事比报错更难查。
+ */
+export function enqueueVoice(taskId: string, signal?: AbortSignal): Promise<EnqueueVoiceResponse> {
+  return apiPost<EnqueueVoiceResponse>(
+    `${TASKS_PATH}/${encodeURIComponent(taskId)}/enqueue_voice`,
+    {},
+    { signal },
+  );
 }
 
 /** 单句重配：这一句退回待办 + 它的作业排回 voice 池（**立刻返回**，念的是 voice 池）。 */

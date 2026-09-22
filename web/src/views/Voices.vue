@@ -1,14 +1,19 @@
 <script setup lang="ts">
 // 配音面板（T4.5 · §04.3.7）。
 //
-// 这一屏只回答四个问题，多一个都不放：
+// 这一屏只回答五个问题，多一个都不放：
 // ① 这条任务配到哪一步了？—— 一条进度条 + 四态计数 + 逐句表；
 // ② 哪一句出了岔子、为什么？—— `skipped` / `failed` 的行高亮，`tts_error` 直接写出来；
 // ③ 某一句念错了怎么办？—— 那一行的「重配」（`synthesizing` 的行**没有**这颗按钮）；
-// ④ 想换一个人的嗓子怎么办？—— 每个角色一个下拉框 + **二次确认框**。
+// ④ 想换一个人的嗓子怎么办？—— 每个角色一个下拉框 + **二次确认框**；
+// ⑤ **「待配音 54 句」谁来推？**—— 右上角那颗「开始配音」，**一次**全投（`startVoicing`）。
 //
-// 三条必须写在面板上的话
+// 四条必须写在面板上的话
 // ----------------------
+// 0. **「重配」只重念这一句**：它是单句入口，不是"必须逐句点"的那件事。少了这句，
+//    一屏 54 行各带一颗「重配」的样子就是"要我一个一个点吗"（真机原话）。
+//    `queued_voice` 只是一个状态，把它推到 `voicing` 需要**投递**，而投递原先只写在
+//    `pipeline_service.run_task` 里（CLI 与「一键出片」走那条路）—— 面板上就缺了那一下。
 // 1. **换音色不是免费的**：一次点击会重配 N 句（确认框里写着 N 是多少）。后端先算代价
 //    再抛 409，面板据此弹框 —— 不写这句话，用户会以为"换个音色"跟"改个标签"一样轻。
 // 2. **重配不重算时间轴**：改完那几句只是回到待办，成片时长要等下一轮配音收口
@@ -160,6 +165,31 @@ function resynthSubtitle(): string {
 function mapSubtitle(): string {
   return `${voice.speakers.length} 个角色 · 本机 ${voice.voices.length} 个可用音色`;
 }
+
+/** 「开始配音」那颗按钮的 `title`：投几条、念的是谁、不用逐句点，三句话说完。 */
+const startTitle = computed(() => {
+  const count = voice.toEnqueue;
+  if (count === 0) {
+    return "这条任务的句子都已经定局，但还没推进到配音中 —— 点一下把它推过去（不会重念任何一句）";
+  }
+  return `把 ${count} 句一次排进 voice 池（**不用**一行一行点「重配」）—— 念的是常驻 voice 池，本屏每秒自己刷新`;
+});
+
+/** 「开始配音」：一次投递整条任务；投完任务变 `voicing`，本屏自己开始轮询。 */
+function onStart(): void {
+  void voice.startVoicing();
+}
+
+/**
+ * 「收口并出片」：提交一条一键出片，然后**把人送到那一屏**看实时进度。
+ *
+ * 跳过去是有意的：这条链路的进度（阶段 + 已完成 / 总数 + 日志尾巴）画在「一键出片」上，
+ * 在这一屏再画一份就是两处会过时的显示。而用户这一刻最想看的正是"它跑到哪了"。
+ */
+async function onFinish(): Promise<void> {
+  const started = await voice.finishToVideo();
+  if (started) ui.goTo("pipeline", voice.taskId);
+}
 </script>
 
 <template>
@@ -185,6 +215,28 @@ function mapSubtitle(): string {
           :label="progressText(voice.progress)"
           :pulse="polling"
         />
+        <AppButton
+          v-if="voice.canStart"
+          size="sm"
+          variant="primary"
+          :loading="voice.busy"
+          :disabled="voice.anyBusy"
+          :title="startTitle"
+          @click="onStart()"
+        >
+          开始配音（投递全部 {{ voice.toEnqueue }} 句）
+        </AppButton>
+        <AppButton
+          v-else-if="voice.voiced"
+          size="sm"
+          variant="primary"
+          :loading="voice.busy"
+          :disabled="voice.anyBusy"
+          title="配音已经念完，但母带还没拼 —— 这一步把收口、母带与渲染一次做完（提交后跳去「一键出片」看进度）"
+          @click="onFinish()"
+        >
+          收口并出片 →
+        </AppButton>
         <AppButton
           size="sm"
           :loading="voice.loading"
@@ -243,6 +295,15 @@ function mapSubtitle(): string {
           <template v-if="polling">
             还有句子在念，这一屏每 {{ VOICE_POLL_MS / 1000 }} 秒自己刷一次（念完就停）。
           </template>
+        </p>
+
+        <p v-if="voice.canStart" class="hint">
+          这条任务停在**待配音**：句子还没排进 voice 池。点右上角那颗「开始配音」**一次**就全投出去 ——
+          下面每一行的「重配」只重念**那一句**，不是必须逐句点。
+        </p>
+        <p v-else-if="voice.voiced" class="hint">
+          配音已经全部定局（{{ voice.settled }}/{{ voice.total }}），但盘上**还没有母带** ——
+          母带是收口那一步拼的。点右上角「收口并出片」把收口、母带与渲染一次做完。
         </p>
       </template>
     </PanelCard>
@@ -326,7 +387,8 @@ function mapSubtitle(): string {
       <p class="hint">
         「重配」只重念这一句：它退回待办、作业排回 voice 池，念完自己出现在这一列里。
         正被念着的句子（`synthesizing`）那颗按钮是灰的 —— 点了必被拒，而"点了没反应"
-        比"按钮是灰的"难懂得多。
+        比"按钮是灰的"难懂得多。**整条任务的投递不在这里**：任务停在待配音时，
+        右上角那颗「开始配音」一次把全部句子排进池子。
       </p>
     </PanelCard>
 
@@ -394,7 +456,7 @@ function mapSubtitle(): string {
       </div>
 
       <p v-if="voice.previewError" class="alert alert--error">{{ voice.previewError }}</p>
-      <audio ref="player" class="player" />
+      <audio ref="player" class="player player--hidden" />
 
       <div v-if="voice.confirm" class="confirm">
         <p class="confirm__title">确认换音色？</p>
@@ -590,13 +652,16 @@ function mapSubtitle(): string {
   font-size: var(--text-xs);
 }
 
+/* 逐句那一列里的播放器（可见）与下面那个**只用来放音色样本**的隐藏播放器
+   曾经共用 `.player` 一个类名，而隐藏那条规则写在后面 ⇒ 逐句的「试听」整列
+   都是空的（元素在、播放器在，只是 `display: none`）。两个用途就得两个类名。 */
 .player {
   height: 24px;
   max-width: 200px;
   vertical-align: middle;
 }
 
-.player {
+.player--hidden {
   display: none;
 }
 

@@ -33,6 +33,7 @@ from studio.app.routers.overview import router as overview_router
 from studio.app.routers.persona import router as persona_router
 from studio.app.routers.pipeline import router as pipeline_router
 from studio.app.routers.pools import router as pools_router
+from studio.app.routers.prompts import router as prompts_router
 from studio.app.routers.publish import router as publish_router
 from studio.app.routers.render import router as render_router
 from studio.app.routers.reports import router as reports_router
@@ -100,6 +101,7 @@ def create_app(
     application.include_router(schedules_router)
     application.include_router(reports_router)
     application.include_router(settings_router)
+    application.include_router(prompts_router)
     application.include_router(ws_router)
     mount_web_ui(application, resolved.paths)
     return application

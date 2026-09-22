@@ -33,7 +33,7 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Final, Literal
@@ -65,6 +65,7 @@ __all__ = [
     "ConfigBundle",
     "ConfigSource",
     "LlmConfig",
+    "LlmConfigHotReload",
     "LoadedConfig",
     "LoggingConfig",
     "OutputsConfig",
@@ -77,8 +78,10 @@ __all__ = [
     "TtsConfig",
     "WatchdogConfig",
     "concurrency_bounds",
+    "llm_config_provider",
     "load_app_config",
     "load_config",
+    "load_llm_config",
     "load_outputs_config",
     "load_persona_file",
     "load_pools_config",
@@ -87,6 +90,7 @@ __all__ = [
     "load_tts_config",
     "redact",
     "set_auto_approve_policy",
+    "set_llm_profile_model",
 ]
 
 logger = get_logger("studio.core.config")
@@ -523,6 +527,35 @@ def concurrency_bounds(pool: str) -> tuple[int, int]:
         context={"pool": pool, "valid": sorted(POOL_CONCURRENCY_MAX)},
         remediation="池名只能是 draft / voice / render / publish",
     )
+
+
+def load_llm_config(
+    paths: StudioPaths,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> LlmConfig:
+    """只读 ``config/llm.yaml``（通道 / 路由 / 预算 / 选题开关）。
+
+    与 :func:`load_pools_config` 同一条理由：设置面板与 LLM 网关每次取配置都要知道
+    "用哪条通道、哪个模型"，走 :func:`load_config` 会把 10 份 YAML 全读一遍并全量校验
+    —— 于是 ``app.yaml`` 里少一个 key，**一次 LLM 调用都发不出去**，而这两件事之间
+    没有任何关系。
+
+    **覆盖层生效**（与 :func:`load_tts_config` 同一取舍）：``llm.local.yaml`` 与
+    ``STUDIO_CFG__LLM__*`` 正是为"换台机器换 base_url / 换模型"准备的。这里读的是
+    **运行期真正生效的那一份** —— 网关与面板必须看到同一个模型名，否则就会出现
+    "面板说 A、实际跑 B"（一次查不完的悬案）。
+    """
+    path = paths.config_dir / "llm.yaml"
+    source_env = dict(env if env is not None else os.environ)
+    data = _read_yaml(path)
+    local_path = paths.config_dir / "llm.local.yaml"
+    if local_path.exists():
+        data = _deep_merge(data, _read_yaml(local_path))
+    data, _applied = _apply_env_overrides(data, name="llm", env=source_env)
+    model = _validate("llm", data, path)
+    assert isinstance(model, LlmConfig)
+    return model
 
 
 def load_outputs_config(path: Path) -> OutputsConfig:
@@ -1844,3 +1877,248 @@ def set_auto_approve_policy(paths: StudioPaths, policy: AutoApprovePolicy) -> Pa
     AppConfig.model_validate(_read_yaml(path))  # 回读校验：写坏必须当场炸
     logger.info("config.auto_approve_policy_written", path=str(path), policy=policy)
     return path
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 运行期可改的通道配置（T6.1 追加：模型名 / base_url 面板可改）
+# ══════════════════════════════════════════════════════════════════════
+
+#: ``config/llm.yaml`` 里 ``profiles:`` 段头（写回时定位用）
+_LLM_PROFILES_HEAD: Final[re.Pattern[str]] = re.compile(r"^(\s*)profiles\s*:\s*(.*)$")
+
+#: 一行 ``键: 值``。值取 ``\S*``（model / base_url 都不含空格），``(.*)`` 是行尾注释 ——
+#: 那份文件每行都带注释，抹掉它等于毁掉可读性。
+_LLM_SCALAR_LINE: Final[re.Pattern[str]] = re.compile(r"^(\s*)([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(\S*)(.*)$")
+
+
+def _llm_profile_span(lines: list[str], profile: str, *, path: Path) -> tuple[int, int]:
+    """定位 ``profiles.<profile>`` 的**内容行**区间 ``[start, end)``（不含通道名那行）。
+
+    缩进是**量出来的**，不写死两个空格：先量 ``profiles:`` 的缩进，再量它下面第一条
+    通道名的缩进 —— 后者就是"同一层的键"的判据。写死缩进的话，这份文件哪天整体缩进
+    一段（或被 `llm.local.yaml` 那套工具改写风格），这里就会**改到别的通道上去**。
+    """
+    head_index: int | None = None
+    head_indent = 0
+    for index, raw in enumerate(lines):
+        match = _LLM_PROFILES_HEAD.match(raw.rstrip("\r\n"))
+        if match is not None:
+            head_index, head_indent = index, len(match.group(1))
+            break
+    if head_index is None:
+        raise ConfigError(
+            f"config/llm.yaml 里找不到 profiles: 段：{path}",
+            code=ErrorCode.CONFIG_MISSING,
+            context={"path": str(path), "key": "profiles"},
+            remediation="确认这份文件是 llm.yaml（而不是别的配置）",
+        )
+
+    section_end = len(lines)
+    for index in range(head_index + 1, len(lines)):
+        body = lines[index].rstrip("\r\n")
+        if not body.strip() or body.lstrip().startswith("#"):
+            continue
+        if (len(body) - len(body.lstrip())) <= head_indent:
+            section_end = index
+            break
+
+    key_indent: int | None = None
+    start: int | None = None
+    for index in range(head_index + 1, section_end):
+        body = lines[index].rstrip("\r\n")
+        if not body.strip() or body.lstrip().startswith("#"):
+            continue
+        indent = len(body) - len(body.lstrip())
+        if key_indent is None:
+            key_indent = indent
+        if indent != key_indent:
+            continue
+        match = _LLM_SCALAR_LINE.match(body)
+        if match is None:
+            continue
+        if start is not None:
+            return (start, index)  # 下一条通道 ⇒ 本块到此为止
+        if match.group(2) == profile:
+            start = index + 1
+
+    if start is None:
+        raise ConfigError(
+            f"config/llm.yaml 里没有通道 {profile!r}：{path}",
+            code=ErrorCode.CONFIG_MISSING,
+            context={"path": str(path), "profile": profile},
+            remediation="确认通道名（见设置页的通道卡片），或先在 llm.yaml 的 profiles: 下加一条",
+        )
+    return (start, section_end)
+
+
+def set_llm_profile_model(
+    paths: StudioPaths,
+    *,
+    profile: str,
+    model: str | None = None,
+    base_url: str | None = None,
+) -> Path:
+    """把某条通道的 ``model`` / ``base_url`` 写回 ``config/llm.yaml``，返回该文件路径。
+
+    为什么按行改写而不是 `yaml.safe_dump` 整份重写
+    --------------------------------------------
+    与 :func:`set_auto_approve_policy` 同一条：那份文件每一行都带注释（通道用途、
+    成本口径、为什么这条 fallback 指向本地）。整份重写会把它们全抹掉 —— 于是
+    "在面板上换了个模型名"就永久毁掉了这份配置的可读性。
+
+    只动**目标通道块内**的那一两行：段外的 routing / budget / 注释一个字节都不碰。
+
+    写完**立刻回读校验**（:func:`load_llm_config`）：写坏了要在这里炸，而不是等下一次
+    真跑任务时报 ``LLM_ROUTE_MISSING`` —— 那时人已经忘了自己点过什么。
+
+    :raises ConfigError: 文件缺失 / 找不到 ``profiles:`` 段 / 找不到该通道 / 回读校验失败
+    :raises ValueError: ``model`` 与 ``base_url`` 一个都没给（不知道该写什么）
+    """
+    if model is None and base_url is None:
+        raise ValueError("至少要给 model 或 base_url 之一")
+
+    path = paths.config_dir / "llm.yaml"
+    if not path.is_file():
+        raise ConfigError(
+            f"配置文件不存在：{path}",
+            code=ErrorCode.CONFIG_MISSING,
+            context={"path": str(path)},
+            remediation="确认 STUDIO_HOME 指向仓库根，且 config/llm.yaml 在位",
+        )
+
+    wanted: dict[str, str] = {}
+    if model is not None:
+        wanted["model"] = model
+    if base_url is not None:
+        wanted["base_url"] = base_url
+
+    # 先校验**值本身**：空模型名 / 非法 base_url 必须在**写盘之前**拦住。
+    # 写完再校验等于把一份读不出来的配置留在盘上 —— 而那正是"下一次启动起不来"
+    # （或"面板打得开、任务发不出请求"）的来源。这里用的就是同一份 pydantic 模型，
+    # 判据只有一处。
+    current = load_llm_config(paths).profiles.get(profile)
+    if current is None:
+        raise ConfigError(
+            f"config/llm.yaml 里没有通道 {profile!r}：{path}",
+            code=ErrorCode.CONFIG_MISSING,
+            context={"path": str(path), "profile": profile},
+            remediation="确认通道名（见设置页的通道卡片），或先在 llm.yaml 的 profiles: 下加一条",
+        )
+    merged = current.model_dump() | wanted
+    try:
+        LlmProfileConfig.model_validate(merged)
+    except ValidationError as exc:
+        errors = _format_errors(exc)
+        raise ConfigError(
+            f"通道 {profile!r} 的值不合法：{errors}",
+            code=ErrorCode.CONFIG_INVALID,
+            context={"path": str(path), "profile": profile, "errors": errors},
+            remediation="模型名不能为空；base_url 必须是 http(s) 地址",
+        ) from exc
+
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    start, end = _llm_profile_span(lines, profile, path=path)
+
+    missing = set(wanted)
+    for index in range(start, end):
+        raw = lines[index]
+        body = raw.rstrip("\r\n")
+        match = _LLM_SCALAR_LINE.match(body)
+        if match is None or match.group(2) not in wanted:
+            continue
+        key = match.group(2)
+        ending = raw[len(body) :] or "\n"
+        lines[index] = f"{match.group(1)}{key}: {wanted[key]}{match.group(4)}{ending}"
+        missing.discard(key)
+
+    if missing:
+        raise ConfigError(
+            f"config/llm.yaml 的通道 {profile!r} 里找不到：{', '.join(sorted(missing))}",
+            code=ErrorCode.CONFIG_MISSING,
+            context={"path": str(path), "profile": profile, "keys": sorted(missing)},
+            remediation=f"在 profiles.{profile} 块内补上这几行（字段名不能改）",
+        )
+
+    path.write_text("".join(lines), encoding="utf-8", newline="\n")
+    load_llm_config(paths)  # 回读校验：写坏必须当场炸
+    logger.info(
+        "config.llm_profile_written",
+        path=str(path),
+        profile=profile,
+        keys=sorted(wanted),
+    )
+    return path
+
+
+class LlmConfigHotReload:
+    """``config/llm.yaml`` 的热重载快照（廉价 ``stat`` 判断 + 坏了沿用上一份）。
+
+    为什么需要这一层
+    ----------------
+    网关是**每进程一个**的长命对象（写稿池 worker 起一次跑到关停），而"换模型名"是
+    控制台上随时会发生的动作。把 :class:`LlmConfig` 冻在网关构造那一刻，症状就是
+    「面板显示新模型、实际还在用旧模型」—— 一次**静默失效**（P4 最反对的那类：
+    界面上是绿的，跑出来是旧的）。
+
+    这里让网关每次取配置先做一次 ``stat``（与 `PersonaStore` 同一手法）：文件没动就
+    只是一次系统调用，动了才重读。REST 面本来就是每次现造网关（见 `app/deps.py`），
+    这一层是给**常驻 worker** 用的。
+
+    读坏了（改到一半、YAML 语法错）**沿用上一份可用值**并记一条 warn：宁可"暂时还用
+    旧模型"，也不让一次手抖把在跑的任务全打断 —— 但**必须说出来**，不假装没事。
+    """
+
+    def __init__(
+        self,
+        paths: StudioPaths,
+        *,
+        env: Mapping[str, str] | None = None,
+        loader: Callable[[], LlmConfig] | None = None,
+    ) -> None:
+        self._paths = paths
+        self._env = env
+        self._loader = loader or (lambda: load_llm_config(paths, env=env))
+        self._mark: tuple[Any, ...] | None = None
+        self._cached: LlmConfig | None = None
+
+    def current(self) -> LlmConfig:
+        """当前生效的配置（文件没动 ⇒ 直接给缓存）。"""
+        mark = self._stat_mark()
+        if self._cached is not None and mark == self._mark:
+            return self._cached
+        try:
+            loaded = self._loader()
+        except ConfigError as exc:
+            if self._cached is None:
+                raise  # 从没读到过 ⇒ 不能装作有配置
+            logger.warning(
+                "config.llm_hot_reload_failed",
+                path=str(self._paths.config_dir / "llm.yaml"),
+                error=str(exc),
+            )
+            return self._cached
+        self._cached = loaded
+        self._mark = mark
+        return loaded
+
+    def _stat_mark(self) -> tuple[Any, ...]:
+        """``llm.yaml`` 与 ``llm.local.yaml`` 的 ``(mtime_ns, size)``（不存在 ⇒ ``None``）。"""
+        marks: list[Any] = []
+        for name in ("llm.yaml", "llm.local.yaml"):
+            try:
+                info = (self._paths.config_dir / name).stat()
+            except OSError:
+                marks.append(None)
+            else:
+                marks.append((info.st_mtime_ns, info.st_size))
+        return tuple(marks)
+
+
+def llm_config_provider(
+    paths: StudioPaths,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> Callable[[], LlmConfig]:
+    """给网关用的配置入口（**每次现取**，见 :class:`LlmConfigHotReload`）。"""
+    hot = LlmConfigHotReload(paths, env=env)
+    return hot.current

@@ -1,10 +1,11 @@
 """设置面板的 REST 面（T6.1）—— LLM 通道与密钥的界面化配置。
 
-三个端点，三件事
+四个端点，四件事
 ----------------
 ① ``GET  /api/v1/settings/llm`` —— 通道卡片 + 路由表 + 密钥状态（**只有掩码**）；
-② ``PUT  /api/v1/settings/llm`` —— 保存 / 清除（**先校验、后落盘**）；
-③ ``POST /api/v1/settings/llm/probe`` —— 按需探测（只发只读 GET）。
+② ``PUT  /api/v1/settings/llm`` —— 保存 / 清除密钥（**先校验、后落盘**）；
+③ ``PUT  /api/v1/settings/llm/profile`` —— 改通道参数（模型名 / base_url，写回 llm.yaml）；
+④ ``POST /api/v1/settings/llm/probe`` —— 按需探测（只发只读 GET）。
 
 为什么「明文一个字节都不许出现」要单独验
 ----------------------------------------
@@ -38,6 +39,7 @@ from studio.ws.hub import HubSettings
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 SETTINGS_URL = "/api/v1/settings/llm"
+PROFILE_URL = "/api/v1/settings/llm/profile"
 PROBE_URL = "/api/v1/settings/llm/probe"
 
 GOOD_KEY = "sk-abcdefghijklmnopqrstuvwxyz012345"
@@ -136,6 +138,26 @@ def connection(state: AppState) -> sqlite3.Connection:
 def client(state: AppState) -> Iterator[TestClient]:
     with TestClient(create_app(state=state)) as test_client:
         yield test_client
+
+
+def _cloud(client: TestClient) -> dict[str, Any]:
+    """当前配置里 ``cloud`` 通道的样子（模型名 + base_url）。
+
+    为什么不写死 ``https://api.openai.com/v1``：那是**仓库默认配置**里的值，而
+    ``config/llm.yaml`` 是用户可改的（T6.1 的整个卖点就是"换服务商不用手改 YAML"）。
+    把默认值钉在断言里，等于每换一次服务商就有三个用例变红，而它们想验的是
+    "改完真的落盘了""探测真的带上了密钥"，与服务商是谁无关。
+    """
+    return _profile(client.get(SETTINGS_URL).json(), "cloud")
+
+
+def _probe_routes(client: TestClient, **extra: Any) -> dict[str, Any]:
+    """按**当前配置**铺探测路由：cloud 与 local 各一条。"""
+    return {
+        f"{_cloud(client)['base_url'].rstrip('/')}/models": _FakeResponse(200),
+        "http://127.0.0.1:11434/api/tags": _FakeResponse(200, {"models": [{"name": "qwen2.5:7b"}]}),
+        **extra,
+    }
 
 
 def _routes(routes: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, _FakeClient]:
@@ -290,6 +312,99 @@ def test_env_variable_overrides_the_file_and_says_so(
 # ── 探测 ────────────────────────────────────────────────────────────────
 
 
+# ── 写 · 通道参数（模型名 / base_url）──────────────────────────────────
+
+
+def _profile(body: dict[str, Any], name: str) -> dict[str, Any]:
+    return next(item for item in body["profiles"] if item["name"] == name)
+
+
+def test_put_profile_changes_the_model_name(client: TestClient, paths: StudioPaths) -> None:
+    """改模型名 ⇒ 盘上真的变了、回包里就是新的、**别的通道一个字节都没动**。"""
+    before = client.get(SETTINGS_URL).json()
+    old_model = _profile(before, "cloud")["model"]
+    local_model = _profile(before, "local")["model"]
+
+    response = client.put(PROFILE_URL, json={"profile": "cloud", "model": "brand-new-model"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["changed"] is True
+    assert body["profile"] == "cloud"
+    assert _profile(body, "cloud")["model"] == "brand-new-model"
+    assert _profile(body, "local")["model"] == local_model
+    text = (paths.config_dir / "llm.yaml").read_text(encoding="utf-8")
+    assert "model: brand-new-model" in text
+    assert f"model: {old_model}" not in text
+
+
+def test_put_profile_can_rewrite_base_url(client: TestClient, paths: StudioPaths) -> None:
+    body = client.put(PROFILE_URL, json={"profile": "local", "base_url": "http://127.0.0.1:9999/v1"}).json()
+
+    assert body["changed"] is True
+    assert _profile(body, "local")["base_url"] == "http://127.0.0.1:9999/v1"
+
+
+def test_put_profile_audits_before_and_after(client: TestClient, connection: sqlite3.Connection) -> None:
+    """留痕要有，且 before/after 是**模型名**这一对（不是掩码那一路）。"""
+    before = _cloud(client)
+
+    client.put(PROFILE_URL, json={"profile": "cloud", "model": "audited-model"})
+
+    row = AuditRepo(connection).list_recent(limit=1)[0]
+    assert row.action == "settings.llm_profile_updated"
+    assert row.target_id == "llm.profiles.cloud"
+    # base_url 没被点名 ⇒ 留痕里它原样回抄当前配置（换服务商的人不该因此看到红字）
+    assert row.before == {"model": before["model"], "base_url": before["base_url"]}
+    assert row.after is not None
+    assert row.after["model"] == "audited-model"
+
+
+def test_put_profile_twice_does_not_write_again(client: TestClient, connection: sqlite3.Connection) -> None:
+    """同一件事做两次不该在审计里出现两行（与密钥那条同一条纪律）。"""
+    client.put(PROFILE_URL, json={"profile": "cloud", "model": "same-model"})
+    second = client.put(PROFILE_URL, json={"profile": "cloud", "model": "same-model"})
+
+    assert second.status_code == 200
+    assert second.json()["changed"] is False
+    assert AuditRepo(connection).list_recent(limit=5)[0].action == "settings.llm_profile_updated"
+
+
+def test_put_profile_rejects_an_unknown_profile(client: TestClient, paths: StudioPaths) -> None:
+    before = (paths.config_dir / "llm.yaml").read_text(encoding="utf-8")
+
+    response = client.put(PROFILE_URL, json={"profile": "nope", "model": "x"})
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "CONFIG_INVALID"
+    assert (paths.config_dir / "llm.yaml").read_text(encoding="utf-8") == before
+
+
+def test_put_profile_demands_a_field(client: TestClient, paths: StudioPaths) -> None:
+    """两个都不给 ⇒ 422（不知道你想改什么），且一个字节都不写。"""
+    before = (paths.config_dir / "llm.yaml").read_text(encoding="utf-8")
+
+    response = client.put(PROFILE_URL, json={"profile": "cloud"})
+
+    assert response.status_code == 422
+    assert (paths.config_dir / "llm.yaml").read_text(encoding="utf-8") == before
+
+
+def test_put_profile_rejects_a_blank_model(client: TestClient, paths: StudioPaths) -> None:
+    before = (paths.config_dir / "llm.yaml").read_text(encoding="utf-8")
+
+    response = client.put(PROFILE_URL, json={"profile": "cloud", "model": "   "})
+
+    assert response.status_code == 422
+    assert (paths.config_dir / "llm.yaml").read_text(encoding="utf-8") == before
+
+
+def test_put_profile_rejects_a_non_http_base_url(client: TestClient) -> None:
+    response = client.put(PROFILE_URL, json={"profile": "local", "base_url": "ftp://x/v1"})
+
+    assert response.status_code == 422
+
+
 def test_probe_reports_missing_key(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     _routes({}, monkeypatch)
     body = client.post(PROBE_URL).json()
@@ -300,13 +415,9 @@ def test_probe_reports_missing_key(client: TestClient, monkeypatch: pytest.Monke
 
 def test_probe_sends_the_stored_key(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """配好之后探测要**真的带上密钥**（带错地方就永远是 401，而面板会说"已连接"）。"""
-    holder = _routes(
-        {
-            "https://api.openai.com/v1/models": _FakeResponse(200),
-            "http://127.0.0.1:11434/api/tags": _FakeResponse(200, {"models": [{"name": "qwen2.5:7b"}]}),
-        },
-        monkeypatch,
-    )
+    holder = _routes(_probe_routes(client), monkeypatch)
+    cloud_base = _cloud(client)["base_url"].rstrip("/")
+
     client.put(SETTINGS_URL, json={"api_key": GOOD_KEY})
     body = client.post(PROBE_URL).json()
     rows = {row["profile"]: row for row in body["rows"]}
@@ -316,7 +427,7 @@ def test_probe_sends_the_stored_key(client: TestClient, monkeypatch: pytest.Monk
     assert body["ok_count"] == 2
 
     fake = holder["client"]
-    cloud_call = next(call for call in fake.calls if "openai" in call[0])
+    cloud_call = next(call for call in fake.calls if call[0].startswith(cloud_base))
     assert cloud_call[1]["Authorization"] == f"Bearer {GOOD_KEY}"
 
 
@@ -324,7 +435,8 @@ def test_probe_reports_unreachable_instead_of_raising(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """连不上 ⇒ 如实报 ``unreachable``（面板要能画出红字，而不是整屏 500）。"""
-    _routes({"https://api.openai.com/v1/models": httpx.ConnectError("boom")}, monkeypatch)
+    cloud_base = _cloud(client)["base_url"].rstrip("/")
+    _routes({f"{cloud_base}/models": httpx.ConnectError("boom")}, monkeypatch)
     client.put(SETTINGS_URL, json={"api_key": GOOD_KEY})
     rows = {row["profile"]: row for row in client.post(PROBE_URL).json()["rows"]}
     assert rows["cloud"]["status"] == "unreachable"

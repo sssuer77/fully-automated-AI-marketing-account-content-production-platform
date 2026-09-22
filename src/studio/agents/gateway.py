@@ -154,6 +154,7 @@ class LlmGateway:
         self,
         *,
         config: LlmConfig,
+        config_provider: Callable[[], LlmConfig] | None = None,
         transport: LlmTransport,
         calls: LlmCallStore,
         budget: TokenBudget | None = None,
@@ -166,7 +167,8 @@ class LlmGateway:
         env: Mapping[str, str] | None = None,
         secrets: SecretLookup | None = None,
     ) -> None:
-        self._config = config
+        self._frozen = config
+        self._provider = config_provider
         self._transport = transport
         self._calls = calls
         self._budget = budget
@@ -179,6 +181,20 @@ class LlmGateway:
         self._env = env
         self._secrets = secrets
         self._guards: dict[str, SchemaGuard] = {}
+
+    @property
+    def _config(self) -> LlmConfig:
+        """当前生效的配置（``config_provider`` 非空 ⇒ **每次现取**）。
+
+        为什么要现取：网关是**每进程一个**的长命对象（写稿池 worker 起一次跑到关停），
+        而"在设置页换模型名"是随时会发生的动作。把配置冻在构造那一刻，症状就是
+        「面板显示新模型、实际还在用旧模型」—— 界面上是绿的，跑出来是旧的。
+
+        ``config``（构造期那一份）仍然必须给：预算闸门是有状态对象，按启动时的口径造一次。
+        """
+        if self._provider is None:
+            return self._frozen
+        return self._provider()
 
     # ── 对外唯一入口 ────────────────────────────────────────────────
     async def complete[TOut: BaseModel](

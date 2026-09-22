@@ -1,7 +1,36 @@
-"""写稿流水线（T1.10 · §04.1.4 / §04.1.5）—— 选题 → 大纲 → 成稿 → 逐句落库。
+"""写稿流水线（T1.10 · §04.1.4 / §04.1.5）—— 文案三级：选题 → 标题与论点 → 对话文案。
+
+文案生成分三级（本模块是后两级的编排入口）
+------------------------------------------
+```
+① 一级 · 话题主体        topic_candidates（人工加 / Ideator 产出，可改可删）
+        │
+        ▼
+② 二级 · 视频标题+核心论点  topic_outlines（Outliner 产出，或人手写；可改可清空）
+        │
+        ▼
+③ 三级 · 对话文案         scripts + script_sentences（Director 大纲 ⇒ Writer 成稿）
+```
+二级是**可选**的一级：没有它，三级照旧按选题自由发挥（少一张表不能变成「写不出稿」）；
+有它，成稿的标题**锁定**用它，正文围绕核心论点展开（见 :meth:`ScriptService.draft`）。
 
 一次 ``draft`` 的链路
 --------------------
+```
+topic_candidates(selected/candidate) + topic_outlines(可选)
+        │  ① 没有 task ⇒ 建任务（pending，幂等键 topic:<id>）并把选题置 queued
+        ▼
+   tasks: pending → drafting
+        │  ② DirectorAgent（钩子 + 3–5 段 + CTA）
+        ▼
+   DirectorOutput
+        │  ③ WriterAgent（600–800 字 + 逐句表 + 口癖/禁区自检，重写 ≤2）
+        ▼
+   WriterOutput
+        │  ④ build_draft（强制切分 ≤28 字 ⇒ 复核字数/口癖/禁区/单人占比）
+        ▼
+   scripts + script_sentences ★ 同一事务（ScriptRepo.save_draft）
+```
 ```
 topic_candidates(selected/candidate)
         │  ① 没有 task ⇒ 建任务（pending，幂等键 topic:<id>）并把选题置 queued
@@ -48,13 +77,17 @@ from studio.core.logging import get_logger
 from studio.core.paths import StudioPaths
 from studio.core.proto import EVENT_PAYLOAD_KEY, EventKind, Severity
 from studio.db import JobStore
-from studio.db.models import ScriptRow, SentenceRow, TopicRow
-from studio.db.repositories import AuditRepo, ScriptRepo, TopicRepo
+from studio.db.models import ScriptRow, SentenceRow, TopicOutlineRow, TopicRow
+from studio.db.repositories import AuditRepo, OutlineRepo, ScriptRepo, TopicRepo
 from studio.domain.enums import TaskStatus, UnitType
 from studio.domain.models import TaskRead
 from studio.domain.script import (
+    OUTLINE_ARGUMENT_MAX,
+    OUTLINE_TITLE_MAX,
     DirectorInput,
     DirectorOutput,
+    OutlineInput,
+    OutlineOutput,
     ScriptRules,
     SentenceSpec,
     WriterInput,
@@ -66,7 +99,16 @@ from studio.domain.topics import TopicSpec
 from studio.services.log_service import LogSink
 from studio.services.topic_service import topic_spec_from_row
 
-__all__ = ["DirectorLike", "DraftReport", "EnqueueOutcome", "ScriptService", "WriterLike"]
+__all__ = [
+    "DirectorLike",
+    "DraftReport",
+    "DraftReviewOutcome",
+    "EnqueueOutcome",
+    "OutlineLike",
+    "OutlineReport",
+    "ScriptService",
+    "WriterLike",
+]
 
 #: structlog 的保留键（``_emit`` 兜底分支展开 payload 时会撞车）
 _LOG_RESERVED: Final[frozenset[str]] = frozenset({"event", "level", "logger", "message", "timestamp"})
@@ -91,6 +133,12 @@ class DirectorLike(Protocol):
 
 class WriterLike(Protocol):
     async def run(self, ctx: AgentContext, payload: WriterInput) -> AgentResult[WriterOutput]: ...
+
+
+class OutlineLike(Protocol):
+    """Outliner 只需实现 ``run``（与 Director/Writer 同一手法）。"""
+
+    async def run(self, ctx: AgentContext, payload: OutlineInput) -> AgentResult[OutlineOutput]: ...
 
 
 @dataclass(slots=True)
@@ -135,6 +183,39 @@ class DraftReport:
         }
 
 
+@dataclass(slots=True)
+class OutlineReport:
+    """一次二级产物的读写结果（生成 / 手改 / 清空都返回它，**不抛裸异常**）。"""
+
+    ok: bool
+    topic_id: str
+    title: str = ""
+    core_argument: str = ""
+    llm_model: str | None = None
+    prompt_version: str | None = None
+    #: 这一份是**模型刚产出的**（``False`` ⇒ 手写或手改的）
+    generated: bool = False
+    changed: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    error_code: str | None = None
+    error_message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "topic_id": self.topic_id,
+            "title": self.title,
+            "core_argument": self.core_argument,
+            "llm_model": self.llm_model,
+            "prompt_version": self.prompt_version,
+            "generated": self.generated,
+            "changed": list(self.changed),
+            "warnings": list(self.warnings),
+            "error_code": self.error_code,
+            "error_message": self.error_message,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class EnqueueOutcome:
     """一次"勾选入队"的结果（建任务 / 复用旧任务都返回它）。"""
@@ -159,6 +240,42 @@ class EnqueueOutcome:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class DraftReviewOutcome:
+    """一次「生成完整文案并移交审核」的结果（面板上那一下）。"""
+
+    ok: bool
+    topic_id: str
+    task_id: str
+    script_id: str | None = None
+    title: str = ""
+    sentence_count: int = 0
+    word_count: int = 0
+    #: 交接完成时任务停在哪（``reviewing``；失败时是 ``failed``）
+    task_status: str = ""
+    #: ``True`` ⇒ 已经有生效稿件，这一次**没有重跑 LLM**
+    reused: bool = False
+    warnings: tuple[str, ...] = ()
+    error_code: str | None = None
+    error_message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "topic_id": self.topic_id,
+            "task_id": self.task_id,
+            "script_id": self.script_id,
+            "title": self.title,
+            "sentence_count": self.sentence_count,
+            "word_count": self.word_count,
+            "task_status": self.task_status,
+            "reused": self.reused,
+            "warnings": list(self.warnings),
+            "error_code": self.error_code,
+            "error_message": self.error_message,
+        }
+
+
 class ScriptService:
     """写稿流水线的唯一编排入口（§04.1.4 / §04.1.5）。"""
 
@@ -168,6 +285,7 @@ class ScriptService:
         *,
         director: DirectorLike | None = None,
         writer: WriterLike | None = None,
+        outliner: OutlineLike | None = None,
         paths: StudioPaths | None = None,
         log: LogSink | None = None,
         tasks: TaskService | None = None,
@@ -175,15 +293,169 @@ class ScriptService:
         self._connection = connection
         self._director = director
         self._writer = writer
+        self._outliner = outliner
         self._paths = paths or StudioPaths.from_env()
         self._log = log
         self._tasks = tasks or TaskService(connection)
         self._topics = TopicRepo(connection)
         self._scripts = ScriptRepo(connection)
+        self._outlines = OutlineRepo(connection)
         self._audit = AuditRepo(connection)
         #: 写稿池的入口（`draft/task` 单元 · T4.11）：建任务与入队必须**同事务**
         #: 看得见 —— 少了这一行，任务会静静地躺在 `pending` 上没人认领。
         self._jobs = JobStore(connection)
+
+    # ── 二级产物：视频标题 + 核心论点 ────────────────────────────────
+    async def outline(
+        self,
+        *,
+        topic_id: str,
+        persona: PersonaConfig,
+        actor: str = "user",
+        trace_id: str | None = None,
+    ) -> OutlineReport:
+        """让模型给这条选题定「视频标题 + 核心论点」（文案三级流水线的二级）。
+
+        为什么这一级**不需要任务**
+        --------------------------
+        ``draft`` 要先建任务再写稿（稿子挂在任务上），而二级产物挂在**选题**上：
+        它是「这条选题要说什么」的定论，在入队之前就该能定。所以这里只认 ``topic_id``，
+        任务号有就顺手带进 ``AgentContext``（记账能串起来），没有也照跑。
+        """
+        outliner = self._require_outliner()
+        topic = self._require_topic(topic_id)
+        ctx = AgentContext(
+            task_id=topic.task_id,
+            persona=persona,
+            trace_id=trace_id or new_ulid(),
+        )
+        result = await outliner.run(ctx, OutlineInput(topic=topic_spec_from_row(topic), angle=topic.angle))
+        if not result.ok or result.data is None:
+            message = result.error_message or result.error_code or "Outliner 未返回标题与论点"
+            self._emit(
+                "warn",
+                f"选题《{topic.title}》的标题与论点没产出：{message}",
+                payload={"topic_id": topic_id, "error_code": result.error_code},
+            )
+            return OutlineReport(
+                ok=False,
+                topic_id=topic_id,
+                warnings=list(result.warnings),
+                error_code=result.error_code or str(ErrorCode.SCRIPT_DRAFT_FAILED),
+                error_message=message,
+            )
+        data = result.data
+        row = self._outlines.upsert(
+            topic_id=topic_id,
+            title=data.title.strip(),
+            core_argument=data.core_argument.strip(),
+            llm_model=result.model or None,
+            prompt_version=result.prompt_version or None,
+        )
+        self._audit.record(
+            actor=actor,
+            action="outline.generated",
+            target_type="topic",
+            target_id=topic_id,
+            after={"title": row.title, "core_argument": row.core_argument},
+            reason="模型产出二级产物",
+            source="webui",
+        )
+        self._emit(
+            "info",
+            f"二级产物已生成：《{row.title}》",
+            payload={"topic_id": topic_id, "llm_model": row.llm_model},
+        )
+        return OutlineReport(
+            ok=True,
+            topic_id=topic_id,
+            title=row.title,
+            core_argument=row.core_argument,
+            llm_model=row.llm_model,
+            prompt_version=row.prompt_version,
+            generated=True,
+            warnings=list(result.warnings),
+        )
+
+    def save_outline(
+        self,
+        *,
+        topic_id: str,
+        title: str,
+        core_argument: str,
+        actor: str = "user",
+    ) -> OutlineReport:
+        """手写 / 手改二级产物（**两个字段一起给**：这一级只有这两样东西）。
+
+        改标题与改论点是同一件事的两面（论点变了标题往往也得变），所以这里不做
+        「只改一半」的接口 —— 那只会让「标题承诺 A、论点讲 B」成为库里的一种合法状态。
+        留痕里 ``before``/``after`` 都记全，谁在什么时候把论点掰弯了查得到。
+        """
+        topic = self._require_topic(topic_id)
+        cleaned_title = _clean_outline_text(title, field="title", limit=OUTLINE_TITLE_MAX, topic_id=topic_id)
+        cleaned_argument = _clean_outline_text(
+            core_argument, field="core_argument", limit=OUTLINE_ARGUMENT_MAX, topic_id=topic_id
+        )
+        before = self._outlines.get(topic_id)
+        row = self._outlines.upsert(topic_id=topic_id, title=cleaned_title, core_argument=cleaned_argument)
+        self._audit.record(
+            actor=actor,
+            action="outline.updated",
+            target_type="topic",
+            target_id=topic_id,
+            before=None if before is None else _outline_snapshot(before),
+            after=_outline_snapshot(row),
+            reason="人工定稿二级产物",
+            source="webui",
+        )
+        self._emit(
+            "info",
+            f"二级产物已定稿：《{row.title}》",
+            payload={"topic_id": topic_id, "topic_title": topic.title},
+        )
+        return OutlineReport(
+            ok=True,
+            topic_id=topic_id,
+            title=row.title,
+            core_argument=row.core_argument,
+            llm_model=row.llm_model,
+            prompt_version=row.prompt_version,
+            changed=["title", "core_argument"],
+        )
+
+    def clear_outline(self, *, topic_id: str, actor: str = "user") -> OutlineReport:
+        """清掉二级产物（**幂等**：本来就没有也算成功，``changed`` 为空）。
+
+        清掉之后三级会退回「按选题自由发挥」—— 这是刻意的：二级是**可选**的一级，
+        没定就照旧写，不能因为少一张表就写不出稿。
+        """
+        topic = self._require_topic(topic_id)
+        before = self._outlines.get(topic_id)
+        removed = self._outlines.delete(topic_id)
+        if removed:
+            self._audit.record(
+                actor=actor,
+                action="outline.deleted",
+                target_type="topic",
+                target_id=topic_id,
+                before=None if before is None else _outline_snapshot(before),
+                reason="人工清空二级产物",
+                source="webui",
+            )
+            self._emit(
+                "info",
+                f"二级产物已清空：《{topic.title}》",
+                payload={"topic_id": topic_id},
+            )
+        return OutlineReport(
+            ok=True,
+            topic_id=topic_id,
+            changed=["title", "core_argument"] if removed else [],
+        )
+
+    def get_outline(self, topic_id: str) -> TopicOutlineRow | None:
+        """读二级产物（没有就 ``None`` —— 它不是错误状态）。"""
+        return self._outlines.get(topic_id)
 
     # ── 写稿 ────────────────────────────────────────────────────────────
 
@@ -200,14 +472,7 @@ class ScriptService:
         """选题 ⇒ 大纲 ⇒ 成稿 ⇒ 落库。**不抛裸异常**：失败返回 ``ok=False`` 的报告。"""
         director, writer = self._require_agents()
         trace = trace_id or new_ulid()
-        topic = self._topics.get(topic_id)
-        if topic is None:
-            raise StudioError(
-                f"选题不存在：{topic_id}",
-                code=ErrorCode.TOPIC_NOT_FOUND,
-                context={"topic_id": topic_id},
-                remediation="先跑 `studio topics ideate` 生成选题，或用 `studio topics list` 确认 id",
-            )
+        topic = self._require_topic(topic_id)
 
         spec = topic_spec_from_row(topic)
         created = (
@@ -224,8 +489,21 @@ class ScriptService:
         duration = target_duration_ms or persona.max_duration_ms
         ctx = AgentContext(task_id=task.id, persona=persona, trace_id=trace)
 
+        # 二级产物（视频标题 + 核心论点）：有就**锁定**标题并当主线喂下去，没有就照旧
+        # 自由发挥 —— 二级是可选的一级，少一张表不能变成「写不出稿」。
+        saved_outline = self._outlines.get(topic.id)
+        locked_title = saved_outline.title if saved_outline is not None else None
+        core_argument = saved_outline.core_argument if saved_outline is not None else None
+
         outline_result = await director.run(
-            ctx, DirectorInput(topic=spec, target_duration_ms=duration, angle=topic.angle)
+            ctx,
+            DirectorInput(
+                topic=spec,
+                target_duration_ms=duration,
+                angle=topic.angle,
+                outline_title=locked_title,
+                core_argument=core_argument,
+            ),
         )
         if not outline_result.ok or outline_result.data is None:
             return self._failed(
@@ -238,7 +516,15 @@ class ScriptService:
             )
         outline = outline_result.data
 
-        writer_result = await writer.run(ctx, WriterInput(topic=spec, outline=outline))
+        writer_result = await writer.run(
+            ctx,
+            WriterInput(
+                topic=spec,
+                outline=outline,
+                outline_title=locked_title,
+                core_argument=core_argument,
+            ),
+        )
         if not writer_result.ok or writer_result.data is None:
             return self._failed(
                 topic=topic,
@@ -258,6 +544,10 @@ class ScriptService:
             forbidden=persona.forbidden,
             rules=rules,
         )
+        if locked_title is not None:
+            # 标题在二级就定死了：Writer 起的那一个只当它自己写的草稿（提示词已经要求照抄，
+            # 这里再强制一次 —— 模型偶尔仍会另起一个，而「标题被悄悄换掉」是最难发现的一类漂移）。
+            draft = draft.model_copy(update={"title": locked_title})
         saved = self._scripts.save_draft(
             task_id=task.id,
             title=draft.title,
@@ -290,6 +580,8 @@ class ScriptService:
                 "split_count": report.split_count,
             },
         )
+        # 就地写稿到此结束 ⇒ **现在**才把作业交给写稿池（时机说明见 `_enqueue_draft`）
+        self._enqueue_draft(task.id)
         return DraftReport(
             ok=True,
             task_id=task.id,
@@ -307,6 +599,136 @@ class ScriptService:
             warnings=warnings,
         )
 
+    async def draft_and_review(
+        self,
+        *,
+        topic_id: str,
+        persona: PersonaConfig,
+        target_duration_ms: int | None = None,
+        actor: str = "user",
+    ) -> DraftReviewOutcome:
+        """选题 ⇒ 入队 ⇒ 写稿 ⇒ 推 ``reviewing``（面板上「生成文案并送审」那一下）。
+
+        为什么把三步缝在一起
+        --------------------
+        面板上这是一个**动作**：选中一条候选，我要看到成稿，然后进确认闸。把它拆成
+        「入队」「写稿」「送审」三个按钮，用户就得记住顺序，而且中间任何一步忘了按，
+        结果都是一条躺在 ``pending`` 上不动的任务 —— 那不是灵活，那是三倍的出错面。
+
+        为什么推 ``reviewing`` 而不是停在 ``drafting``
+        ----------------------------------------------
+        ``drafting`` 的语义是"正在写"，而这一刻稿子已经在库里了。停在 ``drafting``
+        会让面板显示"写稿中"，然后由写稿池认领时才发现"已有稿件 ⇒ 跳过写稿直接审稿"，
+        于是状态在没有任何写入的情况下自己往前跳一格 —— 看着像有人偷偷动了它。
+        ``drafting → reviewing`` 本来就是静态边（T1.11 那条），这里只是按规矩走。
+
+        重复点按
+        --------
+        已经有生效稿件、而且任务已经越过写稿段 ⇒ **不重跑 LLM**，直接复用（``reused``）。
+        重写会白烧一次 Director + Writer，而且会盖掉正在审的那一版。
+
+        为什么要打「人工送审」标记
+        --------------------------
+        ``approval.auto_approve_policy``（默认 ``grade_a``）会让 A 级稿子自动放行 ——
+        那对**批量**流水线是对的，对**这一下**是错的：人亲手点的送审，结果确认闸里
+        空空如也，按钮就成了假的。所以这里给任务打上 ``context_json.human_gate``，
+        审稿侧据此把放行策略降为 ``off``（见 ``ReviewService.review``）。
+        """
+        outcome = self.enqueue(
+            topic_id=topic_id,
+            persona=persona,
+            target_duration_ms=target_duration_ms,
+            selected_by="user",
+            actor=actor,
+            # 就地写稿跑完之前不许投作业（否则与写稿池抢同一个任务，见 `_enqueue_draft`）
+            defer_draft_job=True,
+        )
+        task_id = outcome.task_id
+        # 人工送审 ⇒ 这条稿子降为 off：什么等级都停在确认闸等人（见 ReviewService）
+        self._tasks.require_human_gate(task_id)
+        current = self._tasks.get(task_id)
+        existing = read_active_script(self._connection, task_id)
+        # 稿件已经在库里 ⇒ 一个 token 都不再烧。``pending`` 是唯一的例外：
+        # 那个状态意味着"任务刚被（重新）放回起点"，此刻库里那份稿件属于上一轮。
+        if existing is not None and current.status is not TaskStatus.PENDING:
+            script_row, sentence_rows = existing
+            warnings: list[str] = []
+            if current.status is TaskStatus.DRAFTING:
+                # 上次崩在"落库之后、审稿之前"：状态还停在 drafting，稿子却是现成的。
+                self._tasks.transition(
+                    task_id, TaskStatus.REVIEWING, actor=actor, reason="已有稿件，直接移交审核"
+                )
+                current = self._tasks.get(task_id)
+            elif current.status is TaskStatus.FAILED:
+                # 任务是在**后面**的段落挂的（配音 / 渲染），稿件本身没问题。
+                # 这里硬要"送审"等于假装那条任务没失败 —— 如实说出来，重试走任务面板。
+                warnings.append(
+                    f"任务当前处于 {current.status.value}：稿件已在库里，重试请走「任务 / 四池」面板"
+                )
+            self._emit(
+                "info",
+                f"《{script_row.title or outcome.title}》已有生效稿件，直接移交审核（不重跑写稿）",
+                payload={"task_id": task_id, "topic_id": topic_id, "script_id": script_row.id},
+            )
+            # 复用分支同样要保证作业在（上一次可能崩在"投作业之前"）
+            self._enqueue_draft(task_id)
+            return DraftReviewOutcome(
+                ok=True,
+                topic_id=topic_id,
+                task_id=task_id,
+                script_id=script_row.id,
+                title=script_row.title or outcome.title,
+                sentence_count=len(sentence_rows),
+                word_count=script_row.word_count,
+                task_status=current.status.value,
+                reused=True,
+                warnings=tuple(warnings),
+            )
+
+        report = await self.draft(
+            topic_id=topic_id,
+            persona=persona,
+            task_id=task_id,
+            target_duration_ms=target_duration_ms,
+            actor=actor,
+        )
+        status = self._status_of(task_id)
+        if not report.ok:
+            return DraftReviewOutcome(
+                ok=False,
+                topic_id=topic_id,
+                task_id=task_id,
+                title=report.title,
+                warnings=tuple(report.warnings),
+                task_status="" if status is None else status.value,
+                error_code=report.error_code or str(ErrorCode.SCRIPT_DRAFT_FAILED),
+                error_message=report.error_message or "写稿失败",
+            )
+
+        if status is TaskStatus.DRAFTING:
+            # 推到 ``reviewing``：写稿池里那条单元会接着跑审稿 + 评分 + 确认闸
+            # （它认 ``drafting`` / ``reviewing`` 两个入口，稿件已在库里 ⇒ 不重写）。
+            self._tasks.transition(
+                task_id, TaskStatus.REVIEWING, actor=actor, reason="生成完整文案后移交审核"
+            )
+            status = self._status_of(task_id)
+        self._emit(
+            "info",
+            f"《{report.title}》已移交审核（任务 {task_id}）",
+            payload={"task_id": task_id, "topic_id": topic_id, "script_id": report.script_id},
+        )
+        return DraftReviewOutcome(
+            ok=True,
+            topic_id=topic_id,
+            task_id=task_id,
+            script_id=report.script_id,
+            title=report.title,
+            sentence_count=report.sentence_count,
+            word_count=report.word_count,
+            task_status="" if status is None else status.value,
+            warnings=tuple(report.warnings),
+        )
+
     def _require_agents(self) -> tuple[DirectorLike, WriterLike]:
         """要真的写稿时才检查 Agent 是否装配（与确认闸同一手法 · 裁定 125）。
 
@@ -322,6 +744,33 @@ class ScriptService:
             )
         return self._director, self._writer
 
+    def _require_topic(self, topic_id: str) -> TopicRow:
+        """按 id 取选题（没有 ⇒ ``TOPIC_NOT_FOUND``，不猜、不新建）。"""
+        topic = self._topics.get(topic_id)
+        if topic is not None:
+            return topic
+        raise StudioError(
+            f"选题不存在：{topic_id}",
+            code=ErrorCode.TOPIC_NOT_FOUND,
+            context={"topic_id": topic_id},
+            remediation="先跑 `studio topics ideate` 生成选题，或用 `studio topics list` 确认 id",
+        )
+
+    def _require_outliner(self) -> OutlineLike:
+        """要生成二级产物时才检查 Outliner 是否装配（与 :meth:`_require_agents` 同一手法）。
+
+        手写 / 手改 / 清空这三个动作**一次 LLM 都不调** —— 没配 Key 也该能用它们把标题
+        与论点先定下来（那正是「配 Key 之前也能干活」的意义）。
+        """
+        if self._outliner is not None:
+            return self._outliner
+        raise StudioError(
+            "写稿服务未装配 Outliner",
+            code=ErrorCode.CONFIG_INVALID,
+            context={"outliner": False},
+            remediation="检查 config/llm.yaml 的 Key（E6），或手工填标题与核心论点",
+        )
+
     # ── 勾选入队（T4.3）─────────────────────────────────────────────────
 
     def enqueue(
@@ -332,6 +781,7 @@ class ScriptService:
         target_duration_ms: int | None = None,
         selected_by: str = "user",
         actor: str = "user",
+        defer_draft_job: bool = False,
     ) -> EnqueueOutcome:
         """选题 ⇒ 建任务（``pending``）并把选题置 ``queued``。**不跑写稿。**
 
@@ -344,6 +794,9 @@ class ScriptService:
         幂等：``topic:<id>`` 命中已有任务 ⇒ **复用**那一行，不建第二个（裁定 87）。
         复用分支还要把选题状态拉回 ``queued``：它可能在上一次失败/废弃时被标成
         ``rejected``，而人这次明确又选了它 —— 状态不跟上来，面板会显示"已驳回"。
+
+        ``defer_draft_job=True`` 是给 :meth:`draft_and_review` 用的：那个流程紧接着
+        就要**就地**写稿，作业得等它跑完再投（见 :meth:`_enqueue_draft` 的时机说明）。
         """
         topic = self._topics.get(topic_id)
         if topic is None:
@@ -370,6 +823,9 @@ class ScriptService:
             self._topics.set_status(
                 topic_id=topic.id, status="queued", task_id=task.id, selected_by=selected_by
             )
+
+        if not defer_draft_job:
+            self._enqueue_draft(task.id)
 
         self._audit.record(
             actor=actor,
@@ -416,6 +872,9 @@ class ScriptService:
 
         ``create()`` 命中幂等键时原样返回旧行 ⇒ 这里不能再把"新建"当成既成事实；
         新旧的判断在 :meth:`draft` 里用 ``find_by_idempotency_key`` 先问一次。
+
+        **这里不投作业**：入队时机见 :meth:`_enqueue_draft` —— 写稿池 ~1s 就会
+        来认领，而就地写稿要跑几分钟，在同一个任务上撞车就是两份 LLM 账单。
         """
         task = self._tasks.create(
             title=topic.title,
@@ -431,17 +890,28 @@ class ScriptService:
             idempotency_key=self._idempotency_key(topic.id),
         )
         self._topics.set_status(topic_id=topic.id, status="queued", task_id=task.id, selected_by=selected_by)
-        self._enqueue_draft(task.id)
         return task
 
     def _enqueue_draft(self, task_id: str) -> None:
         """把任务交给写稿池（`draft/task` 单元 · T4.11 接线）。
 
-        为什么建任务时就入队，而不是等某个"调度器"来扫：**入队是幂等的**
+        什么时候投 —— 这条线踩过一次，写清楚
+        --------------------------------------
+        作业必须在**就地写稿跑完之后**才投，不能在 :meth:`_create_task` 里顺手投。
+        写稿池 ~1s 就来认领，而一次就地写稿要跑几分钟的 LLM：两边认领到同一个任务，
+        就是两份 Director + Writer 并发跑 —— token 翻倍、预算当场烧穿
+        （`budget_exceeded` 之后云端通道熔断，评分降级到本地小模型，等级与放行全跟着歪）。
+
+        所以规矩是两条：
+
+        * :meth:`enqueue`（勾选入队，**不跑写稿**）⇒ 立刻投，池子负责写稿；
+        * :meth:`draft`（就地写稿，含 ``draft_now`` 与 CLI）⇒ 跑完/跑挂之后才投，
+          池子认领时稿件已在库里 ⇒ 只跑审稿（``drafting`` / ``reviewing`` 都是它的入口）。
+
+        为什么不是等某个"调度器"来扫：**入队是幂等的**
         （`(task_id, pool, unit_type, unit_ref)` 唯一键），多入一次不会多跑一遍；
         而少入一次就是"勾了 6 条，面板上 6 个 pending 永远不动" —— 后者才是灾难。
-        CLI 的 `studio script draft` 也会走到这里：那次是**就地跑完**，
-        池里那条单元随后认领到时发现任务已越过写稿段 ⇒ 空操作成功（可重入）。
+        失败路径也要投，理由同上：写稿挂了，池子照旧按 ``retry_from`` 重试。
 
         一期只有 `task` 一种写稿单元。`topic_batch`（Planner/Ideator 批次）**仍留待**
         有周期性触发源时再接（T4.12 的 APScheduler）—— 现在入队只会留下永远
@@ -470,6 +940,8 @@ class ScriptService:
         actor: str,
         extra: list[str] | None = None,
     ) -> DraftReport:
+        # 写稿挂了也要投作业：池子认领时按 `retry_from` 回到断点重试（与成功路径同一条规矩）
+        self._enqueue_draft(task_id)
         self._emit(
             "error",
             f"写稿失败：{message}",
@@ -553,6 +1025,35 @@ class ScriptService:
             logger.warning(message, source="script.pipeline", **extra)
         else:
             logger.info(message, source="script.pipeline", **extra)
+
+
+def _clean_outline_text(value: str, *, field: str, limit: int, topic_id: str) -> str:
+    """二级产物的两个自由文本字段：去空白 + 非空 + 长度上限。
+
+    上限在这里再卡一次（schema 已经卡过）：手写的入口**不经**模型输出 schema，
+    少这一道，一个 5000 字的「标题」能直接落库。
+    """
+    cleaned = value.strip()
+    if not cleaned:
+        raise StudioError(
+            f"{field} 不能为空",
+            code=ErrorCode.OUTLINE_INVALID,
+            context={"topic_id": topic_id, "field": field},
+            remediation="标题与核心论点都是必填 —— 想撤掉这一级请用「清空」",
+        )
+    if len(cleaned) > limit:
+        raise StudioError(
+            f"{field} 超过 {limit} 字（实际 {len(cleaned)} 字）",
+            code=ErrorCode.OUTLINE_INVALID,
+            context={"topic_id": topic_id, "field": field, "limit": limit},
+            remediation=f"删到 {limit} 字以内再存",
+        )
+    return cleaned
+
+
+def _outline_snapshot(row: TopicOutlineRow) -> dict[str, Any]:
+    """留痕里那两列（``before``/``after`` 同一份形状，方便逐列比对）。"""
+    return {"title": row.title, "core_argument": row.core_argument}
 
 
 def _sentence_payload(sentence: SentenceSpec) -> dict[str, Any]:

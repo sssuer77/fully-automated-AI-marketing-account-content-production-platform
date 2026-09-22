@@ -21,7 +21,7 @@ from studio.db.migrate import check, discover, doctor_check, migrate
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-EXPECTED_TABLES = 30
+EXPECTED_TABLES = 31
 EXPECTED_INDEXES = 61
 EXPECTED_TRIGGERS = 6
 
@@ -38,6 +38,7 @@ EXPECTED_MIGRATIONS = (
     "0008_observability",
     "0009_assets",
     "0010_metrics",
+    "0011_topic_outlines",
 )
 EXPECTED_VERSIONS = tuple(label.split("_", 1)[0] for label in EXPECTED_MIGRATIONS)
 EXPECTED_MIGRATION_NAMES = tuple(label.split("_", 1)[1] for label in EXPECTED_MIGRATIONS)

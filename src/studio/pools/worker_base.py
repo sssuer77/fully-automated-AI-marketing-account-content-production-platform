@@ -431,6 +431,25 @@ class _Pulse:
         self._last_renew = None
 
     # ── 线程主体 ────────────────────────────────────────────────────────
+    def _forget_orphans(self, beats: HeartbeatStore) -> None:
+        """启动时按 pid 核对一次：清掉上一代被强杀留下的心跳行。
+
+        ``forget`` 只在优雅退出时跑；被 ``taskkill`` / 关终端 / 崩溃带走的进程留下的
+        ``idle`` 行**既不超时判死、也不被 ``purge`` 带走**（后者只删 ``dead``），
+        于是每重启一次多一条，面板上堆成一片"疑似猝死"（见
+        :meth:`HeartbeatStore.forget_orphans`）。
+
+        **异常一律吞掉**：核对失败最多是"多留几行"，不能让脉冲线程起不来。
+        """
+        try:
+            beats.forget_orphans()
+        except Exception as exc:
+            logger.warning(
+                "worker.forget_orphans_failed",
+                worker_id=self._identity.worker_id,
+                error=str(exc),
+            )
+
     def _loop(self) -> None:
         connection: sqlite3.Connection | None = None
         beats: HeartbeatStore | None = None
@@ -438,6 +457,7 @@ class _Pulse:
             connection = self._connection_factory()
             store = JobStore(connection, auto_concurrency=self._auto_concurrency)
             beats = HeartbeatStore(connection)
+            self._forget_orphans(beats)
             while True:
                 self._check_stop_flag()
                 try:

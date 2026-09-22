@@ -299,6 +299,67 @@ def _seed(
     return Rig(paths=paths, task_id=task_id, sentence_ids=saved.sentence_ids)
 
 
+def _seed_queued(connection: sqlite3.Connection, paths: StudioPaths) -> Rig:
+    """建一条**停在 ``queued_voice``** 的任务：三句都是 ``pending``、一条作业都没有。
+
+    这正是真机上那个画面：状态写着「待配音」、每一行一颗「重配」，而**没有任何东西**
+    会把它们排进池子 —— 投递原先只写在 ``pipeline_service.run_task`` 里，
+    面板上没有那一下（真机原话：「这是要我一个一个点重配吗」）。
+    """
+    tasks = TaskService(connection)
+    task_id = tasks.create(
+        title="开始配音验收",
+        payload={"seed": SEED, "voice_map": dict(DEFAULT_VOICE_MAP)},
+    ).id
+    saved = ScriptRepo(connection).save_draft(
+        task_id=task_id,
+        title="标题",
+        hook="钩子",
+        body_md="正文",
+        cta="关注",
+        word_count=60,
+        est_duration_ms=20_000,
+        speaker_ratio={"bigbear": 0.67, "littlebear": 0.33},
+        outline={"hook_3s": "钩子", "segments": []},
+        sentences=[
+            {
+                "seq": seq,
+                "text_raw": text,
+                "text": text,
+                "speaker": speaker,
+                "emotion": "neutral",
+                "pause_after_ms": PAUSES[(seq - 1) % len(PAUSES)],
+            }
+            for seq, (speaker, text) in enumerate(SCRIPT, start=1)
+        ],
+    )
+    for target in (TaskStatus.DRAFTING, TaskStatus.REVIEWING, TaskStatus.QUEUED_VOICE):
+        tasks.transition(task_id, target, actor="test", reason="setup")
+    connection.commit()
+    return Rig(paths=paths, task_id=task_id, sentence_ids=saved.sentence_ids)
+
+
+def _pending_jobs(connection: sqlite3.Connection, task_id: str) -> list[str]:
+    """这条任务在 voice 池里**待认领**的作业（``unit_ref`` = 句子 id）。
+
+    为什么数"待认领"而不是"认领三次"：voice 池的 ``concurrency`` 是 1（§04.2.6），
+    ``claim`` 在池子已经有一条在跑时直接返回 ``None`` —— 那是**池的规矩**，
+    不是"作业没排进去"。所以这里认一条证明"真的能认领"，条数看库。
+    """
+    rows = connection.execute(
+        "SELECT unit_ref FROM jobs WHERE task_id = ? AND pool = 'voice' AND status = 'pending'",
+        (task_id,),
+    ).fetchall()
+    return [str(row["unit_ref"]) for row in rows]
+
+
+def _job_count(connection: sqlite3.Connection, task_id: str) -> int:
+    """这条任务在 ``jobs`` 里有几行（投递的账）。"""
+    row = connection.execute("SELECT COUNT(*) AS n FROM jobs WHERE task_id = ?", (task_id,)).fetchone()
+    assert row is not None
+    return int(row["n"])
+
+
 def _sentences(connection: sqlite3.Connection, task_id: str) -> list[tuple[int, str, str, int]]:
     """库里的 ``(seq, speaker, tts_status, tts_attempts)``（按句序）。"""
     rows = connection.execute(
@@ -487,6 +548,105 @@ def test_media_reports_a_sentence_that_does_not_exist(
 
     assert response.status_code == 404
     assert response.json()["code"] == "SCRIPT_NOT_FOUND"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ②.5 「开始配音」：一次把待配音的句子全投进池
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_enqueue_voice_puts_every_pending_sentence_in_the_pool(
+    client: TestClient, connection: sqlite3.Connection, paths: StudioPaths
+) -> None:
+    """★★ 面板那颗主按钮的验收口径：**一次**投递 + 任务推到 ``voicing`` + 留痕。
+
+    ``queued_voice`` 只是**一个状态**：没有任何东西会因为到了这个状态而投递作业。
+    少了这个端点，面板上「待配音 54 句」的样子就是 54 颗「重配」—— 用户的理解
+    （「这是要我一个一个点重配吗」）在当前实现下是对的。
+
+    断言三件事，缺一件这条链路就是"看着跑通了"：
+
+    - ``queued`` 是**投出去的条数**（不是"库里有多少句"）；
+    - 那些作业**真的能被认领**（改状态字段也能让 REST 返回 200）；
+    - 任务真的推到了 ``voicing``（不推的话常驻池念完了也没人收口）。
+    """
+    rig = _seed_queued(connection, paths)
+    assert _job_count(connection, rig.task_id) == 0  # 投递之前：一条作业都没有
+
+    response = client.post(f"/api/v1/tasks/{rig.task_id}/enqueue_voice")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status_before"] == "queued_voice"
+    assert body["status"] == "voicing"
+    assert body["queued"] == 3
+    assert body["outstanding"] == 3
+    assert body["progress"]["pending"] == 3
+    assert body["hint"]  # 面板直接显示它（下一站在哪，用户不用猜）
+
+    assert sorted(_pending_jobs(connection, rig.task_id)) == sorted(rig.sentence_ids)
+    claimed = JobStore(connection).claim(pool="voice", worker_id="probe")
+    assert claimed is not None
+    assert claimed.unit_ref in rig.sentence_ids
+    assert TaskService(connection).get(rig.task_id).status is TaskStatus.VOICING
+
+    audits = _audit(connection, rig.task_id, "task.enqueue_voice")
+    assert len(audits) == 1
+    assert audits[0].before["status"] == "queued_voice"
+    assert audits[0].after == {"status": "voicing", "queued": 3}
+
+
+def test_enqueue_voice_only_queues_the_sentences_that_are_not_in_the_pool_yet(
+    client: TestClient, connection: sqlite3.Connection, paths: StudioPaths
+) -> None:
+    """★ 幂等：已经在池子里的句子**不会**被排第二遍（否则投一次就把每句念两遍）。
+
+    这条**不是**"再点一次按钮"的形状 —— 那个会被 409 拦下（任务已经在 ``voicing``）。
+    真实的样子是：用户先手点了某一行的「重配」（那一句有了作业），然后才想起来
+    右上角有整条投递。这时 ``queued`` 必须是**新投的那几条**，而总数不能翻倍。
+    """
+    rig = _seed_queued(connection, paths)
+    single = client.post(f"/api/v1/sentences/{rig.sentence_ids[0]}/resynth")
+    assert single.status_code == 200, single.text
+    assert _job_count(connection, rig.task_id) == 1
+
+    response = client.post(f"/api/v1/tasks/{rig.task_id}/enqueue_voice")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["queued"] == 2  # 只有那两条还没排过的
+    assert response.json()["outstanding"] == 3
+    assert _job_count(connection, rig.task_id) == 3  # 一条都没有排第二遍
+
+
+def test_enqueue_voice_refuses_a_task_that_is_not_waiting_for_voice(
+    client: TestClient, connection: sqlite3.Connection, paths: StudioPaths
+) -> None:
+    """★ 只认 ``queued_voice``：别的状态一律 **409**，不是"成功但什么都没做"。
+
+    ``voicing`` 下再投一次本来就是空操作（作业行已经在），返回 200 加一句"投了 0 条"
+    会让那颗看起来能点的按钮变成"点了没反应" —— 而用户会把这件事读成"系统坏了"。
+    """
+    rig = _seed_queued(connection, paths)
+    assert client.post(f"/api/v1/tasks/{rig.task_id}/enqueue_voice").status_code == 200
+
+    again = client.post(f"/api/v1/tasks/{rig.task_id}/enqueue_voice")
+
+    assert again.status_code == 409, again.text
+    assert again.json()["code"] == "STATE_TRANSITION_ILLEGAL"
+    assert again.json()["context"]["status"] == "voicing"
+    assert _job_count(connection, rig.task_id) == 3
+
+
+def test_enqueue_voice_reports_a_task_that_does_not_exist(
+    client: TestClient, connection: sqlite3.Connection, paths: StudioPaths
+) -> None:
+    """任务号写错 ⇒ 404（不是 500）：面板上那颗按钮天天有人点，报错要能读懂。"""
+    _seed_queued(connection, paths)
+
+    response = client.post("/api/v1/tasks/01J000000000000000000000ZZ/enqueue_voice")
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "TASK_NOT_FOUND"
 
 
 # ══════════════════════════════════════════════════════════════════════

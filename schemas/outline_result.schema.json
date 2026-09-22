@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://studio.local/schemas/outline_result.schema.json",
+  "title": "OutlineOutput",
+  "description": "文案三级流水线的二级产物：视频标题 + 核心论点",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "title",
+    "core_argument"
+  ],
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60
+    },
+    "core_argument": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    }
+  }
+}

@@ -54,6 +54,7 @@ from studio.core.proto import EVENT_PAYLOAD_KEY, EventKind, Severity
 from studio.db.models import ReviewRow, ScriptRow, SentenceRow
 from studio.db.repositories import ApprovalRepo, AuditRepo, ReviewRepo, ScriptRepo, TopicRepo
 from studio.domain.enums import ApprovalDecision, AutoApprovePolicy, TaskStatus
+from studio.domain.models import TaskRead
 from studio.domain.scoring import (
     REVISION_LIMIT,
     EditorInput,
@@ -80,7 +81,7 @@ from studio.domain.script import (
     estimate_duration_ms,
 )
 from studio.domain.state_machine import RESCUE_STATUSES
-from studio.domain.task_service import TaskService
+from studio.domain.task_service import HUMAN_GATE_KEY, TaskService
 from studio.domain.topics import TopicSpec
 from studio.services.log_service import LogSink
 from studio.services.script_service import _sentence_payload, read_active_script
@@ -90,6 +91,7 @@ __all__ = [
     "RescueOutcome",
     "ReviewReport",
     "ReviewService",
+    "effective_policy",
     "read_latest_review",
     "writer_output_from_rows",
 ]
@@ -107,6 +109,22 @@ _DECISION_TARGET: Final[Mapping[ApprovalDecision, TaskStatus]] = MappingProxyTyp
 
 #: structlog 的保留键：`_emit` 的兜底分支要把 payload 展开成 kwargs，这些键会撞车
 _LOG_RESERVED: Final[frozenset[str]] = frozenset({"event", "level", "logger", "message", "timestamp"})
+
+
+def effective_policy(task: TaskRead, policy: AutoApprovePolicy) -> AutoApprovePolicy:
+    """这条任务该听哪把放行旋钮（构造参数是默认值，任务自己可以要求更严的那把）。
+
+    ``context_json.human_gate`` 是**人工在面板上点过「生成文案并送审」**的痕迹
+    （见 :meth:`~studio.domain.task_service.TaskService.require_human_gate`）。
+    那一刻的语义是「我要自己看」，所以这条任务降为 ``off`` —— 什么等级都进闸。
+    批量流水线（勾选入队）没有这个标记，照旧听 ``config/app.yaml`` 那把。
+
+    只认**更严**的方向：标记只能把 ``grade_a`` / ``grade_ab`` 拉回 ``off``，
+    不会把 ``off`` 放开 —— 全局配 ``off`` 时，任何标记都不能让稿子自己溜过去。
+    """
+    if task.context.get(HUMAN_GATE_KEY) is True:
+        return AutoApprovePolicy.OFF
+    return policy
 
 
 class ReviewerLike(Protocol):
@@ -278,6 +296,8 @@ class ReviewService:
         reviewer, _ = self._require_agents()
         trace = trace_id or new_ulid()
         task = self._tasks.get(task_id)
+        # 人工送审过的任务降为 off（构造参数只是默认值）—— 下面三处判定同源
+        policy = effective_policy(task, self._policy)
         payload = read_active_script(self._connection, task_id)
         if payload is None:
             raise StudioError(
@@ -338,7 +358,7 @@ class ReviewService:
                 detail=detail,
                 llm=reviewer_result.data,
                 round_no=round_no,
-                policy=self._policy,
+                policy=policy,
             )
             self._reviews.insert(
                 task_id=task_id,
@@ -356,7 +376,7 @@ class ReviewService:
                 prompt_version=reviewer_result.prompt_version or None,
             )
             warnings = [*warnings, *reviewer_result.warnings]
-            action = gate_action(review.grade, self._policy, round_no=round_no)
+            action = gate_action(review.grade, policy, round_no=round_no)
             self._emit_review(task_id=task_id, review=review, action=action)
             result = review
 
@@ -388,6 +408,7 @@ class ReviewService:
             action=action,
             script_row=script_row,
             actor=actor,
+            policy=policy,
         )
         last_review = self._reviews.latest_for_task(task_id)
         return ReviewReport(
@@ -503,10 +524,11 @@ class ReviewService:
         action: GateAction,
         script_row: ScriptRow,
         actor: str,
+        policy: AutoApprovePolicy,
     ) -> str | None:
         """把 :class:`GateAction` 落成状态迁移 + 留痕；返回 ``approvals.id``（若有）。"""
         if action is GateAction.AUTO_PASS:
-            signature = auto_approved_by(review.grade, self._policy)
+            signature = auto_approved_by(review.grade, policy)
             self._tasks.transition(
                 task_id,
                 TaskStatus.QUEUED_VOICE,

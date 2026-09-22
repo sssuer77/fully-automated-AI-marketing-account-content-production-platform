@@ -75,7 +75,8 @@ from studio.db.repositories.sentence_repo import (
     SentenceRepo,
     TimelineSpan,
 )
-from studio.domain.enums import UnitType
+from studio.domain.enums import TaskStatus, UnitType
+from studio.domain.errors import TaskNotFound
 from studio.domain.task_service import TaskService
 from studio.tts.cache import TtsCache
 from studio.tts.sapi import list_voices_cached
@@ -95,6 +96,7 @@ __all__ = [
     "RESIDENT_DOWN_HINT",
     "RESIDENT_NOT_READY_HINT",
     "SAPI_ENGINE_NAME",
+    "EnqueueVoiceReport",
     "ResolvedVoice",
     "ResynthReport",
     "VoiceChange",
@@ -109,6 +111,7 @@ __all__ = [
     "set_voice_map",
     "settle_voice",
     "speakable_voices",
+    "start_voicing",
     "usable_voices",
     "voice_engine_info",
     "voice_payloads",
@@ -269,6 +272,38 @@ class ResynthReport:
 
 
 @dataclass(frozen=True, slots=True)
+class EnqueueVoiceReport:
+    """「开始配音」的结论（面板点完那颗按钮要看到的东西）。
+
+    ``queued`` 与 ``outstanding`` **都要给**：前者是"这一下真投出去几条"，
+    后者是"这条任务还有几条没定局"。只给一个，面板就说不出那句最该说的话 ——
+    "投了 54 条，都排上了"与"投了 0 条，因为 54 条早就排过了"是两个完全不同的结论，
+    而它们的 ``outstanding`` 都是 54。
+    """
+
+    task_id: str
+    status_before: str
+    status: str
+    queued: int
+    outstanding: int
+    progress: SentenceProgress
+    timeline_stale: bool
+    timeline_total_ms: int | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "status_before": self.status_before,
+            "status": self.status,
+            "queued": self.queued,
+            "outstanding": self.outstanding,
+            "progress": self.progress.to_dict(),
+            "timeline_stale": self.timeline_stale,
+            "timeline_total_ms": self.timeline_total_ms,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class VoiceChange:
     """一个角色的音色从哪换到哪，以及它牵动了哪几句。"""
 
@@ -373,6 +408,81 @@ def enqueue_sentences(
             queued += 1
     logger.info("voice.enqueued", task_id=task_id, queued=queued, outstanding=len(rows))
     return queued
+
+
+def start_voicing(
+    *,
+    connection: sqlite3.Connection,
+    task_id: str,
+    paths: StudioPaths | None = None,
+    actor: str = "user",
+) -> EnqueueVoiceReport:
+    """★ 「开始配音」：把这条任务**还没定局**的句子一次投进 voice 池，任务推到 ``voicing``。
+
+    为什么要有这个函数（而不是让面板去点 54 次「重配」）
+    ---------------------------------------------------
+    ``queued_voice`` 只是**一个状态**，没有任何东西会因为它而投递作业：投递写在
+    :func:`~studio.services.pipeline_service.run_task` 的 ``QUEUED_VOICE`` 分支里，
+    而那条路只有 CLI 与「一键出片」会走。于是面板上的样子是"状态写着待配音、
+    每一行一颗「重配」，点一颗只念一句" —— 用户的理解（"要我一个个点？"）
+    在当前实现下**是对的**。这个函数补的就是那个缺失的入口。
+
+    为什么**只认 ``queued_voice``**
+    -------------------------------
+    ``voicing`` 下再投一次多半是空操作：句子的作业行已经存在，幂等键
+    ``(task_id, pool, unit_type, unit_ref)`` 让它 ``DO NOTHING``。返回 0 又不报错，
+    面板上就是"点了没反应"—— 而那颗按钮看起来明明是能点的。已经失败的句子走
+    :func:`resynth_sentence`（它会 ``requeue_unit`` 并把 ``tts_attempts`` 归零），
+    那是**另一件事**：把"投递"与"重试"合成一颗按钮，用户永远说不清自己按的是哪个。
+
+    **不在这里合成**：与 :func:`resynth_sentence` 同一条 —— 操作面只投递，
+    真正念的是 voice 池（T2.8 裁定 224 的"投递 / 排空两步"）。所以这个函数是
+    **秒回**的，哪怕前面排着 54 句、要念 18 分钟。
+    """
+    tasks = TaskService(connection)
+    before = tasks.get(task_id).status
+    if before is not TaskStatus.QUEUED_VOICE:
+        raise StudioError(
+            f"任务 {task_id} 现在停在 {before.value}，不在「待配音」这一步",
+            code=ErrorCode.STATE_TRANSITION_ILLEGAL,
+            context={"task_id": task_id, "status": before.value},
+            remediation=(
+                "「开始配音」只把 queued_voice 推到 voicing："
+                "awaiting_approval ⇒ 先在确认闸放行；"
+                "voicing ⇒ 已经在念，等它念完（失败的句子点那一行的「重配」）；"
+                "queued_render / rendering ⇒ 去「一键出片」推母带与渲染"
+            ),
+        )
+    queued = enqueue_sentences(connection=connection, task_id=task_id, paths=paths)
+    after = tasks.transition(
+        task_id,
+        TaskStatus.VOICING,
+        actor=actor,
+        reason=f"面板投递配音作业（{queued} 句）",
+    )
+    progress = SentenceRepo(connection).progress(task_id)
+    total_ms = read_timeline_total_ms(paths, task_id)
+    AuditRepo(connection).record(
+        actor=actor,
+        action="task.enqueue_voice",
+        target_type="task",
+        target_id=task_id,
+        task_id=task_id,
+        before={"status": before.value},
+        after={"status": after.task.status.value, "queued": queued},
+        reason="面板「开始配音」：把待配音的句子投进 voice 池",
+    )
+    logger.info("voice.started", task_id=task_id, queued=queued, outstanding=progress.outstanding)
+    return EnqueueVoiceReport(
+        task_id=task_id,
+        status_before=before.value,
+        status=after.task.status.value,
+        queued=queued,
+        outstanding=progress.outstanding,
+        progress=progress,
+        timeline_stale=total_ms is not None and progress.outstanding > 0,
+        timeline_total_ms=total_ms,
+    )
 
 
 def usable_voices(connection: sqlite3.Connection) -> tuple[str, ...]:
@@ -513,6 +623,47 @@ def voice_payloads(
         choice = resolved[row.speaker]
         payloads[row.id] = {} if choice.voice is None else {"voice": choice.voice}
     return payloads
+
+
+def active_script_voices(
+    connection: sqlite3.Connection,
+    task_id: str,
+    *,
+    paths: StudioPaths | None = None,
+) -> tuple[str | None, ...]:
+    """生效稿件**逐句**要用的音色（与 :func:`~studio.services.script_service.read_active_script`
+    的句子**同序同长**）。
+
+    为什么渲染这条路要它（真机 2026-09-22）
+    --------------------------------------
+    渲染面板上那格音色只能表达「整篇一个嗓子」，而一份稿子可以是**多角色**的
+    （真机 ``01M2Z9BP1CR70TBW0CJ05FQ12Z``：熊大 17 句 / 熊二 17 句 / 旁白 21 句）。
+    配音台按角色配（``voice_map`` + :func:`resolve_voice`），渲染这条路原先整篇套一个音色
+    ⇒ 母带一旦不在盘上（24h 保留期回收、或人手工删过 ``data/``），重出的片子会把旁白
+    也念成熊大，而且**不报错**。
+
+    判据与配音池**同一份**：``voice_map`` 里没写这个角色 ⇒ ``None``（不覆盖，交给调用方
+    的兜底音色），写了且这台引擎念得出来 ⇒ 用它，写了但念不出来 ⇒ ``None``
+    （:func:`resolve_voice` 的三种结局，一个都不在这里重判）。
+    """
+    rows = SentenceRepo(connection).list_for_task(task_id)
+    if not rows:
+        return ()
+    try:
+        voice_map = TaskService(connection).get(task_id).payload.voice_map
+    except TaskNotFound:
+        # 任务不在库里（面板直接填文案那条路）⇒ 没有逐角色设置，一律不覆盖。
+        return (None,) * len(rows)
+    available = speakable_voices(connection, paths=paths)
+    resolved: dict[str, ResolvedVoice] = {}
+    voices: list[str | None] = []
+    for row in rows:
+        if row.speaker not in resolved:
+            resolved[row.speaker] = resolve_voice(
+                voice_map=voice_map, speaker=row.speaker, available=available
+            )
+        voices.append(resolved[row.speaker].voice)
+    return tuple(voices)
 
 
 def preview_audio(*, paths: StudioPaths, row: SentenceRow) -> tuple[Path, str] | None:

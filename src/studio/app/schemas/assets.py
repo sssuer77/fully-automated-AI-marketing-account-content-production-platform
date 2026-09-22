@@ -27,7 +27,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -35,12 +35,14 @@ from studio.app.schemas.common import MAX_REASON
 from studio.assets.layout import AssetKind
 
 __all__ = [
+    "NULLABLE_PATCH_FIELDS",
     "AssetCheckModel",
     "AssetIngestRequest",
     "AssetItemModel",
     "AssetKindSectionModel",
     "AssetKindStatsModel",
     "AssetLibraryModel",
+    "AssetPageModel",
     "AssetPatchRequest",
     "AssetStatsModel",
     "AssetStatsResponse",
@@ -54,6 +56,8 @@ __all__ = [
     "ScanSectionModel",
     "ScanTotalsModel",
     "ScannedAssetModel",
+    "UploadResultModel",
+    "UploadedFileModel",
     "VoiceItemModel",
 ]
 
@@ -271,6 +275,44 @@ class AssetLibraryModel(_Response):
     sections: list[AssetKindSectionModel]
 
 
+class AssetPageModel(_Response):
+    """一类素材的**一页**（T4.8：跑酷 / 音色 / BGM **各一个菜单**，各翻各的页）。
+
+    为什么不是一个菜单看三类
+    ------------------------
+    三类素材的可管理字段**本来就不一样**（跑酷有可用区间与 `has_text`，BGM 有
+    `bpm` / `mood` / `loopable`，音色有 `ref_count` / `text_path`），放在一屏里
+    只能把三类字段摊成一张"大部分格子是空的"大表。分菜单之后，每一屏的表头与编辑器
+    都只画这一类真正有的东西。
+
+    ``stats`` 与 ``total`` **是两个数**，不能合并
+    -------------------------------------------
+    - ``stats``：这一类的**家底**（库里有几条 / 启用几条 / 共多少时长），**不受筛选影响**；
+    - ``total``：**这一页所在的筛选结果**有几条。
+
+    合成一个数的后果很具体：筛出 3 条时面板会说"这一类只有 3 条素材"，而库里明明有
+    60 条 —— 用户接着就去补素材了。
+
+    ``page`` 是**服务端钳过**的页码：翻过头（比如最后一页被删空了）返回的是最后一页，
+    而不是一页空白。前端照着它画页码，不要自己算。
+    """
+
+    kind: str
+    root: str
+    root_missing: bool
+    items: list[AssetItemModel]
+    stats: AssetStatsModel
+    usable: int
+    disk_total: int
+    shortfall: str | None
+    pending: list[PendingAssetModel]
+    strays: list[str]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
 class AssetKindStatsModel(_Response):
     """一类素材的家底（**不带条目**：总览台只要数字，不该为了几行数把整库拖过来）。
 
@@ -380,6 +422,66 @@ class ScanReportModel(_Response):
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 写：浏览器上传（T4.8 的图形化入库入口）
+# ══════════════════════════════════════════════════════════════════════
+
+
+class UploadedFileModel(_Response):
+    """一个上传文件的结局（面板逐条画一行）。
+
+    ``status`` 只有三种，正好对应面板上的三种颜色：
+
+    - ``stored``：新写进去的；
+    - ``replaced``：覆盖了同名的旧文件（**只在用户勾了「覆盖同名」时才会出现**）；
+    - ``skipped``：一个字节都没写，``message`` 说清为什么（扩展名不对 / 目标已存在…）。
+
+    ``asset_id`` 是**落盘之后**的素材 id，不是原始文件名 —— 上传会把
+    ``跑酷 01.MP4`` 规范成 ``parkour_01``，面板要显示后者：否则用户回头在库里
+    按刚传的那个名字找不到东西。
+
+    ``message`` 里带上"原名 ⇒ 新名"这件事：改名是可以的，**静默**改名不行。
+    """
+
+    filename: str
+    asset_id: str | None
+    status: Literal["stored", "replaced", "skipped"]
+    message: str
+
+
+class UploadResultModel(_Response):
+    """一次上传的回执：逐文件结局 + 这一趟的入库报告。
+
+    ``report`` 可以缺席（``None``）：一个字节都没落盘时没有什么可入库的，此时回一份
+    空的 ``ScanReportModel`` 会假装"扫过了"（而它的 ``missing`` 字段还会把整个库
+    列成"不见了"）。
+    """
+
+    kind: str
+    root: str
+    overwrite: bool
+    files: list[UploadedFileModel]
+    stored: int
+    replaced: int
+    skipped: int
+    report: ScanReportModel | None
+
+
+class AssetDeleteModel(_Response):
+    """一次删除的结局（**库里那一行没了**，盘上那份要看 ``purged``）。
+
+    ``purge`` 是**请求里**那个开关，``purged`` 是**真的从盘上删掉的路径**。两者
+    分开报，因为可以不一致：``purge=true`` 但文件本来就不在盘上 ⇒ 前者 ``true``、
+    后者是空表。面板上写"盘上文件已删除"而其实什么都没删，与写"已移除"而盘上
+    还留着一个目录，是同一类谎话。
+    """
+
+    kind: str
+    id: str
+    purge: bool
+    purged: list[str]
+
+
+# ══════════════════════════════════════════════════════════════════════
 # 写
 # ══════════════════════════════════════════════════════════════════════
 
@@ -399,6 +501,26 @@ class AssetIngestRequest(_Body):
     license: str | None = None
     dry_run: bool = False
     reason: str | None = Field(default=None, max_length=MAX_REASON)
+
+
+#: 显式传 ``null`` 等于**清空**的字段（其余字段的 ``null`` 一律当成"没给"）。
+#:
+#: 这份名单是"这个字段能不能空"的**唯一**一处声明：``null`` 落进 SQL 之前，只有
+#: 名单里的字段允许它是 ``None``。名单外的字段（``enabled`` / ``has_text`` /
+#: ``loopable``）在 DDL 里是 ``INTEGER NOT NULL CHECK IN (0,1)`` —— 把 ``None``
+#: 交给它们换来的是一条 500，而不是一句"这个字段不能清空"。
+NULLABLE_PATCH_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "license",
+        "tags",
+        "mood",
+        "bpm",
+        "usable_to_ms",
+        "source_url",
+        "proof_path",
+        "licensed_to",
+    }
+)
 
 
 class AssetPatchRequest(_Body):
@@ -433,5 +555,26 @@ class AssetPatchRequest(_Body):
 
         不这么做的话，「面板只点了停用、却把整行发上来」会把没动过的字段也重写一遍
         —— 而重写用的是**提交那一刻的旧值**，两个标签页同时开着就会互相覆盖。
+
+        ``kind`` **不进** ``changes()``：它是**选路**用的（同一个 id 在两类里都有时，
+        靠它决定改哪一行 —— 见 ``AssetService.resolve``），不是表里的一列。把它一起交
+        下去，仓储层会把它当成"不可改的字段"拒掉（``_patch`` 的白名单），于是
+        **面板上每一次启停 / 改授权都变成 422** —— 而面板正是每次都带着 ``kind`` 的
+        （它得防"两类同名"那件事）。所以在这里就把选路字段摘掉。
+
+        为什么是 ``exclude_unset`` 而不是 ``exclude_none``
+        ------------------------------------------------
+        ``exclude_none`` 把「字段没给」与「字段给了 ``null``」当成同一件事 —— 而这两件事
+        在 PATCH 里**正好相反**：前者是"别动它"，后者是"把它清掉"。用 ``exclude_none``
+        的后果很具体：面板上把「来源地址」那一框擦干净、点保存，**什么都没发生**，
+        用户看到的是"改了、也保存了、值还在"，于是以为是自己没点到。
+        （``usable_to_ms`` 留空 = 到片尾、``bpm`` 清空 = 没有 BPM，走的是同一条路。）
+
+        ``exclude_unset`` 只交**请求里真的出现过**的键，于是 ``null`` 能落库。剩下的
+        一件事是把"不该为空的字段"上的 ``null`` 摘掉 —— 名单见
+        :data:`NULLABLE_PATCH_FIELDS`。
         """
-        return self.model_dump(exclude={"reason"}, exclude_none=True)
+        payload = self.model_dump(exclude={"kind", "reason"}, exclude_unset=True)
+        return {
+            key: value for key, value in payload.items() if value is not None or key in NULLABLE_PATCH_FIELDS
+        }

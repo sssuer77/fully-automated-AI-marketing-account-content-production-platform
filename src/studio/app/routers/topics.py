@@ -38,23 +38,36 @@ from studio.app.schemas.topics import (
     AnalyzeBody,
     AnalyzeResult,
     DirectionCard,
+    DirectionDeleteResult,
+    DirectionEditResult,
     DirectionItem,
     DirectionList,
+    DirectionPatchBody,
     DraftItem,
+    DraftReviewResult,
     HotImportBody,
     HotImportResult,
     HotSubmitBody,
     IdeateBody,
     IdeateResult,
     ImportResult,
+    ManualDirectionBody,
+    ManualDirectionResult,
     ManualTopicBody,
     ManualTopicResult,
+    OutlineItem,
+    OutlineResult,
+    OutlineSaveBody,
+    OutlineView,
     SelectBody,
     SelectFailure,
     SelectItem,
     SelectResult,
+    TopicDeleteResult,
+    TopicEditResult,
     TopicItem,
     TopicList,
+    TopicPatchBody,
 )
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.ids import new_ulid
@@ -151,6 +164,45 @@ def list_directions(
         ],
         counts=topics.count_by_status(),
     )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 写 · 人工写方向 / 改方向 / 删方向
+# ══════════════════════════════════════════════════════════════════════
+
+
+@router.post("/api/v1/topics/directions", response_model=ManualDirectionResult)
+def add_manual_direction(request: Request, body: ManualDirectionBody) -> ManualDirectionResult:
+    """人工写一个方向（**不经模型、不烧 token**）。缺省落进最近一批。"""
+    state: AppState = request.app.state.studio
+    outcome = topic_service_for(state).add_manual_direction(
+        title=body.title,
+        rationale=body.rationale,
+        priority=body.priority,
+        batch_id=body.batch_id,
+    )
+    return ManualDirectionResult.from_outcome(outcome)
+
+
+@router.patch("/api/v1/topics/directions/{direction_id}", response_model=DirectionEditResult)
+def patch_direction(request: Request, direction_id: str, body: DirectionPatchBody) -> DirectionEditResult:
+    """改一个方向（**只改显式给过的字段**；空 PATCH 在契约层就拦掉了）。"""
+    state: AppState = request.app.state.studio
+    outcome = topic_service_for(state).update_direction(direction_id=direction_id, changes=body.changes())
+    return DirectionEditResult.from_outcome(outcome)
+
+
+@router.delete("/api/v1/topics/directions/{direction_id}", response_model=DirectionDeleteResult)
+def delete_direction(request: Request, direction_id: str) -> DirectionDeleteResult:
+    """删一个方向，**它下面的候选一起走**（级联）。
+
+    唯一拦下的情形：那个方向下已经有候选派生了任务 —— 那种候选被级联删掉之后，
+    它那条任务就再也写不出稿（不是门禁，是断链）。响应里带上 ``cascaded_topics``
+    让人看得见这一下删掉了多少条。
+    """
+    state: AppState = request.app.state.studio
+    outcome = topic_service_for(state).delete_direction(direction_id=direction_id)
+    return DirectionDeleteResult.from_outcome(outcome)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -256,6 +308,96 @@ def add_manual_topic(request: Request, body: ManualTopicBody) -> ManualTopicResu
         reason=body.reason,
     )
     return ManualTopicResult.from_outcome(outcome)
+
+
+@router.patch("/api/v1/topics/{topic_id}", response_model=TopicEditResult)
+def patch_topic(request: Request, topic_id: str, body: TopicPatchBody) -> TopicEditResult:
+    """改一条选题（**只改显式给过的字段**；改标题会重算去重指纹）。
+
+    空 PATCH 在契约层就拦掉了（``TopicPatchBody`` 要求"至少给一个字段"）；而
+    "给了但跟原来一样"由服务层判 —— 那种情况回当前行、``changed`` 为空、不留痕，
+    不是错误（与 ``assets`` 的 PATCH 同一取舍）。
+    """
+    state: AppState = request.app.state.studio
+    outcome = topic_service_for(state).update_topic(topic_id=topic_id, changes=body.changes())
+    return TopicEditResult.from_outcome(outcome)
+
+
+@router.delete("/api/v1/topics/{topic_id}", response_model=TopicDeleteResult)
+def delete_topic(request: Request, topic_id: str) -> TopicDeleteResult:
+    """删一条选题（**已经派生过任务的那条不给删** —— 删了那条任务就再也写不出稿）。"""
+    state: AppState = request.app.state.studio
+    outcome = topic_service_for(state).delete_topic(topic_id=topic_id)
+    return TopicDeleteResult.from_outcome(outcome)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 三级产物 · 生成完整文案并移交审核
+# ══════════════════════════════════════════════════════════════════════
+
+
+@router.post("/api/v1/topics/{topic_id}/draft-review", response_model=DraftReviewResult)
+async def draft_topic_for_review(request: Request, topic_id: str) -> DraftReviewResult:
+    """选中一条候选 ⇒ 生成完整文案 ⇒ 移交审核（**长任务**：Director + Writer）。
+
+    与 ``select`` 的 ``draft_now`` 差在哪：那一个是"批量勾选，顺手写稿"（结果停在
+    ``drafting``，交给写稿池），这一个是**单条候选的下一步**（写完之后推到
+    ``reviewing``，写稿池接着跑评分 + 确认闸）。面板上这两个按钮挨着，但语义不同，
+    所以不合并。
+
+    共用单飞守卫：它和 ``analyze`` / ``ideate`` / ``outline`` 一样是"点下去等一会儿"
+    的长任务，同时跑只会让日志与预算互相打架。
+    """
+    state: AppState = request.app.state.studio
+    service = script_service_for(state)
+    with _RUN_GUARD.hold("写稿并送审"):
+        outcome = await service.draft_and_review(topic_id=topic_id, persona=active_persona())
+    return DraftReviewResult.from_outcome(outcome)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 二级产物 · 视频标题 + 核心论点
+# ══════════════════════════════════════════════════════════════════════
+
+
+@router.get("/api/v1/topics/{topic_id}/outline", response_model=OutlineView)
+def get_topic_outline(request: Request, topic_id: str) -> OutlineView:
+    """读一个选题的二级产物（没有 ⇒ ``outline=null``，**不是 404**）。"""
+    state: AppState = request.app.state.studio
+    row = script_service_for(state, with_agents=False).get_outline(topic_id)
+    return OutlineView(topic_id=topic_id, outline=None if row is None else OutlineItem.from_row(row))
+
+
+@router.post("/api/v1/topics/{topic_id}/outline", response_model=OutlineResult)
+async def generate_topic_outline(request: Request, topic_id: str) -> OutlineResult:
+    """让模型给这条选题定标题与核心论点（**长任务**：一次 LLM）。
+
+    与 ``analyze`` / ``ideate`` 共用同一把单飞守卫：三者都是「点下去等一会儿」的长任务，
+    同时跑只会让日志与预算互相打架。
+    """
+    state: AppState = request.app.state.studio
+    service = script_service_for(state)
+    with _RUN_GUARD.hold("标题与论点生成"):
+        report = await service.outline(topic_id=topic_id, persona=active_persona())
+    return OutlineResult.from_report(report)
+
+
+@router.put("/api/v1/topics/{topic_id}/outline", response_model=OutlineResult)
+def save_topic_outline(request: Request, topic_id: str, body: OutlineSaveBody) -> OutlineResult:
+    """手工定稿二级产物（**一次 LLM 都不调**：没配 Key 也能用）。"""
+    state: AppState = request.app.state.studio
+    report = script_service_for(state, with_agents=False).save_outline(
+        topic_id=topic_id, title=body.title, core_argument=body.core_argument
+    )
+    return OutlineResult.from_report(report)
+
+
+@router.delete("/api/v1/topics/{topic_id}/outline", response_model=OutlineResult)
+def clear_topic_outline(request: Request, topic_id: str) -> OutlineResult:
+    """清空二级产物（**幂等**）。清掉之后三级退回「按选题自由发挥」。"""
+    state: AppState = request.app.state.studio
+    report = script_service_for(state, with_agents=False).clear_outline(topic_id=topic_id)
+    return OutlineResult.from_report(report)
 
 
 # ══════════════════════════════════════════════════════════════════════

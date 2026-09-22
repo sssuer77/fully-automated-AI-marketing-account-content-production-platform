@@ -110,11 +110,16 @@ __all__ = [
     "TOPICS_PER_DIRECTION",
     "AnalyzeReport",
     "ClassifierLike",
+    "DirectionDeleteOutcome",
+    "DirectionEditOutcome",
     "DirectionOutcome",
     "IdeateReport",
     "IdeatorLike",
+    "ManualDirectionOutcome",
     "ManualTopicOutcome",
     "PlannerLike",
+    "TopicDeleteOutcome",
+    "TopicEditOutcome",
     "TopicService",
     "classify_by_keywords",
     "db_sentiment",
@@ -374,6 +379,69 @@ class ManualTopicOutcome:
             "score": self.score,
             "similar_to": list(self.similar_to),
             "warnings": list(self.warnings),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TopicEditOutcome:
+    """一次「改选题」的结果（``changed`` 为空 ⇒ 一个字节都没改）。"""
+
+    topic: TopicRow
+    changed: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"changed": list(self.changed), "warnings": list(self.warnings)}
+
+
+@dataclass(frozen=True, slots=True)
+class TopicDeleteOutcome:
+    """一次「删选题」的结果（``deleted=False`` = 服务层到这一行时它已经没了）。"""
+
+    topic_id: str
+    title: str
+    deleted: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"topic_id": self.topic_id, "title": self.title, "deleted": self.deleted}
+
+
+@dataclass(frozen=True, slots=True)
+class ManualDirectionOutcome:
+    """一次「人工写方向」的结果。"""
+
+    direction: DirectionRow
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"direction": _direction_snapshot(self.direction)}
+
+
+@dataclass(frozen=True, slots=True)
+class DirectionEditOutcome:
+    """一次「改方向」的结果（``changed`` 为空 ⇒ 一个字节都没改）。"""
+
+    direction: DirectionRow
+    changed: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"changed": list(self.changed), "direction": _direction_snapshot(self.direction)}
+
+
+@dataclass(frozen=True, slots=True)
+class DirectionDeleteOutcome:
+    """一次「删方向」的结果（``cascaded_topics`` = 跟着走的候选条数）。"""
+
+    direction_id: str
+    title: str
+    deleted: bool
+    cascaded_topics: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "direction_id": self.direction_id,
+            "title": self.title,
+            "deleted": self.deleted,
+            "cascaded_topics": self.cascaded_topics,
         }
 
 
@@ -1089,24 +1157,316 @@ class TopicService:
         )
 
     def _ensure_manual_direction(self) -> str:
-        """人工加选题挂靠的方向（**懒建一次**，之后一直复用）。"""
-        existing = self._directions.list_batch(MANUAL_BATCH_ID)
-        if existing:
-            return existing[0].id
-        ids = self._directions.insert_batch(
+        """人工加选题挂靠的方向（**懒建一次**，之后一直复用）。
+
+                按**标题**找，而不是取批次里的第一条：``manual`` 批次里除了它，还可能
+        躺着人自己写的方向（:meth:`add_manual_direction` 在没有别的批次时会落到这里）——
+                取第一条会把"人工加选题"挂到人写的那个方向下面去。
+        """
+        for row in self._directions.list_batch(MANUAL_BATCH_ID):
+            if row.title == MANUAL_DIRECTION_TITLE:
+                return row.id
+        row = self._directions.insert_manual(
             batch_id=MANUAL_BATCH_ID,
-            directions=[
-                {
-                    "title": MANUAL_DIRECTION_TITLE,
-                    "rationale": "人在 WebUI 上直接加的选题（不经模型）",
-                    "grounded_on": [],
-                    "priority": 1,
-                    "risk_flags": [],
-                    "status": "selected",
-                }
-            ],
+            title=MANUAL_DIRECTION_TITLE,
+            rationale="人在 WebUI 上直接加的选题（不经模型）",
+            priority=1,
+            status="selected",
         )
-        return ids[0]
+        return row.id
+
+    def update_topic(
+        self,
+        *,
+        topic_id: str,
+        changes: Mapping[str, Any],
+        actor: str = "user",
+    ) -> TopicEditOutcome:
+        """改一条选题（``changes`` 的键 = 要改的列，值 ``None`` = 置空）。
+
+        三件事刻意放在**服务层**而不是路由层：
+
+        1. **空 PATCH 不假装改了一次**（与 ``assets`` 的 PATCH 同一取舍）：回当前行、
+           ``changed`` 为空、**不写留痕** —— 一条什么都没改的审计行只会稀释审计。
+        2. **改了标题就重算去重指纹**：``dedup_hash`` 是 R15 的判据，标题改了却留着旧
+           指纹，等于让「这条跟谁像」从此说谎，后续同名选题会一路漏进池子。顺带把
+           ``similar_to_json`` 也按新标题刷新一遍（**排除自己** —— 自己跟自己永远 100% 像）。
+        3. **只在真改了才写 ``audit_ops``**，``before``/``after`` 逐列都记全。
+
+        改状态**不走这里**：``status`` 有它自己的入口（``set_status``）与语义，混进来
+        只会让「改标题」顺手把一条已入队的选题变回候选。
+        """
+        row = self._topics.get(topic_id)
+        if row is None:
+            raise StudioError(
+                f"选题不存在：{topic_id}",
+                code=ErrorCode.TOPIC_NOT_FOUND,
+                context={"topic_id": topic_id},
+                remediation="刷新选题池 —— 可能已经被别的标签页删掉了",
+            )
+        updates: dict[str, Any] = {}
+        warnings: list[str] = []
+        for column, raw in changes.items():
+            # 各列的值类型不同（str / float / None）⇒ 显式 Any，别让第一支决定整条链的类型
+            value: Any
+            if column == "title":
+                value = _clean_title(raw, topic_id=topic_id)
+            elif column == "angle":
+                value = str(raw).strip() or "人工指定"
+            elif column == "hook_type":
+                value = raw if raw in _HOOK_TYPES else None
+            elif column == "score":
+                value = _clean_score(raw, topic_id=topic_id)
+            elif column == "reason":
+                value = None if raw is None else (str(raw).strip() or None)
+            else:
+                raise ValueError(f"不可改写的列：{column}")
+            if getattr(row, column) != value:
+                updates[column] = value
+        if "title" in updates:
+            dedup_hash, similar = self._refresh_dedup(topic_id, str(updates["title"]))
+            updates["dedup_hash"] = dedup_hash
+            updates["similar_to"] = similar
+            if similar:
+                top = float(similar[0].get("similarity") or 0.0)
+                names = "、".join(str(item.get("target_title", "?")) for item in similar)
+                warnings.append(f"与库内 {len(similar)} 条选题相似（最高 {top:.2f}）：{names}")
+        if not updates:
+            return TopicEditOutcome(topic=row, changed=[], warnings=[])
+        updated = self._topics.patch(topic_id=topic_id, changes=updates)
+        if updated is None:  # pragma: no cover - get 与 patch 之间被删掉的窗口
+            raise StudioError(
+                f"选题不存在：{topic_id}",
+                code=ErrorCode.TOPIC_NOT_FOUND,
+                context={"topic_id": topic_id},
+                remediation="刷新选题池",
+            )
+        # ``changed`` 报的是**调用方点名要改的列**：``dedup_hash`` / ``similar_to``
+        # 是改标题带出来的副作用，把它们混进「改了哪几列」里只会让人看不懂面板在说什么。
+        changed = sorted(changes)
+        self._audit.record(
+            actor=actor,
+            action="topic.updated",
+            target_type="topic",
+            target_id=topic_id,
+            before=_edit_snapshot(row),
+            after=_edit_snapshot(updated),
+            reason="WebUI 改选题",
+            source="webui",
+        )
+        self._emit(
+            "warn" if warnings else "info",
+            f"选题《{updated.title}》已更新（{'、'.join(changed)}）",
+            payload={"topic_id": topic_id, "changed": changed},
+        )
+        return TopicEditOutcome(topic=updated, changed=changed, warnings=warnings)
+
+    def delete_topic(self, *, topic_id: str, actor: str = "user") -> TopicDeleteOutcome:
+        """硬删一条选题（**派生过任务的不给删**）。
+
+        为什么只拦「有任务」这一种：任务是通过 ``topic_id`` 反查选题的
+        （``ScriptService.draft`` 先 ``topics.get(topic_id)``），选题没了那条任务就
+        再也写不出稿 —— 这不是门禁，是**删掉之后会立刻断链**的那一种。
+        其余状态（``rejected`` / ``expired`` / 老的 ``candidate``）删掉不牵连任何东西。
+        """
+        row = self._topics.get(topic_id)
+        if row is None:
+            raise StudioError(
+                f"选题不存在：{topic_id}",
+                code=ErrorCode.TOPIC_NOT_FOUND,
+                context={"topic_id": topic_id},
+                remediation="刷新选题池 —— 可能已经被别的标签页删掉了",
+            )
+        if row.task_id:
+            raise StudioError(
+                f"《{row.title}》已经派生过任务，不能直接删",
+                code=ErrorCode.TOPIC_SELECT_INVALID,
+                context={"topic_id": topic_id, "task_id": row.task_id},
+                remediation=f"先处理任务 {row.task_id}（删掉它或让它跑完），再回来删这条选题",
+            )
+        deleted = self._topics.delete(topic_id)
+        self._audit.record(
+            actor=actor,
+            action="topic.deleted",
+            target_type="topic",
+            target_id=topic_id,
+            before=_edit_snapshot(row),
+            reason="WebUI 删除选题",
+            source="webui",
+        )
+        self._emit(
+            "info",
+            f"选题《{row.title}》已删除",
+            payload={"topic_id": topic_id, "direction_id": row.direction_id},
+        )
+        return TopicDeleteOutcome(topic_id=topic_id, title=row.title, deleted=deleted)
+
+    # ── 方向 · 人工写 / 改 / 删（T4.3 追加）──────────────────────────
+    def add_manual_direction(
+        self,
+        *,
+        title: str,
+        rationale: str,
+        priority: int = 100,
+        batch_id: str | None = None,
+        actor: str = "user",
+    ) -> ManualDirectionOutcome:
+        """人工写一个方向（**不经模型**）。
+
+        落进**当前正在看的那个批次**，而不是另起一个「手工批次」：方向这一列是
+        "这一批要做什么"，人写的与模型产的混在一起才看得见全貌；单独开一个批次，
+        人写完那一刻它会顶到"最近一批"上，把模型那批整个盖掉 —— 而再跑一次
+        ``analyze`` 又会反过来把人写的盖掉。``batch_id`` 缺省取最近一批；一条批次
+        都没有（全新库）时才落到 :data:`MANUAL_BATCH_ID`。
+        """
+        cleaned_title = _clean_direction_title(title, direction_id=None)
+        cleaned_rationale = _clean_direction_rationale(rationale)
+        batch = batch_id or self._directions.latest_batch_id() or MANUAL_BATCH_ID
+        row = self._directions.insert_manual(
+            batch_id=batch,
+            title=cleaned_title,
+            rationale=cleaned_rationale,
+            priority=_clean_priority(priority, direction_id=None),
+        )
+        self._audit.record(
+            actor=actor,
+            action="direction.created",
+            target_type="direction",
+            target_id=row.id,
+            after=_direction_snapshot(row),
+            reason="人工写方向",
+            source="webui",
+        )
+        self._emit(
+            "info",
+            f"人工方向《{row.title}》已入库（批次 {batch}）",
+            payload={"direction_id": row.id, "batch_id": batch},
+        )
+        return ManualDirectionOutcome(direction=row)
+
+    def update_direction(
+        self,
+        *,
+        direction_id: str,
+        changes: Mapping[str, Any],
+        actor: str = "user",
+    ) -> DirectionEditOutcome:
+        """改一个方向（``changes`` 的键 = 要改的列）。
+
+        与 :meth:`update_topic` 同一取舍：**空 PATCH 不假装改了一次**（回当前行、
+        ``changed`` 为空、不写留痕），只有真改了才留痕。``batch_id`` / ``seq`` /
+        ``status`` 不可改 —— 前两个是"这一批怎么排的"，后者有自己的语义。
+        """
+        row = self._directions.get(direction_id)
+        if row is None:
+            raise StudioError(
+                f"方向不存在：{direction_id}",
+                code=ErrorCode.TOPIC_NOT_FOUND,
+                context={"direction_id": direction_id},
+                remediation="刷新选题面板 —— 可能已经被别的标签页删掉了",
+            )
+        updates: dict[str, Any] = {}
+        for column, raw in changes.items():
+            if column == "title":
+                value: Any = _clean_direction_title(raw, direction_id=direction_id)
+            elif column == "rationale":
+                value = _clean_direction_rationale(raw)
+            elif column == "priority":
+                value = _clean_priority(raw, direction_id=direction_id)
+            elif column == "risk_flags":
+                value = [str(item) for item in raw]
+            else:
+                raise ValueError(f"不可改写的列：{column}")
+            if getattr(row, column) != value:
+                updates[column] = value
+        if not updates:
+            return DirectionEditOutcome(direction=row, changed=[])
+        updated = self._directions.patch(direction_id=direction_id, changes=updates)
+        if updated is None:  # pragma: no cover - get 与 patch 之间被删掉的窗口
+            raise StudioError(
+                f"方向不存在：{direction_id}",
+                code=ErrorCode.TOPIC_NOT_FOUND,
+                context={"direction_id": direction_id},
+                remediation="刷新选题面板",
+            )
+        self._audit.record(
+            actor=actor,
+            action="direction.updated",
+            target_type="direction",
+            target_id=direction_id,
+            before=_direction_snapshot(row),
+            after=_direction_snapshot(updated),
+            reason="WebUI 改方向",
+            source="webui",
+        )
+        self._emit(
+            "info",
+            f"方向《{updated.title}》已更新（{'、'.join(sorted(changes))}）",
+            payload={"direction_id": direction_id, "changed": sorted(changes)},
+        )
+        return DirectionEditOutcome(direction=updated, changed=sorted(changes))
+
+    def delete_direction(self, *, direction_id: str, actor: str = "user") -> DirectionDeleteOutcome:
+        """删一个方向，**它下面的候选一起走**（``ON DELETE CASCADE``）。
+
+        唯一拦下的情形与 :meth:`delete_topic` 同源：**已经有候选派生了任务**。
+        那种候选被级联删掉之后，它那条任务就再也写不出稿（``draft`` 要按 topic_id
+        反查选题）—— 这不是门禁，是"删掉之后立刻断链"。所以这里先把那几条点出来，
+        让人自己决定先处理哪一条。
+        """
+        row = self._directions.get(direction_id)
+        if row is None:
+            raise StudioError(
+                f"方向不存在：{direction_id}",
+                code=ErrorCode.TOPIC_NOT_FOUND,
+                context={"direction_id": direction_id},
+                remediation="刷新选题面板 —— 可能已经被别的标签页删掉了",
+            )
+        attached = [item for item in self._topics.list_by_direction(direction_id) if item.task_id is not None]
+        if attached:
+            raise StudioError(
+                f"方向《{row.title}》下有 {len(attached)} 条候选已经派生了任务，不能级联删除",
+                code=ErrorCode.TOPIC_SELECT_INVALID,
+                context={
+                    "direction_id": direction_id,
+                    "topics": [{"topic_id": item.id, "title": item.title} for item in attached],
+                    "task_ids": [item.task_id for item in attached],
+                },
+                remediation="先处理这几条任务（删掉它或让它跑完），再回来删这个方向",
+            )
+        cascaded = self._directions.delete(direction_id)
+        self._audit.record(
+            actor=actor,
+            action="direction.deleted",
+            target_type="direction",
+            target_id=direction_id,
+            before=_direction_snapshot(row),
+            after={"cascaded_topics": cascaded},
+            reason="WebUI 删除方向（候选一并删除）",
+            source="webui",
+        )
+        self._emit(
+            "info",
+            f"方向《{row.title}》已删除（一并删掉 {cascaded} 条候选）",
+            payload={"direction_id": direction_id, "cascaded_topics": cascaded},
+        )
+        return DirectionDeleteOutcome(
+            direction_id=direction_id, title=row.title, deleted=True, cascaded_topics=cascaded
+        )
+
+    def _refresh_dedup(self, topic_id: str, title: str) -> tuple[str, list[dict[str, Any]]]:
+        """按新标题重算 ``dedup_hash`` + 相似清单（**排除自己**）。
+
+        排除自己不是洁癖：不排除的话每一次改标题都会给这一行留下一条
+        「跟自己 100% 像」的记录，面板上从此挂着一条永远消不掉的黄字。
+        """
+        pool = [
+            ExistingTopic(id=item.id, title=item.title, dedup_hash=item.dedup_hash)
+            for item in self._topics.list_for_dedup(limit=DEDUP_POOL_LIMIT)
+            if item.id != topic_id
+        ]
+        dedup = dedup_topic(title, pool)
+        return dedup.dedup_hash, [item.model_dump(mode="json") for item in dedup.similar_to]
 
     # ── 内部 · 日志出口 ─────────────────────────────────────────────
     def _emit(
@@ -1134,6 +1494,89 @@ class TopicService:
             logger.warning(message, source="topics.pipeline", **extra)
         else:
             logger.info(message, source="topics.pipeline", **extra)
+
+
+def _clean_direction_title(value: Any, *, direction_id: str | None) -> str:
+    """方向标题去空白 + 非空校验（空标题 = 把这一列改成了没有内容的东西）。"""
+    cleaned = str(value).strip()
+    if cleaned:
+        return cleaned
+    raise StudioError(
+        "方向标题不能为空",
+        code=ErrorCode.TOPIC_SELECT_INVALID,
+        context={"direction_id": direction_id},
+        remediation="填一个不超过 120 字的标题；想撤掉这个方向请用「删除」",
+    )
+
+
+def _clean_direction_rationale(value: Any) -> str:
+    """方向理由去空白（**允许留空**：人写方向时常常只想先占个位置）。"""
+    return str(value).strip()
+
+
+def _clean_priority(value: Any, *, direction_id: str | None) -> int:
+    """优先级取整（越小越优先，与 ``content_directions.priority`` 同一口径）。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise StudioError(
+            f"优先级必须是整数：{value!r}",
+            code=ErrorCode.TOPIC_SELECT_INVALID,
+            context={"direction_id": direction_id, "priority": value},
+            remediation="给一个整数（越小越优先，模型产出的是 100）",
+        ) from exc
+
+
+def _direction_snapshot(row: DirectionRow) -> dict[str, Any]:
+    """留痕里那几列（``before``/``after`` 用同一份形状，方便逐列比对）。"""
+    return {
+        "title": row.title,
+        "rationale": row.rationale,
+        "priority": row.priority,
+        "risk_flags": list(row.risk_flags),
+        "batch_id": row.batch_id,
+        "seq": row.seq,
+    }
+
+
+def _clean_title(value: Any, *, topic_id: str) -> str:
+    """标题去空白 + 非空校验（空标题 = 把这条选题改成了没有内容的东西）。"""
+    cleaned = str(value).strip()
+    if cleaned:
+        return cleaned
+    raise StudioError(
+        "选题标题不能为空",
+        code=ErrorCode.TOPIC_SELECT_INVALID,
+        context={"topic_id": topic_id},
+        remediation="填一个不超过 50 字的标题；想撤掉这条选题请用「删除」",
+    )
+
+
+def _clean_score(value: Any, *, topic_id: str) -> float | None:
+    """自评分夹在 0–10（``None`` = 不打分，与人工加选题同一区间）。"""
+    if value is None:
+        return None
+    score = float(value)
+    if 0.0 <= score <= 10.0:
+        return score
+    raise StudioError(
+        f"自评分必须在 0–10 之间：{score}",
+        code=ErrorCode.TOPIC_SELECT_INVALID,
+        context={"topic_id": topic_id, "score": score},
+        remediation="给 0 到 10 之间的一个数，或留空表示不打分",
+    )
+
+
+def _edit_snapshot(row: TopicRow) -> dict[str, Any]:
+    """留痕里那几列（``before``/``after`` 用同一份形状，方便逐列比对）。"""
+    return {
+        "title": row.title,
+        "angle": row.angle,
+        "hook_type": row.hook_type,
+        "score": row.score,
+        "reason": row.reason,
+        "status": row.status,
+    }
 
 
 def _import_warnings(*reports: ImportReport | None) -> list[str]:

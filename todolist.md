@@ -1,6 +1,6 @@
 # 施工 Todolist · AI 全自动营销号制片台
 
-> 依据：`docs/spec/`（**v3.2 终版 · 需求已冻结**）｜ 生成日期：2026-09-13 ｜ 最近更新：2026-09-18（**T5.7 数据报告与决策闭环 ✅ —— M5 只剩多账号**）（**T1.1–T1.12 全部 ✅** + **T4 已完成 14/14（T4 齐了）**：T4.1 前端脚手架 ✅ · T4.2 总览台 ✅ · T4.3 选题面板 ✅ · T4.4 稿件面板 + 确认闸 ✅ · **T4.6 渲染面板 ✅** · T4.7 合成配置面板 ✅ · **T4.8 素材库 ✅** · T4.9 实时日志 ✅ · T4.10 四池调度控制台 ✅ · T4.11 无人值守 ✅ · T4.12 观测/备份/交付 ✅ · T4.13 人物库面板 ✅ · **T4.5 配音面板 ✅** · **T4.14 四屏端到端串联 ✅**（T4 14/14 齐）** + **T2.5 文本归一化与切分 ✅（2026-09-15）** + **T2.6 按句合成流水线 + 句级缓存 ✅（2026-09-16）** + **T2.7 时长时间轴 ✅（2026-09-16）** + **T2.8 配音阶段编排与降级演练 ✅（2026-09-16）** + **T2.9 配音服务化操作接口 ✅（2026-09-16）** + **T4.5 配音面板 ✅（2026-09-16）** + **T4.14 四屏端到端串联 ✅（2026-09-16）** + **T5.2 发布适配层与 profile ✅（2026-09-16）**）
+> 依据：`docs/spec/`（**v3.2 终版 · 需求已冻结**）｜ 生成日期：2026-09-13 ｜ 最近更新：2026-09-20（**T4.8 素材库按类别分菜单 + 分页 + 逐行编辑 ✅**）· 2026-09-18（**T5.7 数据报告与决策闭环 ✅ —— M5 只剩多账号**）（**T1.1–T1.12 全部 ✅** + **T4 已完成 14/14（T4 齐了）**：T4.1 前端脚手架 ✅ · T4.2 总览台 ✅ · T4.3 选题面板 ✅ · T4.4 稿件面板 + 确认闸 ✅ · **T4.6 渲染面板 ✅** · T4.7 合成配置面板 ✅ · **T4.8 素材库 ✅** · T4.9 实时日志 ✅ · T4.10 四池调度控制台 ✅ · T4.11 无人值守 ✅ · T4.12 观测/备份/交付 ✅ · T4.13 人物库面板 ✅ · **T4.5 配音面板 ✅** · **T4.14 四屏端到端串联 ✅**（T4 14/14 齐）** + **T2.5 文本归一化与切分 ✅（2026-09-15）** + **T2.6 按句合成流水线 + 句级缓存 ✅（2026-09-16）** + **T2.7 时长时间轴 ✅（2026-09-16）** + **T2.8 配音阶段编排与降级演练 ✅（2026-09-16）** + **T2.9 配音服务化操作接口 ✅（2026-09-16）** + **T4.5 配音面板 ✅（2026-09-16）** + **T4.14 四屏端到端串联 ✅（2026-09-16）** + **T5.2 发布适配层与 profile ✅（2026-09-16）**）
 > 本文件是**唯一施工执行入口**：把规格书里 50 个原子任务拆成可勾选的子项。
 > 规格书回答"**为什么这样做**"，本文件回答"**现在做什么、怎么算做完**"。
 
@@ -1278,6 +1278,105 @@
   - **252** 音色下拉框对"库里记着、本机找不到"的值**要说出**来（`· 本机找不到（换一个）` + 红标），不能让 `<select>` 空着：空白会被读成"这个角色没有音色"，而真实原因可能是"参考音没入库 / 系统语音包没装"（陷阱 #125）
 - ⚠️ 新增陷阱 6 条已并入 §10（编号 122–127）
 
+### T4.5 补丁 · 「开始配音」入口（`queued_voice` 谁来推）· **P1** ✅ **已完成（2026-09-21）**
+- 依赖：T2.9, T4.14 ｜ 里程碑：M4 ｜ 契约：§04.3 / §04.3.7
+- 真机原话：**「这是要我一个一个点重配吗，整个系统易用性极差，让人难以理解」** —— 截图里任务 `01M2Z9BP1CR70TBW0CJ05FQ12Z` 状态 `queued_voice`、进度「已定局 1/55 · 待配 54」、**逐句表每一行一颗「重配」**。用户的理解（"要我一个个点"）在当时的实现下**是对的**
+- [x] 后端：`voice_service.start_voicing()` + `POST /api/v1/tasks/{task_id}/enqueue_voice`（**只投递、不合成**，秒回）
+- [x] 前端：配音面板任务卡右上角 **「开始配音（投递全部 N 句）」** 主按钮（`canStart` = 任务在 `queued_voice`）
+- [x] 前端：念完之后那颗按钮换成 **「收口并出片 →」**（提交一条一键出片，然后跳去「一键出片」看进度）
+- [x] 面板上写清「重配」只是**单句**入口（逐句卡脚注 + 待配音提示条）
+- [x] 一键出片落点文案纠正：`queued_voice` = 「推到待配音（这一步**还不投递**）」、`voicing` = 「投递配音作业」
+- ✅ 真机：`studio pipeline run <task> --until voicing` ⇒ 54 句一次投递 ⇒ voice 池 **18 分钟念完 55/55**（20–22 秒/句）
+- ✅ 真机：面板载入该任务 ⇒ 右上角出现「收口并出片 →」+ 提示「配音已经全部定局（55/55），但盘上还没有母带」（隐藏标签页实测）
+- ✅ 真机：`POST /tasks/<不存在>/enqueue_voice` ⇒ **404**；`POST /tasks/<voicing 中的>/enqueue_voice` ⇒ **409**
+- **验收命令**：
+  - `.\tasks.ps1 check` ⇒ **4204 passed / 32 skipped / 28 deselected**（224s）
+  - `.\tasks.ps1 web:verify` ⇒ **vitest 643 passed（23 文件；`voice.test.ts` 31 ⇒ 49 例）** + `vite build` + 体积门禁 **0.44 MB / 3.00 MB**
+  - `pytest tests/integration/test_voice_api.py -q` ⇒ **30 passed**（新增 4 例：整条投递 / 幂等只投没排过的 / 非 `queued_voice` 409 / 任务号不存在 404）
+- **交付物**：`services/voice_service.py`（`EnqueueVoiceReport` + `start_voicing`）、`app/schemas/voice.py`（`EnqueueVoiceResponse` + `ENQUEUE_HINT`）、`app/routers/voice.py`（第 6 个端点）、`app/routers/pipeline.py`（落点文案）、`web/src/api/endpoints/voice.ts`、`web/src/stores/voice.ts`（`canStart` / `toEnqueue` / `voiced` / `startVoicing` / `finishToVideo` / `startNotice`）、`web/src/views/Voices.vue`、两处测试
+- **施工裁定（本轮新增 359–361）**：
+  - **359** 「开始配音」是**独立端点**，不是把「重配」重复 54 次：投递一条任务的**所有**待办句与重念**某一句**是两件事，前者秒回、后者几秒，而面板上原先只有后者 ⇒ 54 句就是 54 次点击。判据：**凡是「一步」在 CLI 里有、在面板上没有入口的，那条链路在面板上就是断的**（`queued_voice` 只是状态，推它需要投递，而投递原先只写在 `pipeline_service.run_task` 里）
+  - **360** 端点**只认 `queued_voice`**（其余一律 409），不做"成功但什么都没做"：`voicing` 下再投一次是空操作（幂等键让 `enqueue` 什么都不做），返回 200 加一句"投了 0 条"会让那颗看起来能点的按钮变成"点了没反应" —— 用户会把这件事读成"系统坏了"。已经**失败**的句子走「重配」（它会 `requeue_unit` 并把 `tts_attempts` 归零），那是另一件事：把"投递"与"重试"合成一颗按钮，用户永远说不清自己按的是哪个
+  - **361** 配音面板上补第二颗按钮「收口并出片」：念完（全部定局）之后盘上**还没有母带**（母带是收口那一步拼的），此刻点「去渲染」会失败（`produce_video` 报"配音没有产出母带"）。收口 + 渲染是 `run_task` 的事，它的 REST 面就是一键出片 —— 面板替用户按一次，再把**人送到那一屏**看实时进度（进度画两处就会有两处会过时的显示）
+- ⚠️ 新增陷阱 1 条已并入 §10（编号 196）
+
+
+### T4.6 补丁 · 渲染面板出片（「音色必炸」+「句数对不上」）· **P1** ✅ **已完成（2026-09-22）**
+- 依赖：T2.9, T4.6 ｜ 里程碑：M4 ｜ 契约：§04.2.6 / §04.3.2
+- 真机截图原话：渲染面板 `r0001 · 01M2Z9BP1CR70TBW0CJ05FQ12Z · 失败`，阶段 `voice 55/58`，红字
+  `TTS_SENTENCE_FAILED: SAPI 合成失败` + `Cannot set voice. No matching voice is installed`；
+  而同一屏上写着引擎 `cosyvoice2 · 2 个音色`、音色选着 `bigbear`
+- [x] 引擎判据下沉 `src/studio/tts/engine_picker.py`（`EnginePicker` / `resolve_sapi_voice` / 新增
+  `pick_speakable_voice`）—— 配音池与渲染路径共用**一份**判据
+- [x] `tts/synth.py::synthesize_script` 改走常驻引擎 + 逐句 `synthesize_sentence`
+  （归一化 / 缓存 / 音频 QC 一起接上），`VoiceResult.engine` 不再写死 `"sapi"`
+- [x] `VoiceResult.warnings` ⇒ `ProduceResult.warnings` 汇总：音色被退回这件事在面板与 manifest 里都看得见
+- [x] 句子边界从库里来：`ProduceRequest.sentences`（渲染面板 / 渲染池 / 一键出片 / CLI 四条路都填）
+- ✅ 真机：`synthesize_script(sentences=(2 句), voice="bigbear")` ⇒ `engine=cosyvoice2 / voice=bigbear`，
+  两次 `POST /synth`，**一次 SAPI 都没碰**
+- ✅ 真机（面板 API 端到端）：`POST /api/v1/render/jobs`（`voice=bigbear`）⇒
+  `voice 1/2 → 2/2 → render 100/100 → succeeded`，成片 **31.8s / 21.5 MB**，`manifest.voice.engine=cosyvoice2`
+- **验收命令**：
+  - `.\tasks.ps1 check` ⇒ **4215 passed / 32 skipped / 28 deselected**（218s）
+  - `.\tasks.ps1 web:verify` ⇒ 全绿（`vite build` + 体积门禁 **0.44 MB / 3.00 MB**）
+  - `pytest tests/unit/tts/test_synth.py tests/unit/tts/test_engine_picker.py -q` ⇒ **11 passed**（新增）
+  - `pytest tests/unit/pools/test_voice_worker.py -q` ⇒ **37 passed**（patch 目标改到 `engine_picker` 之后）
+- **交付物**：`tts/engine_picker.py`（新）、`tts/synth.py`、`services/render_service.py`、
+  `services/render_job_service.py`、`services/pipeline_service.py`、`pools/render_worker.py`、`cli.py`、
+  `tests/unit/tts/test_synth.py`（新）、`tests/unit/tts/test_engine_picker.py`（新）、
+  `tests/unit/pools/test_voice_worker.py`
+- **施工裁定（本轮新增 362–364）**：
+  - **362** 引擎判据**只有一份**：它原先长在配音池里（`_EnginePicker`），只有池子用它 ⇒ 渲染这条路自己直连
+    SAPI。判据下沉后两条路问的是同一个问题（「这台机器现在用哪台 TTS」），而"面板问常驻、合成走 SAPI"
+    这种形态在构造上就不存在了
+  - **363** 句子边界**从库里来**：`script_sentences` 已经切好了，路上再切一遍只会得到另一个数
+    （真机 55 ⇒ 58），而字幕 / 时间轴按那个数排 ⇒ 与音频错位。`ProduceRequest.sentences` 是这条判据的载体
+  - **364** `pick_speakable_voice` 对「引擎不肯自报家门」**不拦**：`speakable` 为空（SAPI 列表起不来 /
+    常驻服务没给 `/voices`）⇒ 原样放行，让引擎自己去试 —— 拦下来会让本来能念的音色念不出来。只有
+    「这一档确实报得出音色、而你要的那个不在里面」才退回兜底并留一句人话
+- ⚠️ 新增陷阱 2 条已并入 §10（编号 197–198）
+
+
+### T4.6 补丁二 · 逐句试听 / 逐句音色 / 抽风重试 · **P1** ✅ **已完成（2026-09-22）**
+- 依赖：T4.5, T4.6 ｜ 里程碑：M4 ｜ 契约：§04.2.6 / §04.3.7
+- 真机原话两条：**「这里没有试听吗」**（逐句表「试听」整列空白）、
+  **「这里的音色只能选一个？？」**（多角色稿子只能整篇一个嗓子）
+- [x] 修 `.player` 类名撞车：隐藏播放器改用 `.player--hidden`，逐句那一列的播放器重新可见
+- [x] 逐句音色从库里来：`voice_service.active_script_voices`（与配音池共用 `resolve_voice`）
+      ⇒ `ProduceRequest.sentence_voices` ⇒ `synthesize_script(voices=…)`；四条路（面板 / 渲染池 /
+      一键出片 / CLI）都填
+- [x] `VoiceResult.sentence_voices` + 多角色时 `voice` 写 `甲+乙`（进 `manifest.json` 与面板）
+- [x] 配音这条路补**有界重试**（`SENTENCE_ATTEMPTS = 3`）+ 失败时删掉交付路径上的坏音频
+- ✅ 真机：`active_script_voices` 对 `01M2Z9BP1CR70TBW0CJ05FQ12Z` ⇒ 55 句逐句音色
+      （`bigbear` / `littlebear` / 旁白 → `None` ⇒ 用面板那一格）
+- ✅ 真机：挑两句不同角色（s002 bigbear / s004 littlebear）走 `synthesize_script` ⇒
+      `engine=cosyvoice2`、`voice=bigbear+littlebear`、`sentence_voices=('bigbear','littlebear')`、**21.8s**
+- ✅ 真机（重试）：同一句第一次 `TTS_SILENT`（RMS −51.3 dBFS）、第二次正常出 12 秒音频 ⇒
+      重试吸收掉了这次抽风（这就是陷阱 #201 的来源）
+- **验收命令**：
+  - `.\tasks.ps1 check` ⇒ **4221 passed / 32 skipped / 28 deselected**（216s）
+  - `.\tasks.ps1 web:verify` ⇒ 全绿（`vite build` + 体积门禁 **0.44 MB / 3.00 MB**）
+  - `pytest tests/unit/tts/test_synth.py -q` ⇒ **11 passed**（新增逐句音色 2 例 + 重试 2 例）
+  - `pytest tests/unit/services/test_voice_service.py -q` ⇒ **22 passed**（新增逐句音色 4 例）
+  - `cd web; npm run test` ⇒ 新增 `views/voicesPlayers.test.ts` **4 例**
+- **交付物**：`tts/synth.py`、`services/voice_service.py`（`active_script_voices`）、
+  `services/render_service.py`、`services/render_job_service.py`、`services/pipeline_service.py`、
+  `pools/render_worker.py`、`cli.py`、`web/src/views/Voices.vue`、
+  `tests/unit/tts/test_synth.py`、`tests/unit/services/test_voice_service.py`、
+  `web/src/views/voicesPlayers.test.ts`（新）
+- **施工裁定（本轮新增 365–368）**：
+  - **365** 逐句音色**从库里来**，不重算：`active_script_voices` 复用配音池那一份 `resolve_voice`
+    （没配 ⇒ `None` 不覆盖；配了但念不出来 ⇒ `None`）。渲染这条路与配音台从此是**同一个答案**
+  - **366** 这条路的重试**只覆盖抽风型错误码**，而且**不搬决策表**：决策表管「该换招了没有」
+    （去 emotion / 换引擎 / 占位），它需要池的进程内状态与 `tts_attempts` —— 搬过来就是第二份
+    会分叉的判据。这里只做「再来一次」，上限与 `DEGRADE_AFTER_ATTEMPTS` 同数
+  - **367** 重试用尽时**删掉交付路径上的产物**：引擎是直接写 `out_path` 的，留着那段坏音频，
+    下一次重跑的「已存在且非空就跳过」会把它当成已完成 —— 静音被**永久**焊进母带
+  - **368** 多角色时 `VoiceResult.voice` 写 ``甲+乙``：只写一个名字正是「库里写着熊大、
+    听起来是熊二」这类悬案的开头。逐句明细在 `sentence_voices`
+- ⚠️ 新增陷阱 3 条已并入 §10（编号 199–201）
+
+
 ### T4.14 四屏端到端串联（选题 → 稿件 → 配音 → 渲染）· **P1** ✅ **已完成（2026-09-16）**
 - 依赖：T4.3, T4.4, T4.5, T4.6 ｜ 里程碑：M4 ｜ 契约：§04.5.14
 - [x] 选题卡片：入队过的选题上多一颗「去稿件 →」（任务号由后端生成，前端不猜）
@@ -1394,6 +1493,7 @@
   - `cmd /c "cd /d %CD%\web && npm run test"` ⇒ **284 例**（14 文件，含 `assets.test.ts` **18 例**）
   - `.\tasks.ps1 check` ⇒ **2468 passed / 32 skipped / 1 deselected**；`.\tasks.ps1 web:verify` 全绿 · dist **0.26 MB**（门禁 3 MB）
   - **2026-09-17 补正后**：`.\tasks.ps1 check` ⇒ **3591 passed / 32 skipped / 27 deselected**；`.\tasks.ps1 web:verify` ⇒ **380 passed**（18 文件，含 `assets.test.ts` **20 例**）· dist **0.32 MB**
+  - **2026-09-20 补正后**：`.\tasks.ps1 check` ⇒ **4200 passed / 32 skipped / 28 deselected**；`.\tasks.ps1 web:verify` ⇒ **634 passed**（23 文件，含 `assets.test.ts` **52 例**）· dist **0.44 MB**
 - **交付物**：`src/studio/assets/{__init__,layout,validate}.py`、`src/studio/core/media.py`、`src/studio/core/files.py`、`src/studio/core/paths.py`、`src/studio/core/errors.py`、`src/studio/db/migrations/0009_assets.sql`、`src/studio/db/models.py`、`src/studio/db/repositories/asset_repo.py`、`src/studio/services/asset_service.py`、`src/studio/app/schemas/assets.py`、`src/studio/app/routers/assets.py`、`scripts/seed_placeholder_assets.py`；`web/src/api/endpoints/assets.ts`、`web/src/stores/assets.ts`、`web/src/views/Assets.vue`
 - **施工裁定（本轮新增 187–196）**：
   - **187** `BROLL_MIN_USABLE_MS = 4500`：usable 区间只判「长度 > 0」是不够的 —— §04.2.4 的入点规则要「头 1.5s + 尾 1.5s + 一个 1.5s 候选窗口」，低于 4500 ms 的片段**入库时就拒收**，而不是等到渲染那一刻才报错（陷阱 #93）
@@ -1409,10 +1509,17 @@
   - **282** **面板与出片必须看到同一个真相**：出片挑素材走 `render/assets.py`（只列目录、不读库），而面板读库 —— 这两个真相**不会自己对上**，面板必须把盘上事实合进来并给出**一个与出片同口径的数**（`usable`）。三组数字分开报（出片能挑到 / 盘上 / 已入库），因为"它们对不上"本身就是用户要知道的事（陷阱 #150）
   - **283** `degraded` **只回答"出片会不会真的黑屏"**（`usable == 0`），不回答"素材够不够多"（那是 `shortfall`）。两者混在一起的后果是横幅写着"当前为黑屏降级模式"而片子里正放着跑酷 —— 同一句谎话换了个说法。"不够多"是**建议**，"一条都挑不到"才是**降级**
   - **284** **停用名单过线只传一样东西**：库 → 渲染器只流一串**文件名**（`DisabledAssets`），渲染器照旧不 import `db`、不认素材 id、不查时长 —— 补的是**接线**不是校验。用**文件名**而不是 id 或整条路径：库里存的是绝对路径（换台机器前缀就不同），能稳定对上的只有文件名。`produce_video(disabled=None)` ⇒ 退回"能进目录就算数"，CLI 与旧调用方不受影响（陷阱 #151）
+  - **353** 上传的**落点由素材 id 拼出来**，原始文件名一个字符都不进路径：`../../x.mp4` 这种名字于是**在构造上**就没有落点（不需要一条「过滤 `..`」的规则去挡它）。名字只用来①取扩展名、②推 id（`跑酷 01.MP4` ⇒ `parkour_01`）；改名**不静默** —— 响应里逐条写「原名 ⇒ 新名」，面板上看得见。落盘先写 `.partial` 再原子改名：半截 mp4 留在素材目录里比这次上传失败难查得多
+  - **354** 上传**不用整体 409**：一次拖 20 个文件、其中一个撞名，整批失败是最糟的交互。撞名的那个按 `skipped` 逐条报出来（带原因），其余照常落盘（与扫盘「坏文件不中断整批」同一条）；`overwrite=false`（默认）时**绝不静默盖掉**已有素材 —— 那可能是一份手工剪过的片段。`license` 则相反：**在写盘之前**校验（写了一半才 422 会在素材目录里留下一批「没人认领」的文件）
   - **285** 同一条 `usable`，**按类别说不同的话**：跑酷/BGM 是"出片能挑到几条"，音色是"配音能用几个" —— 两条链路真的不同（出片挑素材只列目录；配音只认 `voice_profiles` 表），写成一句通用的话就会在音色那一节说一个反过来的谎（陷阱 #152）
+  - **355** 素材库**按类别分菜单**（跑酷素材 / 音色库 / BGM 库）而不是一屏三类：三类可管理的字段本来就不一样（跑酷有可用区间与 `has_text`，BGM 有 `bpm` / `mood` / `loopable`，音色有 `ref_count`），摊在一屏只能是一张"大半格子是空的"大表，而每一列的表头都得加一句"这一类才有"。三个菜单是**同一个组件**（`Assets.vue`）带不同的 `kind` —— 抄三份只会让它们在第四次改动时开始分叉；`App.vue` 的 `:key="ui.activePanel"` 是**必须**的：不加 key 时 Vue 会就地复用同一个实例，`onMounted` 不重跑 ⇒ 从"跑酷素材"点到"音色库"，屏幕上还是跑酷那一屏
+  - **356** 一柜子素材按**服务端**切片（`GET /api/v1/assets/list`），且 `stats` 与 `total` 是**两个数**：前者是这一类的家底（不受筛选影响），后者是这一页所在的筛选结果。合成一个数的后果很具体 —— 筛出 3 条时面板会说"这一类只有 3 条素材"，而库里明明有 58 条，用户接着就去补素材了（陷阱 #195）。页码由**服务端钳**（翻过头给最后一页，因为"翻过头"最常见的成因就是"你刚把最后一页筛空了"），前端照响应里的 `page` 画，不自己算
+  - **357** PATCH 里「字段没给」与「字段给了 `null`」**必须分开**：前者是"别动它"、后者是"把它清掉"，两件事正好相反。`AssetPatchRequest.changes()` 原用 `exclude_none`，把两者当成同一件事 ⇒ 面板上把「来源地址」那一框擦干净、点保存，**什么都没发生**，而面板看起来是保存成功了（值还在，用户以为自己没点到）；`usable_to_ms: null`（留空 = 到片尾）、`bpm: null` 走的是同一条路。改成 `exclude_unset` + `NULLABLE_PATCH_FIELDS` 白名单（名单外的字段收到 `null` 一律当成"没给" —— `enabled` / `has_text` / `loopable` 在 DDL 里是 `NOT NULL CHECK IN (0,1)`，把 `None` 交给它们换来的是一条 500 而不是一句人话）。这条是**真机验收时**发现的，不是推演出来的
+  - **358** 逐行编辑器的字段清单只有**一份**（前端 `EDIT_FIELDS`），而它的正确性由单测**现读后端源码**比对 `CLIP_/TRACK_/VOICE_PATCH_FIELDS`（双向：编辑器里有的必须在白名单里，白名单里除了行上那两个控件（授权 / 启停）之外一个都不许漏）。在前端抄一份白名单当断言，等于"两处一起错"也能通过 —— 字段改名的那天测试跟着一起改，而面板上的框仍然填了存不进去
+  - ✅ **2026-09-20 落地**：三个菜单各自翻页 / 搜索（防抖 250ms，服务端筛）/ 启用三态筛选 / 每页条数（20·50·100）；每一行一个「改」展开**逐行编辑器**（字段清单按类别取），保存时**只交改过的字段** —— 整行提交会把没动过的字段用"打开编辑器那一刻的旧值"重写一遍，两个标签页同时开着就会**静默**互相覆盖。真机验收：三个菜单都能开、跑酷素材翻到第 2 页是 `parkour_023…042`、搜 `parkour_05` ⇒ "筛出 10 条 / 这一类共 58 条"、编辑 `parkour_003` 改标签与来源地址并保存 ⇒ 库里确实变了（改完已还原）
 - ⚠️ **E1 / E3 / E4 仍缺**：跑酷 / BGM / 原声都没到位 ⇒ 现用 `scripts/seed_placeholder_assets.py` 造的**占位素材**撑门禁（60 跑酷 × 32s = 32 分钟 + 3 BGM + 2 音色，实测 **74s** 跑完）；它们**一律带 `tags: ["placeholder"]` 并在面板标黄**，绝不假装成正式素材
 - ⚠️ **E2 水印 PNG 缺失 ⇒ 跳过水印层**（不再是硬门禁）—— 与素材库无关，但属于同一批外部依赖
-- 📌 一期**不做真 multipart 上传**（分片 / 断点续传 / 授权表单）：走「把文件丢进目录 + 点扫盘入库」；上传的收益只是「不用开资源管理器」，优先级低于把链路跑通
+- ✅ **2026-09-20 补正：浏览器上传已落地**（`POST /api/v1/assets/upload` / `POST /api/v1/assets/voice`）。此前这一条写的是「一期不做真 multipart 上传，走『把文件丢进目录 + 点扫盘入库』」—— 那句话让**入库这件事在界面上没有入口**，用户只能开资源管理器往目录里丢（用户裁定 2026-09-20：「素材入库要在制片台界面有操作 UI」）。现在面板每一节都有「选择文件上传」+ 拖拽落点，**落盘与入库是同一个请求**（传上去就在库里，不用再点一次扫描）；一期**仍然不做**分片 / 断点续传 / 授权书文件表单（那是另一件事）
 - 📌 一期**不做帧哈希 / 感知哈希**：`broll_clips.phash` / `frame_hashes` 列已留，填充留到 T3；素材库只负责「这条能不能用」，「不重复用同一段」是 T3 的随机化策略
 - 📌 **音色目录契约**：`data/voice_src/<voice_id>/{ref_NN.<ext>, ref.txt, profile.json}`；参考音 **2–3 段**、每段 **10–30s**、采样率 **≥ 16 kHz**、峰值 **≤ −1.0 dBFS**；**0 段或 > 3 段 ⇒ 无效**；解析失败**明确报错、不回退默认音色**
 - 📌 缩略图落 `data/assets/.thumbs`（`paths.thumb_file()`）；**没有就 404，不临时现抽**（面板刷新不该触发 ffmpeg）
@@ -2086,6 +2193,58 @@
 
 ---
 
+### T6.2 提示词面板（运行期覆盖）· **P1**（**已交付 2026-09-20**）
+- 依赖：T1.8 / T4.3 ｜ 里程碑：—（服务 M1 真机联调）｜ 契约：§04.1.1 / §04.5.16
+- [x] `core/paths.py`：新增 `prompts_override_dir = data/prompts`，并入 `runtime_dirs()`
+- [x] `agents/prompts.py`：`PromptLibrary` 支持 `override_root`（`read` 覆盖优先 · `read_repo` 只看仓库那份 · `write_override` / `clear_override` / `is_overridden` / `allowed_variables` / `template_variables`）；`digest` 走**生效**那份（覆盖 ⇒ `prompt_version` 自动变），`verify` 走**仓库**那份（覆盖不算漂移）
+- [x] `services/prompt_service.py`：`catalog` / `save`（**先校验、后落盘**）/ `restore`（幂等）+ `audit_ops`（`prompt.updated` / `prompt.restored`，前后都记 `prompt_version`）+ 日志
+- [x] REST：`GET /api/v1/prompts` · `PUT /api/v1/prompts/{name}` · `DELETE /api/v1/prompts/{name}/override?file=system|user`（`app/routers/prompts.py` + `app/schemas/prompts.py`）
+- [x] **覆盖目录处处传**：`deps.prompt_service_for` / `topic_service_for` / `script_service_for`、`cli.py`（5 处）、`pools/draft_worker.py` —— 漏一处的症状是"面板改完、那条链路还读仓库那份"
+- [x] WebUI：`web/src/views/Prompts.vue` + `stores/prompts.ts` + `api/endpoints/prompts.ts`；`stores/ui.ts` 新增 `prompts` 面板；契约再生成
+- [x] 顺带把选题面板左列做成**可手写 / 可改 / 可删（级联）**，方向卡上「生成 N 条候选」（只跑这一个方向），候选卡上「生成文案并送审」（`POST /topics/{topic_id}/draft-review` ⇒ 推 `reviewing`）
+- ✅ `pytest tests/unit/services/test_prompt_service.py tests/integration/test_prompts_api.py tests/integration/test_topics_api.py -q` 全绿（20 + 9 + 36）；`npm run verify` 全绿（604 用例 / 包体 0.42 MB）
+- ⚠️ **覆盖不改仓库文件**（裁定 320）：`prompts/` 是入库的，`prompts verify` 逐字校验它；面板写的每一份落 `data/prompts/<相对路径>`
+- ⚠️ **`system: null` 是"这一段不动"，不是"清空"**（裁定 321）：整段清空 ⇒ 422；"改回仓库原样" ⇒ 当成还原（删掉覆盖）
+- **施工裁定（320–322）**：
+  - **320** 改提示词走**覆盖层**（`data/prompts/`），**不**动仓库文件；`prompt_version` 跟着覆盖走 ⇒ P5「同输入同产物」不需要谁记得 bump 版本号
+  - **321** 保存前校验两件事（引用的变量必须在 `allowed_variables` 里 / 模板语法合法），**一个字节都不写**就报 422 —— 这两种错只会在**下一次生成**时炸，而那时人早忘了自己改过什么
+  - **322** `allowed_variables` 从**仓库那份**读（不是生效那份）：否则"覆盖里新增一个 `{{新变量}}`"会把自己的名字算进允许集，校验必然通过，正好是这条校验要拦的那件事
+
+---
+
+### T4.3 追加 · 「生成文案并送审」两个真问题 · **P0**（**已修复 2026-09-20**）
+
+用户报障：「我在选题提交了一份生成文案并审稿，但是我在审核节点没看到有消息」。
+顺着这条查下去，是两个各自独立、**各自都足以造成症状**的问题。
+
+- ① **人工送审被自动放行**（症状的直接来源）：`config/app.yaml` 的
+  `approval.auto_approve_policy: grade_a` 让 A 级稿子**自动放行** ⇒ 任务直接进
+  `queued_voice`（`approved_by=auto_approve_A`、`approved_at` 有值），确认闸里自然什么都没有。
+  那把旋钮是给**批量**流水线用的；人亲手点的「送审」被它放行掉，按钮就成了假的。
+- ② **重复写稿竞态**（症状背后的钱）：`_create_task` 顺手把写稿作业投了出去，而**紧接着**
+  API 又在就地跑同一份 Director + Writer —— 写稿池 ~1s 就来认领，于是两个进程并发写同一个任务。
+  真机读数：两条 `director` 调用的入参**一字不差**（`in=998`）、起始时间只差 **3.9 秒**，
+  两条 `writer` 调用同样成对出现；token 合计 **71,238** ≥ 60,000 ⇒ `budget_exceeded` ⇒
+  云端通道熔断 ⇒ 评分**降级到本地 `qwen2.5:7b`** ⇒ 等级与放行全跟着歪。
+
+**修法**
+
+- [x] `TaskService.require_human_gate(task_id)`：往 `tasks.context_json` **合并**一个
+      `human_gate: true`（不整体覆盖、不动 `version`）；`draft_and_review` 建完任务就打上
+- [x] `ReviewService.effective_policy(task, policy)`：带标记的任务降为 `off`（A 级也进闸）。
+      **只认更严的方向** —— 全局配 `off` 时它不会把稿子放开
+- [x] 作业**在就地写稿跑完之后**才投：`enqueue`（勾选入队，不跑写稿）立刻投；
+      `draft`（就地写稿，含 `draft_now` 与 CLI）跑完/跑挂之后才投。池子认领到的是一条
+      「稿件已在库里」的作业 ⇒ 只跑审稿（`drafting` / `reviewing` 都是它的入口）
+- [x] 回归：`tests/integration/test_topics_api.py` **+2**（就地写稿期间作业**不可认领** ——
+      探针在每次 LLM 调用前查库，旧行为下读到 `[1,1,1,1]`；勾选入队**立刻**投作业）、
+      `tests/unit/services/test_review_service.py` **+3**（`grade_a` / `grade_ab` 下都进闸 /
+      标记不放松全局 `off` / 标记合并进 `context_json`）
+- ✅ `.\tasks.ps1 check` ⇒ **4161 passed / 32 skipped / 28 deselected**（ruff + mypy + pytest 全绿）
+- ⚠️ 陷阱 **194**；契约口径见 **§04.5.5 落地口径 8 / 9**
+
+---
+
 ## 6. 横切任务（贯穿全程，每个任务都要满足）
 
 - [x] **契约先行**：每个任务有引用 `§` 条款编号的契约测试 —— `tests/contract/` **13 个文件**（`test_voice_engine_abc` / `test_publisher_abc` / `test_ws_protocol` / 五份 `*_schema` / 三份 `test_no_direct_*_write` / `test_llm_gateway` / `test_web_contracts`），逐条按 § 编号对账
@@ -2170,7 +2329,7 @@ T1.12 ✅             （一键启动）
 | **T3** 渲染（一期单遍合成） | 7 | **7**（T3.1 ✅ T3.2 ✅ **T3.3 ✅** **T3.4 ✅** T3.5 ✅ T3.6 ✅ T3.7 ✅ —— **T3 全绿**） | M3 | ✅ |
 | **T4** 操作台 + 四池 + 无人值守 | 14 | **14**（T4.1 ✅ T4.2 ✅ T4.3 ✅ T4.4 ✅ **T4.5 ✅** T4.6 ✅ T4.7 ✅ T4.8 ✅ T4.9 ✅ T4.10 ✅ T4.11 ✅ T4.12 ✅ T4.13 ✅ **T4.14 ✅** —— **T4 齐了**） | M4 | 🔶 |
 | **T5** 发布 + 定时 + 报告 | 8 | **8**（T5.1 ✅ T5.2 ✅ T5.3 ✅ **T5.4 ✅** **T5.5 ✅** **T5.6 ✅** **T5.7 ✅** **T5.8 ✅** —— **T5 全绿**） | M5 | ✅ |
-| **T6** 追加任务（设置面板） | 1 | **1**（T6.1 ✅） | — | *不占一期工期* |
+| **T6** 追加任务（设置面板 / 提示词面板） | 2 | **2**（T6.1 ✅ T6.2 ✅） | — | *不占一期工期* |
 | **合计（一期）** | **50** | **50**（**一期任务全部收口**；非核心项按用户裁定关闭，清单见 §12） | — | — |
 | *T3-P1…T3-P4* | *4（二期）* | *0* | — | *不占一期工期 · ⏸ 二期再启* |
 
@@ -2636,7 +2795,94 @@ T1.12 ✅             （一键启动）
 | 191 | **测试里前一个作业不收尾，后一个永远认领不到**（表现为"什么都没发生"） | `JobStore.claim` 有并发名额守卫（按 `max_concurrency` 过滤在跑的作业） | 测试里显式**收尾 / 释放**前一个作业，再认领下一个 | T2.3 |
 | 192 | **`assert picker.switched is False` 之后，`is True` 那句被 mypy 判成"不可达"** | mypy 会对**成员表达式**（`x.y`）做字面量收窄 ⇒ 后续 `is True` 直接判 unreachable | 先取局部变量（`first_switch: bool = picker.switched`）再 assert | T2.3 |
 | 193 | **重写过稿件的任务，配音跑到一半整条链路卡死**（时间轴报「句序不连续：期望 1..71，实际 1,1,2,2,…」） | 句子的唯一键是 `(script_id, seq)`（§03.3.7），而**按 `task_id` 读句子**的四处查询（`pending_for_task` / `list_for_task` / `progress` / `get_by_seq`）都没带 `is_active` ⇒ 上一版稿件的句子一起被读进来，`seq` 立刻重复。后果不止是时间轴：队列还会替**旧稿**再建一轮作业（71 句变 108 句） | 按 `task_id` 读句子一律带上 `script_id = (SELECT id FROM scripts WHERE task_id = ? AND is_active = 1)`；判据：**凡是「一个任务一份」的东西，查询里都要有 `is_active`** | T2.3 |
-> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 193 条见该处；跨文档引用按编号即可）。
+| 194 | **一次「生成文案并送审」烧掉两倍的 token，而且确认闸里什么都没有** | ① 建任务时就投了写稿作业，而写稿池 ~1s 就来认领、API 紧接着又在**就地**跑同一份 Director + Writer ⇒ 两个进程并发写同一个任务（真机读数：两条 `director` 调用入参一字不差、起始时间只差 3.9 秒；token 71,238 ≥ 60,000 ⇒ `budget_exceeded` ⇒ 云端熔断 ⇒ 评分降级到本地 `qwen2.5:7b`）② `auto_approve_policy: grade_a` 把 A 级稿子自动放行 ⇒ 任务直接进 `queued_voice`，人亲手点的送审**没有任何人工确认机会** | ① 作业**在就地写稿跑完之后**才投（`enqueue` 立刻投 / `draft` 跑完才投）② 人工送审给任务打 `context_json.human_gate`，审稿侧把放行策略降为 `off`（`ReviewService.effective_policy`）。**判据**：一个动作要是承诺了「等人工」，就不能让另一把全局旋钮把它放过去 | T4.3 |
+| 195 | **面板上把「来源地址」擦干净、点保存，值还在**（而面板看起来是保存成功了） | PATCH 的 `changes()` 用 `exclude_none`，把「字段没给」（别动它）与「字段给了 `null`」（把它清掉）当成同一件事 —— 而这两件事正好相反 | 改 `exclude_unset`（只交请求里真出现过的键）+ `NULLABLE_PATCH_FIELDS` 白名单（名单外的字段收到 `null` 当成没给） | T4.8 |
+| 196 | **「待配音 54 句」在面板上的样子是 54 颗「重配」，而用户的理解（「这是要我一个一个点重配吗」）是对的** | `queued_voice` 只是**一个状态**：把它推到 `voicing` 需要**投递**，而投递原先只写在 `pipeline_service.run_task` 里（CLI 与「一键出片」走那条路）—— 面板上唯一存在的投递入口是**单句**的「重配」。症状是「审稿过了、状态写着待配音、然后什么都不发生」（用户只能一颗一颗点） | 补一个**任务级**入口（`POST /tasks/{id}/enqueue_voice` + 面板主按钮「开始配音」），并在一键出片的落点文案里分清 `queued_voice`（停）与 `voicing`（投递）。**判据**：凡是 CLI 里的一步在面板上没有入口，那条链路在面板上就是断的 | T4.5 |
+| 197 | **渲染面板点「出片」必炸：`voice 55/58` 失败，红字是 SAPI 的 `Cannot set voice`** | 面板的音色下拉来自**常驻引擎**（`GET /api/v1/voices` ⇒ `bigbear` / `littlebear`），而渲染这条路（`tts/synth.py::synthesize_script`）**直连 SAPI** ⇒ 每一句 `SelectVoice` 抛、重试 3 次、成片没人声 —— 同一台机器上配音池念得好好的（它走 `EnginePicker`），只有渲染这条路两种引擎各挑各的（陷阱 #154 的第三次现身） | 引擎判据**只有一份**（下沉到 `tts/engine_picker.py`，配音池与渲染路径共用），并新增 `pick_speakable_voice`：要的音色这一档念不出来 ⇒ 退回兜底音色 + 一句人话（进 `VoiceResult.warnings` ⇒ 面板与 `manifest.json` 都看得见）。**判据**：凡是「问的是常驻引擎、念的是另一台」的地方，都是这一条 | T2.9 / T4.6 |
+| 198 | **同一支片子，配音池念 55 句、渲染路径切出 58 句** | 渲染这条路把稿件的 55 句**逐句拼成一个长字符串**再交给 `synthesize_script`，而它拿 `split_for_tts` 又切了一遍（55 ⇒ 58）⇒ 字幕与时间轴按 58 句排，音频是 55 句 | 句子边界**从库里来**：`ProduceRequest.sentences` 逐句带下去，`synthesize_script(sentences=…)` 收到就不再切（只有 CLI 直接给文案那条路才退回切分器）。**判据**：凡是库里已经有的结构，路上不要再算一遍 | T4.6 |
+| 199 | **配音面板的「试听」整列空的**（元素在、`audio_url` 也在 —— 后端 55 句全给了） | 两个用途撞了一个类名：逐句那一列的播放器 `<audio class="player" controls>` 与页面底下那个**只用来放音色样本**的隐藏播放器 `<audio ref="player" class="player">`；后来给后者补了一条 `.player { display: none }`，写在**后面** ⇒ 前者一起被藏了 | 两个用途两个类名（`.player` / `.player--hidden`），并加一条守卫读源码钉住这件事（前端没有 jsdom，引两套依赖不值当）。**判据**：样式表里同一个类名被两条规则同时管着、而其中一条是「藏起来」时，问一句「这个类名还有谁在用」 | T4.5 |
+| 200 | **多角色稿子，渲染这条路整篇一个嗓子**（旁白被念成熊大，而且不报错） | 渲染面板那格音色只能表达「整篇一个嗓子」，而一份稿子可以是多角色（真机 `01M2Z9BP1CR70TBW0CJ05FQ12Z`：熊大 17 句 / 熊二 17 句 / 旁白 21 句）。配音台按角色配，渲染这条路整篇套一个 ⇒ 母带一旦不在盘上（24h 保留期回收、或人手工删过 `data/`），重出的片子会把旁白也念成熊大 | 逐句音色从库里来：`voice_service.active_script_voices` 按`resolve_voice`（**与配音池同一份判据**）解析出与稿件句子**同序同长**的一列，经 `ProduceRequest.sentence_voices` 交给 `synthesize_script(voices=…)`。**判据**：凡是「按角色」的东西，渲染这条路也要按角色，而不是按面板上那一格 | T4.6 |
+| 201 | **一次抽风就让整支片子的渲染白跑**（真机：同一句第一次 RMS −51.3 dBFS，第二次就正常） | 渲染这条路的配音**没有重试**：`synthesize_sentence` 会跑音频 QC（这是对的，它挡住了「引擎报成功、成片没人声」），但一次 `TTS_SILENT` 就直接抛 ⇒ 55 句的长稿只要任何一句赶上一次抽风，前面几十分钟全白跑。**附带一个更阴的**：引擎是直接写 `out_path` 的，所以那段坏音频就躺在交付路径上 —— 下一次重跑会把它当成「这一句已经好了」跳过 | 这条路补**有界重试**（`SENTENCE_ATTEMPTS = DEGRADE_AFTER_ATTEMPTS`，与 §04.3.3 同数），**只重试抽风型错误码**（静音 / 爆音 / 合成失败 / 超时）；配置型错误（音色没给、这台引擎念不出来）一次都不重试 —— 重试只会把一次说得清的失败变成三次。重试用尽时**删掉**交付路径上的坏音频，别让它被当成「已完成」 | T4.6 |
+| 202 |
+| 203 | **导入一个音色之后点「开始配音」，55 句里每一句都写着「音色 sunxiaochuan 当前引擎念不出来 ⇒ 改用 bigbear」** | 池子手里的 `speakable` 是**装配那一刻**问到的（导入 `sunxiaochuan` **之前**那一份 `("bigbear", "littlebear")`），而它兜底用的 `status.voices[0]` = `bigbear` 刚好已被删掉（盘上目录空了、库里也没了）⇒ 每句都失败 ⇒ 熔断 ⇒ 18 句静音占位。面板的「可用音色」是**现问**的（所以能选到它），只有池子不认 —— 判据没分叉，**时效**分叉了 | `EnginePicker` 手里的清单加 **5 秒 TTL**（`VOICE_LIST_TTL_SEC`）：过期就重问一次 `active_resident`；**档位（常驻 / 系统语音包）与引擎对象都不换**（第 2 条纪律冻的是档位，不是清单；引擎的 `revision` 进了缓存键，中途换掉会让同一支片子前后两段的缓存键分属两个版本）；问不成（服务连不上）⇒ **手里的那一份照用**，不降档。**判据**：凡是「装配期问一次、之后再也不问」的外部事实，都要问一句它会不会变 | T2.9 |
+| 204 | **导入的音色念得出来、却被判「破音」**（`TTS_CLIP（RMS −15.7 dBFS / 峰值 −0.1 dBFS）`，重试三次后整条稿子降级成静音占位） | CosyVoice2 的零样本输出是**峰值归一化**的（参考音 −6.0 dBFS ⇒ 念出来 −0.1 dBFS），而句子级爆音门禁是「峰值 > −0.5 dBFS ⇒ `TTS_CLIP`」（§04.3.3）⇒ **每一句**都判破音。同一句文本 + 同一个音色，重试三次的输出当然一模一样 ⇒ 3 连败 ⇒ 熔断 ⇒ 后面每一句都只查缓存、查不到就静音占位 —— 用户看到的是一整条稿子「18 句跳过」，日志里一句人话都没有 | 判据没错（混音那一步要的是**有余量**的人声轨），错的是**引擎的输出电平**：它没有余量。落盘前压一个峰值上限 `OUTPUT_PEAK_CEILING_DBFS = −1.0`（`peak_trim_gain`，**只压不抬** —— 引擎自己念得轻是素材的事，抬电平会把底噪一起抬起来）。真机复测：−0.1 dBFS ⇒ −1.0 dBFS。**判据**：门禁量的是**产物**，而产物是别人的；把别人产物的电平原样交给门禁，门禁就成了那条链路的单点 | T2.2 / T2.9 | **上传回执写着「已落盘」，而这条素材其实永远用不了**（音色那栏是绿点，配音那天才发现挑不到） | 上传那条路只做两件事：判后缀 + 写盘，**不跑** `check_voice`。回执里那个「结局」说的是「字节写没写进盘」，而用户读成「这条素材能不能用」。真正的判据（段数 / 时长 / 采样率 / 峰值）要等点了「把这一类入库」、或翻到一屏之外的扫盘报告才看得见 | 上传回执**当场**带上入库的结论：面板把 `report` 里 `check.ok === false` 的那些（**只认这一次点到过的 id**）画成回执正下方的红带，逐条写清原因与提醒。**判据**：凡是「回执只描述过程、不描述结论」的地方，用户都会把它读成结论 | T4.8 |
+> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 204 条见该处；跨文档引用按编号即可）。
+
+---
+
+## 10.1 2026-09-22 · 音色参考音下限 + 素材删除（裁定 369 / 陷阱 202）
+
+用户报了三件事（原话）：**「十秒是什么限制，阿里这个开源模型不应该一句话的效果最好吗」**
+「入库失败无明显提示」「库中音色无删除接口」。三件都落地了。
+
+- **裁定 369 —— 参考音单段时长下限 10s ⇒ 2s**
+  - 依据①（上游）：`cosyvoice/cli/frontend.py` 里只有**上限**那一条
+    （`assert speech.shape[1] / 16000 <= 30`，"超过 30 秒的提取不了 speech token"），
+    全文**没有**任何"太短"的判据。10s 是我们自己抄进 §4.3.1 的。
+  - 依据②（真机）：拿盘上那条 **2.978 秒**的 `sunxiaochuan` 参考音跑
+    `POST /synth` ⇒ `ok=true`、出 4.48 秒音频、RTF 1.137、`ref_wav=ref_01.wav`。
+  - 依据③（我们自己的代码）：`VoiceRegistry.resolve` 只取 **`wavs[0]`** + `ref.txt` 第一行
+    ⇒ 第 2、3 段在合成时**根本不参与**。所以"2–3 段"是入库留痕的约定，不是引擎的要求。
+  - 改：`VOICE_SEGMENT_MIN_MS` 10_000 ⇒ 2_000（30s 上限保留 —— 那条是引擎的硬约束）；
+    错误文案里的「下限 10s」不再硬编码（跟着常量走，改一次不会留下第二份旧数字）。
+  - 代价：2–10 秒的参考音复刻稳定性会差一些。**这是用户的决定** ——
+    手边只有一句台词的人以前永远入不了库，而那句话的效果并不差。
+- **裁定 369（同一条）—— 删除接口分两个开关**
+  - `DELETE /api/v1/assets/{id}?kind=&purge=`：默认**只删库里的行**（重扫一次就回来），
+    `purge=true` 才连盘上那份一起删。§T4.8「只允许禁用、不物理删除」的**安全默认没被推翻**，
+    只是多了一个显式的、要二次确认的例外。
+  - 音色在面板上默认勾 `purge`：参考音目录留在盘上，下次扫盘又会变成一条"盘上有、库里没有"
+    —— 用户刚删掉的东西自己回来了。跑酷 / BGM 反过来：删了行，文件还在、出片照样挑得到。
+  - `purge` 前有**路径守卫**：解析后的绝对路径必须严格在这一类根目录之下，否则一个字节都不动
+    （`row.path` 是库里的字符串，而音色的删除是**递归删目录**）。
+  - 留痕：`audit_ops.action = 'asset.delete'`，`after={"purged": [...]}`。
+- **陷阱 202 —— 上传回执只说过程、不说结论**
+  - `POST /assets/voice` 只判后缀 + 写盘，**不跑** `check_voice` ⇒ 面板对一条永远入不了库的
+    音色说「已落盘 ref_02.wav」（绿点），而真正的原因埋在整页最下面的扫盘报告里。
+  - 改：回执正下方一条红带，逐条列出"落盘了但没入库"的（**只认这一次点到过的 id**），
+    连 `warnings` 一起报。后端**不加字段** —— 判据只有一份（回执里的 `report`），
+    前端不抄第二份。
+
+**交付物**：`src/studio/assets/validate.py`、`src/studio/services/asset_service.py`、
+`src/studio/db/repositories/asset_repo.py`、`src/studio/app/routers/assets.py`、
+`src/studio/app/schemas/assets.py`、`src/studio/tts/{server,cosyvoice}.py`、
+`web/src/api/endpoints/assets.ts`、`web/src/stores/assets.ts`、`web/src/views/Assets.vue`、
+`tests/integration/test_assets_api.py`、`tests/integration/test_voice_profile.py`、
+`docs/spec/{03-data-model,04-contracts,README,05-roadmap-checklist}.md`
+
+---
+
+## 10.2 2026-09-22 · 配音跑通：清单不冻 + 产物留余量（裁定 370 / 陷阱 203 · 204）
+
+用户报的是**一句话**：**「我用导入的 sunxiaochuan 音色尝试配音,失败」**（配音台截图：37 完成 / 18 跳过 / 0 失败，
+红字是「连续 1 次失败 ⇒ 静音占位」）。查下去是**两个叠在一起的**原因，都在判据上，都不在用户那边。
+
+- **陷阱 203 —— 池子手里的音色清单冻在装配那一刻**
+  - 日志（`studio.pools.voice`）每一句都有两条：`音色 sunxiaochuan 当前引擎念不出来 ⇒ 改用 bigbear`
+    + `配音熔断中 ⇒ 这一句只查缓存，不调引擎`（真机 `system_logs` 里 113 条）。池子拿的是**导入之前**
+    那一份 `("bigbear","littlebear")`，而它兜底用的 `bigbear` 刚好已被删掉（盘上目录空了、库里也没了）
+    ⇒ 每句都失败 ⇒ 熔断 ⇒ 18 句静音占位。
+  - 面板「可用音色」是**现问**的（`GET /api/v1/voices` 里 `sunxiaochuan usable=true`），所以能选到它 ——
+    判据没分叉，**时效**分叉了。
+  - 改：清单加 5 秒 TTL（`VOICE_LIST_TTL_SEC`）过期重问；**档位与引擎对象都不换**（引擎的 `revision`
+    进了缓存键）；问不成 ⇒ 手里的那一份照用，不降档（`engine_picker.py` 第 4 条纪律）。
+- **陷阱 204 —— 念得出来，却被判「破音」**
+  - 清单修好之后失败码换成了 `TTS_CLIP（RMS −15.7 dBFS / 峰值 −0.1 dBFS）`：CosyVoice2 的输出是**峰值归一化**的
+    （参考音 −6.0 dBFS ⇒ 念出来 −0.1 dBFS），而句子级爆音门禁是「峰值 > −0.5 dBFS ⇒ 破音」。同一句文本 +
+    同一个音色，重试三次的输出**一模一样** ⇒ 3 连败 ⇒ 熔断 ⇒ 又是静音占位。
+  - 改：**给产物留余量**，而不是放宽门禁 —— `cosyvoice.synthesize` 落盘前压一个峰值上限
+    `OUTPUT_PEAK_CEILING_DBFS = −1.0`（`peak_trim_gain`，只压不抬）。真机复测：−0.1 dBFS ⇒ −1.0 dBFS。
+- **裁定 370 —— 门禁量的是产物，而产物是别人的**
+  - 这是上面两条的共同判据：句子级 QC（静音 / 爆音）量的是**引擎交出来的东西**，而它的电平**不由我们决定**。
+    把别人产物的电平原样交给门禁，门禁就成了这条链路的单点 —— 而且它失败的样子（重试三次、熔断、静音占位）
+    与「这一句真的坏了」长得一模一样。
+  - 落地：凡是门禁量的是**外部产出**，要么在它前面把产物收拾到门禁的射程内（这里就是留余量），
+    要么承认这条门禁守不住、降级成观测。**不能两样都不做**。
+- **另外**：那 18 句 `skipped` 是**预期行为**，不是 bug —— 熔断期间不调引擎、这一句只查缓存，缓存没有就占位；
+  而且重跑时已定局的 `skipped` 不会自动重念（`_settled_outcome`）。修完要**显式重排**才会重念。
+
+**交付物**：`src/studio/tts/engine_picker.py`、`src/studio/tts/cosyvoice.py`、
+`tests/unit/pools/test_voice_worker.py`、`tests/unit/tts/test_cosyvoice_backend.py`
 
 ---
 
@@ -2678,4 +2924,3 @@ T1.12 ✅             （一键启动）
 （面板 `web/src/stores/render.ts` 有一行 `composite_chunked` 的中文标签，连测试一起在）。
 **留着**的理由：它们是**规格词汇表**（§03.3.14 / §04.2.8.6 / §06.4）里的名字，删列要迁移、删标签要动前端与它的测试 ——
 而它们此刻**不产生任何行为**。真要清，说一声，我按 §12-2 / §12-3 / §12-5 的编号一次性删干净。
-

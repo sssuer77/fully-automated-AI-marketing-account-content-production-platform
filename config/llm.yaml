@@ -8,9 +8,9 @@ default_profile: cloud
 profiles:
   cloud:
     engine: oi_compatible
-    base_url: https://api.openai.com/v1
+    base_url: https://www.micuapi.ai/v1
     api_key_env: STUDIO_LLM_API_KEY
-    model: gpt-5.6-terra
+    model: deepseek-v4.1-flash
     timeout_sec: 120
     max_retries: 3
     temperature: 0.8
@@ -34,6 +34,7 @@ profiles:
 routing:
   planner:  { profile: cloud, fallback: local }
   ideator:  { profile: cloud, fallback: local }
+  outliner: { profile: cloud, fallback: local }
   director: { profile: cloud, fallback: local }
   writer:   { profile: cloud, fallback: local }
   reviewer: { profile: cloud, fallback: local }

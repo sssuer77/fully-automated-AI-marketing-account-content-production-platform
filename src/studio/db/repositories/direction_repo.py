@@ -11,14 +11,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 from studio.core.ids import new_ulid
 from studio.db.engine import transaction
 from studio.db.models import DirectionRow
 
-__all__ = ["DirectionRepo"]
+__all__ = ["EDITABLE_COLUMNS", "DirectionRepo"]
 
 _INSERT_SQL: Final[str] = """
 INSERT INTO content_directions(
@@ -34,6 +34,13 @@ _SELECT_COLUMNS: Final[str] = (
 
 #: ``status`` 合法取值（与 DDL CHECK 逐字一致）
 STATUSES: Final[frozenset[str]] = frozenset({"open", "selected", "dropped"})
+
+#: 允许按列改写的字段（与 ``TopicRepo.EDITABLE_COLUMNS`` 同一手法）。
+#:
+#: ``batch_id`` / ``seq`` 不在里面：它们是**这一批方向怎么排的**，改一个方向
+#: 的归属或序号会让「批次」这个组织单位失去意义。``status`` 也不在这里 ——
+#: 它有自己的入口（:meth:`set_status`），混进来只会让「改标题」顺手把方向标成 dropped。
+EDITABLE_COLUMNS: Final[frozenset[str]] = frozenset({"title", "rationale", "priority", "risk_flags"})
 
 
 class DirectionRepo:
@@ -130,4 +137,104 @@ class DirectionRepo:
             row = self._connection.execute(
                 "SELECT COUNT(*) FROM content_directions WHERE status = ?", (status,)
             ).fetchone()
+        return int(row[0]) if row else 0
+
+    def next_seq(self, batch_id: str) -> int:
+        """批次内的下一个序号（空批次 ⇒ 1）。**人工加的方向排在模型产出的后面**。"""
+        row = self._connection.execute(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM content_directions WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()
+        return int(row[0]) if row else 1
+
+    def insert_manual(
+        self,
+        *,
+        batch_id: str,
+        title: str,
+        rationale: str,
+        priority: int = 100,
+        risk_flags: Sequence[str] = (),
+        status: str = "open",
+    ) -> DirectionRow:
+        """人工写一个方向 ⇒ 返回**写完之后**那一行。
+
+        ``seq`` 由这里自己算（``next_seq``）：调用方不该为了插一行先去查一次最大值，
+        那样"算序号"与"写行"之间就有了一个别人可以插进来的窗口。
+
+        ``llm_model`` / ``prompt_version`` 留空 —— 人写的方向**没有**模型与提示词可溯源，
+        填上任何一个都是假账（``audit_ops`` 里有这次人工新增）。
+        """
+        if status not in STATUSES:
+            raise ValueError(f"非法方向状态：{status}（合法：{sorted(STATUSES)}）")
+        with transaction(self._connection, immediate=True):
+            row = self._connection.execute(
+                f"""
+                INSERT INTO content_directions(
+                    id, batch_id, seq, title, rationale, grounded_on_json, priority,
+                    risk_flags_json, status
+                )
+                VALUES (?, ?, (
+                    SELECT COALESCE(MAX(seq), 0) + 1 FROM content_directions WHERE batch_id = ?
+                ), ?, ?, '[]', ?, ?, ?)
+                RETURNING {_SELECT_COLUMNS}
+                """,
+                (
+                    new_ulid(),
+                    batch_id,
+                    batch_id,
+                    title,
+                    rationale,
+                    int(priority),
+                    json.dumps(list(risk_flags), ensure_ascii=False),
+                    status,
+                ),
+            ).fetchone()
+        if row is None:  # pragma: no cover - RETURNING 一定会给一行
+            raise RuntimeError(f"content_directions 插入没有回读行：{title}")
+        return DirectionRow.from_row(row)
+
+    def patch(self, *, direction_id: str, changes: Mapping[str, Any]) -> DirectionRow | None:
+        """按列改写（只认 :data:`EDITABLE_COLUMNS`），返回**改完之后**那一行。
+
+        ``changes`` 为空 ⇒ 一个字节都不写（空 PATCH 不该假装改了一次），照常把当前行
+        读回来 —— 调用方拿到的形状因此永远一致。与 ``TopicRepo.patch`` 逐字同一取舍。
+        """
+        unknown = sorted(set(changes) - EDITABLE_COLUMNS)
+        if unknown:
+            raise ValueError(f"不可改写的列：{unknown}（可改：{sorted(EDITABLE_COLUMNS)}）")
+        normalized = {
+            ("risk_flags_json" if column == "risk_flags" else column): (
+                json.dumps(list(value), ensure_ascii=False) if column == "risk_flags" else value
+            )
+            for column, value in changes.items()
+        }
+        if normalized:
+            assignments = ", ".join(f"{column} = ?" for column in normalized)
+            with transaction(self._connection, immediate=True):
+                self._connection.execute(
+                    f"UPDATE content_directions SET {assignments} WHERE id = ?",
+                    (*normalized.values(), direction_id),
+                )
+        return self.get(direction_id)
+
+    def delete(self, direction_id: str) -> int:
+        """硬删一个方向 ⇒ 返回**被它带走的选题条数**。
+
+        候选选题是 ``ON DELETE CASCADE`` 跟着走的（DDL 里那一条），所以这里要先把
+        条数数出来再删 —— 删完就再也数不到了，而"这一下删掉了 7 条候选"正是面板
+        必须如实告诉人的事。
+        """
+        with transaction(self._connection, immediate=True):
+            counted = self._connection.execute(
+                "SELECT COUNT(*) FROM topic_candidates WHERE direction_id = ?", (direction_id,)
+            ).fetchone()
+            cascaded = int(counted[0]) if counted else 0
+            self._connection.execute("DELETE FROM content_directions WHERE id = ?", (direction_id,))
+        return cascaded
+
+    def count_topics(self, direction_id: str) -> int:
+        row = self._connection.execute(
+            "SELECT COUNT(*) FROM topic_candidates WHERE direction_id = ?", (direction_id,)
+        ).fetchone()
         return int(row[0]) if row else 0

@@ -320,6 +320,143 @@ def test_ingest_then_library_shows_item_with_kind_discriminator(
 
 
 # ══════════════════════════════════════════════════════════════════════
+# ①b 读 · 一类一页（跑酷 / 音色 / BGM 各是一个菜单）
+# ══════════════════════════════════════════════════════════════════════
+#
+# 分菜单 + 分页之后，面板不再"一次拿三类"，而是"一屏看一类、一页看几条"。
+# 这一组用例钉的就是那条接口上最容易写错的三件事：
+# ① **只能看见这一类**（拿 BGM 的菜单却列出跑酷，是最难发现的一类错）；
+# ② **`stats` 与 `total` 不是一个数**（筛出 1 条时说"库里只有 1 条"会让人去补素材）；
+# ③ **翻过头给最后一页**，不是一页空白、也不是报错。
+
+LIST_URL = "/api/v1/assets/list"
+
+
+def _seed_clips(
+    client: TestClient, paths: StudioPaths, tools: _Tools, count: int, *, prefix: str = "parkour"
+) -> list[str]:
+    """造 `count` 条跑酷素材并入库；返回它们的 id（按 id 排序）。"""
+    for index in range(1, count + 1):
+        _clip(paths, tools, f"{prefix}_{index:03d}.mp4")
+    client.post(INGEST_URL, json={"license": "cc0", "kind": "broll"})
+    return [f"{prefix}_{index:03d}" for index in range(1, count + 1)]
+
+
+def test_page_shows_one_kind_only(client: TestClient, paths: StudioPaths, tools: _Tools) -> None:
+    """一个菜单只看见一类：跑酷那一页里**没有** BGM 的条目。"""
+    _seed_clips(client, paths, tools, 3)
+    _track(paths, tools, "bgm_001.mp3")
+    client.post(INGEST_URL, json={"license": "cc0", "kind": "bgm"})
+
+    body = client.get(LIST_URL, params={"kind": "broll"}).json()
+    assert body["kind"] == "broll"
+    assert [item["id"] for item in body["items"]] == ["parkour_001", "parkour_002", "parkour_003"]
+    assert {item["kind"] for item in body["items"]} == {"broll"}
+    assert body["stats"]["total"] == 3
+    assert body["total"] == 3
+    assert body["pages"] == 1
+    assert body["page"] == 1
+    assert body["page_size"] == 20
+
+    bgm = client.get(LIST_URL, params={"kind": "bgm"}).json()
+    assert [item["id"] for item in bgm["items"]] == ["bgm_001"]
+
+
+def test_page_slices_and_clamps_the_last_page(client: TestClient, paths: StudioPaths, tools: _Tools) -> None:
+    """每页 2 条 ⇒ 3 页；翻过头（page=99）给**最后一页**，而不是一页空白。"""
+    _seed_clips(client, paths, tools, 5)
+
+    first = client.get(LIST_URL, params={"kind": "broll", "page": 1, "page_size": 2}).json()
+    assert first["pages"] == 3
+    assert [item["id"] for item in first["items"]] == ["parkour_001", "parkour_002"]
+
+    last = client.get(LIST_URL, params={"kind": "broll", "page": 3, "page_size": 2}).json()
+    assert [item["id"] for item in last["items"]] == ["parkour_005"]
+
+    over = client.get(LIST_URL, params={"kind": "broll", "page": 99, "page_size": 2}).json()
+    assert over["page"] == 3
+    assert [item["id"] for item in over["items"]] == ["parkour_005"]
+
+
+def test_page_query_matches_id_and_tags(client: TestClient, paths: StudioPaths, tools: _Tools) -> None:
+    """按 id 或**标签**筛（标签是人自己填的，记不住 id 的时候靠它找）。"""
+    _seed_clips(client, paths, tools, 3)
+    client.patch(f"{ASSETS_URL}/parkour_002", json={"kind": "broll", "tags": ["夜景", "备用"]})
+
+    by_id = client.get(LIST_URL, params={"kind": "broll", "q": "003"}).json()
+    assert [item["id"] for item in by_id["items"]] == ["parkour_003"]
+
+    by_tag = client.get(LIST_URL, params={"kind": "broll", "q": "夜景"}).json()
+    assert [item["id"] for item in by_tag["items"]] == ["parkour_002"]
+
+    nothing = client.get(LIST_URL, params={"kind": "broll", "q": "没有这种东西"}).json()
+    assert nothing["items"] == []
+    assert nothing["total"] == 0
+    assert nothing["pages"] == 1, "筛空时也该给一页（页码从 1 起，不是 0）"
+
+
+def test_page_enabled_filter_is_three_state(client: TestClient, paths: StudioPaths, tools: _Tools) -> None:
+    """`enabled` 三态：不给 = 全部，`true` / `false` 各筛一边。"""
+    _seed_clips(client, paths, tools, 3)
+    client.patch(f"{ASSETS_URL}/parkour_002", json={"kind": "broll", "enabled": False})
+
+    every = client.get(LIST_URL, params={"kind": "broll"}).json()
+    assert every["total"] == 3
+
+    on = client.get(LIST_URL, params={"kind": "broll", "enabled": "true"}).json()
+    assert [item["id"] for item in on["items"]] == ["parkour_001", "parkour_003"]
+
+    off = client.get(LIST_URL, params={"kind": "broll", "enabled": "false"}).json()
+    assert [item["id"] for item in off["items"]] == ["parkour_002"]
+
+
+def test_page_stats_stay_whole_under_filters(client: TestClient, paths: StudioPaths, tools: _Tools) -> None:
+    """`stats` 是**家底**（不受筛选影响），`total` 才是**这一页的筛选结果**。
+
+    合成一个数的后果：筛出 1 条时面板说"这一类只有 1 条素材"，用户接着就去补素材了。
+    """
+    _seed_clips(client, paths, tools, 4)
+    body = client.get(LIST_URL, params={"kind": "broll", "q": "001"}).json()
+
+    assert body["total"] == 1
+    assert body["stats"]["total"] == 4
+    assert body["stats"]["enabled"] == 4
+    assert body["usable"] == 4
+
+
+def test_page_carries_the_same_usable_as_the_whole_library(
+    client: TestClient, paths: StudioPaths, tools: _Tools
+) -> None:
+    """同一类在两处（一次拿全 / 一页一页看）必须给出**同一个** `usable` —— 面板拿它上色。"""
+    _seed_clips(client, paths, tools, 3)
+    client.patch(f"{ASSETS_URL}/parkour_002", json={"kind": "broll", "enabled": False})
+
+    library = client.get(ASSETS_URL).json()["sections"][0]
+    page = client.get(LIST_URL, params={"kind": "broll"}).json()
+    assert page["usable"] == library["usable"] == 2
+    assert page["disk_total"] == library["disk_total"] == 3
+
+
+def test_page_requires_a_kind(client: TestClient) -> None:
+    """`kind` 必填：不给就 422（面板三个菜单各自知道自己是谁，没有"默认哪一类"）。"""
+    resp = client.get(LIST_URL)
+    assert resp.status_code == 422
+    assert _error(resp.json()) == ErrorCode.VALIDATION_FAILED.value
+
+
+def test_page_bounds_are_enforced_at_the_edge(client: TestClient) -> None:
+    """页码与每页条数在**入参**就卡范围：不卡的话 `page_size=100000` 就是"把整库拖过来"。"""
+    for params in (
+        {"kind": "broll", "page": 0},
+        {"kind": "broll", "page_size": 0},
+        {"kind": "broll", "page_size": 100_000},
+    ):
+        resp = client.get(LIST_URL, params=params)
+        assert resp.status_code == 422, params
+        assert _error(resp.json()) == ErrorCode.VALIDATION_FAILED.value
+
+
+# ══════════════════════════════════════════════════════════════════════
 # ② 入库 · 扫盘
 # ══════════════════════════════════════════════════════════════════════
 
@@ -494,6 +631,76 @@ def test_patch_license_and_tags_records_before_after(
     }
 
 
+def test_patch_treats_kind_as_a_selector_not_a_field(
+    client: TestClient, connection: sqlite3.Connection, paths: StudioPaths, tools: _Tools
+) -> None:
+    """面板每次 PATCH 都带 `kind`（它得防"两类同名 id"）—— 那**不是**要写进表的字段。
+
+    这条用例的由来是一个真 bug：`changes()` 曾把 `kind` 一起交给仓储层，而那一层的
+    `_patch` 有列白名单 ⇒ **面板上每一次启停 / 改授权都是 422**。而 CLI / 早期用例
+    都没带 `kind`，所以它一直没红。
+    """
+    _clip(paths, tools)
+    client.post(INGEST_URL, json={"license": "cc0"})
+
+    resp = client.patch(f"{ASSETS_URL}/{BROLL}", json={"kind": "broll", "enabled": False})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["enabled"] is False
+    assert [row["id"] for row in _rows(connection, "broll_clips")] == [BROLL]
+
+    # 留痕里只有 `enabled` 真的变了（`kind` 是服务层**给留痕加的定位信息**，
+    # 不是"被改的字段"—— 它出现在 before/after 里是刻意的，便于审计页知道这是哪一类）
+    op = _audit(connection, "asset.disable")[0]
+    assert json.loads(op["before_json"]) == {"kind": "broll", "enabled": True}
+    assert json.loads(op["after_json"]) == {"kind": "broll", "enabled": False}
+
+
+def test_patch_null_clears_a_field(
+    client: TestClient, connection: sqlite3.Connection, paths: StudioPaths, tools: _Tools
+) -> None:
+    """显式 `null` = **清空**（面板上把「来源地址」擦干净、点保存，就该真的没了）。
+
+    这条用例的由来是素材库面板验收时的一个真 bug：`changes()` 用 `exclude_none`，
+    于是「字段没给」与「字段给了 null」被当成同一件事 —— 而这两件事在 PATCH 里
+    **正好相反**（前者"别动它"、后者"把它清掉"）。后果是：擦干净一个框、点保存，
+    **什么都没发生**，而面板看起来是保存成功了（值还在，用户以为自己没点到）。
+
+    `usable_to_ms: null`（留空 = 到片尾）走的是同一条路，所以两条一起钉住。
+    """
+    _clip(paths, tools)
+    client.post(INGEST_URL, json={"license": "cc0"})
+    client.patch(
+        f"{ASSETS_URL}/{BROLL}",
+        json={"source_url": "https://example.com/a.mp4", "usable_to_ms": 20_000},
+    )
+
+    resp = client.patch(f"{ASSETS_URL}/{BROLL}", json={"source_url": None, "usable_to_ms": None})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["source_url"] is None
+    assert resp.json()["usable_to_ms"] is None
+
+    row = _rows(connection, "broll_clips")[0]
+    assert row["source_url"] is None
+    assert row["usable_to_ms"] is None
+
+
+def test_patch_ignores_null_on_a_field_that_cannot_be_empty(
+    client: TestClient, paths: StudioPaths, tools: _Tools
+) -> None:
+    """不该为空的字段上收到 `null` ⇒ 当成**没给**，而不是把 `NULL` 塞进 NOT NULL 的列。
+
+    `enabled` / `has_text` / `loopable` 在 DDL 里是 `INTEGER NOT NULL CHECK IN (0,1)`：
+    把 `None` 交给它们换来的是一条 500（数据库约束炸了），而不是一句人能看懂的话。
+    """
+    _clip(paths, tools)
+    client.post(INGEST_URL, json={"license": "cc0"})
+
+    resp = client.patch(f"{ASSETS_URL}/{BROLL}", json={"enabled": None, "has_text": None})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["enabled"] is True
+    assert resp.json()["has_text"] is False
+
+
 def test_patch_empty_body_returns_row_without_audit(
     client: TestClient, connection: sqlite3.Connection, paths: StudioPaths, tools: _Tools
 ) -> None:
@@ -626,3 +833,314 @@ def test_asset_id_pattern_is_enforced(client: TestClient) -> None:
     resp = client.get(f"{ASSETS_URL}/Parkour/thumb")
     assert resp.status_code == 422
     assert _error(resp.json()) == ErrorCode.VALIDATION_FAILED.value
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ⑦ 上传（T4.8 的图形化入库入口 · §3.3.14 / §4.3.1）
+# ══════════════════════════════════════════════════════════════════════
+#
+# 这一组用例回答的是同一个问题：**在面板上拖几个文件进去，会发生什么**。
+# 四条纪律在这里的具体形状：
+#
+# ① 断言也看盘、也看库 —— "上传即入库"这句承诺必须两边都兑现；
+# ② 一条坏文件**不中断整批**（与扫盘同一条）；
+# ③ 同名冲突**绝不静默覆盖**（那可能是一份手工剪过的片段）；
+# ④ 缺授权时文件落盘但**不入库** —— 盘上多一条 pending 是如实的结果，
+#    替用户填一个 license 才是伪造 R2 留痕。
+
+UPLOAD_URL = "/api/v1/assets/upload"
+VOICE_UPLOAD_URL = "/api/v1/assets/voice"
+
+
+def _part(name: str, body: bytes = b"video-bytes") -> tuple[str, tuple[str, bytes, str]]:
+    return ("files", (name, body, "application/octet-stream"))
+
+
+def _on_disk(paths: StudioPaths, kind: str, name: str) -> Path:
+    root = {
+        "broll": paths.mc_parkour_dir,
+        "bgm": paths.bgm_dir,
+        "voice": paths.voice_src_dir,
+    }[kind]
+    return root / name
+
+
+def test_upload_broll_stores_the_file_and_ingests_it_in_one_step(
+    client: TestClient, connection: sqlite3.Connection, paths: StudioPaths, tools: _Tools
+) -> None:
+    """上传 = 落盘 + 入库**一次做完**（用户点的是"放进素材库"，不是"放进一个目录"）。"""
+    tools.info["parkour_new.mp4"] = _video("parkour_new.mp4")
+    resp = client.post(
+        UPLOAD_URL,
+        data={"kind": "broll", "license": "cc0"},
+        files=[_part("parkour_new.mp4")],
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["stored"], body["replaced"], body["skipped"]) == (1, 0, 0)
+    assert body["files"][0]["asset_id"] == "parkour_new"
+    assert body["files"][0]["status"] == "stored"
+
+    # 盘上真在（而且没有留下 .partial）
+    target = _on_disk(paths, "broll", "parkour_new.mp4")
+    assert target.read_bytes() == b"video-bytes"
+    assert list(paths.mc_parkour_dir.glob("*.partial")) == []
+
+    # 库里真有 —— 不用再点一次「扫描并入库」
+    assert [row["id"] for row in _rows(connection, "broll_clips")] == ["parkour_new"]
+    assert body["report"] is not None
+    assert body["report"]["totals"]["created"] == 1
+    assert body["report"]["sections"][0]["assets"][0]["usable"] is True
+
+
+def test_upload_normalizes_the_browser_filename_and_says_so(
+    client: TestClient, paths: StudioPaths, tools: _Tools
+) -> None:
+    """``跑酷 01.MP4`` ⇒ ``parkour_01.mp4``：改名可以，**不说一声**不行。"""
+    tools.info["parkour_01.mp4"] = _video("parkour_01.mp4")
+    resp = client.post(
+        UPLOAD_URL,
+        data={"kind": "broll", "license": "cc0"},
+        files=[_part("跑酷 01.MP4", b"video-bytes")],
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["files"][0]["asset_id"] == "parkour_01"
+    assert _on_disk(paths, "broll", "parkour_01.mp4").is_file()
+    assert "原名" in body["files"][0]["message"]
+
+
+def test_upload_rejects_an_unknown_suffix_with_a_reason(client: TestClient, paths: StudioPaths) -> None:
+    """扩展名不对 ⇒ 逐条报"跳过 + 为什么"，**一个字节都不写**，也不假装入库了。"""
+    resp = client.post(
+        UPLOAD_URL,
+        data={"kind": "broll", "license": "cc0"},
+        files=[_part("notes.txt", b"hello")],
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["stored"], body["skipped"]) == (0, 1)
+    assert body["files"][0]["status"] == "skipped"
+    assert ".txt" in body["files"][0]["message"]
+    assert body["report"] is None
+    assert list(paths.mc_parkour_dir.iterdir()) == []
+
+
+def test_one_bad_file_does_not_stop_the_batch(
+    client: TestClient, connection: sqlite3.Connection, paths: StudioPaths, tools: _Tools
+) -> None:
+    """一次拖两个文件、坏了一个 ⇒ 好的那个照常入库（与扫盘"坏文件不中断整批"同一条）。"""
+    tools.info["bgm_chill.mp3"] = _audio("bgm_chill.mp3", duration_ms=120_000)
+    resp = client.post(
+        UPLOAD_URL,
+        data={"kind": "bgm", "license": "cc0"},
+        files=[_part("bgm_chill.mp3", b"audio-bytes"), _part("clip.mp4", b"video-bytes")],
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["stored"], body["skipped"]) == (1, 1)
+    assert [row["id"] for row in _rows(connection, "bgm_tracks")] == ["bgm_chill"]
+
+
+def test_upload_never_clobbers_until_you_ask(client: TestClient, paths: StudioPaths, tools: _Tools) -> None:
+    """同名文件默认**拒绝**（409 的语义，逐条报出来）；勾了「覆盖同名」才替换。"""
+    target = _on_disk(paths, "broll", "parkour_001.mp4")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"hand-edited")
+    tools.info["parkour_001.mp4"] = _video("parkour_001.mp4")
+
+    first = client.post(
+        UPLOAD_URL,
+        data={"kind": "broll", "license": "cc0"},
+        files=[_part("parkour_001.mp4", b"from-browser")],
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["files"][0]["status"] == "skipped"
+    assert target.read_bytes() == b"hand-edited", "手工剪过的片段被静默盖掉了"
+
+    second = client.post(
+        UPLOAD_URL,
+        data={"kind": "broll", "license": "cc0", "overwrite": "true"},
+        files=[_part("parkour_001.mp4", b"from-browser")],
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["files"][0]["status"] == "replaced"
+    assert target.read_bytes() == b"from-browser"
+
+
+def test_upload_without_license_writes_the_file_but_does_not_fake_consent(
+    client: TestClient, connection: sqlite3.Connection, paths: StudioPaths, tools: _Tools
+) -> None:
+    """没选授权 ⇒ 文件落盘（盘上多一条 pending）、**不入库**，报告里如实说"未入库"。"""
+    tools.info["parkour_9.mp4"] = _video("parkour_9.mp4")
+    resp = client.post(UPLOAD_URL, data={"kind": "broll"}, files=[_part("parkour_9.mp4", b"video-bytes")])
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["files"][0]["status"] == "stored"
+    assert _on_disk(paths, "broll", "parkour_9.mp4").is_file()
+    assert _rows(connection, "broll_clips") == []
+    assert body["report"]["totals"]["rejected"] == 1
+
+
+def test_upload_with_a_bad_license_writes_nothing(client: TestClient, paths: StudioPaths) -> None:
+    """授权类型不合法 ⇒ 422，而且**在写盘之前**就挡住（不留孤儿文件）。"""
+    resp = client.post(
+        UPLOAD_URL,
+        data={"kind": "broll", "license": "borrowed-from-a-friend"},
+        files=[_part("parkour_1.mp4")],
+    )
+
+    assert resp.status_code == 422
+    assert _error(resp.json()) == ErrorCode.ASSET_INVALID.value
+    assert list(paths.mc_parkour_dir.iterdir()) == []
+
+
+def test_flat_upload_refuses_the_voice_kind(client: TestClient) -> None:
+    """音色是目录，不是平铺文件 ⇒ 明确指路（面板上音色那一节有它自己的上传口）。"""
+    resp = client.post(
+        UPLOAD_URL,
+        data={"kind": "voice"},
+        files=[_part("a.wav", b"audio")],
+    )
+    assert resp.status_code == 422
+    assert _error(resp.json()) == ErrorCode.ASSET_INVALID.value
+
+
+def test_voice_upload_numbers_refs_in_filename_order(
+    client: TestClient, connection: sqlite3.Connection, paths: StudioPaths, tools: _Tools
+) -> None:
+    """音色上传：按原文件名排序落成 ``ref_01`` / ``ref_02``，``ref_text`` 逐行写成 ``ref.txt``。"""
+    for name in ("ref_01.wav", "ref_02.wav"):
+        tools.info[name] = _audio(name, duration_ms=15_000, sample_rate=24_000)
+
+    resp = client.post(
+        VOICE_UPLOAD_URL,
+        data={"voice_id": "bear_da", "license": "self_recorded", "ref_text": "第一句\n\n第二句"},
+        files=[_part("b.wav", b"B"), _part("a.wav", b"A")],
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["stored"], body["skipped"]) == (3, 0), body
+    root = paths.voice_src_dir / "bear_da"
+    assert (root / "ref_01.wav").read_bytes() == b"A", "排序没生效（ref_01 该是 a.wav）"
+    assert (root / "ref_02.wav").read_bytes() == b"B"
+    assert (root / "ref.txt").read_text(encoding="utf-8") == "第一句\n第二句\n"
+    assert [row["id"] for row in _rows(connection, "voice_profiles")] == ["bear_da"]
+    assert body["report"]["totals"]["created"] == 1
+
+
+def test_voice_upload_with_a_bad_id_is_422(client: TestClient, paths: StudioPaths) -> None:
+    """``voice_id`` 就是目录名 ⇒ 与素材 id **同一条**正则，在入参那一层就挡住。"""
+    resp = client.post(
+        VOICE_UPLOAD_URL,
+        data={"voice_id": "../escape"},
+        files=[_part("a.wav", b"A")],
+    )
+    assert resp.status_code == 422
+    assert _error(resp.json()) == ErrorCode.VALIDATION_FAILED.value
+    assert not (paths.voice_src_dir.parent / "escape").exists()
+
+
+def test_voice_upload_keeps_the_line_numbers_aligned_when_a_file_is_skipped(
+    client: TestClient, paths: StudioPaths, tools: _Tools
+) -> None:
+    """中间夹一个非音频文件 ⇒ 它被跳过，**后面的段号不跳号**（跳了 ref.txt 就整体错位）。"""
+    for name in ("ref_01.wav", "ref_02.wav"):
+        tools.info[name] = _audio(name, duration_ms=15_000, sample_rate=24_000)
+
+    resp = client.post(
+        VOICE_UPLOAD_URL,
+        data={"voice_id": "bear_da", "license": "self_recorded"},
+        files=[_part("a.wav", b"A"), _part("readme.txt", b"x"), _part("c.wav", b"C")],
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["stored"], body["skipped"]) == (2, 1)
+    root = paths.voice_src_dir / "bear_da"
+    assert sorted(item.name for item in root.iterdir()) == ["ref_01.wav", "ref_02.wav"]
+    assert (root / "ref_02.wav").read_bytes() == b"C"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ④ 写 · 删除（裁定 369：删行 / 删文件是**两个**开关）
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_delete_removes_the_row_but_keeps_the_file_by_default(
+    client: TestClient, connection: sqlite3.Connection, paths: StudioPaths, tools: _Tools
+) -> None:
+    """默认只删库里的行：盘上的文件原地不动（重扫一次就回来）。"""
+    target = _clip(paths, tools)
+    client.post(INGEST_URL, json={"license": "cc0"})
+
+    resp = client.delete(f"{ASSETS_URL}/{BROLL}", params={"kind": "broll"})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["kind"], body["id"], body["purge"], body["purged"]) == ("broll", BROLL, False, [])
+    assert _rows(connection, "broll_clips") == []
+    assert target.is_file()
+    ops = _audit(connection, "asset.delete")
+    assert len(ops) == 1
+    assert ops[0]["target_id"] == BROLL
+    assert ops[0]["target_type"] == "asset"
+    assert json.loads(ops[0]["after_json"]) == {"kind": "broll", "purged": []}
+
+
+def test_delete_with_purge_removes_the_voice_directory(
+    client: TestClient, connection: sqlite3.Connection, paths: StudioPaths, tools: _Tools
+) -> None:
+    """音色带上 ``purge`` ⇒ 参考音目录一起删。
+
+    不删盘的话，下次扫盘这个目录又会变成一条"盘上有、库里没有" —— 用户刚删掉的
+    东西自己回来了。``purged`` 回的是**真的删掉的那个路径**（绝对路径）。
+    """
+    root = _voice_dir(paths, tools)
+    client.post(INGEST_URL, json={"license": "self_recorded"})
+
+    resp = client.delete(f"{ASSETS_URL}/{VOICE}", params={"kind": "voice", "purge": True})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["purged"] == [str(root.resolve())]
+    assert _rows(connection, "voice_profiles") == []
+    assert not root.exists()
+
+
+def test_delete_unknown_id_is_404(client: TestClient) -> None:
+    """id 打错 ⇒ 404，不是"删掉了"（否则面板会说成功而那一行还在）。"""
+    resp = client.delete(f"{ASSETS_URL}/nothing_here", params={"kind": "broll"})
+    assert resp.status_code == 404
+    assert _error(resp.json()) == ErrorCode.ASSET_NOT_FOUND.value
+
+
+def test_purge_refuses_a_path_outside_the_root(
+    client: TestClient,
+    connection: sqlite3.Connection,
+    paths: StudioPaths,
+    tools: _Tools,
+    tmp_path: Path,
+) -> None:
+    """库里那一行指到根目录**外面** ⇒ 一个字节都不动。
+
+    行是能被人手改的、也可能从别的机器同步过来。删素材时信 ``row.path``，
+    一次"清理素材库"就会变成删掉另一个文件。
+    """
+    outside = tmp_path / "outside.mp4"
+    outside.write_bytes(b"not-an-asset")
+    _clip(paths, tools)
+    client.post(INGEST_URL, json={"license": "cc0"})
+    connection.execute("UPDATE broll_clips SET path = ? WHERE id = ?", (str(outside), BROLL))
+
+    resp = client.delete(f"{ASSETS_URL}/{BROLL}", params={"kind": "broll", "purge": True})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["purged"] == []
+    assert outside.is_file()
+    assert _rows(connection, "broll_clips") == []

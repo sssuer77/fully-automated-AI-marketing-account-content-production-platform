@@ -46,6 +46,9 @@ __all__ = [
     "DURATION_MAX_MS",
     "DURATION_MIN_MS",
     "FORBIDDEN_PREFIX",
+    "OUTLINE_ARGUMENT_MAX",
+    "OUTLINE_TITLE_MAX",
+    "OUTLINE_UNSET",
     "PAUSE_DEFAULT_MS",
     "REWRITE_LIMIT",
     "SEGMENT_CHARS_MAX",
@@ -62,6 +65,8 @@ __all__ = [
     "WORD_COUNT_TARGET",
     "DirectorInput",
     "DirectorOutput",
+    "OutlineInput",
+    "OutlineOutput",
     "OutlineReport",
     "ScriptDraft",
     "ScriptReport",
@@ -98,6 +103,14 @@ SENTENCE_INPUT_MAX_CHARS: Final[int] = 200
 SENTENCE_MIN_COUNT: Final[int] = 15
 SPEAKER_RATIO_MAX: Final[float] = 0.7
 CATCHPHRASE_MIN_HITS: Final[int] = 2
+
+# ── 二级产物（视频标题 + 核心论点）────────────────────────────────────
+OUTLINE_TITLE_MAX: Final[int] = 60
+OUTLINE_ARGUMENT_MAX: Final[int] = 200
+
+#: 二级产物缺位时喂给提示词的**字面量**（不能给空串：空行会让模型以为
+#: 「上游给了一个空标题」，而事实是「上游还没定」）。
+OUTLINE_UNSET: Final[str] = "（未定 —— 这一级还没定，你按选题自行发挥）"
 REWRITE_LIMIT: Final[int] = 2
 CHARS_PER_SECOND: Final[float] = 5.0
 PAUSE_DEFAULT_MS: Final[int] = 200
@@ -132,6 +145,36 @@ class ScriptRules(BaseModel):
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 二级产物 · 视频标题 + 核心论点（文案三级流水线的中间一级）
+# ══════════════════════════════════════════════════════════════════════
+
+
+class OutlineInput(BaseModel):
+    """二级产物的输入（选题 + 角度；与 Director 同一口径）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    topic: TopicSpec
+    angle: str | None = Field(default=None, max_length=120)
+
+
+class OutlineOutput(BaseModel):
+    """二级产物：**视频标题 + 核心论点**。
+
+    为什么标题要在这一级就定死
+    --------------------------
+    ``scripts.title`` 是观众看到的第一行字，而它此前是 Writer 写完 600–800 字之后
+    顺手起的 —— 也就是「内容决定标题」。人对这件事的控制点恰恰相反：**先想清楚要
+    说什么**（标题 + 论点），再让模型展开成对话。定在这一级，三级就只是「按它写」。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=OUTLINE_TITLE_MAX)
+    core_argument: str = Field(min_length=1, max_length=OUTLINE_ARGUMENT_MAX)
+
+
+# ══════════════════════════════════════════════════════════════════════
 # Director（§04.1.4）
 # ══════════════════════════════════════════════════════════════════════
 
@@ -156,6 +199,9 @@ class DirectorInput(BaseModel):
     topic: TopicSpec
     target_duration_ms: int = Field(default=DURATION_DEFAULT_MS, ge=DURATION_MIN_MS, le=DURATION_MAX_MS)
     angle: str | None = Field(default=None, max_length=120)
+    #: 二级产物（视频标题 + 核心论点）；``None`` ⇒ 这一级还没定，按选题自由发挥
+    outline_title: str | None = Field(default=None, max_length=OUTLINE_TITLE_MAX)
+    core_argument: str | None = Field(default=None, max_length=OUTLINE_ARGUMENT_MAX)
 
 
 class DirectorOutput(BaseModel):
@@ -209,6 +255,9 @@ class WriterInput(BaseModel):
     topic: TopicSpec
     outline: DirectorOutput
     revision_notes: list[str] = Field(default_factory=list)
+    #: 二级产物；``outline_title`` 非空 ⇒ 成稿标题**锁定**用它（见 ScriptService.draft）
+    outline_title: str | None = Field(default=None, max_length=OUTLINE_TITLE_MAX)
+    core_argument: str | None = Field(default=None, max_length=OUTLINE_ARGUMENT_MAX)
 
 
 class WriterOutput(BaseModel):

@@ -1,8 +1,8 @@
 # §03 核心数据结构与持久化 Schema
 
-> 唯一真相源 = `data/studio.db`（SQLite，WAL，**30 表**）。全部 DDL 采用**纯 SQL 迁移文件**（`src/studio/db/migrations/000N_*.sql`），ORM 只映射、不建表。
+> 唯一真相源 = `data/studio.db`（SQLite，WAL，**31 表**）。全部 DDL 采用**纯 SQL 迁移文件**（`src/studio/db/migrations/000N_*.sql`），ORM 只映射、不建表。
 > 依赖前提：SQLite ≥3.35（`UPDATE ... RETURNING`）、JSON1 扩展（3.38+ 默认启用）。本机 3.51.1 ✅
-> **本节的 DDL 已用本机 `sqlite3 3.51.1` 实际执行验证**：**30 表 / 61 索引 / 6 触发器 / `integrity_check=ok` / `foreign_key_check` 为空**。
+> **本节的 DDL 已用本机 `sqlite3 3.51.1` 实际执行验证**：**31 表 / 61 索引 / 6 触发器 / `integrity_check=ok` / `foreign_key_check` 为空**。
 > 另已实测：`report_schedules` 的**部分唯一索引**（同周期仅 1 个启用）、`at_time` CHECK、`weekly 必须给 weekday` CHECK、到期查询只取启用项 —— 全部符合预期。
 
 ---
@@ -57,7 +57,7 @@
    └──────────────────┘
 ```
 
-**表清单（30）**：`schema_migrations`、`personas`、`hot_items`、`feedback_items`、`content_directions`、`topic_candidates`、`tasks`、`scripts`、`script_sentences`、`review_scores`、`jobs`、`template_definitions`、`template_scenes`、`template_components`、`artifacts`、`system_logs`、`approvals`、`task_events`、`llm_calls`、`worker_heartbeats`、`broll_clips`、`broll_usage`、`publications`、`audit_ops`、`pool_settings`、`publish_schedules`、`reports`、`report_schedules`、`bgm_tracks`、`voice_profiles`。
+**表清单（31）**：`schema_migrations`、`personas`、`hot_items`、`feedback_items`、`content_directions`、`topic_candidates`、`tasks`、`scripts`、`script_sentences`、`review_scores`、`jobs`、`template_definitions`、`template_scenes`、`template_components`、`artifacts`、`system_logs`、`approvals`、`task_events`、`llm_calls`、`worker_heartbeats`、`broll_clips`、`broll_usage`、`publications`、`audit_ops`、`pool_settings`、`publish_schedules`、`reports`、`report_schedules`、`bgm_tracks`、`voice_profiles`、`topic_outlines`。
 
 ---
 
@@ -1180,7 +1180,7 @@ END;
 | 问题 | 能不能靠扫目录回答 |
 | --- | --- |
 | 本机有哪些音色 | ✅ 能（`layout.discover`） |
-| 哪些被停用了 | ❌ **不能**。停用是**人的决定**，而 §T4.8 明写「只允许禁用、不物理删除」—— 删掉目录等于连人录的参考音一起删 |
+| 哪些被停用了 | ❌ **不能**。停用是**人的决定**（§T4.8 硬约束：停用**不动物理文件**）—— 删掉目录等于连人录的参考音一起删。删除是另一个动词（`DELETE /assets/{id}`，**裁定 369**）：默认也只删库里的行，`purge=true` 才连目录一起删 |
 | 每个音色用了几次 / 最后一次什么时候用 | ❌ 不能（T2.6 配音时回填，属于运行期状态） |
 
 后两个必须有地方存，且必须**与文件系统解耦**：素材目录是「人往里丢东西」的地方，
@@ -1232,6 +1232,42 @@ CREATE INDEX IF NOT EXISTS idx_voice_enabled ON voice_profiles(enabled);
 素材目录是用户的地盘：机器往里写一个 `profile.json`，下一次扫描就分不清这份来源登记
 是用户填的还是脚本生成的。占位素材的 `profile.json` 由**生成脚本**自己写（`origin: generated`），
 那是「造文件」而不是「改资产」。
+
+---
+
+### 3.3.22 `topic_outlines`（视频标题 + 核心论点 · 迁移 `0011`）
+
+> **一句话**：文案生成分三级（一级「话题主体」→ 二级「视频标题 + 核心论点」→ 三级「对话文案」）。
+> 一级早就在 `topic_candidates`、三级在 `scripts`，二级此前**没有落点** —— 于是「只想改标题和论点、
+> 不想重写全文」在库里无法表达。这张表就是那一级。
+
+```sql
+CREATE TABLE IF NOT EXISTS topic_outlines (
+  id             TEXT PRIMARY KEY,
+  topic_id       TEXT NOT NULL UNIQUE REFERENCES topic_candidates(id) ON DELETE CASCADE,
+  title          TEXT NOT NULL,          -- 视频标题（三级成稿时**锁定**用它）
+  core_argument  TEXT NOT NULL,          -- 核心论点（一句话；喂给 Director / Writer 当主线）
+  llm_model      TEXT,                   -- 模型产出时记下是谁写的；手改的照旧保留原值
+  prompt_version TEXT,
+  created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+```
+
+**四条设计取舍**
+
+1. **一个选题一行**（`topic_id UNIQUE`）：二级产物是「这条视频到底要说什么」的定论，不是一份可以
+   并存多版的历史。要改就改这一行，改动留在 `audit_ops`（`outline.updated` 带 `before`/`after`）。
+2. **它是可选的一级**：没有这一行，三级照旧按选题自由发挥（`draft` 的提示词收到「（未定）」）；
+   有这一行，成稿标题**锁定**用它、正文围绕核心论点展开。少一张表不能变成「写不出稿」。
+3. **`llm_model` / `prompt_version` 在人工改写时不被清空**：它们记的是「这一行最初是哪个模型、
+   哪版提示词产出的」，是溯源信息；人改过之后把模型名抹掉，等于让「这条是不是模型写的」查不出来。
+4. **选题被删 ⇒ 它跟着走**（`ON DELETE CASCADE`）：二级产物离开一级没有意义。
+   （`topic_candidates` 有任务时不给删 —— 见 §04.4.5 第 2 行，那是为了不让任务断链。）
+
+**三级怎么吃这一行**（`ScriptService.draft`）：读到 `topic_outlines` ⇒ `outline_title` / `core_argument`
+一起进 `DirectorInput` 与 `WriterInput`，并在 `build_draft` 之后把 `draft.title` 覆盖成锁定标题
+（提示词已经要求照抄，这里再强制一次 —— 「标题被悄悄换掉」是最难发现的一类漂移）。
 
 ---
 
@@ -1971,8 +2007,10 @@ animation:
 | `0007_pool_autodegrade.sql` | `pool_settings` 追加 `consecutive_oom`（T4.10 自动降并发计数器，§3.3.17） | — |
 | `0008_observability.sql` | 补两个观测索引（T4.12）：`idx_logs_source`（日志按 `source` 过滤 + `ORDER BY id`，§04.5.3）、`idx_events_created`（`task_events` 按保留期 GC，§03.7.5） | — |
 | `0009_assets.sql` | 素材库（T4.8）：`voice_profiles` + `idx_voice_enabled`（跑酷 / BGM 的表在 `0001` 里就有，T4.8 只是把列填满 —— 音色**必须**新建表，理由见 §3.3.21） | 1 |
+| `0010_metrics.sql` | 指标与观测（T4.12）：指标采样、资源快照相关的列 / 索引 | — |
+| `0011_topic_outlines.sql` | 二级产物（文案三级流水线的中间一级）：`topic_outlines`（§3.3.22） | 1 |
 
-**合计 30 表**（17 + 3 + 3 + 3 + 3 + 1 = 30，与 §3.1 表清单一致）。
+**合计 31 表**（17 + 3 + 3 + 3 + 3 + 1 + 1 = 31，与 §3.1 表清单一致）。
 
 ### 3.7.2 迁移规则（六条硬约束）
 
@@ -1981,7 +2019,7 @@ animation:
 3. **幂等**：全部 DDL 使用 `IF NOT EXISTS`；`0006_seed.sql` 使用 `INSERT ... ON CONFLICT DO NOTHING`。连续执行两次结果一致（T1.3 验收项）。
 4. **可前滚不可回滚**：不写 down 迁移；回退靠**每日备份还原**（§3.7.4）。
 5. **顺序执行 + 版本登记**：按 `version` 字典序执行，每条成功即写 `schema_migrations`。
-6. **启动自检**：`studio db check` 断言 `journal_mode=wal`、`foreign_keys=1`、`integrity_check=ok`、`foreign_key_check` 空结果，并把**迁移声明的对象清单**与库内实际做**双向比对**（漏建 / 多建都算 fail）：30 表 / 61 索引 / 6 触发器。
+6. **启动自检**：`studio db check` 断言 `journal_mode=wal`、`foreign_keys=1`、`integrity_check=ok`、`foreign_key_check` 空结果，并把**迁移声明的对象清单**与库内实际做**双向比对**（漏建 / 多建都算 fail）：31 表 / 61 索引 / 6 触发器。
 
 ### 3.7.3 改 `CHECK` 约束的标准做法（SQLite 不支持 `ALTER ... CHECK`）
 

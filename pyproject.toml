@@ -23,6 +23,7 @@ dependencies = [
   "psutil>=6.0",
   "APScheduler>=3.10",
   "playwright>=1.48",
+  "python-multipart>=0.0.32",
 ]
 
 [project.optional-dependencies]

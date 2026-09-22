@@ -32,6 +32,7 @@ PYTHONPATH 的两段（陷阱 160）
 
 from __future__ import annotations
 
+import math
 import sys
 import time
 from dataclasses import dataclass
@@ -49,6 +50,7 @@ __all__ = [
     "SynthResult",
     "cuda_free_mb",
     "looks_like_oom",
+    "peak_trim_gain",
 ]
 
 logger = get_logger("studio.tts.cosyvoice")
@@ -59,6 +61,21 @@ _OOM_MARKERS: Final[tuple[str, ...]] = (
     "cuda error: out of memory",
     "cublas_status_alloc_failed",
 )
+
+#: 落盘前给产物留的峰值上限（dBFS）。
+#:
+#: 为什么引擎自己产出的东西还要压（真机 2026-09-22）
+#: ------------------------------------------------
+#: CosyVoice2 的零样本输出是**峰值归一化**的：用户导入 `sunxiaochuan`（参考音峰值
+#: −6.0 dBFS）之后，念出来每一句都是 **−0.1 dBFS**。而句子级的爆音门禁是
+#: 「峰值 > −0.5 dBFS ⇒ ``TTS_CLIP``」（§04.3.3）—— 于是**每一句**都被判破音：
+#: 重试 3 次（同一句文本同一个音色，输出当然一样）⇒ 连续 3 次失败 ⇒ 配音熔断打开
+#: ⇒ 后面每一句都只查缓存、查不到就降级成静音占位。用户看到的是一整条稿子
+#: 「18 句跳过」，日志里一句人话都没有。
+#:
+#: 判据没错（混音那一步要的是**有余量**的人声轨），错的是引擎的输出电平：
+#: 它没有余量。所以这里补的就是那个余量 —— 与成片门禁的 −1.0 dBTP 同一个数。
+OUTPUT_PEAK_CEILING_DBFS: Final[float] = -1.0
 
 
 class EngineState(StrEnum):
@@ -76,6 +93,24 @@ def looks_like_oom(exc: BaseException) -> bool:
         return True
     text = str(exc).lower()
     return any(marker in text for marker in _OOM_MARKERS)
+
+
+def peak_trim_gain(peak: float, *, ceiling_dbfs: float = OUTPUT_PEAK_CEILING_DBFS) -> float:
+    """峰值超过上限 ⇒ 返回把它压到上限的那个**线性增益**；否则返回 ``1.0``。
+
+    **只压不抬**：引擎自己念得轻（真机上另一支音色只有 −24 dBFS 峰值）是素材的
+    事，不是这里该管的 —— 抬电平会把底噪一起抬起来，而且会让同一支片子里前后两句
+    的响度关系反过来。
+
+    纯函数（不碰 numpy / torch）：门禁与它都是"数字进、数字出"，这样这一条能在
+    没有 GPU 的主 venv 里被钉死（见 ``tests/unit/tts/test_cosyvoice_backend.py``）。
+    """
+    # 标注类型不是仪式：mypy 眼里 `float ** float` 可能是复数（`__pow__` 的重载里有它），
+    # 于是这一行会推成 `Any`，整个函数就变成"从 Any 返回 float"。
+    ceiling: float = 10.0 ** (ceiling_dbfs / 20.0)
+    if peak <= ceiling:
+        return 1.0
+    return ceiling / peak
 
 
 def cuda_free_mb() -> int | None:
@@ -370,7 +405,7 @@ class CosyVoiceBackend:
                 f"参考音不存在：{ref_wav}",
                 code=ErrorCode.TTS_VOICE_MISSING,
                 context={"ref_wav": str(ref_wav)},
-                remediation="按 §4.3.1 把 2–3 段 10–30 秒的原声放进 data/voice_src/<音色>/",
+                remediation="按 §4.3.1 把 2–3 段 2–30 秒的原声放进 data/voice_src/<音色>/",
             )
         if not ref_text.strip():
             raise StudioError(
@@ -412,6 +447,19 @@ class CosyVoiceBackend:
                 code=ErrorCode.TTS_SENTENCE_FAILED,
                 context={"text_len": len(text)},
                 remediation="看 data/logs/tts.log 里这一句的引擎日志",
+            )
+
+        # 留余量（见 `OUTPUT_PEAK_CEILING_DBFS`）：模型输出是峰值归一化的，
+        # 原样落盘会让每一句都顶在 0 dBFS 上，被句子级爆音门禁判成破音。
+        peak = float(abs(samples).max())
+        gain = peak_trim_gain(peak)
+        if gain < 1.0:
+            samples = samples * gain
+            logger.info(
+                "cosyvoice.peak_trimmed",
+                peak_dbfs=round(20.0 * math.log10(peak), 2),
+                gain_db=round(20.0 * math.log10(gain), 2),
+                ceiling_dbfs=OUTPUT_PEAK_CEILING_DBFS,
             )
 
         out_path.parent.mkdir(parents=True, exist_ok=True)

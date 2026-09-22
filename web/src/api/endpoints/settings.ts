@@ -29,6 +29,8 @@ export type LlmKeyStatus = LlmSettings["key"];
 export type LlmRoutingRow = NonNullable<LlmSettings["routing"]>[number];
 export type LlmKeyBody = BodyJson<"/api/v1/settings/llm", "put">;
 export type LlmKeyOutcome = OkJson<"/api/v1/settings/llm", "put">;
+export type LlmProfileBody = BodyJson<"/api/v1/settings/llm/profile", "put">;
+export type LlmProfileOutcome = OkJson<"/api/v1/settings/llm/profile", "put">;
 export type LlmProbe = OkJson<"/api/v1/settings/llm/probe", "post">;
 export type LlmProbeRow = NonNullable<LlmProbe["rows"]>[number];
 
@@ -57,6 +59,17 @@ export function saveLlmKey(apiKey: string, reason?: string): Promise<LlmKeyOutco
  */
 export function clearLlmKey(reason?: string): Promise<LlmKeyOutcome> {
   return apiPut<LlmKeyOutcome>(SETTINGS_PATH, { clear: true, reason: reason ?? null });
+}
+
+/**
+ * 改通道参数（模型名 / base_url）。
+ *
+ * 与密钥同一个 PUT 家族，但**写的是 `config/llm.yaml`**：模型名会变（换服务商、换档位、
+ * 临时降本），而那份文件带着"为什么这么配"的注释 —— 所以后端是按行改写、不整份重写。
+ * 生效方式与密钥相同：网关每次取配置先做一次 `stat`，常驻 worker **不需要重启**。
+ */
+export function saveLlmProfile(body: LlmProfileBody): Promise<LlmProfileOutcome> {
+  return apiPut<LlmProfileOutcome>(`${SETTINGS_PATH}/profile`, body);
 }
 
 /**

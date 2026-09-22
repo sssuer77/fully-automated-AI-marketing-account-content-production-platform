@@ -1,7 +1,9 @@
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { PipelineSubmit } from "@/api/endpoints/pipeline";
 import type {
+  EnqueueVoiceResponse,
   ResynthResponse,
   SentenceProgress,
   SentenceVoice,
@@ -29,6 +31,7 @@ import {
   spanText,
   speakersOf,
   statusLabel,
+  startNotice,
   statusTone,
   toVoiceMapRequest,
   useVoiceStore,
@@ -47,6 +50,9 @@ const TASK_ID = "ui-20260916-120000";
 const HUIHUI = "Microsoft Huihui Desktop";
 const ZIRA = "Microsoft Zira Desktop";
 const HINT = "重配完成后跑一次配音收口会让时间轴全量重算";
+
+/** 后端「开始配音」那条 hint（面板直接显示它）。 */
+const ENQUEUE_HINT = "作业已经排进 voice 池：常驻池在跑就会接着念";
 
 function progress(overrides: Partial<SentenceProgress> = {}): SentenceProgress {
   return {
@@ -151,6 +157,50 @@ function mapReport(overrides: Partial<VoiceMapResponse> = {}): VoiceMapResponse 
   };
 }
 
+function enqueueReport(overrides: Partial<EnqueueVoiceResponse> = {}): EnqueueVoiceResponse {
+  return {
+    task_id: TASK_ID,
+    status_before: "queued_voice",
+    status: "voicing",
+    queued: 3,
+    outstanding: 3,
+    progress: progress({ done: 0, pending: 3, settled: 0, ratio: 0 }),
+    timeline_stale: false,
+    timeline_total_ms: null,
+    hint: ENQUEUE_HINT,
+    ...overrides,
+  };
+}
+
+function pipelineSubmit(overrides: Partial<PipelineSubmit> = {}): PipelineSubmit {
+  return {
+    job: {
+      id: "p0001",
+      task_id: TASK_ID,
+      until: "completed",
+      status: "running",
+      stage: "voice",
+      done: 0,
+      total: 0,
+      percent: 0,
+      note: "",
+      created_at: "2026-09-21T11:00:00Z",
+      started_at: "2026-09-21T11:00:00Z",
+      finished_at: null,
+      steps: [],
+      final: null,
+      quality: null,
+      error_code: null,
+      error_message: null,
+      remediation: null,
+      logs: [],
+      request: {},
+    },
+    deduped: false,
+    ...overrides,
+  };
+}
+
 /** 换音色要"先算代价"的那个 409（后端 `VOICE_MAP_CONFIRM_REQUIRED`）。 */
 function confirmError(overrides: Record<string, unknown> = {}): ApiError {
   return new ApiError(`换音色会让 2 句重新配音，确认后再提交`, 409, {
@@ -169,6 +219,8 @@ let resynthSentence = vi.fn(async () => resynthReport());
 let patchVoiceMap = vi.fn(async () => mapReport());
 let fetchVoicePreview = vi.fn(async () => previewSample());
 let createVoicePreview = vi.fn(async () => previewSample());
+let enqueueVoice = vi.fn(async () => enqueueReport());
+let createPipelineJob = vi.fn(async () => pipelineSubmit());
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -178,6 +230,8 @@ beforeEach(() => {
   patchVoiceMap = vi.fn(async () => mapReport());
   fetchVoicePreview = vi.fn(async () => previewSample());
   createVoicePreview = vi.fn(async () => previewSample());
+  enqueueVoice = vi.fn(async () => enqueueReport());
+  createPipelineJob = vi.fn(async () => pipelineSubmit());
   configureVoiceApi({
     fetchSentences,
     fetchVoiceOptions,
@@ -185,6 +239,8 @@ beforeEach(() => {
     patchVoiceMap,
     fetchVoicePreview,
     createVoicePreview,
+    enqueueVoice,
+    createPipelineJob,
   });
 });
 
@@ -759,3 +815,134 @@ describe("试听：动作", () => {
     expect(store.previewError).toContain("还没有选音色");
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════
+// 「开始配音」：面板上那颗主按钮（T4.5 补的那个入口）
+// ══════════════════════════════════════════════════════════════════════
+
+describe("开始配音", () => {
+  it("纯函数：投了 0 条说的是幂等，不是「失败了」", () => {
+    expect(startNotice(enqueueReport())).toContain("已把 3 句排进 voice 池");
+    expect(startNotice(enqueueReport({ queued: 0 }))).toContain("这次新排了 0 条");
+    expect(startNotice(enqueueReport({ queued: 0, outstanding: 0 }))).toContain(
+      "这条任务没有待投的句子",
+    );
+  });
+
+  it("★ 一次投递整条任务：调 enqueue_voice + 回话 + 重新拉一次", async () => {
+    const store = useVoiceStore();
+    store.setTaskId(TASK_ID);
+    await store.reload();
+    fetchSentences.mockClear();
+
+    const ok = await store.startVoicing();
+
+    expect(ok).toBe(true);
+    expect(enqueueVoice).toHaveBeenCalledWith(TASK_ID);
+    expect(store.notice).toContain("已把 3 句排进 voice 池");
+    expect(store.error).toBeNull();
+    expect(store.hint).toBe(ENQUEUE_HINT);
+    expect(fetchSentences).toHaveBeenCalledTimes(1);
+  });
+
+  it("投了 0 条也要说清是幂等，不是按钮坏了", async () => {
+    enqueueVoice = vi.fn(async () => enqueueReport({ queued: 0 }));
+    configureVoiceApi({ enqueueVoice });
+    const store = useVoiceStore();
+    store.setTaskId(TASK_ID);
+    await store.reload();
+
+    await store.startVoicing();
+
+    expect(store.notice).toContain("这次新排了 0 条");
+    expect(store.notice).toContain("幂等");
+  });
+
+  it("canStart 只看**任务状态**：句子全定局但停在待配音时，那颗按钮还在", async () => {
+    fetchSentences = vi.fn(async () =>
+      snapshot({ task_status: "queued_voice", progress: progress({ done: 3, settled: 3 }) }),
+    );
+    configureVoiceApi({ fetchSentences });
+    const store = useVoiceStore();
+    store.setTaskId(TASK_ID);
+    await store.reload();
+
+    expect(store.canStart).toBe(true);
+    expect(store.toEnqueue).toBe(0);
+  });
+
+  it("投完之后 canStart 关掉、voiced 打开（念完了 ⇒ 该收口出片了）", async () => {
+    const store = useVoiceStore();
+    store.setTaskId(TASK_ID);
+    await store.reload();
+    expect(store.canStart).toBe(false);
+    expect(store.voiced).toBe(true); // 假快照就是"三句都 done、任务 voicing"
+
+    fetchSentences = vi.fn(async () =>
+      snapshot({ task_status: "queued_voice", progress: progress({ done: 0, pending: 3, ratio: 0 }) }),
+    );
+    configureVoiceApi({ fetchSentences });
+    await store.refresh();
+    expect(store.canStart).toBe(true);
+    expect(store.toEnqueue).toBe(3);
+    expect(store.voiced).toBe(false);
+  });
+
+  it("失败照原样报出来（含 HTTP 状态），不吞", async () => {
+    enqueueVoice = vi.fn(async () => {
+      throw new ApiError("任务现在停在 voicing，不在待配音这一步", 409, null);
+    });
+    configureVoiceApi({ enqueueVoice });
+    const store = useVoiceStore();
+    store.setTaskId(TASK_ID);
+    await store.reload();
+
+    const ok = await store.startVoicing();
+
+    expect(ok).toBe(false);
+    expect(store.error).toBe("任务现在停在 voicing，不在待配音这一步（HTTP 409）");
+  });
+});
+
+describe("收口并出片", () => {
+  it("★ 提交一条一键出片（until=completed）—— 母带还没拼，去渲染会失败", async () => {
+    const store = useVoiceStore();
+    store.setTaskId(TASK_ID);
+    await store.reload();
+
+    const ok = await store.finishToVideo();
+
+    expect(ok).toBe(true);
+    expect(createPipelineJob).toHaveBeenCalledWith({ task_id: TASK_ID, until: "completed" });
+    expect(store.notice).toContain("p0001");
+    expect(store.notice).toContain("final.mp4");
+  });
+
+  it("已经有一条在跑 ⇒ 说清是复用的，不是开了第二条", async () => {
+    createPipelineJob = vi.fn(async () => pipelineSubmit({ deduped: true }));
+    configureVoiceApi({ createPipelineJob });
+    const store = useVoiceStore();
+    store.setTaskId(TASK_ID);
+    await store.reload();
+
+    await store.finishToVideo();
+
+    expect(store.notice).toContain("已经有一条在跑了");
+  });
+
+  it("提交失败照原样报出来，不吞", async () => {
+    createPipelineJob = vi.fn(async () => {
+      throw new ApiError("任务停在确认闸（awaiting_approval），流水线不代按", 409, null);
+    });
+    configureVoiceApi({ createPipelineJob });
+    const store = useVoiceStore();
+    store.setTaskId(TASK_ID);
+    await store.reload();
+
+    const ok = await store.finishToVideo();
+
+    expect(ok).toBe(false);
+    expect(store.error).toBe("任务停在确认闸（awaiting_approval），流水线不代按（HTTP 409）");
+  });
+});
+

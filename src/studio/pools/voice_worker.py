@@ -86,6 +86,7 @@ from studio.services.log_service import LogService
 from studio.tts.cache import TtsCache
 from studio.tts.circuit import CircuitBreaker
 from studio.tts.engine import VoiceEngine, rewarm
+from studio.tts.engine_picker import EnginePicker, resolve_sapi_voice
 from studio.tts.fallback import (
     DEGRADE_AFTER_ATTEMPTS,
     DefaultFallbackPolicy,
@@ -95,7 +96,6 @@ from studio.tts.fallback import (
     action_note,
 )
 from studio.tts.faults import wrap_engine
-from studio.tts.sapi import list_voices_cached, pick_voice
 from studio.tts.sentence import (
     SapiEngine,
     SentenceEngine,
@@ -103,7 +103,6 @@ from studio.tts.sentence import (
     synthesize_sentence,
     write_placeholder,
 )
-from studio.tts.service_engine import ResidentEngine, active_resident
 from studio.tts.synth import concat_wavs
 from studio.tts.text_normalize import GlossaryStore
 from studio.tts.timeline import has_audio
@@ -214,7 +213,7 @@ class VoiceSentenceHandler:
         connection: sqlite3.Connection,
         cache: TtsCache | None = None,
         engine: SentenceEngine | None = None,
-        engine_picker: _EnginePicker | None = None,
+        engine_picker: EnginePicker | None = None,
         voice: str | None = None,
         glossary: GlossaryStore | None = None,
         log: LogService | None = None,
@@ -921,12 +920,12 @@ def build_voice_handler(
     if engine is not None:
         # 注入的引擎 = "就用这一个"（测试 / 演练）⇒ 不探测（裁定 311）
         chosen: SentenceEngine = wrap_engine(engine, plan)
-        default_voice: str | None = _resolve_voice()
-        picker: _EnginePicker | None = None
+        default_voice: str | None = resolve_sapi_voice()
+        picker: EnginePicker | None = None
     else:
         # 故障壳由 picker 自己套：它中途会换引擎，套在外面就等于没套
         # —— 换上去的那台是裸的，T2.8 的降级演练会在真机上静默失效。
-        picker = _EnginePicker(paths, plan=plan)
+        picker = EnginePicker(paths, plan=plan)
         chosen, default_voice, _ = picker()
     return VoiceSentenceHandler(
         paths=paths,
@@ -938,115 +937,6 @@ def build_voice_handler(
         log=log if log is not None else LogService(resolved),
         breaker=breaker if breaker is not None else CircuitBreaker(),
     )
-
-
-class _EnginePicker:
-    """每一次取引擎：常驻服务能用就用它，否则退回 SAPI（§1.7 降级）。
-
-    为什么是"每一次"而不是装配期定一次（真机实测 2026-09-18）
-    --------------------------------------------------------
-    启动器**同时**拉起五个进程，而 tts 要先把模型读进显存（真机 22s）。配音池的
-    装配期必然落在那 22s 里 ⇒ 判据永远是"服务不可用" ⇒ 整条链路退回系统语音包，
-    而且**一直退到进程重启为止**：面板上写着 ``bigbear``（它问的时候服务已经就绪），
-    池子却把 ``bigbear`` 交给 SAPI —— ``SelectVoice`` 抛 ⇒ 每句失败 3 次 ⇒ 成片
-    没人声（陷阱 #154 的第二次现身，这次的原因在**时序**上）。
-
-    判据用的还是 :func:`~studio.tts.service_engine.active_resident` **那一份**（与
-    配音面板"这个音色念得出来吗"同源），只是问得晚一点、多问几次。
-
-    只升不降
-    --------
-    常驻服务一旦可用就固定用它。反过来的"中途降回 SAPI"会让同一支片子里一半
-    CosyVoice、一半系统音色 —— 那比"如实失败"更难查（听起来只是"有几句话怪"）。
-
-    返回的 ``speakable`` 是这台引擎**念得出来**的音色（SAPI 是系统语音包；常驻是
-    服务自报的可克隆音色）。要它是因为 payload 里那个音色可能是**上一次判据**下
-    算出来的 —— 同一条时序坑的另一半。
-
-    ``plan`` 传进来是因为换引擎的动作发生在**这里**：故障壳得套在每一台
-    真正上场的引擎上，而不是套在装配期那一台上（T2.8 降级演练）。
-    """
-
-    def __init__(self, paths: StudioPaths, *, plan: FaultPlan | None = None) -> None:
-        self._paths = paths
-        self._plan = plan if plan is not None else FaultPlan()
-        self._sapi = wrap_engine(SapiEngine(), self._plan)
-        self._sapi_voice: str | None = None
-        self._resident: tuple[SentenceEngine, str | None, tuple[str, ...]] | None = None
-        #: 已经**强制**降档到系统语音包（`SWITCH_ENGINE` 打过这张牌）
-        self._switched = False
-
-    @property
-    def switched(self) -> bool:
-        """已经强制降档了吗（决策表用它判"换引擎这张牌打过了没有"）。"""
-        return self._switched
-
-    def switch(self) -> bool:
-        """强制降档到系统语音包（§04.3.3 的 ``SWITCH_ENGINE``）。
-
-        ⇒ **这一次真的换了没有**：已经在备用引擎上 ⇒ ``False``（调用方据此说
-        "没得换了"，而不是谎报换成功）。
-
-        与"只升不降"（裁定 314）不矛盾：那一条说的是**判据**不许自己往下降
-        （服务明明可用却退回 SAPI ⇒ 同一支片子两种嗓子）。这里是**决策表**在
-        连续失败之后主动换档 —— 它知道自己在做什么，而且换完就不再回头看常驻服务
-        （``self._switched`` 一置位，``__call__`` 里那句探测也不会再问）。
-
-        **不切回常驻服务**：这台引擎刚刚被判定"念不出来"，切回去只会再失败一轮；
-        要恢复就重启配音池（那是"修完引擎"之后的事）。
-        """
-        if self._switched:
-            return False
-        self._switched = True
-        self._resident = None
-        logger.warning("voice.engine_switched", reason="决策表判定常驻引擎连续失败 ⇒ 改走系统语音包")
-        return True
-
-    def __call__(self) -> tuple[SentenceEngine, str | None, tuple[str, ...]]:
-        """⇒ ``(引擎, 兜底音色, 念得出来的音色)``。"""
-        if self._resident is not None:
-            return self._resident
-        if self._switched:
-            # 已经强制降档 ⇒ **不再问常驻服务**：它刚刚被判"念不出来"，
-            # 再问一次只会把整批句子又带回那条路上（见 `switch`）。
-            if self._sapi_voice is None:
-                self._sapi_voice = _resolve_voice()
-            return self._sapi, self._sapi_voice, tuple(list_voices_cached())
-        status = active_resident(self._paths)
-        if status is None:
-            if self._sapi_voice is None:
-                # 列音色要起一次 PowerShell（1–2 秒）⇒ 进程生命周期内只解析一次
-                self._sapi_voice = _resolve_voice()
-            logger.info("voice.engine_sapi", reason="常驻推理服务不可用，按降级档用系统语音包")
-            return self._sapi, self._sapi_voice, tuple(list_voices_cached())
-        logger.info(
-            "voice.engine_resident",
-            base_url=status.base_url,
-            revision=status.revision,
-            voices=list(status.voices),
-        )
-        self._resident = (
-            wrap_engine(ResidentEngine(paths=self._paths, status=status), self._plan),
-            status.voices[0],
-            status.voices,
-        )
-        return self._resident
-
-
-def _resolve_voice() -> str | None:
-    """挑一个本机装了的音色；一个都没有 ⇒ 抛（**启动期**就该知道）。"""
-    chosen = pick_voice()
-    if chosen is None:
-        raise StudioError(
-            "本机没有可用的语音音色，配音池无法工作",
-            code=ErrorCode.TTS_ENGINE_UNAVAILABLE,
-            context={"engine": "sapi"},
-            remediation=(
-                "在「设置 → 时间和语言 → 语音」里装一个中文语音包（如 Microsoft Huihui），"
-                "或给 pools.yaml 的 voice 池配一个已装音色"
-            ),
-        )
-    return chosen
 
 
 def _simplified_seed(sentence: SentenceRow) -> int:

@@ -9,7 +9,7 @@
 
 为什么用真 ffprobe / 真 ffmpeg
 ------------------------------
-阈值是「单段 10-30 秒」「采样率 ≥ 16 kHz」「峰值 ≤ -1.0 dBFS」，这三件事都得**真的
+阈值是「单段 2-30 秒」（下限见裁定 369）「采样率 ≥ 16 kHz」「峰值 ≤ -1.0 dBFS」，这三件事都得**真的
 解码**才知道。假件只能验「我传进去的 duration 被比较过了」，验不出「ffprobe 报出来的
 时长是不是我写进去的那个」。参考音是整条配音链路的**输入**：它错了，后面每一句都
 跟着错，而错误要到听成片时才暴露。
@@ -171,11 +171,25 @@ class TestFourRejections:
     def test_segment_too_short(
         self, service: AssetService, connection: sqlite3.Connection, paths: StudioPaths
     ) -> None:
-        _voice(paths, durations=(SEGMENT_SECONDS, 5.0))
+        _voice(paths, durations=(SEGMENT_SECONDS, 1.0))
         asset = _ingested(service)
         assert asset.check.ok is False
         assert _codes(asset.check.problems) == ["ref_02_too_short"]
         assert VoiceProfileRepo(connection).get("bigbear") is None
+
+    def test_three_second_segment_passes(
+        self, service: AssetService, connection: sqlite3.Connection, paths: StudioPaths
+    ) -> None:
+        """3 秒的参考音**能入库**（裁定 369）。
+
+        这一条就是"下限从 10 秒降到 2 秒"的全部意义：手边只有一句台词的人，
+        以前永远入不了库。上游 ``frontend.py`` 只挡 >30s（"提取不了 speech token"），
+        没有任何"太短"的判据；真机也验过 2.978 秒的参考音能克隆出 4.48 秒音频。
+        """
+        _voice(paths, durations=(3.0, 3.0))
+        asset = _ingested(service)
+        assert asset.check.ok is True
+        assert VoiceProfileRepo(connection).get("bigbear") is not None
 
     def test_segment_too_long(
         self, service: AssetService, connection: sqlite3.Connection, paths: StudioPaths
@@ -340,7 +354,7 @@ class TestBatchBehaviour:
         self, service: AssetService, connection: sqlite3.Connection, paths: StudioPaths
     ) -> None:
         _voice(paths, "bigbear")
-        _voice(paths, "littlebear", durations=(SEGMENT_SECONDS, 5.0))
+        _voice(paths, "littlebear", durations=(SEGMENT_SECONDS, 1.0))
         section = service.ingest(kind=AssetKind.VOICE).section(AssetKind.VOICE)
         by_id = {item.id: item for item in section.assets}
         assert by_id["bigbear"].action is IngestAction.CREATED

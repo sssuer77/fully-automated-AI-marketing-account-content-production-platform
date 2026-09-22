@@ -18,9 +18,13 @@ from studio.core.config import (
     CONFIG_FILE_NAMES,
     SECRETS_FILE_NAME,
     ConfigBundle,
+    LlmConfigHotReload,
     effective_paths,
+    llm_config_provider,
     load_config,
+    load_llm_config,
     redact,
+    set_llm_profile_model,
 )
 from studio.core.errors import ConfigError, ErrorCode
 from studio.core.paths import StudioPaths
@@ -551,6 +555,142 @@ def test_warnings_flag_missing_llm_key(config_paths: StudioPaths, monkeypatch: p
     monkeypatch.delenv("STUDIO_LLM_API_KEY", raising=False)
     notes = _load(config_paths).warnings
     assert any("STUDIO_LLM_API_KEY" in note for note in notes)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 通道参数写回（T6.1：设置页可改模型名 / base_url）
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _llm_yaml(paths: StudioPaths) -> dict[str, Any]:
+    data = yaml.safe_load((paths.config_dir / "llm.yaml").read_text(encoding="utf-8"))
+    assert isinstance(data, dict)
+    return data
+
+
+def _llm_value(paths: StudioPaths, profile: str, key: str) -> str:
+    return str(_llm_yaml(paths)["profiles"][profile][key])
+
+
+def test_load_llm_config_reads_only_that_file(config_paths: StudioPaths) -> None:
+    """``app.yaml`` 写坏了，LLM 通道照样读得出来 —— 两件事之间没有关系。"""
+    _edit(config_paths, "app", lambda data: data["web"].__setitem__("port", 999999))
+    _expect(config_paths, ErrorCode.CONFIG_INVALID)
+
+    assert load_llm_config(config_paths).profiles["cloud"].model == _llm_value(config_paths, "cloud", "model")
+
+
+def test_set_llm_profile_model_rewrites_exactly_one_line(config_paths: StudioPaths) -> None:
+    """逐字节：只有那一行变了 —— 注释、routing、budget 一个字节都没动。"""
+    path = config_paths.config_dir / "llm.yaml"
+    before = path.read_text(encoding="utf-8")
+    old_model = _llm_value(config_paths, "cloud", "model")
+    local_model = _llm_value(config_paths, "local", "model")
+
+    set_llm_profile_model(config_paths, profile="cloud", model="brand-new-model")
+
+    after = path.read_text(encoding="utf-8")
+    assert load_llm_config(config_paths).profiles["cloud"].model == "brand-new-model"
+    assert after == before.replace(f"model: {old_model}", "model: brand-new-model")
+    assert load_llm_config(config_paths).profiles["local"].model == local_model
+
+
+def test_set_llm_profile_model_keeps_a_trailing_comment(config_paths: StudioPaths) -> None:
+    """行尾注释原样保留（那份文件的注释就是"为什么这么配"的唯一记录）。"""
+    path = config_paths.config_dir / "llm.yaml"
+    old_model = _llm_value(config_paths, "cloud", "model")
+    text = path.read_text(encoding="utf-8")
+    path.write_text(
+        text.replace(f"model: {old_model}", f"model: {old_model}  # 换档位时改这一行"),
+        encoding="utf-8",
+    )
+
+    set_llm_profile_model(config_paths, profile="cloud", model="next-model")
+
+    assert "model: next-model  # 换档位时改这一行" in path.read_text(encoding="utf-8")
+
+
+def test_set_llm_profile_model_can_rewrite_base_url(config_paths: StudioPaths) -> None:
+    """换服务商要能改 base_url（模型名与地址是同一件事的两半）。"""
+    set_llm_profile_model(config_paths, profile="local", base_url="http://127.0.0.1:9999/v1")
+
+    assert load_llm_config(config_paths).profiles["local"].base_url == "http://127.0.0.1:9999/v1"
+    assert load_llm_config(config_paths).profiles["local"].model == _llm_value(config_paths, "local", "model")
+
+
+def test_set_llm_profile_model_rejects_an_unknown_profile(config_paths: StudioPaths) -> None:
+    with pytest.raises(ConfigError) as excinfo:
+        set_llm_profile_model(config_paths, profile="nope", model="x")
+
+    assert excinfo.value.code is ErrorCode.CONFIG_MISSING
+    assert "nope" in str(excinfo.value)
+
+
+def test_set_llm_profile_model_needs_something_to_write(config_paths: StudioPaths) -> None:
+    with pytest.raises(ValueError):
+        set_llm_profile_model(config_paths, profile="cloud")
+
+
+def test_set_llm_profile_model_refuses_a_bad_value_without_touching_the_file(
+    config_paths: StudioPaths,
+) -> None:
+    """空模型名 ⇒ 写盘**之前**就炸：一份读不出来的配置不该留在盘上。"""
+    path = config_paths.config_dir / "llm.yaml"
+    before = path.read_text(encoding="utf-8")
+
+    with pytest.raises(ConfigError) as excinfo:
+        set_llm_profile_model(config_paths, profile="cloud", model="")
+
+    assert excinfo.value.code is ErrorCode.CONFIG_INVALID
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_llm_config_hot_reload_picks_up_a_rewrite(config_paths: StudioPaths) -> None:
+    """常驻进程（写稿 worker）靠它发现"面板上换了模型名"。"""
+    provider = llm_config_provider(config_paths)
+    assert provider().profiles["cloud"].model == _llm_value(config_paths, "cloud", "model")
+
+    set_llm_profile_model(config_paths, profile="cloud", model="hot-reloaded-model")
+
+    assert provider().profiles["cloud"].model == "hot-reloaded-model"
+
+
+def test_llm_config_hot_reload_keeps_the_last_good_snapshot(config_paths: StudioPaths) -> None:
+    """改到一半（YAML 语法错）⇒ 沿用上一份可用值，**不**把在跑的任务打断。"""
+    provider = llm_config_provider(config_paths)
+    good = provider()
+
+    (config_paths.config_dir / "llm.yaml").write_text("profiles: [", encoding="utf-8")
+
+    assert provider().profiles["cloud"].model == good.profiles["cloud"].model
+
+
+def test_llm_config_hot_reload_raises_when_nothing_was_ever_read(
+    config_paths: StudioPaths,
+) -> None:
+    """从没读到过 ⇒ 必须炸：不能装作"有一份配置"。"""
+    (config_paths.config_dir / "llm.yaml").write_text("profiles: [", encoding="utf-8")
+
+    with pytest.raises(ConfigError):
+        llm_config_provider(config_paths)()
+
+
+def test_llm_config_hot_reload_caches_until_the_file_moves(config_paths: StudioPaths) -> None:
+    """文件没动 ⇒ 不重读（一次 ``stat``，不是一次全量校验）。"""
+    calls: list[int] = []
+    original = load_llm_config
+
+    def counting(paths: StudioPaths, *, env: Any = None) -> Any:
+        calls.append(1)
+        return original(paths, env=env)
+
+    hot = LlmConfigHotReload(config_paths, loader=lambda: counting(config_paths))
+
+    first = hot.current()
+    second = hot.current()
+
+    assert first is second
+    assert len(calls) == 1
 
 
 def test_publish_guard_blocks_confirm_free_without_accounts(config_paths: StudioPaths) -> None:

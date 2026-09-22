@@ -269,7 +269,7 @@ class VoiceRegistry:
                     "available": available,
                 },
                 remediation=(
-                    "按 §4.3.1 放进 2–3 段 10–30 秒原声 + ref.txt（逐字文本），"
+                    "按 §4.3.1 放进 2–3 段 2–30 秒原声 + ref.txt（逐字文本），"
                     "再跑 scripts/ingest_voice_src.py；换音色不必改代码"
                 ),
             )

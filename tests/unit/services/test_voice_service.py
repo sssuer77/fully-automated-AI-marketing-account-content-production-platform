@@ -31,6 +31,7 @@ from studio.services.voice_service import (
     VOICE_SOURCE_DEFAULT,
     VOICE_SOURCE_FALLBACK,
     VOICE_SOURCE_MAP,
+    active_script_voices,
     preview_audio,
     read_timeline_total_ms,
     resolve_voice,
@@ -495,3 +496,53 @@ def test_a_missing_or_broken_timeline_is_not_an_error(paths: StudioPaths) -> Non
 
     target.write_text(json.dumps({"total_ms": "十七秒"}), encoding="utf-8")
     assert read_timeline_total_ms(paths, "01TASK") is None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ⑨ 逐句音色（渲染那条路读的就是它）
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_active_script_voices_is_per_sentence(
+    connection: sqlite3.Connection, paths: StudioPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """★ 渲染这条路要的是**逐句**音色，不是整篇一个嗓子。
+
+    真机 2026-09-22：稿子是熊大 / 熊二 / 旁白三个角色，而渲染面板那格音色只能表达
+    「整篇一个嗓子」⇒ 母带一旦不在盘上（24h 保留期回收），重出的片子会把旁白也念成
+    熊大，而且不报错。
+    """
+    monkeypatch.setattr("studio.services.voice_service.speakable_voices", lambda *a, **k: ("熊大", "熊二"))
+    task_id = _task(connection, voice_map={"bigbear": "熊大", "littlebear": "熊二"})
+
+    assert active_script_voices(connection, task_id, paths=paths) == ("熊大", "熊二")
+
+
+def test_a_speaker_without_a_voice_stays_none(
+    connection: sqlite3.Connection, paths: StudioPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``voice_map`` 里没写的角色 ⇒ ``None``（**不覆盖**），交给调用方的兜底音色。"""
+    monkeypatch.setattr("studio.services.voice_service.speakable_voices", lambda *a, **k: ("熊大",))
+    task_id = _task(connection, voice_map={"bigbear": "熊大"})
+
+    assert active_script_voices(connection, task_id, paths=paths) == ("熊大", None)
+
+
+def test_a_voice_the_engine_cannot_speak_is_not_forced_through(
+    connection: sqlite3.Connection, paths: StudioPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``voice_map`` 写了、这台引擎念不出来 ⇒ ``None`` —— 与配音池**同一条**判据。
+
+    硬塞给引擎的后果很具体：``SelectVoice`` 每句抛、重试 3 次、成片没人声。
+    """
+    monkeypatch.setattr("studio.services.voice_service.speakable_voices", lambda *a, **k: ())
+    task_id = _task(connection, voice_map={"bigbear": "熊大", "littlebear": "熊二"})
+
+    assert active_script_voices(connection, task_id, paths=paths) == (None, None)
+
+
+def test_a_task_without_sentences_has_no_per_sentence_voices(
+    connection: sqlite3.Connection, paths: StudioPaths
+) -> None:
+    """库里没有这个任务的句子（面板直接填文案那条路）⇒ 空元组，由调用方整篇一个嗓子。"""
+    assert active_script_voices(connection, "no-such-task", paths=paths) == ()

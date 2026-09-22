@@ -23,6 +23,7 @@ from typing import ClassVar
 
 from studio.agents.base import AgentContext, AgentResult, BaseAgent
 from studio.domain.script import (
+    OUTLINE_UNSET,
     DirectorInput,
     DirectorOutput,
     OutlineReport,
@@ -58,6 +59,8 @@ class DirectorAgent(BaseAgent[DirectorInput, DirectorOutput]):
                 topic_reason=topic.reason,
                 target_duration_ms=str(payload.target_duration_ms),
                 target_seconds=str(round(payload.target_duration_ms / 1000)),
+                outline_title=payload.outline_title or OUTLINE_UNSET,
+                core_argument=payload.core_argument or OUTLINE_UNSET,
                 retry_hint=hint,
             )
             if not result.ok or result.data is None:

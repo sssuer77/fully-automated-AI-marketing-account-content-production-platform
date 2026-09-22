@@ -82,7 +82,12 @@ from studio.services.render_service import (
     quality_report,
 )
 from studio.services.script_service import read_active_script
-from studio.services.voice_service import VoiceStageReport, enqueue_sentences, settle_voice
+from studio.services.voice_service import (
+    VoiceStageReport,
+    active_script_voices,
+    enqueue_sentences,
+    settle_voice,
+)
 
 __all__ = [
     "SUPPORTED_UNTIL",
@@ -362,10 +367,14 @@ def run_task(
 
         if status is TaskStatus.QUEUED_RENDER:
             tasks.transition(task_id, TaskStatus.RENDERING, actor="pipeline", reason="开始渲染")
+            script_text, script_sentences = _script_payload(connection, task_id)
+            script_voices = active_script_voices(connection, task_id, paths=paths)
             result = produce_video(
                 ProduceRequest(
                     task_id=task_id,
-                    text=_script_text(connection, task_id),
+                    text=script_text,
+                    sentences=script_sentences,
+                    sentence_voices=script_voices,
                     profile_name=profile_name,
                     voice=voice,
                     reuse_voice=True,
@@ -486,8 +495,12 @@ def _require_script(connection: sqlite3.Connection, task_id: str) -> None:
         )
 
 
-def _script_text(connection: sqlite3.Connection, task_id: str) -> str:
-    """生效稿件的正文（**逐句拼接** —— 与配音读的是同一份，字面一致）。"""
+def _script_payload(connection: sqlite3.Connection, task_id: str) -> tuple[str, tuple[str, ...]]:
+    """生效稿件的正文与**逐句**（正文给缓存指纹，逐句给配音）。
+
+    两句都给：拼接后的正文是渲染指纹的输入，而配音要的是**句子边界** ——
+    在路上重新切句会切出另一个句数（真机 2026-09-21：55 句 vs 58 句）。
+    """
     payload = read_active_script(connection, task_id)
     if payload is None:  # pragma: no cover —— 上面已经拦过一次
         raise StudioError(
@@ -497,7 +510,7 @@ def _script_text(connection: sqlite3.Connection, task_id: str) -> str:
             remediation="先跑 `studio script draft`",
         )
     _script, sentences = payload
-    return "".join(row.text for row in sentences)
+    return "".join(row.text for row in sentences), tuple(row.text for row in sentences)
 
 
 # ══════════════════════════════════════════════════════════════════════

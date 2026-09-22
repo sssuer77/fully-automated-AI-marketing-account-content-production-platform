@@ -34,6 +34,7 @@ __all__ = [
     "ReviewRow",
     "ScriptRow",
     "SentenceRow",
+    "TopicOutlineRow",
     "TopicRow",
     "VoiceProfileRow",
 ]
@@ -263,6 +264,38 @@ class TopicRow:
             selected_at=_text(row, "selected_at"),
             selected_by=_text(row, "selected_by"),
             created_at=_text(row, "created_at"),
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# topic_outlines（文案三级 · 二级：视频标题 + 核心论点）
+# ══════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class TopicOutlineRow:
+    """一行「视频标题 + 核心论点」。一个选题最多一行（``topic_id`` UNIQUE）。"""
+
+    id: str
+    topic_id: str
+    title: str
+    core_argument: str
+    llm_model: str | None = None
+    prompt_version: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+    @classmethod
+    def from_row(cls, row: RowLike) -> TopicOutlineRow:
+        return cls(
+            id=str(_opt(row, "id")),
+            topic_id=str(_opt(row, "topic_id")),
+            title=str(_opt(row, "title")),
+            core_argument=str(_opt(row, "core_argument")),
+            llm_model=_text(row, "llm_model"),
+            prompt_version=_text(row, "prompt_version"),
+            created_at=_text(row, "created_at"),
+            updated_at=_text(row, "updated_at"),
         )
 
 

@@ -3,13 +3,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   AnalyzeResult,
+  DirectionDeleteResult,
+  DirectionEditResult,
   DirectionItem,
   DirectionList,
+  DraftReviewResult,
   HotImportResult,
   IdeateResult,
   ImportResult,
+  ManualDirectionBody,
+  ManualDirectionResult,
   ManualTopicResult,
+  OutlineItem,
+  OutlineResult,
+  OutlineView,
   SelectFailure,
+  TopicDeleteResult,
+  TopicEditResult,
   SelectResult,
   TopicItem,
   TopicList,
@@ -23,6 +33,7 @@ import {
   isTopicEvent,
   scoreTone,
   sortByScore,
+  summarizeEdit,
   summarizeImport,
   summarizeSelect,
   topicStatusTone,
@@ -70,6 +81,50 @@ function direction(id: string, overrides: Partial<DirectionItem> = {}): Directio
     created_at: null,
     topic_count: 0,
     selected_count: 0,
+    ...overrides,
+  };
+}
+
+function directionAdded(
+  item: DirectionItem,
+  overrides: Partial<ManualDirectionResult> = {},
+): ManualDirectionResult {
+  return { direction: item, ...overrides };
+}
+
+function directionEdited(
+  item: DirectionItem,
+  changed: string[],
+): DirectionEditResult {
+  return { direction: item, changed };
+}
+
+function directionDeleted(
+  overrides: Partial<DirectionDeleteResult> = {},
+): DirectionDeleteResult {
+  return {
+    direction_id: "d1",
+    title: "方向 d1",
+    deleted: true,
+    cascaded_topics: 3,
+    ...overrides,
+  };
+}
+
+function drafted(overrides: Partial<DraftReviewResult> = {}): DraftReviewResult {
+  return {
+    ok: true,
+    topic_id: "tp1",
+    task_id: "t-tp1",
+    script_id: "sc1",
+    title: "熊大跑酷翻车那一下，问题出在起跳前",
+    sentence_count: 20,
+    word_count: 700,
+    task_status: "reviewing",
+    reused: false,
+    warnings: [],
+    error_code: null,
+    error_message: null,
     ...overrides,
   };
 }
@@ -188,15 +243,76 @@ function hotResult(overrides: Partial<HotImportResult> = {}): HotImportResult {
   return { hot: imported(), feedback: null, ...overrides };
 }
 
+function deleted(overrides: Partial<TopicDeleteResult> = {}): TopicDeleteResult {
+  return { topic_id: "tp1", title: "选题 tp1", deleted: true, ...overrides };
+}
+
+function edited(overrides: Partial<TopicEditResult> = {}): TopicEditResult {
+  return {
+    topic: topic("tp1", { title: "改之后" }),
+    changed: ["title"],
+    warnings: [],
+    ...overrides,
+  };
+}
+
+function outlineItem(overrides: Partial<OutlineItem> = {}): OutlineItem {
+  return {
+    topic_id: "tp1",
+    title: "熊大跑酷翻车那一下，问题出在起跳前",
+    core_argument: "新手翻车不是因为手速，是因为起跳前没看落脚点",
+    llm_model: "gpt-5.6-terra",
+    prompt_version: "1+abc",
+    updated_at: null,
+    ...overrides,
+  };
+}
+
+function outlineView(outline: OutlineItem | null = outlineItem()): OutlineView {
+  return { topic_id: "tp1", outline };
+}
+
+function outlineResult(overrides: Partial<OutlineResult> = {}): OutlineResult {
+  return {
+    ok: true,
+    topic_id: "tp1",
+    title: "熊大跑酷翻车那一下，问题出在起跳前",
+    core_argument: "新手翻车不是因为手速，是因为起跳前没看落脚点",
+    llm_model: "gpt-5.6-terra",
+    prompt_version: "1+abc",
+    generated: true,
+    changed: ["title", "core_argument"],
+    warnings: [],
+    error_code: null,
+    error_message: null,
+    ...overrides,
+  };
+}
+
 /** 装一整套假件（**每次都给全** ⇒ 上一个用例的覆盖不会漏到下一个）。 */
 function install(overrides: Partial<TopicsApi> = {}): TopicsApi {
   const fakes: TopicsApi = {
     fetchTopics: vi.fn(async () => pool([topic("tp1"), topic("tp2")])),
     fetchDirections: vi.fn(async () => directions([direction("d1"), direction("d2")])),
+    // 回一个**带着提交内容**的方向：面板显示的是后端回的那份，不是自己拼的
+    createDirection: vi.fn(async (body: ManualDirectionBody) =>
+      directionAdded(direction("d3", { title: body.title, rationale: body.rationale })),
+    ),
+    updateDirection: vi.fn(async () =>
+      directionEdited(direction("d1", { title: "改之后" }), ["title"]),
+    ),
+    deleteDirection: vi.fn(async () => directionDeleted()),
+    draftTopicForReview: vi.fn(async () => drafted()),
     analyzeTopics: vi.fn(async () => analyzed()),
     ideateTopics: vi.fn(async () => ideated()),
     selectTopics: vi.fn(async (ids: readonly string[]) => selected(ids)),
     addManualTopic: vi.fn(async () => manual()),
+    fetchTopicOutline: vi.fn(async () => outlineView()),
+    generateTopicOutline: vi.fn(async () => outlineResult()),
+    saveTopicOutline: vi.fn(async () => outlineResult()),
+    clearTopicOutline: vi.fn(async () => outlineResult()),
+    updateTopic: vi.fn(async () => edited()),
+    deleteTopic: vi.fn(async () => deleted()),
     importHot: vi.fn(async () => hotResult()),
     submitHot: vi.fn(async () => hotResult()),
     ...overrides,
@@ -626,5 +742,295 @@ describe("输入源", () => {
     expect(ok).toBe(true);
     expect(fakes.submitHot).toHaveBeenCalledWith({ text: "某热点|9800|抖音", kind: "hot" });
     expect(store.notice).toBe("热点 +3（坏行 0）");
+  });
+});
+
+describe("改选题 / 删选题", () => {
+  it("小结把列名说成人话，认不出的列照原样显示", () => {
+    expect(summarizeEdit(edited({ changed: ["hook_type", "weird"] }))).toBe("已改 钩子、weird");
+  });
+
+  it("改完重拉一次，并把改了哪几列说成人话", async () => {
+    fakes = install({ updateTopic: vi.fn(async () => edited({ changed: ["score", "title"] })) });
+    const store = useTopicsStore();
+    await store.refresh();
+
+    const ok = await store.editTopic("tp1", { title: "改之后", score: 7.5 });
+
+    expect(ok).toBe(true);
+    expect(store.notice).toBe("已改 分数、标题");
+    expect(fakes.fetchTopics).toHaveBeenCalledTimes(2); // 初拉 + 改完重拉
+    expect(store.saving).toBe(false);
+  });
+
+  it("一个字节都没动时说清楚是「没改动」，不是「改好了」", async () => {
+    fakes = install({ updateTopic: vi.fn(async () => edited({ changed: [] })) });
+    const store = useTopicsStore();
+    await store.editTopic("tp1", { title: "改之后" });
+    expect(store.notice).toBe("没有改动（值跟原来一样）");
+  });
+
+  it("改标题撞库 ⇒ 把相似提示带出来（仍然算改成功）", async () => {
+    fakes = install({
+      updateTopic: vi.fn(async () => edited({ warnings: ["与库内 1 条选题相似（最高 1.00）：老标题"] })),
+    });
+    const store = useTopicsStore();
+    const ok = await store.editTopic("tp1", { title: "老标题" });
+    expect(ok).toBe(true);
+    expect(store.notice).toBe("已改 标题 · 与库内 1 条选题相似（最高 1.00）：老标题");
+  });
+
+  it("后端拦下来（422 + 任务号）⇒ 原因原样摆出来，不动本地列表", async () => {
+    fakes = install({
+      deleteTopic: vi.fn(async () => {
+        throw new ApiError("已经派生过任务，不能直接删", 422, null);
+      }),
+    });
+    const store = useTopicsStore();
+    await store.refresh();
+
+    const ok = await store.removeTopic("tp1");
+
+    expect(ok).toBe(false);
+    expect(store.error).toBe("已经派生过任务，不能直接删（HTTP 422）");
+    expect(store.notice).toBeNull();
+    expect(fakes.fetchTopics).toHaveBeenCalledTimes(1); // 失败不重拉
+  });
+
+  it("删掉之后把它的勾选一并摘掉（不留一个指向已删行的 id）", async () => {
+    const store = useTopicsStore();
+    await store.refresh();
+    store.toggleChecked("tp1");
+
+    const ok = await store.removeTopic("tp1");
+
+    expect(ok).toBe(true);
+    expect(store.notice).toBe("已删除《选题 tp1》");
+    expect(store.checked).toEqual([]);
+  });
+});
+
+describe("二级产物：视频标题 + 核心论点", () => {
+  it("展开才拉（按需），拿到 null 也照样记下来", async () => {
+    fakes = install({ fetchTopicOutline: vi.fn(async () => outlineView(null)) });
+    const store = useTopicsStore();
+
+    await store.loadOutline("tp1");
+
+    expect(fakes.fetchTopicOutline).toHaveBeenCalledWith("tp1");
+    expect(store.outlines["tp1"]).toBeNull(); // 拉过了、确实还没有 —— 不是 undefined
+  });
+
+  it("模型产出之后直接落进按选题索引的那张表", async () => {
+    const store = useTopicsStore();
+
+    const ok = await store.generateOutline("tp1");
+
+    expect(ok).toBe(true);
+    expect(store.outlines["tp1"]?.title).toBe("熊大跑酷翻车那一下，问题出在起跳前");
+    expect(store.notice).toBe("二级已生成：《熊大跑酷翻车那一下，问题出在起跳前》");
+    expect(store.outlineBusy).toBeNull();
+  });
+
+  it("产出失败（ok=false 也是 200）⇒ 报体内原因，不写空行", async () => {
+    fakes = install({
+      generateTopicOutline: vi.fn(async () =>
+        outlineResult({ ok: false, title: "", core_argument: "", error_message: "Key 没配" }),
+      ),
+    });
+    const store = useTopicsStore();
+
+    const ok = await store.generateOutline("tp1");
+
+    expect(ok).toBe(false);
+    expect(store.error).toBe("Key 没配");
+    expect(store.outlines["tp1"]).toBeUndefined();
+  });
+
+  it("手写定稿不调 LLM，并把定稿值写回本地", async () => {
+    const store = useTopicsStore();
+
+    const ok = await store.saveOutline("tp1", { title: "手写的标题", core_argument: "手写的论点" });
+
+    expect(ok).toBe(true);
+    expect(fakes.generateTopicOutline).not.toHaveBeenCalled();
+    expect(store.outlines["tp1"]?.title).toBe("熊大跑酷翻车那一下，问题出在起跳前");
+  });
+
+  it("清空幂等：本来就没有时说「本来就没定」，不假装删掉了什么", async () => {
+    fakes = install({
+      clearTopicOutline: vi.fn(async () => outlineResult({ title: "", core_argument: "", changed: [] })),
+    });
+    const store = useTopicsStore();
+
+    const ok = await store.clearOutline("tp1");
+
+    expect(ok).toBe(true);
+    expect(store.outlines["tp1"]).toBeNull();
+    expect(store.notice).toBe("这一级本来就没定");
+  });
+
+  it("清空成功 ⇒ 说明三级会退回自由发挥（这一级是可选的）", async () => {
+    const store = useTopicsStore();
+    await store.clearOutline("tp1");
+    expect(store.notice).toBe("二级已清空（三级会按选题自由发挥）");
+  });
+});
+
+
+// ══════════════════════════════════════════════════════════════════════
+// 方向 · 手写 / 改 / 删 / 只跑这一个（左列那一栏）
+// ══════════════════════════════════════════════════════════════════════
+
+describe("方向 · 手写", () => {
+  it("落进当前批次并如实报出排到第几位", async () => {
+    const store = useTopicsStore();
+    const ok = await store.addDirection({
+      title: "手写的方向",
+      rationale: "先占位",
+      priority: 100,
+    });
+
+    expect(ok).toBe(true);
+    expect(fakes.createDirection).toHaveBeenCalledWith({
+      title: "手写的方向",
+      rationale: "先占位",
+      priority: 100,
+    });
+    expect(store.notice).toContain("手写的方向");
+    expect(store.directionBusy).toBeNull();
+    expect(fakes.fetchDirections).toHaveBeenCalled(); // 左列重拉了
+  });
+
+  it("失败时把原因摆在 error 上，不写 notice", async () => {
+    fakes = install({
+      createDirection: vi.fn(async () => {
+        throw new ApiError("标题太长", 422, null);
+      }),
+    });
+    const store = useTopicsStore();
+
+    expect(await store.addDirection({ title: "x", rationale: "", priority: 100 })).toBe(false);
+    expect(store.error).toContain("422");
+    expect(store.notice).toBeNull();
+  });
+});
+
+describe("方向 · 改", () => {
+  it("原样转发要改的字段（哪些字段变了由调用点判）", async () => {
+    const store = useTopicsStore();
+    expect(await store.editDirection("d1", { title: "改之后" })).toBe(true);
+
+    expect(fakes.updateDirection).toHaveBeenCalledWith("d1", { title: "改之后" });
+    expect(store.notice).toContain("改之后");
+  });
+
+  it("changed 为空 ⇒ 说「什么都没改」，不假装改了一次", async () => {
+    fakes = install({
+      updateDirection: vi.fn(async () => directionEdited(direction("d1"), [])),
+    });
+    const store = useTopicsStore();
+
+    await store.editDirection("d1", { title: "方向 d1" });
+    expect(store.notice).toBe("什么都没改");
+  });
+});
+
+describe("方向 · 删（级联）", () => {
+  it("把被一起删掉的候选条数如实说出来", async () => {
+    const store = useTopicsStore();
+    expect(await store.removeDirection("d1")).toBe(true);
+
+    expect(fakes.deleteDirection).toHaveBeenCalledWith("d1");
+    expect(store.notice).toContain("3 条候选");
+    expect(store.lastDirection).toEqual(directionDeleted());
+  });
+
+  it("勾选里已经不存在的 id 要清掉（否则下一次入队会报一串「选题不存在」）", async () => {
+    const store = useTopicsStore();
+    await store.refresh();
+    store.toggleChecked("tp1");
+    store.toggleChecked("tp-gone");
+
+    await store.removeDirection("d1");
+
+    // 假件的选题池只有 tp1 / tp2 ⇒ 被级联删掉的那条从勾选里消失
+    expect(store.checked).toEqual(["tp1"]);
+  });
+
+  it("后端拦下（候选已派生任务）⇒ error 带上 422 与原因", async () => {
+    fakes = install({
+      deleteDirection: vi.fn(async () => {
+        throw new ApiError("方向《x》下有 2 条候选已经派生了任务", 422, null);
+      }),
+    });
+    const store = useTopicsStore();
+
+    expect(await store.removeDirection("d1")).toBe(false);
+    expect(store.error).toContain("已经派生了任务");
+  });
+});
+
+describe("方向 · 只跑这一个", () => {
+  it("只把这一个方向交给 Ideator，条数用面板上选的那个", async () => {
+    const store = useTopicsStore();
+    store.setPerDirection(8);
+    await store.ideateOne("d1", "方向 d1");
+
+    expect(fakes.ideateTopics).toHaveBeenCalledWith({
+      per_direction: 8,
+      direction_ids: ["d1"],
+    });
+    expect(store.notice).toContain("方向 d1");
+    expect(store.busy).toBe(false);
+    expect(store.directionBusy).toBeNull();
+  });
+
+  it("每方向条数不接受非法值（NaN / 0 都当没听见）", () => {
+    const store = useTopicsStore();
+    store.setPerDirection(6);
+    store.setPerDirection(Number.NaN);
+    store.setPerDirection(0);
+    expect(store.perDirection).toBe(6);
+  });
+});
+
+describe("候选 · 生成文案并送审", () => {
+  it("成功 ⇒ 返回任务号、切到「已入队」、如实报字数与句数", async () => {
+    const store = useTopicsStore();
+    const taskId = await store.draftForReview("tp1");
+
+    expect(taskId).toBe("t-tp1");
+    expect(store.notice).toContain("700 字 / 20 句");
+    expect(store.draftBusy).toBeNull();
+    // 这一步会把选题推出候选视图：留在原地它当场就消失了
+    expect(store.status).toBe("queued");
+    expect(fakes.fetchTopics).toHaveBeenLastCalledWith("queued", 200);
+  });
+
+  it("已有生效稿件 ⇒ 说清楚「没重跑」，不谎称又写了一遍", async () => {
+    fakes = install({ draftTopicForReview: vi.fn(async () => drafted({ reused: true })) });
+    const store = useTopicsStore();
+
+    await store.draftForReview("tp1");
+    expect(store.notice).toContain("已有生效稿件");
+  });
+
+  it("失败 ⇒ 返回 null、error 带后端那句话，不改过滤条件", async () => {
+    fakes = install({
+      draftTopicForReview: vi.fn(async () =>
+        drafted({
+          ok: false,
+          script_id: null,
+          task_status: "failed",
+          error_message: "Writer 没返回成稿",
+        }),
+      ),
+    });
+    const store = useTopicsStore();
+
+    expect(await store.draftForReview("tp1")).toBeNull();
+    expect(store.error).toBe("Writer 没返回成稿");
+    expect(store.status).toBe("candidate");
   });
 });

@@ -104,6 +104,7 @@ from studio.services.render_service import (
     produce_video,
 )
 from studio.services.topic_service import TOPICS_PER_DIRECTION
+from studio.services.voice_service import active_script_voices
 
 config_app = typer.Typer(name="config", help="配置系统：校验与导出（T1.2）", no_args_is_help=True)
 persona_app = typer.Typer(
@@ -1172,7 +1173,7 @@ def prompts_verify(
     """校验提示词注册表与文件内容是否一致（漂移 ⇒ 退出码 1）。"""
     paths = StudioPaths.from_env()
     try:
-        library = PromptLibrary.load(paths.prompts_dir)
+        library = PromptLibrary.load(paths.prompts_dir, override_root=paths.prompts_override_dir)
     except StudioError as exc:
         _fail(exc, json_output)
         raise typer.Exit(code=1) from exc
@@ -1202,7 +1203,7 @@ def prompts_list(
     """列出已登记提示词（含未登记的 Agent 缺口提示）。"""
     paths = StudioPaths.from_env()
     try:
-        library = PromptLibrary.load(paths.prompts_dir)
+        library = PromptLibrary.load(paths.prompts_dir, override_root=paths.prompts_override_dir)
     except StudioError as exc:
         _fail(exc, json_output)
         raise typer.Exit(code=1) from exc
@@ -1568,7 +1569,7 @@ def _build_topic_service(paths: StudioPaths, connection: sqlite3.Connection) -> 
     "去哪里拿配置与提示词"是**入口**的责任（T1.9 裁定 70 的延伸）。
     """
     loaded = load_config(paths)
-    prompts = PromptLibrary.load(paths.prompts_dir)
+    prompts = PromptLibrary.load(paths.prompts_dir, override_root=paths.prompts_override_dir)
     log = LogService(connection)
     gateway = build_gateway(
         connection=connection,
@@ -1594,7 +1595,7 @@ def _build_script_service(paths: StudioPaths, connection: sqlite3.Connection) ->
     服务层只认 Protocol（可注入假件）。
     """
     loaded = load_config(paths)
-    prompts = PromptLibrary.load(paths.prompts_dir)
+    prompts = PromptLibrary.load(paths.prompts_dir, override_root=paths.prompts_override_dir)
     log = LogService(connection)
     gateway = build_gateway(
         connection=connection,
@@ -1774,10 +1775,15 @@ def _script_text_for(
     text: str | None,
     text_file: Path | None,
     paths: StudioPaths,
-) -> str:
-    """文案从哪来：``--text`` > ``--text-file`` > 库里的生效稿件（优先级从高到低）。"""
+) -> tuple[str, tuple[str, ...], tuple[str | None, ...]]:
+    """文案从哪来：``--text`` > ``--text-file`` > 库里的生效稿件（优先级从高到低）。
+
+    ⇒ ``(正文, 逐句, 逐句音色)``。后两个只对「库里那一版稿件」有意义 —— 命令行
+    直接给的文案本来就没有句子边界、也没有角色，只能让配音自己切、自己挑音色
+    （两个都返回空）。
+    """
     if text is not None and text.strip():
-        return text
+        return text, (), ()
     if text_file is not None:
         if not text_file.is_file():
             raise StudioError(
@@ -1786,7 +1792,7 @@ def _script_text_for(
                 context={"path": text_file.as_posix()},
                 remediation="确认路径拼写，或改用 --text 直接给文案",
             )
-        return text_file.read_text(encoding="utf-8")
+        return text_file.read_text(encoding="utf-8"), (), ()
     if not paths.db_file.is_file():
         raise StudioError(
             f"数据库尚未初始化：{paths.db_file}",
@@ -1798,6 +1804,8 @@ def _script_text_for(
     connection = connect(paths.db_file, read_only=True)
     try:
         payload = read_active_script(connection, task_id)
+        # 逐句音色必须在**这条连接关掉之前**解析（判据与配音池共用一份）。
+        voices = active_script_voices(connection, task_id, paths=paths)
     finally:
         connection.close()
     if payload is None:
@@ -1808,7 +1816,11 @@ def _script_text_for(
             remediation="先用 `studio script draft` 出稿，或直接 `--text '口播文案'`",
         )
     _script, sentences = payload
-    return "".join(row.text for row in sentences)
+    return (
+        "".join(row.text for row in sentences),
+        tuple(row.text for row in sentences),
+        voices,
+    )
 
 
 def _disabled_assets_for(paths: StudioPaths) -> DisabledAssets | None:
@@ -1910,7 +1922,9 @@ def render_make(
     """
     paths = StudioPaths.from_env()
     try:
-        script_text = _script_text_for(task_id, text=text, text_file=text_file, paths=paths)
+        script_text, script_sentences, script_voices = _script_text_for(
+            task_id, text=text, text_file=text_file, paths=paths
+        )
         outputs_source = paths.config_dir / "outputs.yaml"
         outputs = load_outputs_config(outputs_source)
 
@@ -1922,6 +1936,8 @@ def render_make(
             ProduceRequest(
                 task_id=task_id,
                 text=script_text,
+                sentences=script_sentences,
+                sentence_voices=script_voices,
                 profile_name=profile_name,
                 voice=voice,
                 reuse_voice=reuse_voice,
@@ -2241,7 +2257,7 @@ def _build_publish_service(
     loaded = load_config(paths)
     if not with_agent:
         return PublishService(connection, paths=paths, publish=loaded.bundle.publish)
-    prompts = PromptLibrary.load(paths.prompts_dir)
+    prompts = PromptLibrary.load(paths.prompts_dir, override_root=paths.prompts_override_dir)
     gateway = build_gateway(
         connection=connection,
         llm=loaded.bundle.llm,

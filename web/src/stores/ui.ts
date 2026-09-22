@@ -3,6 +3,18 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 
+import type { AssetKind } from "@/api/endpoints/assets";
+
+/**
+ * 素材库的**三个菜单**（跑酷 / 音色 / BGM）。
+ *
+ * 为什么不是一屏看三类：三类素材可管理的字段**本来就不一样**（跑酷有可用区间与
+ * `has_text`，BGM 有 `bpm` / `mood` / `loopable`，音色有 `ref_count`），摊在一屏里
+ * 只能是一张"大半格子是空的"大表，而每一列的表头都得加一句"这一类才有"。
+ * 分成三个菜单之后，每一屏的表头、筛选、编辑器都只画这一类真正有的东西。
+ */
+export type AssetPanelId = "assets_broll" | "assets_voice" | "assets_bgm";
+
 export type PanelId =
   | "overview"
   | "topics"
@@ -11,14 +23,27 @@ export type PanelId =
   | "renders"
   | "pipeline"
   | "templates"
-  | "assets"
+  | AssetPanelId
   | "pools"
   | "metrics"
   | "audit"
   | "personas"
   | "publish"
   | "settings"
+  | "prompts"
   | "logs";
+
+/** 菜单 → 素材类别（`Assets.vue` 就是按它知道自己该画哪一类）。 */
+export const ASSET_PANEL_KINDS: Readonly<Record<AssetPanelId, AssetKind>> = {
+  assets_broll: "broll",
+  assets_voice: "voice",
+  assets_bgm: "bgm",
+};
+
+/** 这个面板是素材库的某一个菜单吗？是就给出它管的那一类。 */
+export function assetKindOf(panel: PanelId): AssetKind | null {
+  return panel in ASSET_PANEL_KINDS ? ASSET_PANEL_KINDS[panel as AssetPanelId] : null;
+}
 
 export interface PanelDef {
   id: PanelId;
@@ -38,7 +63,10 @@ export const PANELS: readonly PanelDef[] = [
   { id: "renders", label: "渲染", task: "T4.6", ready: true },
   { id: "pipeline", label: "一键出片", task: "T4.14+", ready: true },
   { id: "templates", label: "合成配置", task: "T4.7", ready: true },
-  { id: "assets", label: "素材库", task: "T4.8", ready: true },
+  // 素材库按类别分三个菜单（跑酷 / 音色 / BGM）：一屏看一类，各自翻页、各自编辑。
+  { id: "assets_broll", label: "跑酷素材", task: "T4.8", ready: true },
+  { id: "assets_voice", label: "音色库", task: "T4.8", ready: true },
+  { id: "assets_bgm", label: "BGM 库", task: "T4.8", ready: true },
   { id: "logs", label: "实时日志", task: "T4.1/T4.9", ready: true },
   { id: "pools", label: "四池调度", task: "T4.10", ready: true },
   { id: "metrics", label: "观测面板", task: "T4.12", ready: true },
@@ -46,6 +74,7 @@ export const PANELS: readonly PanelDef[] = [
   { id: "personas", label: "人物库", task: "T4.13", ready: true },
   { id: "publish", label: "发布", task: "T5.5", ready: true },
   { id: "settings", label: "设置", task: "T6.1", ready: true },
+  { id: "prompts", label: "提示词", task: "T6.2", ready: true },
 ];
 
 /**

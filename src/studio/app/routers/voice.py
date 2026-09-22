@@ -1,10 +1,16 @@
 """配音操作面 REST（T2.9 · §04.3 / T4.5）。
 
-五个端点 = 面板上能做的五件事
+六个端点 = 面板上能做的六件事
 -----------------------------
-看逐句状态（``GET /sentences``）、看有哪些音色（``GET /voices``）、重配一句
-（``POST /sentences/{id}/resynth``）、试听一句（``GET /media/{path}``）、
-换音色（``PATCH /tasks/{id}/voice_map``）。
+看逐句状态（``GET /sentences``）、看有哪些音色（``GET /voices``）、**开始配音**
+（``POST /tasks/{id}/enqueue_voice``）、重配一句（``POST /sentences/{id}/resynth``）、
+试听一句（``GET /media/{path}``）、换音色（``PATCH /tasks/{id}/voice_map``）。
+
+为什么「开始配音」是**独立**的一个端点
+--------------------------------------
+它与「重配」是两件事：重配一句是**单句**重跑（几秒），开始配音是**整条任务**的
+投递（一次 54 句）。原先只有前者，于是面板上「待配音 54 句」的样子就是 54 颗按钮
+—— 真机上的原话是「这是要我一个一个点重配吗」。
 
 为什么"重配"与"换音色"是**两个**端点
 ------------------------------------
@@ -46,6 +52,7 @@ from studio.app.deps import AppState
 from studio.app.schemas.voice import (
     NO_VOICE_HINT,
     PROFILE_UNSPEAKABLE_HINT,
+    EnqueueVoiceResponse,
     ResynthResponse,
     SentenceVoiceList,
     VoiceMapRequest,
@@ -66,6 +73,7 @@ from studio.services.voice_service import (
     resynth_sentence,
     set_voice_map,
     speakable_voices,
+    start_voicing,
     usable_voices,
 )
 
@@ -200,6 +208,33 @@ def list_sentences(
         timeline_total_ms=total_ms,
         timeline_stale=total_ms is not None and progress.outstanding > 0,
     )
+
+
+@router.post("/api/v1/tasks/{task_id}/enqueue_voice", response_model=EnqueueVoiceResponse)
+def enqueue_voice_endpoint(request: Request, task_id: str = _TASK_ID) -> EnqueueVoiceResponse:
+    """★ 「开始配音」：把这条任务**待配音的句子一次**投进 voice 池（**立刻返回**）。
+
+    为什么要有这个端点
+    ------------------
+    ``queued_voice`` 只是**一个状态**：把它推到 ``voicing`` 需要**投递**，而投递原先只
+    写在 ``pipeline_service.run_task`` 里（CLI 与「一键出片」会走那条路）。于是面板上
+    只剩每一行那颗「重配」—— 54 句就是 54 次点击，而用户完全有理由以为"这就是设计"
+    （真机上的原话：**"这是要我一个一个点重配吗"**）。
+
+    它**不合成**（与单句重配同一条）：投完就返回，真正念的是 voice 池；面板随后轮询
+    ``GET /sentences`` 看进度。投递 54 句是这个函数里最快的部分，念完要十几分钟 ——
+    把它们塞进同一个请求，一次点击就会变成一个挂住十几分钟的请求。
+
+    只认 ``queued_voice``（不是就 409）：``voicing`` 下再投一次是空操作（幂等键让
+    ``enqueue`` 什么都不做），返回 0 又不报错，面板上就是"点了没反应"。
+    """
+    state: AppState = request.app.state.studio
+    report = start_voicing(
+        connection=state.connections.get(),
+        task_id=task_id,
+        paths=state.paths,
+    )
+    return EnqueueVoiceResponse.model_validate(report.to_dict())
 
 
 @router.post("/api/v1/sentences/{sentence_id}/resynth", response_model=ResynthResponse)

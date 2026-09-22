@@ -618,6 +618,39 @@
         "title": "AssetCheckModel",
         "type": "object"
       },
+      "AssetDeleteModel": {
+        "additionalProperties": false,
+        "description": "一次删除的结局（**库里那一行没了**，盘上那份要看 ``purged``）。\n\n``purge`` 是**请求里**那个开关，``purged`` 是**真的从盘上删掉的路径**。两者\n分开报，因为可以不一致：``purge=true`` 但文件本来就不在盘上 ⇒ 前者 ``true``、\n后者是空表。面板上写\"盘上文件已删除\"而其实什么都没删，与写\"已移除\"而盘上\n还留着一个目录，是同一类谎话。",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "purge": {
+            "title": "Purge",
+            "type": "boolean"
+          },
+          "purged": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Purged",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "purge",
+          "purged"
+        ],
+        "title": "AssetDeleteModel",
+        "type": "object"
+      },
       "AssetIngestRequest": {
         "additionalProperties": false,
         "description": "扫盘 / 入库请求。\n\n``kind`` 留空 = 三类都扫（面板「扫全部」按钮）。``ids`` 留空 = 该目录全扫，\n给了 = 只处理这几条（「重扫这一条」按钮，坏文件修好之后不用整批重来）。\n\n``license`` 只对**本次新入库**的条目生效；已入库的按行里存的那份走 ——\n否则一次「顺手全扫」会把每条素材的授权都改成本次请求里填的那个。",
@@ -860,6 +893,119 @@
           "sections"
         ],
         "title": "AssetLibraryModel",
+        "type": "object"
+      },
+      "AssetPageModel": {
+        "additionalProperties": false,
+        "description": "一类素材的**一页**（T4.8：跑酷 / 音色 / BGM **各一个菜单**，各翻各的页）。\n\n为什么不是一个菜单看三类\n------------------------\n三类素材的可管理字段**本来就不一样**（跑酷有可用区间与 `has_text`，BGM 有\n`bpm` / `mood` / `loopable`，音色有 `ref_count` / `text_path`），放在一屏里\n只能把三类字段摊成一张\"大部分格子是空的\"大表。分菜单之后，每一屏的表头与编辑器\n都只画这一类真正有的东西。\n\n``stats`` 与 ``total`` **是两个数**，不能合并\n-------------------------------------------\n- ``stats``：这一类的**家底**（库里有几条 / 启用几条 / 共多少时长），**不受筛选影响**；\n- ``total``：**这一页所在的筛选结果**有几条。\n\n合成一个数的后果很具体：筛出 3 条时面板会说\"这一类只有 3 条素材\"，而库里明明有\n60 条 —— 用户接着就去补素材了。\n\n``page`` 是**服务端钳过**的页码：翻过头（比如最后一页被删空了）返回的是最后一页，\n而不是一页空白。前端照着它画页码，不要自己算。",
+        "properties": {
+          "disk_total": {
+            "title": "Disk Total",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "bgm": "#/components/schemas/BgmItemModel",
+                  "broll": "#/components/schemas/BrollItemModel",
+                  "voice": "#/components/schemas/VoiceItemModel"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/BrollItemModel"
+                },
+                {
+                  "$ref": "#/components/schemas/BgmItemModel"
+                },
+                {
+                  "$ref": "#/components/schemas/VoiceItemModel"
+                }
+              ]
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "pending": {
+            "items": {
+              "$ref": "#/components/schemas/PendingAssetModel"
+            },
+            "title": "Pending",
+            "type": "array"
+          },
+          "root": {
+            "title": "Root",
+            "type": "string"
+          },
+          "root_missing": {
+            "title": "Root Missing",
+            "type": "boolean"
+          },
+          "shortfall": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shortfall"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/AssetStatsModel"
+          },
+          "strays": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Strays",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "usable": {
+            "title": "Usable",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "root",
+          "root_missing",
+          "items",
+          "stats",
+          "usable",
+          "disk_total",
+          "shortfall",
+          "pending",
+          "strays",
+          "total",
+          "page",
+          "page_size",
+          "pages"
+        ],
+        "title": "AssetPageModel",
         "type": "object"
       },
       "AssetPatchRequest": {
@@ -1630,6 +1776,95 @@
         "title": "BgmItemModel",
         "type": "object"
       },
+      "Body_upload_assets_api_v1_assets_upload_post": {
+        "properties": {
+          "files": {
+            "items": {
+              "contentMediaType": "application/octet-stream",
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AssetKind"
+          },
+          "license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "License"
+          },
+          "overwrite": {
+            "default": false,
+            "title": "Overwrite",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "files"
+        ],
+        "title": "Body_upload_assets_api_v1_assets_upload_post",
+        "type": "object"
+      },
+      "Body_upload_voice_api_v1_assets_voice_post": {
+        "properties": {
+          "files": {
+            "items": {
+              "contentMediaType": "application/octet-stream",
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "License"
+          },
+          "overwrite": {
+            "default": false,
+            "title": "Overwrite",
+            "type": "boolean"
+          },
+          "ref_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref Text"
+          },
+          "voice_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z0-9][a-z0-9_\\-]{0,63}$",
+            "title": "Voice Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "voice_id",
+          "files"
+        ],
+        "title": "Body_upload_voice_api_v1_assets_voice_post",
+        "type": "object"
+      },
       "BoundModel": {
         "additionalProperties": false,
         "description": "一个数值字段的上下限（``None`` = 这一侧没约束）。\n\n``exclusive_*`` 为真 ⇒ 边界本身**不合法**（``gt`` / ``lt`` 而不是 ``ge`` / ``le``）。",
@@ -2256,6 +2491,56 @@
         "title": "DirectionCard",
         "type": "object"
       },
+      "DirectionDeleteResult": {
+        "description": "删掉的那个方向 + **被它带走的候选条数**（级联删除要如实报数）。",
+        "properties": {
+          "cascaded_topics": {
+            "default": 0,
+            "title": "Cascaded Topics",
+            "type": "integer"
+          },
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "direction_id": {
+            "title": "Direction Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "direction_id",
+          "title",
+          "deleted"
+        ],
+        "title": "DirectionDeleteResult",
+        "type": "object"
+      },
+      "DirectionEditResult": {
+        "description": "改完之后的那一行 + 改了哪几列（``changed`` 为空 ⇒ 什么都没变）。",
+        "properties": {
+          "changed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Changed",
+            "type": "array"
+          },
+          "direction": {
+            "$ref": "#/components/schemas/DirectionCard"
+          }
+        },
+        "required": [
+          "direction",
+          "changed"
+        ],
+        "title": "DirectionEditResult",
+        "type": "object"
+      },
       "DirectionItem": {
         "description": "方向卡片 + 它下面的选题计数（\"这个方向出了 4 条，选中 1 条\"）。",
         "properties": {
@@ -2443,6 +2728,71 @@
         "title": "DirectionOutcomeModel",
         "type": "object"
       },
+      "DirectionPatchBody": {
+        "additionalProperties": false,
+        "description": "改一个方向（**只列你要改的字段**；与 ``TopicPatchBody`` 同一手法）。",
+        "properties": {
+          "priority": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "越小越优先",
+            "title": "Priority"
+          },
+          "rationale": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "为什么做这个方向",
+            "title": "Rationale"
+          },
+          "risk_flags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "风险标记",
+            "title": "Risk Flags"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "方向标题",
+            "title": "Title"
+          }
+        },
+        "title": "DirectionPatchBody",
+        "type": "object"
+      },
       "DiscardBody": {
         "additionalProperties": false,
         "description": "放弃（``awaiting_approval → discarded``）。可被 :class:`RescueBody` 捞回。",
@@ -2608,6 +2958,154 @@
           "warnings"
         ],
         "title": "DraftItem",
+        "type": "object"
+      },
+      "DraftReviewResult": {
+        "description": "「生成完整文案并移交审核」的结果（面板上选中一条候选的那一下）。\n\n``reused=true`` 表示库里**已经有生效稿件**，这一次一个 token 都没烧 ——\n面板据此把提示语从\"已生成\"改成\"已有稿件，直接送审\"，而不是假装又写了一遍。",
+        "properties": {
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "reused": {
+            "default": false,
+            "title": "Reused",
+            "type": "boolean"
+          },
+          "script_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Script Id"
+          },
+          "sentence_count": {
+            "default": 0,
+            "title": "Sentence Count",
+            "type": "integer"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_status": {
+            "default": "",
+            "title": "Task Status",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "topic_id": {
+            "title": "Topic Id",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "word_count": {
+            "default": 0,
+            "title": "Word Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ok",
+          "topic_id",
+          "task_id"
+        ],
+        "title": "DraftReviewResult",
+        "type": "object"
+      },
+      "EnqueueVoiceResponse": {
+        "description": "「开始配音」的结果：把这条任务待配音的句子一次投进 voice 池。\n\n``queued`` 与 ``outstanding`` 是**两个数**，面板两个都要说：前者是\"这一下真投出去\n几条\"，后者是\"这条任务还有几条没定局\"。只有前者，用户看到 0 会以为按钮坏了\n（其实那 54 条早就在池子里排着）。",
+        "properties": {
+          "hint": {
+            "default": "作业已经排进 voice 池：常驻池在跑就会接着念，这一屏每 1 秒自己刷新一次。全部定局之后，去「一键出片」把母带与渲染推完（那一步会出 final.mp4）",
+            "title": "Hint",
+            "type": "string"
+          },
+          "outstanding": {
+            "title": "Outstanding",
+            "type": "integer"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/SentenceProgressModel"
+          },
+          "queued": {
+            "title": "Queued",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "status_before": {
+            "title": "Status Before",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "timeline_stale": {
+            "default": false,
+            "title": "Timeline Stale",
+            "type": "boolean"
+          },
+          "timeline_total_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeline Total Ms"
+          }
+        },
+        "required": [
+          "task_id",
+          "status_before",
+          "status",
+          "queued",
+          "outstanding",
+          "progress"
+        ],
+        "title": "EnqueueVoiceResponse",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -2931,7 +3429,7 @@
           "per_direction": {
             "default": 4,
             "description": "每方向目标选题数",
-            "maximum": 10.0,
+            "maximum": 20.0,
             "minimum": 1.0,
             "title": "Per Direction",
             "type": "integer"
@@ -3449,6 +3947,145 @@
         "title": "LlmProfileModel",
         "type": "object"
       },
+      "LlmProfileOutcome": {
+        "additionalProperties": false,
+        "description": "一次通道参数写入的结果 = **刷新后的整屏** + 这次改了什么。\n\n与 :class:`LlmKeyOutcome` 同一条：面板写完要立刻显示新模型名，只回 ``changed``\n的话前端还得再发一次 GET，那两次请求之间显示的是**旧**模型。",
+        "properties": {
+          "base_url": {
+            "title": "Base Url",
+            "type": "string"
+          },
+          "changed": {
+            "title": "Changed",
+            "type": "boolean"
+          },
+          "default_profile": {
+            "title": "Default Profile",
+            "type": "string"
+          },
+          "generated_at": {
+            "title": "Generated At",
+            "type": "string"
+          },
+          "key": {
+            "$ref": "#/components/schemas/LlmKeyModel"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/LlmLimitsModel"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/LlmProfileModel"
+            },
+            "title": "Profiles",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "routing": {
+            "items": {
+              "$ref": "#/components/schemas/LlmRoutingModel"
+            },
+            "title": "Routing",
+            "type": "array"
+          }
+        },
+        "required": [
+          "generated_at",
+          "default_profile",
+          "profiles",
+          "routing",
+          "key",
+          "limits",
+          "notes",
+          "changed",
+          "profile",
+          "model",
+          "base_url",
+          "reason"
+        ],
+        "title": "LlmProfileOutcome",
+        "type": "object"
+      },
+      "LlmProfileRequest": {
+        "additionalProperties": false,
+        "description": "改写某条通道的模型名 / base_url。\n\n``model`` 与 ``base_url`` **至少要给一个**：两个都不给 ⇒ 422（不知道你想改什么）。\n与 :class:`LlmKeyRequest` 的 ``clear`` 同一条理由 —— \"少带一个字段\"绝不能变成\n\"把某个值改成空\"。",
+        "properties": {
+          "base_url": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "profile": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Profile",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "profile"
+        ],
+        "title": "LlmProfileRequest",
+        "type": "object"
+      },
       "LlmRoutingModel": {
         "additionalProperties": false,
         "description": "一个 Agent 走哪条通道（只读展示；改它属于 ``llm.yaml``，不在这一屏）。",
@@ -3692,6 +4329,64 @@
           "message"
         ],
         "title": "LogRow",
+        "type": "object"
+      },
+      "ManualDirectionBody": {
+        "additionalProperties": false,
+        "description": "人工写一个方向（**不经模型**；与「人工加选题」同一手法）。",
+        "properties": {
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "落进哪个批次（缺省=最近一批）",
+            "title": "Batch Id"
+          },
+          "priority": {
+            "default": 100,
+            "description": "越小越优先（模型产出的是 100）",
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Priority",
+            "type": "integer"
+          },
+          "rationale": {
+            "default": "",
+            "description": "为什么做这个方向",
+            "maxLength": 500,
+            "title": "Rationale",
+            "type": "string"
+          },
+          "title": {
+            "description": "方向标题",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "ManualDirectionBody",
+        "type": "object"
+      },
+      "ManualDirectionResult": {
+        "description": "人工写方向的结果（返回**落库之后**那一行）。",
+        "properties": {
+          "direction": {
+            "$ref": "#/components/schemas/DirectionCard"
+          }
+        },
+        "required": [
+          "direction"
+        ],
+        "title": "ManualDirectionResult",
         "type": "object"
       },
       "ManualPoolTaskModel": {
@@ -4210,6 +4905,207 @@
           }
         },
         "title": "MetricsTickView",
+        "type": "object"
+      },
+      "OutlineItem": {
+        "description": "二级产物（``topic_outlines`` 的展示字段）。",
+        "properties": {
+          "core_argument": {
+            "title": "Core Argument",
+            "type": "string"
+          },
+          "llm_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Model"
+          },
+          "prompt_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Version"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "topic_id": {
+            "title": "Topic Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "topic_id",
+          "title",
+          "core_argument"
+        ],
+        "title": "OutlineItem",
+        "type": "object"
+      },
+      "OutlineResult": {
+        "description": "一次二级产物的读写结果（生成 / 定稿 / 清空都返回它）。",
+        "properties": {
+          "changed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Changed",
+            "type": "array"
+          },
+          "core_argument": {
+            "default": "",
+            "title": "Core Argument",
+            "type": "string"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "generated": {
+            "default": false,
+            "title": "Generated",
+            "type": "boolean"
+          },
+          "llm_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Model"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "prompt_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Version"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "topic_id": {
+            "title": "Topic Id",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "topic_id",
+          "changed",
+          "warnings"
+        ],
+        "title": "OutlineResult",
+        "type": "object"
+      },
+      "OutlineSaveBody": {
+        "additionalProperties": false,
+        "description": "手工定稿二级产物（**两个字段一起给**：这一级只有这两样东西）。",
+        "properties": {
+          "core_argument": {
+            "description": "核心论点（一句话）",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Core Argument",
+            "type": "string"
+          },
+          "title": {
+            "description": "视频标题",
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "core_argument"
+        ],
+        "title": "OutlineSaveBody",
+        "type": "object"
+      },
+      "OutlineView": {
+        "description": "一个选题的二级产物（``outline=null`` = 还没定 —— **不是错误**）。\n\n为什么读接口不 404\n------------------\n「这一级还没定」是**正常状态**（三级会照旧自由发挥）。用 404 表达它，前端就得把一次\n注定失败的网络往返当成流程的一部分 —— 而那不是错误，只是「还没做」。",
+        "properties": {
+          "outline": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OutlineItem"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "topic_id": {
+            "title": "Topic Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic_id"
+        ],
+        "title": "OutlineView",
         "type": "object"
       },
       "OutputsLimitsModel": {
@@ -6448,6 +7344,200 @@
           }
         },
         "title": "ProfilePatch",
+        "type": "object"
+      },
+      "PromptCatalogResponse": {
+        "additionalProperties": false,
+        "description": "全部条目（面板的下拉框）。",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "override_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Dir"
+          },
+          "prompts": {
+            "items": {
+              "$ref": "#/components/schemas/PromptEntryModel"
+            },
+            "title": "Prompts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "prompts",
+          "override_dir",
+          "count"
+        ],
+        "title": "PromptCatalogResponse",
+        "type": "object"
+      },
+      "PromptEntryModel": {
+        "additionalProperties": false,
+        "description": "面板上的一个提示词条目。",
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/PromptFileModel"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "overridden": {
+            "title": "Overridden",
+            "type": "boolean"
+          },
+          "prompt_version": {
+            "title": "Prompt Version",
+            "type": "string"
+          },
+          "variables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Variables",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "version",
+          "prompt_version",
+          "overridden",
+          "files",
+          "variables"
+        ],
+        "title": "PromptEntryModel",
+        "type": "object"
+      },
+      "PromptFileModel": {
+        "additionalProperties": false,
+        "description": "一个条目里的一段（``system`` 或 ``user``）。",
+        "properties": {
+          "overridden": {
+            "title": "Overridden",
+            "type": "boolean"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "system",
+              "user"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "path",
+          "text",
+          "overridden"
+        ],
+        "title": "PromptFileModel",
+        "type": "object"
+      },
+      "PromptOutcome": {
+        "additionalProperties": false,
+        "description": "一次保存 / 还原的结果（含**改完之后**的条目，省一次往返）。",
+        "properties": {
+          "changed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Changed",
+            "type": "array"
+          },
+          "entry": {
+            "$ref": "#/components/schemas/PromptEntryModel"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "restored": {
+            "title": "Restored",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "changed",
+          "restored",
+          "entry"
+        ],
+        "title": "PromptOutcome",
+        "type": "object"
+      },
+      "PromptSaveBody": {
+        "additionalProperties": false,
+        "description": "保存覆盖：**只处理显式给过的那一段**。",
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "system": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User"
+          }
+        },
+        "title": "PromptSaveBody",
         "type": "object"
       },
       "PublicationList": {
@@ -10889,6 +11979,59 @@
         "title": "TodayOutputModel",
         "type": "object"
       },
+      "TopicDeleteResult": {
+        "description": "删掉的那一条（``deleted=False`` = 服务层到这一步时它已经不在了）。",
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "topic_id": {
+            "title": "Topic Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic_id",
+          "title",
+          "deleted"
+        ],
+        "title": "TopicDeleteResult",
+        "type": "object"
+      },
+      "TopicEditResult": {
+        "description": "改完之后的那一行 + 改了哪几列 + 去重提示（``changed`` 为空 ⇒ 什么都没变）。",
+        "properties": {
+          "changed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Changed",
+            "type": "array"
+          },
+          "topic": {
+            "$ref": "#/components/schemas/TopicItem"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "topic",
+          "changed",
+          "warnings"
+        ],
+        "title": "TopicEditResult",
+        "type": "object"
+      },
       "TopicItem": {
         "description": "瀑布流的一条选题（``topic_candidates`` 的展示字段）。",
         "properties": {
@@ -11063,6 +12206,187 @@
           "limit"
         ],
         "title": "TopicList",
+        "type": "object"
+      },
+      "TopicPatchBody": {
+        "additionalProperties": false,
+        "description": "改一条选题（**只列你要改的字段**；显式给 ``null`` = 把那一列清空）。\n\n为什么用 ``model_fields_set`` 判「有没有给」而不是判 ``is not None``：\n``hook_type=null`` 与「根本没提 hook_type」是两件事 —— 前者是「把钩子标签清掉」，\n后者是「别动它」。Pydantic 已经把这件事记下来了，再引入一个 ``UNSET`` 哨兵只是\n把同一份信息写第二遍。",
+        "properties": {
+          "angle": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "角度差异化说明",
+            "title": "Angle"
+          },
+          "hook_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "conflict",
+                  "suspense",
+                  "contrast",
+                  "number",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hook Type"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "评分理由",
+            "title": "Reason"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "maximum": 10.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "自评分（``null`` = 不打分）",
+            "title": "Score"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 50,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "选题标题",
+            "title": "Title"
+          }
+        },
+        "title": "TopicPatchBody",
+        "type": "object"
+      },
+      "UploadResultModel": {
+        "additionalProperties": false,
+        "description": "一次上传的回执：逐文件结局 + 这一趟的入库报告。\n\n``report`` 可以缺席（``None``）：一个字节都没落盘时没有什么可入库的，此时回一份\n空的 ``ScanReportModel`` 会假装\"扫过了\"（而它的 ``missing`` 字段还会把整个库\n列成\"不见了\"）。",
+        "properties": {
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/UploadedFileModel"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "overwrite": {
+            "title": "Overwrite",
+            "type": "boolean"
+          },
+          "replaced": {
+            "title": "Replaced",
+            "type": "integer"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanReportModel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "root": {
+            "title": "Root",
+            "type": "string"
+          },
+          "skipped": {
+            "title": "Skipped",
+            "type": "integer"
+          },
+          "stored": {
+            "title": "Stored",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "root",
+          "overwrite",
+          "files",
+          "stored",
+          "replaced",
+          "skipped",
+          "report"
+        ],
+        "title": "UploadResultModel",
+        "type": "object"
+      },
+      "UploadedFileModel": {
+        "additionalProperties": false,
+        "description": "一个上传文件的结局（面板逐条画一行）。\n\n``status`` 只有三种，正好对应面板上的三种颜色：\n\n- ``stored``：新写进去的；\n- ``replaced``：覆盖了同名的旧文件（**只在用户勾了「覆盖同名」时才会出现**）；\n- ``skipped``：一个字节都没写，``message`` 说清为什么（扩展名不对 / 目标已存在…）。\n\n``asset_id`` 是**落盘之后**的素材 id，不是原始文件名 —— 上传会把\n``跑酷 01.MP4`` 规范成 ``parkour_01``，面板要显示后者：否则用户回头在库里\n按刚传的那个名字找不到东西。\n\n``message`` 里带上\"原名 ⇒ 新名\"这件事：改名是可以的，**静默**改名不行。",
+        "properties": {
+          "asset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Id"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "stored",
+              "replaced",
+              "skipped"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filename",
+          "asset_id",
+          "status",
+          "message"
+        ],
+        "title": "UploadedFileModel",
         "type": "object"
       },
       "ValidationError": {
@@ -12315,6 +13639,114 @@
         ]
       }
     },
+    "/api/v1/assets/list": {
+      "get": {
+        "description": "**一类素材的一页**（T4.8：素材库按类别分菜单 + 分页）。\n\n与 ``GET /api/v1/assets`` 的分工\n--------------------------------\n那个端点一次给三类（每类的**全部**条目），适合\"我就要一眼看全\"；这个端点给一类\n的**一页**，适合\"我要管理一柜子素材\"。两者的 ``usable`` / ``shortfall`` 走的是\n**同一份** ``_section()``，所以同一类在两处不会给出不同的颜色。\n\n为什么 ``page`` / ``page_size`` 在**入参**就卡范围\n-------------------------------------------------\n``page_size`` 不设上限的话，一个 ``page_size=100000`` 就把这个接口变回\"把整库拖\n过来\"—— 而那正是分页要避免的事。越界的页码**不报错**（服务层钳到最后一页）：\n\"翻过头\"最常见的成因是\"你刚把最后一页的素材停用/筛掉了\"，报错只会让人以为接口坏了。",
+        "operationId": "list_assets_api_v1_assets_list_get",
+        "parameters": [
+          {
+            "description": "哪一类（跑酷 / 音色 / BGM 各是一个菜单）",
+            "in": "query",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AssetKind",
+              "description": "哪一类（跑酷 / 音色 / BGM 各是一个菜单）"
+            }
+          },
+          {
+            "description": "第几页（1 起）",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "description": "第几页（1 起）",
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "每页几条",
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "description": "每页几条",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "按 id 或标签筛（不区分大小写）",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "按 id 或标签筛（不区分大小写）",
+              "title": "Q"
+            }
+          },
+          {
+            "description": "只看启用 / 只看停用；不给 = 全部",
+            "in": "query",
+            "name": "enabled",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "只看启用 / 只看停用；不给 = 全部",
+              "title": "Enabled"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetPageModel"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Assets",
+        "tags": [
+          "assets"
+        ]
+      }
+    },
     "/api/v1/assets/stats": {
       "get": {
         "description": "只要数字：三类家底 + 判据线（总览台的「素材够不够」小卡片用这个，不拖整库）。",
@@ -12337,7 +13769,165 @@
         ]
       }
     },
+    "/api/v1/assets/upload": {
+      "post": {
+        "description": "把文件传进跑酷 / BGM 目录，并**当场入库**（§3.3.14）。\n\n为什么\"上传\"与\"入库\"是同一个动作\n--------------------------------\n用户点的是\"把这个文件放进素材库\"，不是\"把文件放进一个目录、然后我再去点一次\n扫描\"。分成两步的后果，是面板上多出一批\"盘上有、库里没有\"的条目 —— 而那正是\n最容易被误读的一种（\"我明明传了啊\"）。\n\n为什么 `license` 在写盘**之前**校验\n-----------------------------------\n写了一半才 422，素材目录里会留下一批\"没人认领\"的文件，而它们看上去和正常素材\n一模一样。\n\n为什么冲突不是整体 409\n----------------------\n一次拖 20 个文件进去，其中 1 个撞名就整批失败是最糟的交互。撞名的那个按\n``skipped`` 逐条报出来（带上原因），其余照常落盘 —— 与扫盘\"坏文件不中断整批\"\n同一条。",
+        "operationId": "upload_assets_api_v1_assets_upload_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_assets_api_v1_assets_upload_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResultModel"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Assets",
+        "tags": [
+          "assets"
+        ]
+      }
+    },
+    "/api/v1/assets/voice": {
+      "post": {
+        "description": "传一个音色的参考音（§4.3.1：``ref_01`` … + ``ref.txt``），并当场入库。\n\n``voice_id`` 就是目录名，也**就是**素材 id：与 ``ASSET_ID_PATTERN`` 同一条正则\n（id 会进 SQL 参数、会拼进路径、会在 URL 里当 query，一个 ``..`` 都是事故）。\n\n顺序为什么要排序\n----------------\n``ref.txt`` 的第 N 行对应第 N 段参考音，顺序是**契约的一部分**。而用户在文件\n选择框里没法指定顺序，浏览器给的顺序每台机器还不一样 —— 按原文件名排序至少是\n**可预期**的，并且面板会把\"第 N 段 ← 哪个原文件\"逐条报出来。",
+        "operationId": "upload_voice_api_v1_assets_voice_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_voice_api_v1_assets_voice_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResultModel"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Voice",
+        "tags": [
+          "assets"
+        ]
+      }
+    },
     "/api/v1/assets/{asset_id}": {
+      "delete": {
+        "description": "删掉一条素材（裁定 369：**默认只删库里的行**，``purge=true`` 才动盘上的文件）。\n\n面板上这件事是二次确认的，而且对音色默认勾上 ``purge`` —— 理由见模块头部那条\n裁定：音色不删盘，下次扫盘它自己就回来了。",
+        "operationId": "delete_asset_api_v1_assets__asset_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9_\\-]{0,63}$",
+              "title": "Asset Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "哪一类；不给就跨类反查",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AssetKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "哪一类；不给就跨类反查",
+              "title": "Kind"
+            }
+          },
+          {
+            "description": "连盘上那份一起删（音色是目录，不可逆）",
+            "in": "query",
+            "name": "purge",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "连盘上那份一起删（音色是目录，不可逆）",
+              "title": "Purge",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetDeleteModel"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Asset",
+        "tags": [
+          "assets"
+        ]
+      },
       "patch": {
         "description": "改一条素材（启用 / 停用 / 授权 / 标签 / 可用区间 / 情绪…），并留痕。\n\n``enabled`` 走的是**同一条** :meth:`AssetService.set_enabled` 路径（幂等：\n状态没变就不留痕），而不是这里再写一遍「赋值 + 记日志」。\n\n返回的是**行字典**，由 ``response_model``（``kind`` 判别的联合）复核 ——\n路由这一层不重复实现「三类各自长什么样」，那是契约的事。",
         "operationId": "patch_asset_api_v1_assets__asset_id__patch",
@@ -13908,6 +15498,137 @@
         "summary": "Requeue Dead",
         "tags": [
           "pools"
+        ]
+      }
+    },
+    "/api/v1/prompts": {
+      "get": {
+        "description": "全部提示词条目（含**生效**正文与 ``prompt_version``）。",
+        "operationId": "list_prompts_api_v1_prompts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptCatalogResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Prompts",
+        "tags": [
+          "prompts"
+        ]
+      }
+    },
+    "/api/v1/prompts/{name}": {
+      "put": {
+        "description": "存一份覆盖：仓库文件一个字节都不动，改的是 ``data/prompts/`` 那一份。\n\n校验不过 ⇒ 422 ``VALIDATION_FAILED``，**一个字节都不落盘**（``context.unknown``\n会点名\"你用了哪个没人填的变量\"）。提交的内容与生效那份逐字相同 ⇒\n``changed=[]``、不写盘、不留痕。",
+        "operationId": "save_prompt_api_v1_prompts__name__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromptSaveBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptOutcome"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Prompt",
+        "tags": [
+          "prompts"
+        ]
+      }
+    },
+    "/api/v1/prompts/{name}/override": {
+      "delete": {
+        "description": "还原一段（删掉覆盖文件 ⇒ 退回仓库那一份）。**幂等**：本来就没覆盖也回 200。",
+        "operationId": "restore_prompt_api_v1_prompts__name__override_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "还原哪一段",
+            "in": "query",
+            "name": "file",
+            "required": false,
+            "schema": {
+              "default": "system",
+              "description": "还原哪一段",
+              "pattern": "^(system|user)$",
+              "title": "File",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptOutcome"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Restore Prompt",
+        "tags": [
+          "prompts"
         ]
       }
     },
@@ -15738,6 +17459,48 @@
         ]
       }
     },
+    "/api/v1/settings/llm/profile": {
+      "put": {
+        "description": "改写某条通道的模型名 / base_url（写回 ``config/llm.yaml``，**存完立刻生效**）。\n\n为什么不是「把整份 llm.yaml 传上来」：那份文件每一行都带注释（通道用途、成本口径、\n为什么 fallback 指向本地），整份替换等于让面板来负责保住它们 —— 它保不住。\n这里只认三个字段，落盘时按行改写，段外的 routing / budget / 注释一个字节都不碰。\n\n生效方式：网关每次取配置先做一次 ``stat``（``core.config.llm_config_provider``）\n⇒ 常驻的写稿 worker **不需要重启**。",
+        "operationId": "put_llm_profile_api_v1_settings_llm_profile_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LlmProfileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlmProfileOutcome"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Llm Profile",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
     "/api/v1/tasks/{task_id}/approve": {
       "post": {
         "description": "确认放行：``awaiting_approval → queued_voice``。",
@@ -15855,6 +17618,50 @@
         "summary": "Discard Task",
         "tags": [
           "approvals"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/enqueue_voice": {
+      "post": {
+        "description": "★ 「开始配音」：把这条任务**待配音的句子一次**投进 voice 池（**立刻返回**）。\n\n为什么要有这个端点\n------------------\n``queued_voice`` 只是**一个状态**：把它推到 ``voicing`` 需要**投递**，而投递原先只\n写在 ``pipeline_service.run_task`` 里（CLI 与「一键出片」会走那条路）。于是面板上\n只剩每一行那颗「重配」—— 54 句就是 54 次点击，而用户完全有理由以为\"这就是设计\"\n（真机上的原话：**\"这是要我一个一个点重配吗\"**）。\n\n它**不合成**（与单句重配同一条）：投完就返回，真正念的是 voice 池；面板随后轮询\n``GET /sentences`` 看进度。投递 54 句是这个函数里最快的部分，念完要十几分钟 ——\n把它们塞进同一个请求，一次点击就会变成一个挂住十几分钟的请求。\n\n只认 ``queued_voice``（不是就 409）：``voicing`` 下再投一次是空操作（幂等键让\n``enqueue`` 什么都不做），返回 0 又不报错，面板上就是\"点了没反应\"。",
+        "operationId": "enqueue_voice_endpoint_api_v1_tasks__task_id__enqueue_voice_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9A-Za-z_-]{1,64}$",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnqueueVoiceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enqueue Voice Endpoint",
+        "tags": [
+          "voice"
         ]
       }
     },
@@ -16183,6 +17990,140 @@
         "tags": [
           "topics"
         ]
+      },
+      "post": {
+        "description": "人工写一个方向（**不经模型、不烧 token**）。缺省落进最近一批。",
+        "operationId": "add_manual_direction_api_v1_topics_directions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManualDirectionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManualDirectionResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Manual Direction",
+        "tags": [
+          "topics"
+        ]
+      }
+    },
+    "/api/v1/topics/directions/{direction_id}": {
+      "delete": {
+        "description": "删一个方向，**它下面的候选一起走**（级联）。\n\n唯一拦下的情形：那个方向下已经有候选派生了任务 —— 那种候选被级联删掉之后，\n它那条任务就再也写不出稿（不是门禁，是断链）。响应里带上 ``cascaded_topics``\n让人看得见这一下删掉了多少条。",
+        "operationId": "delete_direction_api_v1_topics_directions__direction_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "direction_id",
+            "required": true,
+            "schema": {
+              "title": "Direction Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DirectionDeleteResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Direction",
+        "tags": [
+          "topics"
+        ]
+      },
+      "patch": {
+        "description": "改一个方向（**只改显式给过的字段**；空 PATCH 在契约层就拦掉了）。",
+        "operationId": "patch_direction_api_v1_topics_directions__direction_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "direction_id",
+            "required": true,
+            "schema": {
+              "title": "Direction Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DirectionPatchBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DirectionEditResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Direction",
+        "tags": [
+          "topics"
+        ]
       }
     },
     "/api/v1/topics/ideate": {
@@ -16313,6 +18254,319 @@
           }
         },
         "summary": "Select Topics",
+        "tags": [
+          "topics"
+        ]
+      }
+    },
+    "/api/v1/topics/{topic_id}": {
+      "delete": {
+        "description": "删一条选题（**已经派生过任务的那条不给删** —— 删了那条任务就再也写不出稿）。",
+        "operationId": "delete_topic_api_v1_topics__topic_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "topic_id",
+            "required": true,
+            "schema": {
+              "title": "Topic Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopicDeleteResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Topic",
+        "tags": [
+          "topics"
+        ]
+      },
+      "patch": {
+        "description": "改一条选题（**只改显式给过的字段**；改标题会重算去重指纹）。\n\n空 PATCH 在契约层就拦掉了（``TopicPatchBody`` 要求\"至少给一个字段\"）；而\n\"给了但跟原来一样\"由服务层判 —— 那种情况回当前行、``changed`` 为空、不留痕，\n不是错误（与 ``assets`` 的 PATCH 同一取舍）。",
+        "operationId": "patch_topic_api_v1_topics__topic_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "topic_id",
+            "required": true,
+            "schema": {
+              "title": "Topic Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TopicPatchBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopicEditResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Topic",
+        "tags": [
+          "topics"
+        ]
+      }
+    },
+    "/api/v1/topics/{topic_id}/draft-review": {
+      "post": {
+        "description": "选中一条候选 ⇒ 生成完整文案 ⇒ 移交审核（**长任务**：Director + Writer）。\n\n与 ``select`` 的 ``draft_now`` 差在哪：那一个是\"批量勾选，顺手写稿\"（结果停在\n``drafting``，交给写稿池），这一个是**单条候选的下一步**（写完之后推到\n``reviewing``，写稿池接着跑评分 + 确认闸）。面板上这两个按钮挨着，但语义不同，\n所以不合并。\n\n共用单飞守卫：它和 ``analyze`` / ``ideate`` / ``outline`` 一样是\"点下去等一会儿\"\n的长任务，同时跑只会让日志与预算互相打架。",
+        "operationId": "draft_topic_for_review_api_v1_topics__topic_id__draft_review_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "topic_id",
+            "required": true,
+            "schema": {
+              "title": "Topic Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftReviewResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Draft Topic For Review",
+        "tags": [
+          "topics"
+        ]
+      }
+    },
+    "/api/v1/topics/{topic_id}/outline": {
+      "delete": {
+        "description": "清空二级产物（**幂等**）。清掉之后三级退回「按选题自由发挥」。",
+        "operationId": "clear_topic_outline_api_v1_topics__topic_id__outline_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "topic_id",
+            "required": true,
+            "schema": {
+              "title": "Topic Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutlineResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Clear Topic Outline",
+        "tags": [
+          "topics"
+        ]
+      },
+      "get": {
+        "description": "读一个选题的二级产物（没有 ⇒ ``outline=null``，**不是 404**）。",
+        "operationId": "get_topic_outline_api_v1_topics__topic_id__outline_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "topic_id",
+            "required": true,
+            "schema": {
+              "title": "Topic Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutlineView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Topic Outline",
+        "tags": [
+          "topics"
+        ]
+      },
+      "post": {
+        "description": "让模型给这条选题定标题与核心论点（**长任务**：一次 LLM）。\n\n与 ``analyze`` / ``ideate`` 共用同一把单飞守卫：三者都是「点下去等一会儿」的长任务，\n同时跑只会让日志与预算互相打架。",
+        "operationId": "generate_topic_outline_api_v1_topics__topic_id__outline_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "topic_id",
+            "required": true,
+            "schema": {
+              "title": "Topic Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutlineResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate Topic Outline",
+        "tags": [
+          "topics"
+        ]
+      },
+      "put": {
+        "description": "手工定稿二级产物（**一次 LLM 都不调**：没配 Key 也能用）。",
+        "operationId": "save_topic_outline_api_v1_topics__topic_id__outline_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "topic_id",
+            "required": true,
+            "schema": {
+              "title": "Topic Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OutlineSaveBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutlineResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Topic Outline",
         "tags": [
           "topics"
         ]

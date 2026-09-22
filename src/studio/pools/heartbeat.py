@@ -13,6 +13,11 @@
 优雅退出时 worker **删掉**自己那行（:meth:`HeartbeatStore.forget`），
 所以"行还在但 15s 没动静"就一定是猝死 ⇒ 判死 + 告警，不会误报。
 
+但 `forget` 只在**优雅退出**时跑：`Ctrl+C` 关终端 / `taskkill` / 崩溃都走不到那儿，
+留下的行是 `idle`，而判死只认"心跳超时"、`purge` 只删 `dead` 行 ⇒ 它**既不死也不走**。
+所以 worker **启动时**按 pid 核对一次（:meth:`HeartbeatStore.forget_orphans`）：
+上一代的尸体在那里清掉，面板上不会堆成一片"疑似猝死"。
+
 关于 ``WORKER_DEAD`` 为什么不是 ``system.alert``
 ----------------------------------------------
 §04.5.2 把 ``system.alert.code`` 锁死为 8 个值（T1.5 施工裁定 31），
@@ -26,6 +31,7 @@ import json
 import os
 import socket
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Final
@@ -74,6 +80,12 @@ RSS_MIN_GROWTH_MB: Final[int] = 256
 RSS_STRIKES: Final[int] = 3
 
 _MB: Final[int] = 1024 * 1024
+
+#: 尸体行的日志里最多列几个 ``worker_id``（一次几百条塞进日志没人看）
+_ORPHAN_LOG_SAMPLE: Final[int] = 20
+
+#: pid 复用的容忍：新进程比这行记的 ``started_at`` 晚超过这么多 ⇒ 判为"别人占了这号"
+_PID_REUSE_TOLERANCE_SEC: Final[float] = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +178,34 @@ class RssLeakWatch:
         return True
 
 
+def _pid_alive(probe: Callable[[int], bool], pid: int) -> bool:
+    """探针说"死了"才算死 —— 探针自己炸了就当作活着（宁可多留一行，不可误删活行）。"""
+    try:
+        return bool(probe(pid))
+    except Exception:  # psutil 对非法 pid 抛 ValueError；外部依赖不能带走判活
+        return True
+
+
+def _pid_reused(pid: int, started_at: str | None) -> bool:
+    """pid 被**别人**占了吗（worker 死后系统把同一号发给了新进程）。
+
+    只看"pid 还在不在"会让这种行永远清不掉：它既不超时判死（进程"在"，虽然那不是它），
+    也不被 :meth:`HeartbeatStore.purge` 带走（后者只删 ``dead``）⇒ 面板上一条永远的
+    "疑似猝死"。判据是**进程创建时间**：比这行自己记的 ``started_at`` 还晚 ⇒ 不是当初那个 worker。
+
+    只在**能证明**复用的时候才说"是"：拿不到创建时间 / 老行没有 ``started_at`` ⇒ ``False``
+    （宁可多留一行，不可误删活行）。
+    """
+    if not started_at:
+        return False
+    try:
+        created = psutil.Process(pid).create_time()
+        started = parse_iso(started_at).timestamp()
+    except (psutil.Error, OSError, ValueError):
+        return False
+    return created > started + _PID_REUSE_TOLERANCE_SEC
+
+
 class HeartbeatStore:
     """``worker_heartbeats`` 的读写面（**唯一写入方**）。
 
@@ -241,6 +281,47 @@ class HeartbeatStore:
         """优雅退出时摘掉自己那行（**不变式：行存在 ⇔ 进程应当在跑**）。"""
         cursor = self._connection.execute("DELETE FROM worker_heartbeats WHERE worker_id = ?", (worker_id,))
         return cursor.rowcount == 1
+
+    def forget_orphans(self, *, alive: Callable[[int], bool] | None = None) -> tuple[str, ...]:
+        """清掉"进程已经不在"的行 —— 前几代 worker 被强杀留下的尸体。
+
+        为什么必须有这一手：:meth:`forget` 只在**优雅退出**时执行，而
+        ``Ctrl+C`` 关终端 / ``taskkill`` / 崩溃都走不到那儿；留下的行是 ``idle``，
+        判死只认"心跳超时"、:meth:`purge` 只删 ``dead`` 行 ⇒ 它**既不死也不走**，
+        面板上就是一条永远的"疑似猝死"。
+
+        ``worker_id`` 的末段就是 pid，所以"那个进程还在不在"是能直接核对的事实 ——
+        但"在"还不够：pid 会被复用，那个号现在可能是任务管理器的（见 :func:`_pid_reused`）。
+
+        核对失败**只会多留一行**，永远不会误删活行：活行的 pid 在、且创建时间早于
+        这行的 ``started_at``，两条判据都指向"就是它"。万一真把某个活行的号判成复用，
+        它下一拍心跳（≤5s）就 upsert 回来了。
+
+        :param alive: pid 存活性探针（测试注入用）；默认 ``psutil.pid_exists``
+        :return: 被清掉的 ``worker_id``（升序；空元组表示没有尸体）
+        """
+        probe = alive or psutil.pid_exists
+        gone: list[str] = []
+        for row in self._connection.execute("SELECT worker_id, pid, started_at FROM worker_heartbeats"):
+            pid = row["pid"]
+            if pid is None:
+                continue  # 没有 pid 就核对不了（留给 purge 按保留期处理）
+            number = int(pid)
+            if _pid_alive(probe, number) and not _pid_reused(number, row["started_at"]):
+                continue  # 那个进程真的还在跑
+            gone.append(str(row["worker_id"]))
+        gone.sort()
+        if not gone:
+            return ()
+        marks = ", ".join("?" for _ in gone)
+        self._connection.execute(f"DELETE FROM worker_heartbeats WHERE worker_id IN ({marks})", gone)
+        logger.info(
+            "worker.orphans_forgotten",
+            count=len(gone),
+            workers=gone[:_ORPHAN_LOG_SAMPLE],
+            truncated=len(gone) > _ORPHAN_LOG_SAMPLE,
+        )
+        return tuple(gone)
 
     def mark_dead(self, *, worker_id: str, now: datetime | None = None) -> bool:
         """标死但**保留** ``last_seen_at``（那是最后一次真实接触的时间，不能被覆盖）。

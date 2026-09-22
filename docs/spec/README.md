@@ -380,7 +380,7 @@ Editor               (三层模板=二期)           报告生成
 | 模型缓存 | D 盘 | 已存在 `D:\ai_models\huggingface_cache` 与 `modelscope_cache` | ✅ 复用既有约定 |
 | **MC 跑酷素材** | ≥60 条 / ≥30 分钟 | `D:\MC` 为空 | 🔴 **阻塞项**：T3.1 的前置关键路径（有采购 lead time） |
 | BGM 音乐库 | ≥20 首授权曲 | `D:\MUSIC` 为空 | 🔴 同上 |
-| 熊大熊二原声 | 各 2–3 段 / 10–30s / 无 BGM | 缺失 | 🔴 T2.4 前置 |
+| 熊大熊二原声 | 各 2–3 段 / 2–30s（裁定 369）/ 无 BGM | 缺失 | 🔴 T2.4 前置 |
 | CosyVoice 权重 | 2–4 GB | 缺失 | 🔴 T2.1 前置（版本待核验，见 §9 待确认） |
 | LLM API Key | [OI] 兼容 | 未提供；本机**未检测到** Ollama | 🔴 T1.8 前置 |
 
@@ -541,7 +541,7 @@ Editor               (三层模板=二期)           报告生成
 
 | 原文要求 | 出处 | 本规格条款 | 状态 |
 | --- | --- | --- | --- |
-| 音色 `bigbear`/`littlebear`；原声 2–3 段、10–30s、无 BGM | §3.1 | §4.3.1 音色档案（`data/voice_src/*/profile.json` + TTS 服务注册表） | ✅ |
+| 音色 `bigbear`/`littlebear`；原声 2–3 段、2–30s（裁定 369）、无 BGM | §3.1 | §4.3.1 音色档案（`data/voice_src/*/profile.json` + TTS 服务注册表） | ✅ |
 | 原声目录 `data/voice_src/{bigbear,littlebear}/` | §3.1 | §2.2 目录 | 🔧 新增 |
 | 零样本复刻 `inference_zero_shot(目标文本, 参考文本, 参考wav)` | §3.2 | §4.3.2 | ✅ |
 | 全程本地推理，数据不出机器 | §3.2 | §1.2 / §6 | ✅ |

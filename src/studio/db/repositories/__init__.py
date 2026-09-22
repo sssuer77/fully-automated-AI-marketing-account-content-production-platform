@@ -28,6 +28,7 @@ from studio.db.repositories.audit_repo import AuditRepo
 from studio.db.repositories.direction_repo import DirectionRepo
 from studio.db.repositories.feedback_repo import FeedbackItemRepo
 from studio.db.repositories.hot_repo import HotItemRepo
+from studio.db.repositories.outline_repo import OutlineRepo
 from studio.db.repositories.report_repo import (
     ReportRepo,
     ReportRow,
@@ -56,6 +57,7 @@ __all__ = [
     "FeedbackItemRepo",
     "HotItemRepo",
     "IngestAction",
+    "OutlineRepo",
     "ReportRepo",
     "ReportRow",
     "ReportScheduleRepo",
