@@ -388,6 +388,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/library": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Library
+         * @description 成片库：盘上已出的片子，一条任务一行（新的在前）。
+         */
+        get: operations["get_library_api_v1_library_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/library/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Publish Selected
+         * @description 批量投递：把勾中的这几条一次排进发布池（**立刻返回**，真正发的是 publish 池）。
+         *
+         *     请求体本身不合法（空清单 / 超过上限）⇒ 422 ``VALIDATION_FAILED``：那是调用方的
+         *     错，不该混进 ``items`` 里冒充"这一条没投出去"。
+         */
+        post: operations["publish_selected_api_v1_library_publish_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/logs": {
         parameters: {
             query?: never;
@@ -3743,6 +3786,92 @@ export interface components {
             statement: string;
             /** Suggested Action */
             suggested_action: string;
+        };
+        /**
+         * LibraryBatchItemView
+         * @description 批量投递里的一条结论。
+         */
+        LibraryBatchItemView: {
+            /** Duplicates */
+            duplicates: string[];
+            /** Missing */
+            missing: boolean;
+            /** Queued */
+            queued: number;
+            /** Skipped */
+            skipped: string[];
+            /** Task Id */
+            task_id: string;
+        };
+        /**
+         * LibraryItemView
+         * @description 成片库里的一行（= 一条任务，见 ``services/library_service.py`` 的模块注释）。
+         */
+        LibraryItemView: {
+            /** Duration Ms */
+            duration_ms: number | null;
+            /** Modified At */
+            modified_at: number;
+            /** Publications */
+            publications: components["schemas"]["PublicationView"][];
+            /** Size Bytes */
+            size_bytes: number;
+            /** Task Found */
+            task_found: boolean;
+            /** Task Id */
+            task_id: string;
+            /** Task Status */
+            task_status: string | null;
+            /** Title */
+            title: string;
+            /** Versions */
+            versions: number;
+            /** Video Name */
+            video_name: string;
+            /** Video Path */
+            video_path: string;
+            /** Video Url */
+            video_url: string;
+        };
+        /**
+         * LibraryPublishRequest
+         * @description 批量投递：把勾中的这几条任务排进发布池。
+         */
+        LibraryPublishRequest: {
+            /** Dry Run */
+            dry_run?: boolean | null;
+            /** Platforms */
+            platforms?: string[] | null;
+            /** Task Ids */
+            task_ids: string[];
+        };
+        /**
+         * LibraryPublishResponse
+         * @description 一次批量投递的总账（``items`` 与 ``task_ids`` **同序同长**）。
+         */
+        LibraryPublishResponse: {
+            /** Items */
+            items: components["schemas"]["LibraryBatchItemView"][];
+            /** Platforms */
+            platforms: string[];
+            /** Queued Total */
+            queued_total: number;
+            /** Task Total */
+            task_total: number;
+        };
+        /**
+         * LibraryResponse
+         * @description 成片库首屏。
+         */
+        LibraryResponse: {
+            /** Hint */
+            hint?: string | null;
+            /** Items */
+            items: components["schemas"]["LibraryItemView"][];
+            /** Limit */
+            limit: number;
+            /** Total */
+            total: number;
         };
         /**
          * LlmKeyModel
@@ -7990,6 +8119,71 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HotImportResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_library_api_v1_library_get: {
+        parameters: {
+            query?: {
+                /** @description 最多几行 */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    publish_selected_api_v1_library_publish_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryPublishRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryPublishResponse"];
                 };
             };
             /** @description Validation Error */

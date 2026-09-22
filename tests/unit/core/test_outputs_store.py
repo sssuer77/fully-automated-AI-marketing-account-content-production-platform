@@ -228,7 +228,7 @@ def test_update_with_the_current_sha_passes(store: OutputsStore, paths: StudioPa
 def test_a_manual_edit_between_load_and_save_is_detected(store: OutputsStore, paths: StudioPaths) -> None:
     """面板打开 -> 人直接改文件 -> 面板保存：必须被拦下（而不是把人的改动吃掉）。"""
     snapshot = store.current()
-    _write(paths, _read(paths).replace("  margin_y: 96", "  margin_y: 196"))
+    _write(paths, _read(paths).replace("  margin_y: 420", "  margin_y: 196"))
     before = _file(paths).read_bytes()
     with pytest.raises(ConfigError) as exc:
         store.update({"subtitle": {"font_size": 72}}, expected_sha256=snapshot.sha256)

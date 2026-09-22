@@ -99,7 +99,13 @@ def render_scalar(value: object) -> str:
     if isinstance(value, int):
         return str(value)
     if isinstance(value, float):
-        return f"{value:g}"
+        # `repr` 而不是 `f"{value:g}"`：后者对**整数值的浮点数**会把 `1.0` 写成 `1`，
+        # 于是"把每一个可编辑标量按原值写回去 ⇒ 逐字节还是原来那一份"这条地基在
+        # 手写过 `opacity: 1.0` 的文件上当场塌掉（真机 2026-09-22：合成配置面板保存
+        # 一次就会把那行改成 `1`，而 `test_set_scalar_is_the_identity_on_every_editable_path`
+        # 正是靠这条不变量守住"改一个值不会顺带改掉别的东西"）。
+        # `repr` 是 Python 里**保证往返**的那个写法：`float(repr(x)) == x` 恒成立。
+        return repr(value)
     if value is None:
         return "null"
     text = str(value)

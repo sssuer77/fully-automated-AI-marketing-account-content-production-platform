@@ -202,11 +202,11 @@ def test_report_places_a_valid_watermark(
     assert report.watermark.asset.usable is True
     placement = report.watermark.placement
     assert placement is not None
-    assert placement.width_px == 238
-    assert placement.height_px == 118
+    assert placement.width_px == 270
+    assert placement.height_px == 134
     assert placement.x % 2 == 0
     assert placement.y % 2 == 0
-    assert placement.x == 1080 - 238 - 48
+    assert placement.x == 1080 - 270 - 48
 
 
 def test_report_skips_an_unusable_watermark(
@@ -226,7 +226,7 @@ def test_report_skips_an_unusable_watermark(
 def test_report_uses_the_selected_profile_canvas(
     outputs: OutputsConfig, outputs_home: StudioPaths, watermark_path: Path
 ) -> None:
-    """保底档 720 宽 ⇒ 水印像素宽跟着变（158 = round(0.22*720)）。"""
+    """保底档 720 宽 ⇒ 水印像素宽跟着变（180 = round(0.25*720)）。"""
     write_png(watermark_path, width=400, height=200)
     report = build_render_profile_report(
         outputs,
@@ -235,16 +235,16 @@ def test_report_uses_the_selected_profile_canvas(
         name=FALLBACK_PROFILE_NAME,
     )
     assert report.profile.canvas == (720, 1280)
-    assert report.watermark.spec.width_px == 158
+    assert report.watermark.spec.width_px == 180
     placement = report.watermark.placement
     assert placement is not None
-    assert placement.x == 720 - 158 - 48
+    assert placement.x == 720 - 180 - 48
 
 
 def test_report_carries_the_width_warning(
     outputs: OutputsConfig, outputs_home: StudioPaths, watermark_path: Path
 ) -> None:
-    """画布宽 1078（偶数）+ 0.22 ⇒ round(237.16)=237 是**奇数**，必须取偶并记账。
+    """画布宽 1078（偶数）+ 0.25 ⇒ round(269.5)=270 越过 1078//4=269，夹取后再取偶。
 
     这条与「超过 1/4 夹取」走的是同一条 warn 路径 —— 两者的修法都是改 width_ratio。
     """
@@ -255,7 +255,7 @@ def test_report_carries_the_width_warning(
     report = build_render_profile_report(
         outputs, source=outputs_home.config_dir / "outputs.yaml", home=outputs_home.home
     )
-    assert report.watermark.spec.width_px == 236
+    assert report.watermark.spec.width_px == 268
     assert len(report.watermark.warnings) == 1
 
 
@@ -289,5 +289,5 @@ def test_report_dict_is_json_ready(
     )
     assert payload["watermark"]["enabled"] is True
     assert payload["watermark"]["asset"]["has_alpha"] is True
-    assert payload["watermark"]["placement"]["width_px"] == 238
+    assert payload["watermark"]["placement"]["width_px"] == 270
     assert payload["profile"]["output_args"][:2] == ["-c:v", "libx264"]

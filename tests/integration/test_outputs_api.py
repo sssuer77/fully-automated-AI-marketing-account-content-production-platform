@@ -210,10 +210,10 @@ def test_read_returns_the_watermark_with_pixel_width(client: TestClient) -> None
     watermark = client.get(OUTPUTS_URL).json()["watermark"]
     assert watermark["path"] == WATERMARK_REL
     assert watermark["position"] == "bottom_right"
-    assert (watermark["margin_x"], watermark["margin_y"]) == (48, 96)
-    assert watermark["width_ratio"] == 0.22
-    assert watermark["width_px"] == 238, "1080 * 0.22 四舍五入"
-    assert watermark["opacity"] == 0.85
+    assert (watermark["margin_x"], watermark["margin_y"]) == (48, 420)
+    assert watermark["width_ratio"] == 0.25
+    assert watermark["width_px"] == 270, "1080 * 0.25"
+    assert watermark["opacity"] == 1.0
     assert watermark["exists"] is True
 
 
@@ -356,7 +356,7 @@ def test_save_can_change_a_profile_and_the_default(client: TestClient, paths: St
     assert "crf: 18" in text
     reread = client.get(OUTPUTS_URL).json()
     assert reread["default_profile"] == FALLBACK
-    assert reread["watermark"]["width_px"] == 158, "水印像素宽跟着**默认档**的画布宽走"
+    assert reread["watermark"]["width_px"] == 180, "水印像素宽跟着**默认档**的画布宽走"
 
 
 def test_save_updates_the_watermark(client: TestClient, paths: StudioPaths) -> None:
@@ -502,7 +502,7 @@ def test_a_manual_edit_is_seen_and_then_blocks_a_save_with_the_old_sha(
 ) -> None:
     """人直接编辑 YAML：下一次 GET 看得到新值，而拿**旧**指纹提交必须被拦下。"""
     stale = client.get(OUTPUTS_URL).json()
-    _write(paths, _read(paths).replace("  margin_y: 96", "  margin_y: 196"))
+    _write(paths, _read(paths).replace("  margin_y: 420", "  margin_y: 196"))
 
     fresh = client.get(OUTPUTS_URL).json()
     assert fresh["watermark"]["margin_y"] == 196

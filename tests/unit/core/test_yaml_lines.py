@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 from studio.core.config import OutputsConfig, load_outputs_config
 from studio.core.outputs_store import (
     PROFILE_FIELDS,
@@ -110,6 +112,18 @@ def test_render_scalar_keeps_numbers_as_numbers() -> None:
     assert render_scalar(0.85) == "0.85"
     assert render_scalar(True) == "true"
     assert render_scalar(False) == "false"
+
+
+def test_render_scalar_round_trips_a_whole_number_float() -> None:
+    """`1.0` 必须写成 `1.0`，不能写成 `1`。
+
+    真机（2026-09-22）：`config/outputs.yaml` 里的 `opacity: 1.0` 是人手写的，而面板
+    保存一次会把它改成 `1` —— 语义没变，但"按原值写回去还是原来那一份"这条地基塌了
+    （`test_set_scalar_is_the_identity_on_every_editable_path` 当场红）。
+    """
+    assert render_scalar(1.0) == "1.0"
+    assert render_scalar(0.0) == "0.0"
+    assert yaml.safe_load(render_scalar(1.0)) == 1.0
 
 
 def test_render_scalar_quotes_anything_yaml_would_read_as_something_else() -> None:

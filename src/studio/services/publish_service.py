@@ -100,6 +100,7 @@ __all__ = [
     "enqueue_publications",
     "mark_manual_done",
     "platform_options",
+    "read_json",
     "resolve_account",
     "resolve_accounts",
     "resolve_final_video",
@@ -270,7 +271,7 @@ def resolve_final_video(task_id: str, paths: StudioPaths) -> Path | None:
     两个来源都答不出来 ⇒ ``None``。**不抛**：调用方要区分"这条任务还没渲染"与
     "渲染了但文件被挪走"，而那是它自己的判断（一个报错文案的差别），不是这里的事。
     """
-    payload = _read_json(paths.manifest_json(task_id))
+    payload = read_json(paths.manifest_json(task_id))
     if isinstance(payload, dict):
         value = payload.get("final")
         if isinstance(value, str) and value:
@@ -284,12 +285,16 @@ def resolve_final_video(task_id: str, paths: StudioPaths) -> Path | None:
     return matches[-1] if matches else None
 
 
-def _read_json(path: Path) -> Any:
+def read_json(path: Path) -> Any:
     """读一个 JSON 文件；不存在 / 读不了 / 不是 JSON ⇒ ``None``（**不抛**）。
 
     ``timeline.json`` 与 ``manifest.json`` 都是"有更好、没有也能继续"的输入：
     时间轴缺失只影响抽帧点（退回默认值），manifest 缺失只影响成片路径的取法。
     为它们各抛一次异常，只会让"这条任务还没渲染"变成一个需要 try/except 的常态。
+
+    **公开**（2026-09-22）：成片库也要读 ``manifest.json``（拿时长），而它是同一件
+    事 —— "读一个可能不存在的 JSON"。各写一份的代价是两边对"读不出来"的处理慢慢
+    分叉（一边退回默认值、一边抛），而它们读的是**同一个文件**。
     """
     if not path.is_file():
         return None
@@ -363,8 +368,8 @@ class PublishService:
         script_payload = read_active_script(self._connection, request.task_id)
         script = script_payload[0] if script_payload else None
 
-        timeline = _read_json(self._paths.timeline_json(request.task_id))
-        manifest = _read_json(self._paths.manifest_json(request.task_id))
+        timeline = read_json(self._paths.timeline_json(request.task_id))
+        manifest = read_json(self._paths.manifest_json(request.task_id))
         duration_ms = _duration_ms(timeline, manifest)
         frame_at_ms = resolve_frame_at_ms(timeline)
 
@@ -1437,7 +1442,7 @@ def _manifest_watermark(paths: StudioPaths, task_id: str) -> bool | None:
     ``None`` 与 ``False`` 是两件事：前者是"没记录"，后者是"记录了没贴"。
     ``precheck._watermark_gate`` 会把两者分开处理，所以这里不能顺手把 ``None`` 折成假。
     """
-    payload = _read_json(paths.manifest_json(task_id))
+    payload = read_json(paths.manifest_json(task_id))
     if not isinstance(payload, dict):
         return None
     watermark = payload.get("watermark")

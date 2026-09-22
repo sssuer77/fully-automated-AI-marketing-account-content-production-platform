@@ -233,6 +233,32 @@ class PublicationRepo:
         ).fetchall()
         return tuple(PublicationRow.from_row(row) for row in rows)
 
+    def list_for_tasks(self, task_ids: Sequence[str]) -> tuple[PublicationRow, ...]:
+        """一次取多条任务的发布记录（成片库用：逐行查是 N+1，而 N 是"成片库有多大"）。
+
+        分批切开是因为 SQLite 的变量上限（``SQLITE_MAX_VARIABLE_NUMBER``，编译期默认
+        999）。成片库现在最多列 500 行，看上去不会撞上 —— 但"现在是安全的"不该靠
+        调用方的一个常量去保证，所以这里按 400 一批自己切开。
+
+        **不按 task_id 过滤就不查**：``IN ()`` 是语法错误，而"一条都没勾"是常态
+        （空库、或者调用方只想看看）。返回空元组，与"查了但一条没有"同义。
+        """
+        wanted = tuple(dict.fromkeys(task_ids))
+        if not wanted:
+            return ()
+        found: list[PublicationRow] = []
+        batch = 400
+        for start in range(0, len(wanted), batch):
+            chunk = wanted[start : start + batch]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._connection.execute(
+                f"SELECT {_COLUMNS} FROM publications WHERE task_id IN ({placeholders}) "
+                "ORDER BY created_at ASC",
+                chunk,
+            ).fetchall()
+            found.extend(PublicationRow.from_row(row) for row in rows)
+        return tuple(found)
+
     def list_by_status(self, status: str | Sequence[str], *, limit: int = 100) -> tuple[PublicationRow, ...]:
         """按状态取（发布面板的七区块都走这一条）。
 

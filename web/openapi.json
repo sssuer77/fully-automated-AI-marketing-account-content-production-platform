@@ -3596,6 +3596,250 @@
         "title": "InsightModel",
         "type": "object"
       },
+      "LibraryBatchItemView": {
+        "description": "批量投递里的一条结论。",
+        "properties": {
+          "duplicates": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Duplicates",
+            "type": "array"
+          },
+          "missing": {
+            "title": "Missing",
+            "type": "boolean"
+          },
+          "queued": {
+            "title": "Queued",
+            "type": "integer"
+          },
+          "skipped": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Skipped",
+            "type": "array"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "queued",
+          "skipped",
+          "duplicates",
+          "missing"
+        ],
+        "title": "LibraryBatchItemView",
+        "type": "object"
+      },
+      "LibraryItemView": {
+        "description": "成片库里的一行（= 一条任务，见 ``services/library_service.py`` 的模块注释）。",
+        "properties": {
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "modified_at": {
+            "title": "Modified At",
+            "type": "number"
+          },
+          "publications": {
+            "items": {
+              "$ref": "#/components/schemas/PublicationView"
+            },
+            "title": "Publications",
+            "type": "array"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "task_found": {
+            "title": "Task Found",
+            "type": "boolean"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Status"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "versions": {
+            "title": "Versions",
+            "type": "integer"
+          },
+          "video_name": {
+            "title": "Video Name",
+            "type": "string"
+          },
+          "video_path": {
+            "title": "Video Path",
+            "type": "string"
+          },
+          "video_url": {
+            "title": "Video Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "video_name",
+          "video_url",
+          "video_path",
+          "size_bytes",
+          "modified_at",
+          "versions",
+          "task_found",
+          "title",
+          "task_status",
+          "duration_ms",
+          "publications"
+        ],
+        "title": "LibraryItemView",
+        "type": "object"
+      },
+      "LibraryPublishRequest": {
+        "additionalProperties": false,
+        "description": "批量投递：把勾中的这几条任务排进发布池。",
+        "properties": {
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dry Run"
+          },
+          "platforms": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platforms"
+          },
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Task Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "task_ids"
+        ],
+        "title": "LibraryPublishRequest",
+        "type": "object"
+      },
+      "LibraryPublishResponse": {
+        "description": "一次批量投递的总账（``items`` 与 ``task_ids`` **同序同长**）。",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LibraryBatchItemView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "platforms": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Platforms",
+            "type": "array"
+          },
+          "queued_total": {
+            "title": "Queued Total",
+            "type": "integer"
+          },
+          "task_total": {
+            "title": "Task Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "platforms",
+          "queued_total",
+          "task_total"
+        ],
+        "title": "LibraryPublishResponse",
+        "type": "object"
+      },
+      "LibraryResponse": {
+        "description": "成片库首屏。",
+        "properties": {
+          "hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hint"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LibraryItemView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit"
+        ],
+        "title": "LibraryResponse",
+        "type": "object"
+      },
       "LlmKeyModel": {
         "additionalProperties": false,
         "description": "密钥的**静态**状态（不发任何请求就能回答）。",
@@ -14387,6 +14631,96 @@
         "summary": "Submit Sources",
         "tags": [
           "topics"
+        ]
+      }
+    },
+    "/api/v1/library": {
+      "get": {
+        "description": "成片库：盘上已出的片子，一条任务一行（新的在前）。",
+        "operationId": "get_library_api_v1_library_get",
+        "parameters": [
+          {
+            "description": "最多几行",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "description": "最多几行",
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Library",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/v1/library/publish": {
+      "post": {
+        "description": "批量投递：把勾中的这几条一次排进发布池（**立刻返回**，真正发的是 publish 池）。\n\n请求体本身不合法（空清单 / 超过上限）⇒ 422 ``VALIDATION_FAILED``：那是调用方的\n错，不该混进 ``items`` 里冒充\"这一条没投出去\"。",
+        "operationId": "publish_selected_api_v1_library_publish_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LibraryPublishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryPublishResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Publish Selected",
+        "tags": [
+          "library"
         ]
       }
     },

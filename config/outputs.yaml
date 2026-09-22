@@ -79,9 +79,9 @@ watermark:
   path: templates/douyin_9x16_default/assets/images/watermark.png
   position: bottom_right        # top_left | top_right | bottom_left | bottom_right
   margin_x: 48
-  margin_y: 96
-  width_ratio: 0.22             # 相对画布宽度；上限 0.25（T3.2 夹取）
-  opacity: 0.85
+  margin_y: 420
+  width_ratio: 0.25             # 相对画布宽度；上限 0.25（T3.2 夹取）
+  opacity: 1.0
 
 # 音频总线（T3.6）
 audio:

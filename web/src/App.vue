@@ -8,6 +8,7 @@ import { useOverviewStore } from "@/stores/overview";
 import { PANELS, useUiStore, type PanelId } from "@/stores/ui";
 import Assets from "@/views/Assets.vue";
 import Audit from "@/views/Audit.vue";
+import Library from "@/views/Library.vue";
 import Logs from "@/views/Logs.vue";
 import Metrics from "@/views/Metrics.vue";
 import Outputs from "@/views/Outputs.vue";
@@ -56,6 +57,7 @@ const VIEWS: Partial<Record<PanelId, PanelView>> = {
   metrics: { view: Metrics },
   audit: { view: Audit },
   personas: { view: Personas },
+  library: { view: Library },
   publish: { view: Publish },
   settings: { view: Settings },
   prompts: { view: Prompts },

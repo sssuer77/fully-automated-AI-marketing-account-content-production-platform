@@ -28,6 +28,7 @@ export type PanelId =
   | "metrics"
   | "audit"
   | "personas"
+  | "library"
   | "publish"
   | "settings"
   | "prompts"
@@ -72,6 +73,9 @@ export const PANELS: readonly PanelDef[] = [
   { id: "metrics", label: "观测面板", task: "T4.12", ready: true },
   { id: "audit", label: "审计留痕", task: "T4.12", ready: true },
   { id: "personas", label: "人物库", task: "T4.13", ready: true },
+  // 成片库紧挨着发布：它是"选片 → 投递"那一步，而发布面板是"投出去之后怎么样"。
+  // 两屏挨着，人从渲染面板出来顺着往下点就是一条路。
+  { id: "library", label: "成片库", task: "T5.11", ready: true },
   { id: "publish", label: "发布", task: "T5.5", ready: true },
   { id: "settings", label: "设置", task: "T6.1", ready: true },
   { id: "prompts", label: "提示词", task: "T6.2", ready: true },

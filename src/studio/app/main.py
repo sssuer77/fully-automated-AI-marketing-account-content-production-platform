@@ -26,6 +26,7 @@ from studio.app.routers.approvals import router as approvals_router
 from studio.app.routers.assets import router as assets_router
 from studio.app.routers.audit import router as audit_router
 from studio.app.routers.health import router as health_router
+from studio.app.routers.library import router as library_router
 from studio.app.routers.logs import router as logs_router
 from studio.app.routers.metrics import router as metrics_router
 from studio.app.routers.outputs import router as outputs_router
@@ -98,6 +99,7 @@ def create_app(
     application.include_router(pipeline_router)
     application.include_router(voice_router)
     application.include_router(publish_router)
+    application.include_router(library_router)
     application.include_router(schedules_router)
     application.include_router(reports_router)
     application.include_router(settings_router)
