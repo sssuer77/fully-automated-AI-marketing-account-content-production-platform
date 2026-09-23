@@ -119,6 +119,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/assets/prune": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prune Assets
+         * @description 清掉这一类的**孤儿**：盘上认得出、库里没有、**而且本身就不合格**。
+         *
+         *     为什么它不是 ``DELETE /assets/{id}`` 的一个参数
+         *     ----------------------------------------------
+         *     ``DELETE`` 的对象是**库里那一行**（裁定 369：默认只删行，``purge=true`` 才动
+         *     盘上那份），而孤儿反过来 —— 它**没有行**，``delete()`` 手上没有行就 404。把它
+         *     塞进 ``purge`` 里，会让同一个动词在两条路上语义相反（"删行顺带删文件" vs
+         *     "只有文件、没有行"），而那正是最难查的一类不一致（陷阱 #205 同族）。
+         *
+         *     合格的孤儿**不会被清**（它们该入库），这条判据在服务层，面板照实显示
+         *     ``kept`` 那一段。``dry_run=true`` ⇒ 一个字节都不动。
+         */
+        post: operations["prune_assets_api_v1_assets_prune_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/assets/stats": {
         parameters: {
             query?: never;
@@ -200,6 +230,67 @@ export interface paths {
          */
         post: operations["upload_voice_api_v1_assets_voice_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assets/voice/{voice_id}/segments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Voice Segments
+         * @description 一个音色的**逐段现状**（裁定 381）。
+         *
+         *     为什么这件事值得一个端点
+         *     ------------------------
+         *     音色的"能不能用"不取决于库里那一行，而取决于目录里躺着哪几段、每段多长、
+         *     ``ref.txt`` 有没有与它们一一对应。以前这三件事只有入库那一刻知道，用户想"看看
+         *     现在到底什么样"、或者想删掉一段，面板上一个字都没有 —— 于是只能去资源管理器里
+         *     翻目录，而翻完也不知道哪一段是对的。
+         *
+         *     判据与入库**同一份**：这里不重算时长 / 采样率 / 削波，全走 ``check_voice``。
+         */
+        get: operations["get_voice_segments_api_v1_assets_voice__voice_id__segments_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assets/voice/{voice_id}/segments/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Voice Segment
+         * @description 删掉一段参考音（**删完重编号 + 同步 ``ref.txt``** —— 裁定 381）。
+         *
+         *     为什么这是删一段、而不是改一段
+         *     ------------------------------
+         *     改一段 = 用同样的名字换一份音频，那条路是**上传**（勾「覆盖同名」）。这个端点回答的是
+         *     "这段我不想要了" —— 比如当年为了凑够段数把同一个文件复制了一份，或者某一段里混进了
+         *     杂音。以前唯一的办法是把整个音色删掉重传，而重传要把**所有**段都再选一遍。
+         *
+         *     为什么重编号必须报出来
+         *     ----------------------
+         *     位置即对应（``ref.txt`` 第 N 行 ↔ 第 N 段）。删掉第 2 段之后原来的 ``ref_03.wav``
+         *     会变成 ``ref_02.wav`` —— 用户手上的文件名变了，而**静默改名不行**。回执里的
+         *     ``renamed`` 就是这本流水账。
+         */
+        delete: operations["delete_voice_segment_api_v1_assets_voice__voice_id__segments__name__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -975,6 +1066,127 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/publish/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Accounts
+         * @description 账号区块首屏：配置里的账号（含停用的）+ 平台清单 + 表单上下限 + 必须说的话。
+         *
+         *     **含停用的账号**：停用不是删除（登录态还在、历史发布记录还挂在它名下）。
+         *     藏起来的话，用户会以为"这个号已经没了"，然后去重新加一个同 id 的号。
+         */
+        get: operations["list_accounts_api_v1_publish_accounts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/publish/accounts/{account_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Save Account
+         * @description 新增或改写一个账号（**先校验、后落盘**；没变就不写盘、不留痕）。
+         *
+         *     ``account_id`` 只从路径来 —— 请求体里没有这个字段（身份只有一个来源）。
+         *     表单不合法 ⇒ **422** + ``context.errors``（面板把红字标到对应输入框上）；
+         *     与别的账号冲突（``profile_dir`` 重复 / 平台没定义）⇒ **400**：
+         *     那是"这份配置不能变成那样"，不是"你这个框填错了"。
+         *
+         *     写盘**按行改写** ``config/publish.yaml``：段外的 ``platforms`` / ``precheck`` /
+         *     注释一个字节都不碰，段内的行尾注释原样保留（见 ``core.config.write_publish_accounts``）。
+         */
+        put: operations["save_account_api_v1_publish_accounts__account_id__put"];
+        post?: never;
+        /**
+         * Remove Account
+         * @description 从配置里删掉一个账号（**登录态目录不碰**）。
+         *
+         *     配置里已经没有这个 id ⇒ **404**（多半是另一个人刚删掉了它）：请求本身没错，
+         *     错的是"你手上这一屏过时了"，面板据此提示刷新，而不是让用户对着一个
+         *     "改不动"的按钮猜原因。
+         *
+         *     ``reason`` 走查询串而不是请求体：DELETE 带 body 在代理链路上会被静默丢掉，
+         *     而"这条为什么删了"是三个月后唯一能回答问题的东西。
+         */
+        delete: operations["remove_account_api_v1_publish_accounts__account_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/publish/accounts/{account_id}/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Login Account
+         * @description 开一个**可见的浏览器窗口**等人扫码（T6.4 · R13：登录只发生在人扫码那一下）。
+         *
+         *     窗口出现在**跑着 studio 服务的那台电脑**上 —— 浏览器是它起的，不是手机上会跳出
+         *     什么。人用手机 App 扫窗口里那个码，扫完窗口自己关掉，这里返回探测结论。
+         *
+         *     为什么这一个可以跑几分钟而不用后台作业
+         *     ------------------------------------
+         *     它**必须**是人按着看的：窗口关了这件事没有任何地方能替用户确认。所以前端
+         *     按"长动作"处理（按钮转圈 + 文字说明），而不是把它藏进一个看不见的队列 ——
+         *     藏进去之后，"我扫完了没反应"就成了一句没人能回答的话。
+         *
+         *     等不到扫码**不是错误**（200 + ``ready=false`` + ``note`` 里写明下一步）；
+         *     真出错（浏览器起不来 / 平台不支持）才抛。
+         */
+        post: operations["login_account_api_v1_publish_accounts__account_id__login_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/publish/accounts/{account_id}/probe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Probe Account
+         * @description 探一眼这个账号的登录态（T6.4 · **无头、几秒钟、不动任何东西**）。
+         *
+         *     为什么值得单独一个端点：面板上那一行 ``note`` 说的是"登录过（会话是否仍有效，
+         *     要真发一次才知道）"—— 而这句话对"我现在就想知道能不能发"是不够的。探测把
+         *     那个不确定性收窄成一个当场可得的答案，且**不需要真发一条**（R14 不可逆）。
+         *
+         *     探不出来（浏览器起不来 / 平台打不开）⇒ 200 + ``ready=false`` + ``hint``：
+         *     这不是请求失败，是"这次没探到"，面板要把它显示成一句提示而不是一个红叉。
+         */
+        post: operations["probe_account_api_v1_publish_accounts__account_id__probe_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/publish/compliance": {
         parameters: {
             query?: never;
@@ -990,6 +1202,30 @@ export interface paths {
          *     授权范围是人的判断，程序只负责让"缺一份"看得见。
          */
         get: operations["compliance_api_v1_publish_compliance_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/publish/covers/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Cover
+         * @description 看一张封面（``<img>`` 直接取这个 url）。
+         *
+         *     为什么给面板一个能显示的路由、而不是只回一句路径：封面是**给人看的那一格** ——
+         *     "生成了"与"这张能不能用"是两件事，而后者只有眼睛能判。只回路径的话，用户要
+         *     自己去文件管理器里翻 ``data/output/covers/``，而那里堆着这一期的每一张。
+         */
+        get: operations["get_cover_api_v1_publish_covers__name__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1179,6 +1415,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/publish/tasks/{task_id}/cover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Make Cover
+         * @description 给这条任务出一张封面（T5.1 追加 · §06.3）。
+         *
+         *     封面 = **成片里抽的一帧** + **合成配置里的贴图**（``stickers`` 里挑一层，居中）
+         *     + **标题**（黄字黑边，样式来自 ``config/outputs.yaml`` 的 ``cover`` 一节）。
+         *     落 ``data/output/covers/``，同时记一条 ``artifacts(kind='cover')`` 与
+         *     ``tasks.context_json.cover_path`` —— 发布器读的就是后者，所以"出过封面"这件事
+         *     在**发布**那一侧立刻生效（§06.3：有封面就带，没有就用平台首帧）。
+         *
+         *     为什么 ``ok=False`` 也回 200
+         *     ---------------------------
+         *     封面是**可选装饰**：抽帧失败 ⇒ 退纯色底；连纯色底都失败 ⇒ 无封面发布，这是契约
+         *     写明的合法结局。把它做成 4xx 的话，面板会把一次"正常的降级"画成一条红色故障，
+         *     而用户唯一该做的事（去看出片）与真故障时完全一样。真正的用法错误（任务号不存在）
+         *     才抛 —— 那一条在服务层。
+         *
+         *     为什么这条**不**进后台作业
+         *     --------------------------
+         *     与「人工过验证」相反：它不需要人看着，但它要的输入（稿件 / 时间轴 / 成片 / 配置）
+         *     全都在请求这一刻是齐的，跑完就落盘。丢进队列只会让"点了没反应"多一个去处。
+         */
+        post: operations["make_cover_api_v1_publish_tasks__task_id__cover_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/publish/tasks/{task_id}/enqueue": {
         parameters: {
             query?: never;
@@ -1198,6 +1472,45 @@ export interface paths {
          *     而"点了没反应"比"有一条能查的作业"难查得多（见模块注释）。
          */
         post: operations["enqueue_task_api_v1_publish_tasks__task_id__enqueue_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/publish/{publication_id}/assist": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Assist
+         * @description **人工过验证**：开一个可见窗口，把这条重新发一遍，途中停下来等人输验证码。
+         *
+         *     什么时候用它
+         *     ------------
+         *     面板上那条写着 ``PUBLISH_FAILED：平台要求短信验证`` 时 —— 平台在点下发布之后弹一个
+         *     「接收短信验证码」，要人在**浏览器窗口**里点「获取验证码」、再输手机上收到的六位数。
+         *     这时「重试」是没用的：平台问的是"这台机器/这个出口 IP 是不是你本人"，那是个
+         *     **一次性质询**，重试一百次只会弹一百次（真机实测）。
+         *
+         *     为什么这一个可以跑十几分钟而不用后台作业
+         *     --------------------------------------
+         *     与「扫码登录」同一条：它**必须**是人按着看的。窗口关掉这件事没有任何地方能替用户
+         *     确认，所以前端按"长动作"处理（转圈 + 一句"去窗口里输码"），而不是把它藏进一个
+         *     看不见的队列 —— 藏进去之后，"我输完了没反应"就成了一句没人能回答的话。
+         *
+         *     它做什么 / 不做什么
+         *     ------------------
+         *     做：开**可见**窗口（同一个 profile、同一份登录态）⇒ 上传 ⇒ 填标题文案 ⇒ 点发布
+         *     ⇒ **停在那儿等人**；人过掉验证之后流程自己走完并落库。
+         *     不做：**不点**「获取验证码」、**不读**短信、**不填**码、不存任何凭据（R13）。
+         */
+        post: operations["assist_api_v1_publish__publication_id__assist_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1979,6 +2292,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/topics/clear": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Clear Topics
+         * @description 清空整个选题面板（**所有方向 + 所有选题**；``dry_run`` ⇒ 只报数）。
+         *
+         *     三处刻意的取舍：
+         *
+         *     - **点两下**（与 ``/assets/prune`` 同一条）：``dry_run=true`` 先报会删掉多少，第二下
+         *       才真删。这一下动辄删掉几十行，而"到底删了多少"在删完之后只能去审计页翻。
+         *     - **长任务在跑就拒**（409 ``TOPIC_BATCH_RUNNING``）：Planner / Ideator 正在往这张表里
+         *       写的时候清空，那批方向跑完会**自己长回来** —— 用户看到的是"清了，怎么又有了"，
+         *       而两件事都没有报错。它自己不是长任务（几毫秒），所以不占那把锁，只是**要求锁空着**。
+         *     - **任务不跟着走**：派生过任务的那些选题照删，任务照跑（``detached_task_count`` 如实报）。
+         */
+        post: operations["clear_topics_api_v1_topics_clear_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/topics/directions": {
         parameters: {
             query?: never;
@@ -2017,9 +2359,9 @@ export interface paths {
          * Delete Direction
          * @description 删一个方向，**它下面的候选一起走**（级联）。
          *
-         *     唯一拦下的情形：那个方向下已经有候选派生了任务 —— 那种候选被级联删掉之后，
-         *     它那条任务就再也写不出稿（不是门禁，是断链）。响应里带上 ``cascaded_topics``
-         *     让人看得见这一下删掉了多少条。
+         *     派生过任务也照删：删掉的是想法，不是活 —— 那些候选上的任务不跟着走，照跑（任务自己
+         *     带着标题 / 角度 / 钩子）。响应里带上 ``cascaded_topics``（这一下删掉了多少条候选）与
+         *     ``detached_task_count``（其中几条已经有任务），两样都要让人看得见。
          */
         delete: operations["delete_direction_api_v1_topics_directions__direction_id__delete"];
         options?: never;
@@ -2071,6 +2413,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/topics/news-pull": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pull Today News
+         * @description 一键拉取今日社会新闻 ⇒ 模型评测 ⇒ 值得写的落成方向（**长任务**：抓取 + 若干次 LLM）。
+         *
+         *     与 ``analyze`` / ``ideate`` 共用同一把单飞守卫：三者都是「点下去等一会儿」的长任务，
+         *     同时跑只会让日志与预算互相打架。抓取失败 ⇒ 抛 ``NEWS_FETCH_FAILED``（422/500 由应用级
+         *     handler 兜），因为那是"今天这条链路真的没通"，不该假装成"今天没有值得写的新闻"。
+         */
+        post: operations["pull_today_news_api_v1_topics_news_pull_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/topics/select": {
         parameters: {
             query?: never;
@@ -2107,7 +2473,7 @@ export interface paths {
         post?: never;
         /**
          * Delete Topic
-         * @description 删一条选题（**已经派生过任务的那条不给删** —— 删了那条任务就再也写不出稿）。
+         * @description 删一条选题（**派生过任务也照删**）。
          */
         delete: operations["delete_topic_api_v1_topics__topic_id__delete"];
         options?: never;
@@ -2764,6 +3130,24 @@ export interface components {
             usable_to_ms?: number | null;
         };
         /**
+         * AssetPruneRequest
+         * @description 孤儿清理请求。
+         *
+         *     ``kind`` **必填**（与 :class:`AssetIngestRequest` 的"留空 = 三类都扫"刻意不同）：
+         *     这个动作会删盘上的东西，而"删哪一类"必须由人说出来。给一个留空的默认值，等于
+         *     让一次手滑的请求在三类目录里同时动手 —— 而扫盘留空的代价只是多读两个目录。
+         *
+         *     ``dry_run=true`` ⇒ 只报"会清掉哪些"，一个字节都不动（面板点第一下用它）。
+         */
+        AssetPruneRequest: {
+            /**
+             * Dry Run
+             * @default false
+             */
+            dry_run: boolean;
+            kind: components["schemas"]["AssetKind"];
+        };
+        /**
          * AssetStatsModel
          * @description 一类素材的家底。
          *
@@ -3076,6 +3460,52 @@ export interface components {
             width: number | null;
         };
         /**
+         * ClearTopicsBody
+         * @description 清空选题面板的请求体（**两级**：先预览，再真删）。
+         *
+         *     ``dry_run`` 默认 ``True``：调用方**必须显式**说"我知道会删掉多少，删吧"。
+         *     默认成 ``False`` 的话，一个漏传请求体的客户端（``POST`` 不带 body）就会把
+         *     整个面板清空 —— 而这条链路上"漏传"是常态，不是例外。
+         */
+        ClearTopicsBody: {
+            /**
+             * Dry Run
+             * @description true ⇒ 只报会删掉多少，一个字节都不写
+             * @default true
+             */
+            dry_run: boolean;
+        };
+        /**
+         * ClearTopicsResult
+         * @description 一次「清除所有选题」的结果。
+         *
+         *     ``dry_run=True`` ⇒ 这是**预览**：两个数说"会删掉多少"，库里一个字节没动。
+         *     ``dry_run=False`` ⇒ 真删了，两个数说"实际删掉多少"（走的是同一个计数路径，
+         *     所以预览与真删报的是同一件事）。
+         *
+         *     ``detached_task_count`` = 被清掉的选题里**已经派生过任务**的条数 —— 那些任务不
+         *     跟着走，照跑。不报这一条的话，用户会以为"清了选题 ⇒ 那些活也没了"。
+         */
+        ClearTopicsResult: {
+            /**
+             * Detached Task Count
+             * @default 0
+             */
+            detached_task_count: number;
+            /**
+             * Directions
+             * @default 0
+             */
+            directions: number;
+            /** Dry Run */
+            dry_run: boolean;
+            /**
+             * Topics
+             * @default 0
+             */
+            topics: number;
+        };
+        /**
          * ComplianceItemView
          * @description 一件素材的来源登记（R2 留档的一行）。
          */
@@ -3244,6 +3674,9 @@ export interface components {
         /**
          * DirectionDeleteResult
          * @description 删掉的那个方向 + **被它带走的候选条数**（级联删除要如实报数）。
+         *
+         *     ``detached_task_count`` = 被带走的候选里**已经派生过任务**的条数 —— 那些任务不跟着走，
+         *     照跑。不报这一条的话，用户会以为"删了方向 ⇒ 那些活也没了"。
          */
         DirectionDeleteResult: {
             /**
@@ -3253,6 +3686,11 @@ export interface components {
             cascaded_topics: number;
             /** Deleted */
             deleted: boolean;
+            /**
+             * Detached Task Count
+             * @default 0
+             */
+            detached_task_count: number;
             /** Direction Id */
             direction_id: string;
             /** Title */
@@ -3786,6 +4224,20 @@ export interface components {
             statement: string;
             /** Suggested Action */
             suggested_action: string;
+        };
+        /**
+         * KeptOrphanModel
+         * @description 一个**没被清**的孤儿，以及为什么留着。
+         */
+        KeptOrphanModel: {
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Path */
+            path: string;
+            /** Reason */
+            reason: string;
         };
         /**
          * LibraryBatchItemView
@@ -4365,6 +4817,60 @@ export interface components {
             yielded: boolean;
         };
         /**
+         * NewsPullResult
+         * @description 一次「拉今日新闻 ⇒ 评测 ⇒ 留方向」的结果（``ok=False`` 也返回 200 —— 原因在体内）。
+         *
+         *     ``ok`` 说的是**评测这一步跑通没有**，不是"留下几条"：跑了但一条都没挑中（``ok=True``
+         *     + ``kept=[]``）与压根没跑起来（``ok=False`` + ``error_code``）是两件事 —— 前者不需要
+         *     用户做任何事，后者要他去配通道。
+         */
+        NewsPullResult: {
+            /** Batch Id */
+            batch_id?: string | null;
+            /** Error Code */
+            error_code?: string | null;
+            /** Error Message */
+            error_message?: string | null;
+            /**
+             * Evaluated
+             * @default 0
+             */
+            evaluated: number;
+            /**
+             * Fetched
+             * @default 0
+             */
+            fetched: number;
+            /** Kept */
+            kept: components["schemas"]["DirectionCard"][];
+            /**
+             * Kept Count
+             * @default 0
+             */
+            kept_count: number;
+            /** Ok */
+            ok: boolean;
+            /** Skipped */
+            skipped: components["schemas"]["NewsSkipItem"][];
+            /**
+             * Source
+             * @default
+             */
+            source: string;
+            /** Warnings */
+            warnings: string[];
+        };
+        /**
+         * NewsSkipItem
+         * @description 一条没被留下的新闻（``reason`` 是给人看的一句话）。
+         */
+        NewsSkipItem: {
+            /** Reason */
+            reason: string;
+            /** Title */
+            title: string;
+        };
+        /**
          * OutlineItem
          * @description 二级产物（``topic_outlines`` 的展示字段）。
          */
@@ -4460,6 +4966,9 @@ export interface components {
             profile_fields: string[];
             /** Scalar Fields */
             scalar_fields: string[];
+            sticker: components["schemas"]["StickerBoundsModel"];
+            /** Sticker Fields */
+            sticker_fields: string[];
             subtitle: components["schemas"]["SubtitleBoundsModel"];
             /** Subtitle Fields */
             subtitle_fields: string[];
@@ -4512,6 +5021,8 @@ export interface components {
             sha256: string;
             /** Stale */
             stale: boolean;
+            /** Stickers */
+            stickers: components["schemas"]["StickerModel"][];
             subtitle: components["schemas"]["SubtitleModel"] | null;
             /** Version */
             version: number;
@@ -4539,6 +5050,10 @@ export interface components {
             reason?: string | null;
             /** Source Sha256 */
             source_sha256?: string | null;
+            /** Stickers */
+            stickers?: {
+                [key: string]: components["schemas"]["StickerPatch"];
+            } | null;
             subtitle?: components["schemas"]["SubtitlePatch"] | null;
             watermark?: components["schemas"]["WatermarkPatch"] | null;
         };
@@ -4642,6 +5157,8 @@ export interface components {
             role_desc: string;
             /** Schema Version */
             schema_version: string;
+            /** Speaker Names */
+            speaker_names: string[];
             /** Style Hint */
             style_hint: string;
             /** Target Chars Max */
@@ -4688,6 +5205,7 @@ export interface components {
             max_duration_ms: components["schemas"]["BoundsModel"];
             name: components["schemas"]["BoundsModel"];
             role_desc: components["schemas"]["BoundsModel"];
+            speaker_names: components["schemas"]["BoundsModel"];
             target_chars_max: components["schemas"]["BoundsModel"];
             target_chars_min: components["schemas"]["BoundsModel"];
             tone: components["schemas"]["BoundsModel"];
@@ -4793,6 +5311,8 @@ export interface components {
             reason?: string | null;
             /** Role Desc */
             role_desc?: string | null;
+            /** Speaker Names */
+            speaker_names?: string[] | null;
             /** Style Hint */
             style_hint?: string | null;
             /** Target Chars Max */
@@ -5315,6 +5835,41 @@ export interface components {
             user?: string | null;
         };
         /**
+         * PruneReportModel
+         * @description 一次孤儿清理的结论。
+         *
+         *     ``removed`` / ``kept`` / ``strays`` 分开报的理由见服务层
+         *     :class:`~studio.services.asset_service.PruneReport`：三种"盘上有、库里没有"
+         *     该做的动作完全不同，合成一个数字，面板就只能说"清掉 3 个" —— 而其中两个
+         *     可能是**该入库**的。
+         */
+        PruneReportModel: {
+            /** Dry Run */
+            dry_run: boolean;
+            /** Kept */
+            kept: components["schemas"]["KeptOrphanModel"][];
+            /** Kind */
+            kind: string;
+            /** Removed */
+            removed: components["schemas"]["PrunedOrphanModel"][];
+            /** Strays */
+            strays: string[];
+        };
+        /**
+         * PrunedOrphanModel
+         * @description 一个被清掉的孤儿（``problems`` 是它该被清的理由，人话）。
+         */
+        PrunedOrphanModel: {
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Path */
+            path: string;
+            /** Problems */
+            problems: string[];
+        };
+        /**
          * PublicationList
          * @description 一份发布面板快照（六状态计数 + 各若干条）。
          */
@@ -5431,6 +5986,289 @@ export interface components {
             video_path: string;
         };
         /**
+         * PublishAccountHealth
+         * @description 一次登录态探测的结论（T6.4 · **面板直接显示，不自己拼**）。
+         *
+         *     ``ready`` 与 ``logged_in`` 都留着：前者是"这一趟能用它发了吗"，后者是"平台说
+         *     登录了吗"。``ready=False`` + ``logged_in=False`` 才是"没登录"；探测本身没跑通
+         *     （浏览器起不来 / 页面打不开）走的是 :meth:`PublishHealth.unknown`，那一条也是
+         *     ``ready=False`` —— 两者在 ``hint`` 里分得开（"需人工扫码" vs "探测失败：…"）。
+         */
+        PublishAccountHealth: {
+            /** Account Name */
+            account_name?: string | null;
+            /** Hint */
+            hint?: string | null;
+            /**
+             * Last Check At
+             * @default
+             */
+            last_check_at: string;
+            /**
+             * Logged In
+             * @default false
+             */
+            logged_in: boolean;
+            /**
+             * Ready
+             * @default false
+             */
+            ready: boolean;
+        };
+        /**
+         * PublishAccountHealthOutcome
+         * @description 探测 / 扫码登录的结论：**刷新后的整屏** + 这一次的 health + 一句"下一步"。
+         *
+         *     与 :class:`PublishAccountOutcome` 同一个形状（回整屏而不是只回那一条）：面板
+         *     拿到它就能整块重画，不必再发一次 GET —— 也就不存在"两次请求之间显示旧值"那一帧。
+         */
+        PublishAccountHealthOutcome: {
+            /**
+             * Account Id
+             * @default
+             */
+            account_id: string;
+            /** Accounts */
+            accounts?: components["schemas"]["PublishAccountView"][];
+            /**
+             * Action
+             * @default
+             */
+            action: string;
+            /** Config Path */
+            config_path: string;
+            /** Generated At */
+            generated_at: string;
+            health?: components["schemas"]["PublishAccountHealth"] | null;
+            /** Limits */
+            limits?: {
+                [key: string]: number;
+            };
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /** Notes */
+            notes?: string[];
+            /** Platforms */
+            platforms?: components["schemas"]["PublishPlatformOption"][];
+            /**
+             * Profile Dir Prefix
+             * @default
+             */
+            profile_dir_prefix: string;
+            /**
+             * Publish Enabled
+             * @default false
+             */
+            publish_enabled: boolean;
+            /**
+             * Require Confirm
+             * @default true
+             */
+            require_confirm: boolean;
+            /**
+             * Waited Sec
+             * @default 0
+             */
+            waited_sec: number;
+        };
+        /**
+         * PublishAccountOutcome
+         * @description 写操作的结论：**刷新后的整屏** + 这一次到底改了什么。
+         *
+         *     回整屏而不是只回那一条：面板不必再发一次 GET，也就不存在"两次请求之间显示旧值"
+         *     的那一帧（与设置面板的 ``PUT /settings/llm`` 同一条）。
+         */
+        PublishAccountOutcome: {
+            /**
+             * Account Id
+             * @default
+             */
+            account_id: string;
+            /** Accounts */
+            accounts?: components["schemas"]["PublishAccountView"][];
+            /**
+             * Changed
+             * @default false
+             */
+            changed: boolean;
+            /** Config Path */
+            config_path: string;
+            /**
+             * Created
+             * @default false
+             */
+            created: boolean;
+            /** Generated At */
+            generated_at: string;
+            /** Limits */
+            limits?: {
+                [key: string]: number;
+            };
+            /** Notes */
+            notes?: string[];
+            /** Platforms */
+            platforms?: components["schemas"]["PublishPlatformOption"][];
+            /**
+             * Profile Dir Prefix
+             * @default
+             */
+            profile_dir_prefix: string;
+            /**
+             * Publish Enabled
+             * @default false
+             */
+            publish_enabled: boolean;
+            /** Reason */
+            reason?: string | null;
+            /** Removed */
+            removed?: string | null;
+            /**
+             * Require Confirm
+             * @default true
+             */
+            require_confirm: boolean;
+        };
+        /**
+         * PublishAccountRequest
+         * @description 新增 / 改写一个账号的请求体。
+         *
+         *     ``account_id`` **只从路径来**，这里没有这个字段：身份只有一个来源，
+         *     否则"想改 A、结果新增了 B"这种错法迟早出现。
+         *
+         *     这里**不重复**声明上下限（``ge`` / ``le``）：判据只有一处 ——
+         *     ``core.config.AccountConfig`` 上的那几条约束（服务层用它校验，失败 ⇒ 422 +
+         *     ``context.errors``，面板把红字标到输入框上）。两处各写一份的结果是
+         *     "面板按 A 拦、后端按 B 拦"，而用户看到的是"这个框明明填对了还是红的"。
+         */
+        PublishAccountRequest: {
+            /**
+             * Daily Limit
+             * @default 3
+             */
+            daily_limit: number;
+            /**
+             * Display Name
+             * @default
+             */
+            display_name: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /**
+             * Min Gap Min
+             * @default 30
+             */
+            min_gap_min: number;
+            /** Platform */
+            platform: string;
+            /** Profile Dir */
+            profile_dir?: string | null;
+            /**
+             * Reason
+             * @description 说明（写进留痕）
+             */
+            reason?: string | null;
+        };
+        /**
+         * PublishAccountView
+         * @description 一个发布账号：配置里那条 ``accounts[]`` + 它在盘上的**状态**。
+         *
+         *     ``profile_dir`` 与 ``runtime_profile_dir`` 分开给，是因为它们**可能不是一个东西**：
+         *     运行期真正用的登录态目录永远是 ``data/browser_profile/<account_id>``
+         *     （``publish/base.py`` 的 ``PublisherContext.profile_dir``），而配置里那一列是
+         *     "登录态必须按账号隔离"的声明。两者不一致时面板要说出来 —— 否则用户改了半天
+         *     那个值、发现毫无效果，又是一次静默失效。
+         */
+        PublishAccountView: {
+            /** Account Id */
+            account_id: string;
+            /**
+             * Daily Limit
+             * @default 3
+             */
+            daily_limit: number;
+            /**
+             * Display Name
+             * @default
+             */
+            display_name: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /**
+             * Min Gap Min
+             * @default 30
+             */
+            min_gap_min: number;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /** Platform */
+            platform: string;
+            /** Profile Dir */
+            profile_dir: string;
+            /**
+             * Profile Dir Exists
+             * @default false
+             */
+            profile_dir_exists: boolean;
+            /**
+             * Profile Dir Matches Runtime
+             * @default true
+             */
+            profile_dir_matches_runtime: boolean;
+            /** Runtime Profile Dir */
+            runtime_profile_dir: string;
+        };
+        /**
+         * PublishAccountsView
+         * @description 账号区块的首屏：账号清单 + 平台清单 + 表单上下限 + 必须说的话。
+         *
+         *     平台清单复用投递区块那一份（:class:`PublishPlatformOption`）：账号要挂在平台上，
+         *     而"这个平台现在能不能投"的判据与投递期**必须是同一套** —— 面板上另列一份的代价是
+         *     "给一个不会生效的平台配了账号，而面板显示一切正常"。
+         */
+        PublishAccountsView: {
+            /** Accounts */
+            accounts?: components["schemas"]["PublishAccountView"][];
+            /** Config Path */
+            config_path: string;
+            /** Generated At */
+            generated_at: string;
+            /** Limits */
+            limits?: {
+                [key: string]: number;
+            };
+            /** Notes */
+            notes?: string[];
+            /** Platforms */
+            platforms?: components["schemas"]["PublishPlatformOption"][];
+            /**
+             * Profile Dir Prefix
+             * @default
+             */
+            profile_dir_prefix: string;
+            /**
+             * Publish Enabled
+             * @default false
+             */
+            publish_enabled: boolean;
+            /**
+             * Require Confirm
+             * @default true
+             */
+            require_confirm: boolean;
+        };
+        /**
          * PublishActionRequest
          * @description 人工处置的请求体（重试 / 取消 / 标记已人工处理共用）。
          */
@@ -5466,6 +6304,95 @@ export interface components {
             /** Message */
             message: string;
             publication: components["schemas"]["PublicationView"];
+        };
+        /**
+         * PublishAssistOutcome
+         * @description 「人工过验证」的结论（T6.4 · 真机 2026-09-23）。
+         *
+         *     与 :class:`PublishActionResponse` 同一个形状 + 一个 ``waited_sec``：这一个动作
+         *     **会开一个浏览器窗口、并且可能等上十几分钟**，而"它到底在干什么"是用户唯一
+         *     拿得到的信息 —— 等了多久是这个形状里最该有的那个数（扫码登录那一条同理）。
+         *
+         *     没有 ``job_changed``：这条路**不碰作业队列**（它直接对着这条记录发），
+         *     留着那个字段会让人以为它重排了什么。
+         */
+        PublishAssistOutcome: {
+            /**
+             * Action
+             * @default assist
+             */
+            action: string;
+            /** Message */
+            message: string;
+            publication: components["schemas"]["PublicationView"];
+            /**
+             * Waited Sec
+             * @default 0
+             */
+            waited_sec: number;
+        };
+        /**
+         * PublishCoverOutcome
+         * @description 一张封面的结论（§06.3）。
+         *
+         *     ``ok=False`` **不是错误**：封面是可选装饰，没有它就用平台首帧 —— 契约里写明的
+         *     合法结局。所以这一屏回 200 + 一份 ``plan``，而不是 4xx；真正的用法错误（任务号
+         *     不存在）才抛。
+         *
+         *     ``plan`` 原样下发（与渲染面板的 ``manifest`` 同一条）：面板要能回答"这张封面为什么
+         *     长这样" —— 抽的是哪一帧、字号被缩过吗、人物贴图用的是哪一层。面板自己再拼一遍
+         *     这些结论，就等于同一件事有两份口径。
+         */
+        PublishCoverOutcome: {
+            /** Agent Error */
+            agent_error?: string | null;
+            /** Cover Path */
+            cover_path?: string | null;
+            /**
+             * Duration Ms
+             * @default 0
+             */
+            duration_ms: number;
+            /**
+             * Fallback Background
+             * @default false
+             */
+            fallback_background: boolean;
+            /**
+             * Frame At Ms
+             * @default 0
+             */
+            frame_at_ms: number;
+            /**
+             * Ok
+             * @default false
+             */
+            ok: boolean;
+            /** Plan */
+            plan?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Source
+             * @default
+             */
+            source: string;
+            /** Task Id */
+            task_id: string;
+            /** Warnings */
+            warnings?: string[];
+        };
+        /**
+         * PublishCoverRequest
+         * @description 出封面的请求体（T5.1 追加）。
+         */
+        PublishCoverRequest: {
+            /**
+             * Use Agent
+             * @description 走 Cover Agent 写封面文案；false = 直接用稿件标题兜底（离线 / 省钱 / 复现同一张图）
+             * @default true
+             */
+            use_agent: boolean;
         };
         /**
          * PublishEnqueueRequest
@@ -5523,14 +6450,31 @@ export interface components {
          *
          *     ``selectable`` 与 ``note`` **由服务端算**：判据（平台启用 / 这个平台有没有启用账号）
          *     与投递期跳过它的那两条是同一套。面板自己再判一遍的代价是"显示点得动、点了被跳过"。
+         *
+         *     ``calibration`` / ``calibration_note`` / ``known_gaps``（T5.14）同一条理由：
+         *     "这个平台的选择器验过没有"是**文件里的一份事实**（``selectors/<x>.yaml``），
+         *     面板要显示它，而**不许**自己猜。四个状态见
+         *     :data:`~studio.services.publish_service.CALIBRATED` 那四个常量。
          */
         PublishPlatformOption: {
             /** Accounts */
             accounts?: string[];
+            /**
+             * Calibration
+             * @default
+             */
+            calibration: string;
+            /**
+             * Calibration Note
+             * @default
+             */
+            calibration_note: string;
             /** Code */
             code: string;
             /** Enabled */
             enabled: boolean;
+            /** Known Gaps */
+            known_gaps?: string[];
             /**
              * Note
              * @default
@@ -5679,6 +6623,10 @@ export interface components {
             /** Profiles */
             profiles: components["schemas"]["RenderProfileOptionModel"][];
             running: components["schemas"]["RenderJobModel"] | null;
+            /** Stickers Applied */
+            stickers_applied: string[];
+            /** Stickers Hint */
+            stickers_hint: string | null;
             /** Subtitle Enabled */
             subtitle_enabled: boolean;
             /** Subtitle Hint */
@@ -6904,6 +7852,99 @@ export interface components {
             url: string;
         };
         /**
+         * StickerBoundsModel
+         * @description 人物贴图各字段的上下限 + 位置枚举（与水域共用同一份枚举）。
+         */
+        StickerBoundsModel: {
+            height_ratio: components["schemas"]["BoundModel"];
+            margin_x: components["schemas"]["BoundModel"];
+            margin_y: components["schemas"]["BoundModel"];
+            opacity: components["schemas"]["BoundModel"];
+            /** Positions */
+            positions: string[];
+        };
+        /**
+         * StickerModel
+         * @description 一层人物贴图（T6.5）。``usable=false`` ⇒ 这一层不贴，**其余层照常**。
+         *
+         *     ``height_px`` 是按**默认档**画布高算出来的像素高（与水域 ``width_px`` 同一条理由：
+         *     面板上"多高"比"0.45"直观）。实际宽度由素材宽高比决定，所以这里不给 ——
+         *     给一个"假设人物是正方形"的估算值，只会让人按一个假数字去调。
+         *
+         *     ``usable`` / ``problem`` 的判据与渲染路径**同源**（都是 `render.png_probe.probe_png`）：
+         *     面板说"会贴上"、渲染却跳过，是这一屏最贵的一种谎话（用户会去查 ffmpeg、查字体、
+         *     查素材，唯独不会想到是面板骗了他）。
+         *
+         *     ★ **换图（T6.5 追加）**：``speaker`` / ``speaking_path`` 是"这一层代表谁、他讲话时
+         *     换成哪张图"，``speaking_usable`` / ``speaking_problem`` / ``speaking_warnings`` 是
+         *     那一张图的结论 —— 三个判据与普通图那三个**完全同源**（同一份 `probe_png`），
+         *     因为"讲话图坏了"与"普通图坏了"是同一种坏。
+         *
+         *     代价如实说明：面板**判不了**"这个人这条片子里到底有没有讲话区间"（那要读稿子与
+         *     时间轴）。所以这一屏的绿灯只说明"配齐了"，不说明"一定会换" —— 真的换没换、
+         *     按哪份时间换的，写在成片的 `manifest.json` 的 `stickers[].speaking` 里。
+         */
+        StickerModel: {
+            /** Enabled */
+            enabled: boolean;
+            /** Exists */
+            exists: boolean;
+            /** Height Px */
+            height_px: number;
+            /** Height Ratio */
+            height_ratio: number;
+            /** Margin X */
+            margin_x: number;
+            /** Margin Y */
+            margin_y: number;
+            /** Name */
+            name: string;
+            /** Opacity */
+            opacity: number;
+            /** Path */
+            path: string;
+            /** Position */
+            position: string;
+            /** Problem */
+            problem: string | null;
+            /** Speaker */
+            speaker: string;
+            /** Speaking Path */
+            speaking_path: string | null;
+            /** Speaking Problem */
+            speaking_problem: string | null;
+            /** Speaking Usable */
+            speaking_usable: boolean;
+            /** Speaking Warnings */
+            speaking_warnings: string[];
+            /** Usable */
+            usable: boolean;
+        };
+        /**
+         * StickerPatch
+         * @description 一层贴图的改动（``None`` = **这次不动它**）。
+         */
+        StickerPatch: {
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Height Ratio */
+            height_ratio?: number | null;
+            /** Margin X */
+            margin_x?: number | null;
+            /** Margin Y */
+            margin_y?: number | null;
+            /** Opacity */
+            opacity?: number | null;
+            /** Path */
+            path?: string | null;
+            /** Position */
+            position?: string | null;
+            /** Speaker */
+            speaker?: string | null;
+            /** Speaking Path */
+            speaking_path?: string | null;
+        };
+        /**
          * StorageHealthModel
          * @description 存储体检（DB 空洞 + 三个会自己长大的目录）。
          */
@@ -6927,12 +7968,18 @@ export interface components {
          */
         SubtitleBoundsModel: {
             font_size: components["schemas"]["BoundModel"];
+            margin_bottom: components["schemas"]["BoundModel"];
             max_chars_per_line: components["schemas"]["BoundModel"];
             outline: components["schemas"]["BoundModel"];
+            safe_area_bottom: components["schemas"]["BoundModel"];
         };
         /**
          * SubtitleModel
          * @description 字幕样式（Q11 开启）。
+         *
+         *     ``margin_v`` 是**真正生效**的距底像素（= max(margin_bottom, safe_area_bottom)），
+         *     由服务端算好一起下发 —— 面板据此在两者不一致时说明白"实际 N px（被底部安全区
+         *     抬上来了）"。让面板自己再算一遍 max，就等于同一件事有两份口径（裁定 161 同源）。
          */
         SubtitleModel: {
             /** Enabled */
@@ -6943,26 +7990,38 @@ export interface components {
             font_size: number;
             /** Margin Bottom */
             margin_bottom: number;
+            /** Margin V */
+            margin_v: number;
             /** Max Chars Per Line */
             max_chars_per_line: number;
             /** Max Lines */
             max_lines: number;
             /** Outline */
             outline: number;
+            /** Safe Area Bottom */
+            safe_area_bottom: number;
             /** Shadow */
             shadow: number;
         };
         /**
          * SubtitlePatch
          * @description 字幕改动。
+         *
+         *     ``safe_area_bottom`` 是**扁平名**，落到文件里是 ``subtitle.safe_area.bottom``
+         *     （对照表在 ``core/outputs_store.SUBTITLE_NESTED``）：面板一个数一个框，没必要
+         *     让它知道安全区底下还有 ``top`` / ``left`` / ``right`` 三个兄弟。
          */
         SubtitlePatch: {
             /** Font Size */
             font_size?: number | null;
+            /** Margin Bottom */
+            margin_bottom?: number | null;
             /** Max Chars Per Line */
             max_chars_per_line?: number | null;
             /** Outline */
             outline?: number | null;
+            /** Safe Area Bottom */
+            safe_area_bottom?: number | null;
         };
         /**
          * TaskSweepModel
@@ -7007,10 +8066,15 @@ export interface components {
         /**
          * TopicDeleteResult
          * @description 删掉的那一条（``deleted=False`` = 服务层到这一步时它已经不在了）。
+         *
+         *     ``detached_task_id`` = 这条选题派生过的那条任务号 —— **它不跟着走**。删掉的是想法，
+         *     不是活：那条任务自己带着标题 / 角度 / 钩子，照跑。
          */
         TopicDeleteResult: {
             /** Deleted */
             deleted: boolean;
+            /** Detached Task Id */
+            detached_task_id?: string | null;
             /** Title */
             title: string;
             /** Topic Id */
@@ -7127,16 +8191,24 @@ export interface components {
          * @description 一次上传的回执：逐文件结局 + 这一趟的入库报告。
          *
          *     ``report`` 可以缺席（``None``）：一个字节都没落盘时没有什么可入库的，此时回一份
-         *     空的 ``ScanReportModel`` 会假装"扫过了"（而它的 ``missing`` 字段还会把整个库
-         *     列成"不见了"）。
+         *     空的 ``ScanReportModel`` 会假装「扫过了」（而它的 ``missing`` 字段还会把整个库
+         *     列成「不见了」）。
+         *
+         *     ``removed`` / ``notes`` 是**覆盖语义**的账（裁定 381）：勾了「覆盖同名」之后，
+         *     盘上没被这次写到的东西会被清掉 —— 清掉了什么（``removed``）与「什么没动但你
+         *     应该知道」（``notes``）都要报出来，否则用户看到的是「我覆盖了，可它还是 3 段」。
          */
         UploadResultModel: {
             /** Files */
             files: components["schemas"]["UploadedFileModel"][];
             /** Kind */
             kind: string;
+            /** Notes */
+            notes: string[];
             /** Overwrite */
             overwrite: boolean;
+            /** Removed */
+            removed: string[];
             /** Replaced */
             replaced: number;
             report: components["schemas"]["ScanReportModel"] | null;
@@ -7365,9 +8437,14 @@ export interface components {
          * VoicePreview
          * @description 一个音色的试听样本现在什么样（T2.4）。
          *
-         *     ``status`` 四态：``missing``（还没生成，点一下就生成）· ``running``（正在生成，
+         *     ``status`` **五态**：``missing``（还没生成，点一下就生成）· ``running``（正在生成，
          *     真机上一次十几秒）· ``ready``（盘上有，可以播）· ``failed``（生成失败了，
-         *     ``error`` 里是引擎原话）。
+         *     ``error`` 里是引擎原话）· ``stale``（盘上有，但那是**上一版参考音**念的 ——
+         *     同名重传参考音之后就会出现，见 ``services/voice_preview.py``）。
+         *
+         *     ``stale`` 必须与 ``ready`` 分开：两者都「盘上有文件、能播」，但前者播出来是
+         *     旧嗓子。合成一个状态，用户听到不像时的第一反应会是去查引擎、查模型，
+         *     而真正的原因（参考音换过、样本没重生成）面板上一个字都没提。
          *
          *     ``missing`` 与 ``failed`` **必须分开**：前者点一下就行，后者再点一下大概率还是
          *     失败 —— 得先看那句话。合成一个"没有"会让用户反复点一个注定失败的按钮。
@@ -7389,6 +8466,79 @@ export interface components {
             url?: string | null;
             /** Voice Id */
             voice_id: string;
+        };
+        /**
+         * VoiceSegmentModel
+         * @description 一个音色里的一段参考音（逐段管理那一屏的一行）。
+         *
+         *     ``text`` 是 ``ref.txt`` 里**同一位置**那一行 —— 位置即对应（第 N 行 ↔ 第 N 段）。
+         *     它是 ``None`` 就说明这一段没有对应文本，克隆质量会打折。
+         */
+        VoiceSegmentModel: {
+            /** Duration Ms */
+            duration_ms: number | null;
+            /** Index */
+            index: number;
+            /** Name */
+            name: string;
+            /** Peak Db */
+            peak_db: number | null;
+            /** Problems */
+            problems: components["schemas"]["ProblemModel"][];
+            /** Sample Rate */
+            sample_rate: number | null;
+            /** Text */
+            text: string | null;
+            /** Usable */
+            usable: boolean;
+        };
+        /**
+         * VoiceSegmentRemovalModel
+         * @description 删掉一段参考音的结局（**重编号是这件事的一部分**，所以必须报出来）。
+         */
+        VoiceSegmentRemovalModel: {
+            /** Notes */
+            notes: string[];
+            /** Removed */
+            removed: string;
+            /** Removed Text */
+            removed_text: string | null;
+            /** Renamed */
+            renamed: {
+                [key: string]: string;
+            }[];
+            segments: components["schemas"]["VoiceSegmentsModel"];
+            /** Text Rewritten */
+            text_rewritten: boolean;
+            /** Voice Id */
+            voice_id: string;
+        };
+        /**
+         * VoiceSegmentsModel
+         * @description 一个音色目录的逐段现状。
+         *
+         *     ``ref_count`` 与 ``text_lines`` 分开报：两者不等就是「文本与参考音对不上」，
+         *     面板要能一眼指出是哪一段对不上（而不是只显示一句「有 warning」）。
+         */
+        VoiceSegmentsModel: {
+            /** Enabled */
+            enabled: boolean | null;
+            /** In Library */
+            in_library: boolean;
+            /** Problems */
+            problems: components["schemas"]["ProblemModel"][];
+            /** Ref Count */
+            ref_count: number;
+            /** Root */
+            root: string;
+            /** Segments */
+            segments: components["schemas"]["VoiceSegmentModel"][];
+            /** Text Lines */
+            text_lines: number;
+            /** Voice Id */
+            voice_id: string;
+            /** Warnings */
+            warnings: components["schemas"]["ProblemModel"][];
         };
         /**
          * WatchdogServiceModel
@@ -7499,7 +8649,11 @@ export interface components {
         };
         /**
          * WatermarkModel
-         * @description 固定水印（**可选装饰**）。``exists=false`` ⇒ 这次出片不贴水印，**照样出片**。
+         * @description 固定水印（**可选装饰**）。``usable=false`` ⇒ 这次出片不贴水印，**照样出片**。
+         *
+         *     ``exists``（盘上有这么个文件）与 ``usable``（渲染**真的会贴上**）是两件事，两个都下发：
+         *     扩展名叫 ``.png`` 的 WebP / 没透明通道的 PNG 在盘上"存在"，渲染却会跳过它。
+         *     只报前者的面板会让人对着一个绿点找半天"为什么片子上没有水印"。
          */
         WatermarkModel: {
             /** Exists */
@@ -7514,6 +8668,10 @@ export interface components {
             path: string;
             /** Position */
             position: string;
+            /** Problem */
+            problem: string | null;
+            /** Usable */
+            usable: boolean;
             /** Width Px */
             width_px: number;
             /** Width Ratio */
@@ -7763,6 +8921,39 @@ export interface operations {
             };
         };
     };
+    prune_assets_api_v1_assets_prune_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssetPruneRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PruneReportModel"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_asset_stats_api_v1_assets_stats_get: {
         parameters: {
             query?: never;
@@ -7836,6 +9027,69 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UploadResultModel"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_voice_segments_api_v1_assets_voice__voice_id__segments_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                voice_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VoiceSegmentsModel"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_voice_segment_api_v1_assets_voice__voice_id__segments__name__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                voice_id: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VoiceSegmentRemovalModel"];
                 };
             };
             /** @description Validation Error */
@@ -8999,6 +10253,160 @@ export interface operations {
             };
         };
     };
+    list_accounts_api_v1_publish_accounts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishAccountsView"];
+                };
+            };
+        };
+    };
+    save_account_api_v1_publish_accounts__account_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublishAccountRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishAccountOutcome"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_account_api_v1_publish_accounts__account_id__delete: {
+        parameters: {
+            query?: {
+                /** @description 说明（写进留痕） */
+                reason?: string | null;
+            };
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishAccountOutcome"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    login_account_api_v1_publish_accounts__account_id__login_post: {
+        parameters: {
+            query?: {
+                /** @description 等扫码的上限（秒），默认 180 */
+                timeout_sec?: number;
+            };
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishAccountHealthOutcome"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    probe_account_api_v1_publish_accounts__account_id__probe_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishAccountHealthOutcome"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     compliance_api_v1_publish_compliance_get: {
         parameters: {
             query?: never;
@@ -9015,6 +10423,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ComplianceView"];
+                };
+            };
+        };
+    };
+    get_cover_api_v1_publish_covers__name__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -9253,6 +10692,41 @@ export interface operations {
             };
         };
     };
+    make_cover_api_v1_publish_tasks__task_id__cover_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PublishCoverRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishCoverOutcome"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     enqueue_task_api_v1_publish_tasks__task_id__enqueue_post: {
         parameters: {
             query?: never;
@@ -9275,6 +10749,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PublishEnqueueResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    assist_api_v1_publish__publication_id__assist_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PublishActionRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishAssistOutcome"];
                 };
             };
             /** @description Validation Error */
@@ -10547,6 +12056,39 @@ export interface operations {
             };
         };
     };
+    clear_topics_api_v1_topics_clear_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ClearTopicsBody"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClearTopicsResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_directions_api_v1_topics_directions_get: {
         parameters: {
             query?: {
@@ -10740,6 +12282,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pull_today_news_api_v1_topics_news_pull_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NewsPullResult"];
                 };
             };
         };

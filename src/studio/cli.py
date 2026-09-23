@@ -14,7 +14,7 @@ import sqlite3
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import typer
 from rich.console import Console
@@ -39,6 +39,7 @@ from studio.core.config import (
     LlmProfileConfig,
     LoadedConfig,
     PersonaConfig,
+    PlatformCode,
     load_app_config,
     load_config,
     load_outputs_config,
@@ -67,12 +68,15 @@ from studio.domain.enums import TaskStatus
 from studio.domain.task_service import TaskService
 from studio.gc import GcReport, RetentionPolicy, resolve_policy, run_gc
 from studio.pools import HeartbeatStore, run_pool
+from studio.publish.calibrate import CalibrateReport, calibrate_platform
 from studio.publish.precheck import PrecheckReport
+from studio.publish.selectors import load_selector_pack
 from studio.render.profiles import (
     FALLBACK_PROFILE_NAME,
     RenderProfileReport,
     build_render_profile_report,
 )
+from studio.render.sticker import StickerPlan
 from studio.services import (
     DraftReport,
     LogService,
@@ -96,6 +100,7 @@ from studio.services.publish_service import (
     cancel_publication,
     enqueue_publications,
     mark_manual_done,
+    resolve_accounts,
     retry_publication,
 )
 from studio.services.render_service import (
@@ -1755,6 +1760,54 @@ def _render_profile_report(report: RenderProfileReport, *, show: bool) -> None:
     else:
         console.print(f"[yellow]水印[/yellow]：跳过（{plan.skipped_reason}）—— **不影响出片**")
 
+    _print_stickers(report)
+
+
+def _print_stickers(report: RenderProfileReport) -> None:
+    """人物贴图那一段（T6.5）：**每一层一行**，贴不贴、为什么。
+
+    为什么逐层打印而不是像水印那样打一张竖表：贴图是"若干层"，而人真正要问的是
+    "我配的那三层，哪几层真的上了"。一张总表答不出这个 —— 于是出现"面板上开着、
+    成片上却没有"时，人只能去翻 manifest。
+    """
+    if not report.stickers:
+        console.print("[dim]人物贴图：配置里没有 stickers 段（一层都不贴）[/dim]")
+        return
+
+    table = Table(title="人物贴图（有就贴，没有就跳过；每层各自判断）", show_lines=False)
+    table.add_column("层", style="cyan", no_wrap=True)
+    table.add_column("位置", no_wrap=True)
+    table.add_column("高度", no_wrap=True)
+    table.add_column("文件", overflow="fold")
+    table.add_column("结论", overflow="fold")
+    for item in report.stickers:
+        table.add_row(
+            item.spec.name,
+            item.spec.position,
+            f"{item.spec.height_px}px",
+            _sticker_file_cell(item),
+            _sticker_verdict_cell(item),
+        )
+    console.print(table)
+
+
+def _sticker_file_cell(item: StickerPlan) -> str:
+    """贴图文件那一格（与水印同一种三态：缺失 / 不可用 / 正常）。"""
+    asset = item.asset
+    if not asset.exists:
+        return "[yellow]缺失[/yellow]"
+    if not asset.usable:
+        return f"[yellow]不可用[/yellow]：{asset.problem}"
+    return f"[green]OK[/green] {asset.width_px}x{asset.height_px}（含透明通道，{asset.sha256[:12]}）"
+
+
+def _sticker_verdict_cell(item: StickerPlan) -> str:
+    """贴图结论那一格：贴上 ⇒ 报摆放；跳过 ⇒ 报原因。"""
+    placement = item.placement
+    if placement is None:
+        return f"[yellow]跳过[/yellow]：{item.skipped_reason}"
+    return f"[green]贴[/green] x={placement.x} y={placement.y} （{placement.width_px}x{placement.height_px}）"
+
 
 def _watermark_file_cell(report: RenderProfileReport) -> str:
     """水印文件那一格的文案（缺文件 / 坏文件 / 正常，三种状态一眼分清）。
@@ -1775,15 +1828,15 @@ def _script_text_for(
     text: str | None,
     text_file: Path | None,
     paths: StudioPaths,
-) -> tuple[str, tuple[str, ...], tuple[str | None, ...]]:
+) -> tuple[str, tuple[str, ...], tuple[str | None, ...], tuple[str, ...]]:
     """文案从哪来：``--text`` > ``--text-file`` > 库里的生效稿件（优先级从高到低）。
 
-    ⇒ ``(正文, 逐句, 逐句音色)``。后两个只对「库里那一版稿件」有意义 —— 命令行
+    ⇒ ``(正文, 逐句, 逐句音色, 逐句说话人)``。后三个只对「库里那一版稿件」有意义 —— 命令行
     直接给的文案本来就没有句子边界、也没有角色，只能让配音自己切、自己挑音色
-    （两个都返回空）。
+    （三个都返回空；说话人空了 ⇒ 人物贴图不换图，manifest 里会写明为什么）。
     """
     if text is not None and text.strip():
-        return text, (), ()
+        return text, (), (), ()
     if text_file is not None:
         if not text_file.is_file():
             raise StudioError(
@@ -1792,7 +1845,7 @@ def _script_text_for(
                 context={"path": text_file.as_posix()},
                 remediation="确认路径拼写，或改用 --text 直接给文案",
             )
-        return text_file.read_text(encoding="utf-8"), (), ()
+        return text_file.read_text(encoding="utf-8"), (), (), ()
     if not paths.db_file.is_file():
         raise StudioError(
             f"数据库尚未初始化：{paths.db_file}",
@@ -1820,6 +1873,7 @@ def _script_text_for(
         "".join(row.text for row in sentences),
         tuple(row.text for row in sentences),
         voices,
+        tuple(row.speaker for row in sentences),
     )
 
 
@@ -1922,7 +1976,7 @@ def render_make(
     """
     paths = StudioPaths.from_env()
     try:
-        script_text, script_sentences, script_voices = _script_text_for(
+        script_text, script_sentences, script_voices, script_speakers = _script_text_for(
             task_id, text=text, text_file=text_file, paths=paths
         )
         outputs_source = paths.config_dir / "outputs.yaml"
@@ -1938,6 +1992,7 @@ def render_make(
                 text=script_text,
                 sentences=script_sentences,
                 sentence_voices=script_voices,
+                sentence_speakers=script_speakers,
                 profile_name=profile_name,
                 voice=voice,
                 reuse_voice=reuse_voice,
@@ -2253,10 +2308,15 @@ def _build_publish_service(
 
     ``with_agent=False`` 时**连网关都不建**：二次校验（§06.4）一个字节都不调 LLM，
     为它去读提示词、探通道，只会让"能不能发"这件本该确定的事多几个可能失败的点。
+
+    ``outputs``（合成配置）给的是**封面**那一条路要的东西：主体贴图（``stickers`` 里的
+    一层）与样式（``cover`` 一节）。这里现读一份而不是从 ``AppState`` 拿 —— CLI 里
+    本来就没有那个热重载仓库，而封面是一次性的命令。
     """
     loaded = load_config(paths)
+    outputs = load_outputs_config(paths.config_dir / "outputs.yaml")
     if not with_agent:
-        return PublishService(connection, paths=paths, publish=loaded.bundle.publish)
+        return PublishService(connection, paths=paths, publish=loaded.bundle.publish, outputs=outputs)
     prompts = PromptLibrary.load(paths.prompts_dir, override_root=paths.prompts_override_dir)
     gateway = build_gateway(
         connection=connection,
@@ -2269,6 +2329,7 @@ def _build_publish_service(
         paths=paths,
         publish=loaded.bundle.publish,
         persona=_active_persona(),
+        outputs=outputs,
         cover_agent=CoverAgent(gateway, prompts),
     )
 
@@ -2523,6 +2584,158 @@ def _render_dry_run(report: DryRunReport) -> None:
     for item in report.warnings:
         console.print(f"[yellow]提示[/yellow] {item}")
     console.print("[dim]本次**没有真的发**：publish.enabled=false 是出厂状态（R14）。[/dim]")
+
+
+@publish_app.command("calibrate")
+def publish_calibrate(
+    platform: Annotated[
+        str,
+        typer.Option("--platform", help="平台代号：douyin / kuaishou / shipinhao / xiaohongshu / …"),
+    ] = "douyin",
+    account: Annotated[
+        str | None, typer.Option("--account", help="账号 id（默认取该平台第一个启用的账号）")
+    ] = None,
+    headless: Annotated[
+        bool, typer.Option("--headless", help="不开窗口（只在登录态已确认没问题时用）")
+    ] = False,
+    no_logged_out: Annotated[
+        bool, typer.Option("--no-logged-out", help="跳过「未登录那一侧」（**不推荐**，见下）")
+    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="输出机读 JSON")] = False,
+) -> None:
+    """逐平台校准选择器（T5.14 · §06.2.2「实测校准」）：**只读探针**，不发任何东西。
+
+    七份 ``selectors/<platform>.yaml`` 里只有抖音那份在真机上逐条验过，其余六份的
+    CSS 是照着它的**形状**猜的。这条命令把"猜得对不对"变成一个十分钟能做完的动作：
+
+    - 开一个**可见**窗口（``--headless`` 可关），打开这个平台的创作页；
+    - 把 pack 里**每一条**选择器在真页面上逐条跑一遍，报"命中几个 / 0 个 / 问不出来"；
+    - **未登录那一侧用一份空 profile 单独跑一遍**：``login_required`` 必须命中、
+      ``login_ok`` 必须**不**命中（陷阱 #212 就是这么翻的车 —— 只测已登录那一侧
+      **测不出** ``login_ok`` 写宽了）；
+    - 管理页也走一遍（数据回收那一组在列表页上）。
+
+    ``--no-logged-out`` 存在只是为了快 —— 但那一半正是最容易错的，默认跑。
+
+    它**只读**：不点发布、不填输入框、不往平台上送任何内容（R13 / R14）。唯一的写
+    操作是往 ``data/work/calibrate/<platform>/`` 落一张截图。
+
+    **校准需要一份登录态**：这条命令不认识"没登录"以外的任何失败，所以要先有一个该
+    平台的账号（``config/publish.yaml`` 的 ``accounts``）并在面板上点过它的「扫码登录」
+    （T6.4）。没登录时它**不会**把创作页那一堆"命中 0 个"当成"选择器全错"—— 那会让人
+    去改几条其实好好的选择器。
+
+    校完照着输出末尾那句话做：改 ``selectors/<platform>.yaml`` 里错的那几条、
+    把 ``version`` 改掉（它进 ``publications.evidence_json``）、再把 ``calibrated``
+    改成 ``true`` 并写上 ``calibrated_at`` —— 面板上"校准"那一列看的就是这两个值。
+
+    有"要修"的那几条 ⇒ 退出码 1。
+    """
+    paths = StudioPaths.from_env()
+    try:
+        loaded = load_config(paths)
+    except StudioError as exc:
+        _fail(exc, json_output)
+        raise typer.Exit(code=1) from exc
+    config = loaded.bundle.publish
+
+    # ``request.platform`` 到这一行之前只是个字符串（CLI 传什么就是什么）；
+    # 它是不是真平台，由下面这次查表回答 —— 查不到就抛，不会走到 cast。
+    platform_cfg = config.platforms.get(cast("PlatformCode", platform))
+    if platform_cfg is None:
+        console.print(
+            f"[red]config/publish.yaml 里没有平台 {platform}[/red]（现有：{' / '.join(config.platforms)}）"
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        pack = load_selector_pack(platform)
+        # 校准**只要一份登录态**，所以取该平台第一个启用的账号就够（探测选择器时
+        # 是哪个号无所谓）—— 这与投递侧"默认铺满全部账号"的意图不冲突。
+        account_cfg = resolve_accounts(
+            config, platform=platform, account_ids=None if account is None else (account,)
+        )[0]
+        report = asyncio.run(
+            calibrate_platform(
+                pack=pack,
+                account=account_cfg,
+                platform_cfg=platform_cfg,
+                paths=paths,
+                headless=headless,
+                check_logged_out=not no_logged_out,
+            )
+        )
+    except StudioError as exc:
+        _fail(exc, json_output)
+        raise typer.Exit(code=1) from exc
+
+    if json_output:
+        console.print_json(data=report.to_dict())
+    else:
+        _render_calibrate(report)
+    if not report.ok:
+        raise typer.Exit(code=1)
+
+
+def _render_calibrate(report: CalibrateReport) -> None:
+    """校准结论（人读）。"""
+    state = (
+        f"[green]已校准[/green]（{report.calibrated_at}）"
+        if report.calibrated
+        else "[yellow]未校准[/yellow]（calibrated: false）"
+    )
+    console.print(
+        f"[cyan]选择器校准[/cyan] {report.platform} · 账号 {report.account_id} · "
+        f"选择器版本 {report.selectors_version} · {state}"
+    )
+    if report.known_gaps:
+        console.print("[yellow]这份 pack 还有已知缺口（校准修不了它们）[/yellow]")
+        for gap in report.known_gaps:
+            console.print(f"  [yellow]·[/yellow] {gap}")
+
+    table = Table(title="逐条读数", show_lines=False)
+    table.add_column("位置", style="cyan", no_wrap=True)
+    table.add_column("键", no_wrap=True)
+    table.add_column("命中", justify="right", no_wrap=True)
+    table.add_column("结论", no_wrap=True)
+    table.add_column("选择器 / 文案", overflow="fold")
+    for probe in report.probes:
+        if probe.verdict == "fix":
+            mark = "[red]要修[/red]"
+        elif probe.verdict == "ok":
+            mark = "[green]好[/green]"
+        else:
+            mark = "[dim]信息[/dim]"
+        hits = "[red]问不出来[/red]" if probe.error else str(probe.hits)
+        table.add_row(probe.where, probe.key, hits, mark, probe.selector)
+    console.print(table)
+
+    for probe in report.blockers:
+        detail = probe.error or f"命中 {probe.hits} 个，而这一条期望「{probe.expect}」"
+        console.print(f"[red]要修[/red] {probe.where} · {probe.key}：{detail}")
+        if probe.note:
+            console.print(f"      [dim]{probe.note}[/dim]")
+
+    for skipped in report.skipped:
+        console.print(f"[dim]跳过 {skipped.key}：{skipped.reason}[/dim]")
+    for warning in report.warnings:
+        console.print(f"[yellow]提示[/yellow] {warning}")
+    if report.screenshot_path is not None:
+        console.print(f"[dim]截图 {report.screenshot_path}[/dim]")
+    console.print(f"[dim]耗时 {report.elapsed_ms} ms · 本次**一个字节都没发出去**[/dim]")
+
+    if report.blockers:
+        console.print(
+            "[yellow]接下来[/yellow]：改 selectors/"
+            f"{report.platform}.yaml 里那几条（**只改文件，不改代码**），再跑一次本命令。"
+        )
+    else:
+        console.print(
+            f"[green]这一轮没有「要修」的[/green]（跳过的那几条见上面）。把 selectors/"
+            f"{report.platform}.yaml 的 version 改掉，再写 "
+            f'calibrated: true / calibrated_at: "{utc_now().date().isoformat()}" —— '
+            "面板上「校准」那一列就会跟着变。"
+        )
 
 
 @publish_app.command("enqueue")

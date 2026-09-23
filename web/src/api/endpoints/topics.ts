@@ -4,7 +4,8 @@
 // 人工写 / 改 / 删方向（POST/PATCH/DELETE directions）、两次长任务（analyze / ideate）、
 // 勾选入队（select）、人工加选题（manual）、改选题（PATCH topics/{id}）、
 // 删选题（DELETE topics/{id}）、生成文案并送审（POST topics/{id}/draft-review）、
-// 输入源（hot/import 扫盘 · hot/submit 网页粘贴）。
+// 输入源（hot/import 扫盘 · hot/submit 网页粘贴）、
+// 今日新闻（news-pull 一键抓取 + 模型评测）、清空面板（clear 一键清除所有选题）。
 //
 // 长任务为什么单独给超时
 // ----------------------
@@ -64,6 +65,10 @@ export type OutlineView = OkJson<"/api/v1/topics/{topic_id}/outline", "get">;
 export type OutlineItem = NonNullable<OutlineView["outline"]>;
 export type OutlineResult = OkJson<"/api/v1/topics/{topic_id}/outline", "post">;
 export type TopicDeleteResult = OkJson<"/api/v1/topics/{topic_id}", "delete">;
+export type NewsPullResult = OkJson<"/api/v1/topics/news-pull", "post">;
+export type ClearTopicsBody = BodyJson<"/api/v1/topics/clear", "post">;
+export type ClearTopicsResult = OkJson<"/api/v1/topics/clear", "post">;
+export type NewsSkipItem = NewsPullResult["skipped"][number];
 export type HotImportResult = OkJson<"/api/v1/hot/import", "post">;
 export type ImportResult = NonNullable<HotImportResult["hot"]>;
 
@@ -167,8 +172,8 @@ export function updateTopic(
 /**
  * 删一条选题（**不可撤销**）。
  *
- * 已经派生过任务的选题会被后端拦下（422 `TOPIC_SELECT_INVALID` + 任务号）：删掉它
- * 那条任务就再也写不出稿 —— 前端不需要自己判，把后端给的原因照原样摆出来即可。
+ * **派生过任务也照删**：删掉的是想法，不是活 —— 那条任务不跟着走（响应里的
+ * `detached_task_id`），它自己带着标题 / 角度 / 钩子，照跑。
  */
 export function deleteTopic(topicId: string, signal?: AbortSignal): Promise<TopicDeleteResult> {
   return apiDelete<TopicDeleteResult>(`/api/v1/topics/${encodeURIComponent(topicId)}`, { signal });
@@ -265,9 +270,9 @@ export function updateDirection(
 /**
  * 删一个方向，**它下面的候选一起走**（级联）。
  *
- * 响应里的 `cascaded_topics` 就是被一起删掉的候选条数 —— 面板拿它做二次确认，
- * 也拿它在事后如实报一句"删了 7 条候选"。已经有候选派生了任务的方向会被后端拦下
- * （422 + 任务号）：那不是门禁，是"删掉之后立刻断链"。
+ * 响应里两样都要看：`cascaded_topics`（这一下删掉了多少条候选）与 `detached_task_count`
+ * （其中几条已经有任务）。**派生过任务也照删** —— 删掉的是想法，不是活：那些任务不跟着走，
+ * 照跑。第二样不报出来，用户会以为"删了方向 ⇒ 那些活也没了"。
  */
 export function deleteDirection(
   directionId: string,
@@ -277,6 +282,36 @@ export function deleteDirection(
     `/api/v1/topics/directions/${encodeURIComponent(directionId)}`,
     { signal },
   );
+}
+
+/**
+ * 一键拉取今日新闻 ⇒ 模型逐条评测 ⇒ 值得写的落成方向（**长任务**：抓取 + 若干次 LLM）。
+ *
+ * 与 `analyze` / `ideate` 一样是"点下去等一会儿"的长任务，所以共用后端那把单飞守卫 ——
+ * 已经在跑 ⇒ 409 `TOPIC_BATCH_RUNNING`，前端不做队列（排队只会让人对着转圈猜）。
+ *
+ * `ok=false` 也是 200（评测没跑出来，原因在体内）；抓取挂了才是 503
+ * `NEWS_FETCH_FAILED` —— 那是"链路没通"，与"今天没有值得写的"是两件事。
+ */
+export function pullTodayNews(signal?: AbortSignal): Promise<NewsPullResult> {
+  return apiPost<NewsPullResult>("/api/v1/topics/news-pull", undefined, {
+    timeoutMs: LONG_TASK_TIMEOUT_MS,
+    signal,
+  });
+}
+
+/**
+ * 清空整个选题面板：**所有方向 + 所有选题**（不可撤销）。
+ *
+ * 两级调用（与素材库的孤儿清理同一条）：`dryRun` 为真 ⇒ **只报会删掉多少**，库里一个
+ * 字节不动；面板拿这三个数弹一次确认，用户点头才用 `false` 再发一次。
+ *
+ * `detached_task_count` = 被清掉的选题里**已经派生过任务**的条数 —— 那些任务不跟着走，
+ * 照跑。不显示这一条的话，用户会以为"清了选题 ⇒ 那些活也没了"。
+ */
+export function clearTopics(dryRun = true, signal?: AbortSignal): Promise<ClearTopicsResult> {
+  const body: ClearTopicsBody = { dry_run: dryRun };
+  return apiPost<ClearTopicsResult>("/api/v1/topics/clear", body, { signal });
 }
 
 /**

@@ -20,12 +20,14 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import BinaryIO, Final, Literal
 
 from studio.assets.layout import (
     ASSET_ID_PATTERN,
+    AUDIO_SUFFIXES,
+    REF_STEM_PATTERN,
     AssetKind,
     prefix_for,
     root_for,
@@ -42,6 +44,7 @@ __all__ = [
     "asset_id_for_upload",
     "check_suffix",
     "copy_into_place",
+    "prune_refs",
     "ref_name",
     "safe_basename",
     "suffix_of",
@@ -151,6 +154,43 @@ def ref_name(index: int, filename: str) -> str:
     """音色的第 N 段参考音叫什么（``ref_01.wav`` …）。两位数是契约的一部分：
     排序即顺序，而 ``ref.txt`` 的第 N 行对应的就是第 N 段。"""
     return f"ref_{index:02d}{suffix_of(filename)}"
+
+
+def prune_refs(root: Path, keep: Iterable[str]) -> tuple[str, ...]:
+    """覆盖上传之后，把**这次没写到**的 ``ref_NN.*`` 清掉，返回被清掉的文件名。
+
+    为什么覆盖要连带清掉多余的段（裁定 381）
+    --------------------------------------
+    "覆盖同名"如果只管同名的那几个，结果会是一份**两边都不是**的目录：新传了 2 段、
+    旧的 ``ref_03.wav`` 还在盘上 ⇒ 库里报 3 段、引擎把三段拼起来当 prompt，而用户
+    以为自己只留了 2 段。用户看到的现象就是**"覆盖没生效"** —— 他说的没错，
+    覆盖确实没覆盖完。所以这里把语义定成**镜像**：这次传进来的就是全部，其余的段
+    一律清掉，并且**逐条报出来**（静默清理比不清理更难查）。
+
+    三条守卫
+    --------
+    ① 只认 ``ref_NN`` + 音频扩展名 —— ``ref.txt`` / ``profile.json`` / 用户自己塞的
+       其它东西一个都不动（那不是我们建的）；
+    ② 只在**本次确实写进去过**的时候才清（由调用方保证）：一次全被跳过 / 全失败的上传
+       不该把用户现有的音色清空；
+    ③ 目录必须真的存在，且 ``keep`` 是名字而不是路径 —— 拼路径的活只在这一处。
+    """
+    if not root.is_dir():
+        return ()
+    kept = set(keep)
+    doomed = [
+        item
+        for item in sorted(root.iterdir(), key=lambda path: path.name)
+        if item.is_file()
+        and REF_STEM_PATTERN.fullmatch(item.stem) is not None
+        and item.suffix.lower() in AUDIO_SUFFIXES
+        and item.name not in kept
+    ]
+    removed: list[str] = []
+    for item in doomed:
+        item.unlink()
+        removed.append(item.name)
+    return tuple(removed)
 
 
 def copy_into_place(source: BinaryIO, target: Path, *, overwrite: bool) -> WriteStatus:

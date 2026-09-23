@@ -42,7 +42,6 @@ __all__ = [
     "BROLL_LIBRARY_MIN_MS",
     "BROLL_MIN_USABLE_MS",
     "VOICE_MIN_SAMPLE_RATE",
-    "VOICE_MIN_SEGMENTS",
     "VOICE_PEAK_CEILING_DB",
     "VOICE_SEGMENT_MAX_MS",
     "VOICE_SEGMENT_MIN_MS",
@@ -63,9 +62,16 @@ BGM_MIN_DURATION_MS: Final[int] = 15_000
 #: 低于这个数的片段**抽不出任何合法入点**，留着只会在渲染那一刻才报错。
 BROLL_MIN_USABLE_MS: Final[int] = 4_500
 
-#: 参考音段数（§4.3.1：2–3 段，超出**拒绝入库**）。
-VOICE_MIN_SEGMENTS: Final[int] = 2
-VOICE_MAX_SEGMENTS: Final[int] = 3
+#: 参考音**一段都没有**才是问题：段数不设上限，也不设"至少几段"（**裁定 379**）。
+#:
+#: 这里原本写着「2–3 段，超出**拒绝入库**」，而这两条都是**我们自己加的**：
+#: - 上游只挡单段 >30s（``cosyvoice/cli/frontend.py`` 的
+#:   ``assert speech.shape[1] / 16000 <= 30``），全文没有任何段数判据；
+#: - 下限 2 的代价很具体：手边只有一句干净台词的人，为了过这道门会**把同一个文件
+#:   复制一份**当第二段 —— 真机库里就躺着这样一条音色（两段 sha256 完全相同）。
+#:   复制不产生任何新信息，只让人以为自己给了两段。
+#: 多给几段是**真的有用**的（合成时会把它们拼成一段 prompt 一起喂给引擎），
+#: 所以它是"越多越好"的建议，不是"少了就拒"的门。只给一段时下面给一条 warning。
 
 #: 单段参考音时长（**裁定 369**：下限从 §4.3.1 原文的 10s 改成 2s）。
 #:
@@ -117,6 +123,9 @@ class AssetCheck:
     :param peaks: 与 ``segments`` **同序同长**的峰值（dBFS）；量不出来那一段是 ``None``。
         入库时要把"最响的那一段"记进 ``voice_profiles.peak_db`` —— 在体检里已经量过
         一遍了，让入库再量一遍等于把每个参考音解码两次。
+    :param segment_indexes: ``segments`` / ``peaks`` 里每一项**是第几段**（1 起）。
+        少了它，两者就只能按"第几个探测成功的"去对齐，而探不出来的段会被跳过 ——
+        于是"第 3 段的时长"可能被当成第 2 段的（逐段管理面板会照着这个数让人删段）。
     """
 
     kind: AssetKind
@@ -126,6 +135,7 @@ class AssetCheck:
     info: MediaInfo | None
     segments: tuple[MediaInfo, ...] = ()
     peaks: tuple[float | None, ...] = ()
+    segment_indexes: tuple[int, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -238,8 +248,12 @@ def check_voice(
     probe: Callable[..., MediaInfo] = probe_media,
     volume: Callable[..., VolumeStats] = analyze_volume,
 ) -> AssetCheck:
-    """零样本参考音：段数 2–3、单段 2–30s（下限见裁定 369）、采样率 ≥ 16kHz、
-    峰值 ≤ −1.0 dBFS（§4.3.1）。
+    """零样本参考音：段数**不设上下限**、单段 2–30s（下限见裁定 369）、
+    采样率 ≥ 16kHz、峰值 ≤ −1.0 dBFS（§4.3.1）。
+
+    段数为什么不再是判据（**裁定 379**）：引擎一次只吃"一段 prompt"，而合成时会把
+    多段**拼起来**用 ⇒ 段数越多，克隆听到的原声越多。它既不是引擎的限制，也不该
+    是我们拦人的理由（详见 ``VOICE_*_SEGMENTS`` 删掉处那段注释）。
 
     旁车文件（``ref.txt`` / ``profile.json``）缺失或对不上记 **warning**：
     它们不阻止入库（引擎仍能跑），但会让复刻质量与合规留档打折 —— 这两件事
@@ -250,17 +264,10 @@ def check_voice(
     refs = voice_refs(candidate)
     segments: list[MediaInfo] = []
     peaks: list[float | None] = []
+    indexes: list[int] = []
 
     if not refs:
         problems.append(Problem("no_refs", "目录里没有参考音（要 ref_01.wav 这种名字）"))
-    if len(refs) < VOICE_MIN_SEGMENTS:
-        problems.append(
-            Problem("too_few_refs", f"参考音只有 {len(refs)} 段，下限 {VOICE_MIN_SEGMENTS} 段（§4.3.1）")
-        )
-    if len(refs) > VOICE_MAX_SEGMENTS:
-        problems.append(
-            Problem("too_many_refs", f"参考音有 {len(refs)} 段，上限 {VOICE_MAX_SEGMENTS} 段（§4.3.1）")
-        )
 
     for index, ref in enumerate(refs, start=1):
         info, failure = _probe(ref, probe)
@@ -270,6 +277,7 @@ def check_voice(
         if info is None:
             continue
         segments.append(info)
+        indexes.append(index)
         # 峰值先量（不管有没有音频流）：``peaks`` 必须与 ``segments`` 同序同长，
         # 否则入库时"最响的那一段"会张冠李戴。
         peak, peak_problem = _peak(ref, volume)
@@ -312,6 +320,14 @@ def check_voice(
             )
 
     warnings.extend(_voice_sidecar_warnings(candidate, ref_count=len(refs)))
+    if len(refs) == 1:
+        warnings.append(
+            Problem(
+                "single_ref",
+                "只有 1 段参考音：能用，但多给几段音色会更稳 —— "
+                "合成时会把各段拼成一段 prompt 一起喂给引擎，听到的原声越多越像",
+            )
+        )
     return AssetCheck(
         kind=candidate.kind,
         id=candidate.id,
@@ -320,6 +336,7 @@ def check_voice(
         info=segments[0] if segments else None,
         segments=tuple(segments),
         peaks=tuple(peaks),
+        segment_indexes=tuple(indexes),
     )
 
 

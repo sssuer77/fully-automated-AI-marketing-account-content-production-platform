@@ -93,6 +93,8 @@ function snapshot(overrides: Partial<RenderConsole> = {}): RenderConsole {
     watermark_hint: "水印文件不存在，跳过：…/watermark.png",
     subtitle_enabled: true,
     subtitle_hint: null,
+    stickers_applied: [],
+    stickers_hint: null,
     ...overrides,
   };
 }

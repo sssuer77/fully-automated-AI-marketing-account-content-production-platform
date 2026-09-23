@@ -72,6 +72,7 @@ def test_two_drills_never_share_a_cache_key() -> None:
             engine=engine.name,
             engine_revision=engine.revision,
             voice_id="v",
+            voice_fingerprint="",
             normalized_text="念这一句",
             speed=1.0,
             emotion="neutral",

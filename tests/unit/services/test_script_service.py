@@ -21,11 +21,13 @@ from studio.agents.base import AgentContext, AgentResult
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.paths import StudioPaths
 from studio.db import connect, migrate
-from studio.db.repositories import DirectionRepo, ScriptRepo, TopicRepo
+from studio.db.repositories import DirectionRepo, OutlineRepo, ScriptRepo, TopicRepo
 from studio.domain.enums import TaskStatus
 from studio.domain.script import (
     DirectorInput,
     DirectorOutput,
+    OutlineInput,
+    OutlineOutput,
     ScriptSegment,
     SentenceSpec,
     WriterInput,
@@ -53,7 +55,13 @@ def connection(tmp_path: Path) -> Iterator[sqlite3.Connection]:
 # ══════════════════════════════════════════════════════════════════════
 
 
-def seed_topic(connection: sqlite3.Connection, title: str = "MC跑酷最难的一跳") -> str:
+def seed_topic(
+    connection: sqlite3.Connection,
+    title: str = "MC跑酷最难的一跳",
+    *,
+    evidence: str = "",
+) -> str:
+    """造一条方向 + 一条选题；``evidence`` 非空 ⇒ 这条方向带着**今日新闻的事件总结**。"""
     directions = DirectionRepo(connection)
     batch = directions.new_batch_id()
     (direction_id,) = directions.insert_batch(
@@ -62,7 +70,10 @@ def seed_topic(connection: sqlite3.Connection, title: str = "MC跑酷最难的�
             {
                 "title": "跑酷技术流",
                 "rationale": "账号定位就是跑酷",
-                "grounded_on": [{"type": "persona"}],
+                "grounded_on": [
+                    {"type": "persona"},
+                    *([{"type": "hot", "kind": "news", "quote": evidence}] if evidence else []),
+                ],
                 "priority": 100,
                 "risk_flags": [],
             }
@@ -118,6 +129,10 @@ def writer_output() -> WriterOutput:
     )
 
 
+def outline_output() -> OutlineOutput:
+    return OutlineOutput(title="原标题够好就别改", core_argument="表面是价格，内核是信任")
+
+
 class FakeDirector:
     """记录收到的 ``DirectorInput``，返回脚本化的结果。"""
 
@@ -144,16 +159,32 @@ class FakeWriter:
         return AgentResult[WriterOutput](ok=self.ok, data=self.data, **self.extra)
 
 
+class FakeOutliner:
+    """记录收到的 ``OutlineInput``，返回脚本化的二级产物。"""
+
+    def __init__(self, *, data: OutlineOutput | None = None, ok: bool = True, **extra: Any) -> None:
+        self.data = data
+        self.ok = ok
+        self.extra = extra
+        self.inputs: list[OutlineInput] = []
+
+    async def run(self, ctx: AgentContext, payload: OutlineInput) -> AgentResult[OutlineOutput]:
+        self.inputs.append(payload)
+        return AgentResult[OutlineOutput](ok=self.ok, data=self.data, **self.extra)
+
+
 def build(
     connection: sqlite3.Connection,
     *,
     director: FakeDirector | None = None,
     writer: FakeWriter | None = None,
+    outliner: FakeOutliner | None = None,
 ) -> ScriptService:
     return ScriptService(
         connection,
         director=director or FakeDirector(data=outline()),
         writer=writer or FakeWriter(data=writer_output()),
+        outliner=outliner,
     )
 
 
@@ -211,6 +242,65 @@ class TestDraft:
         second = await service.draft(topic_id=topic_id, persona=persona())
         assert (first.version, second.version) == (1, 2)
         assert second.script_id != first.script_id
+
+    async def test_a_deleted_topic_does_not_strand_the_task_it_derived(
+        self, connection: sqlite3.Connection
+    ) -> None:
+        """选题行被删掉之后，**已经排队的活照跑** —— 它自己带着要说什么。
+
+        「删选题 / 删方向」是清理选题池的动作，不该让一条已经派生的任务写不出稿
+        （用户原话：「堆积太多内容会难以管理」）。任务自带 ``tasks.title`` 与
+        ``payload_json`` 里的 angle / hook_type ⇒ 退路是把这三样捡起来接着写。
+        """
+        topic_id = seed_topic(connection)
+        first = await build(connection).draft(topic_id=topic_id, persona=persona())
+        assert first.ok
+        assert TopicRepo(connection).delete(topic_id) is True
+
+        director = FakeDirector(data=outline())
+        report = await build(connection, director=director).draft(
+            topic_id=topic_id, persona=persona(), task_id=first.task_id
+        )
+
+        assert report.ok
+        assert report.task_id == first.task_id
+        assert report.topic_id == topic_id
+        assert not report.created_task  # 任务早就在那儿了，不该新建第二个
+        spec = director.inputs[0].topic
+        assert spec.title == "MC跑酷最难的一跳"
+        assert spec.angle == "只讲那一跳"
+        assert spec.hook_type == "suspense"
+        # 理由那一栏只能给一句实话（`TaskPayload` 里没有 reason，那一份是冻结的契约）
+        assert "已从选题池删除" in spec.reason
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 已知事实（今日新闻那条链路 · T5.12 增补）
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestFacts:
+    """事件总结要**真的**走到写稿那两级 —— 否则它只是躺在库里的一句话。
+
+    为什么在服务层按 ``topic.direction_id`` 回读，而不是让上游哪一级的模型抄下来：
+    抄写会漂（模型改写一句、漏一句都看不出来），而事实漂了就是幻觉 —— 用户要的正是
+    "别编"。这一层是确定性的：方向里有什么，提示词里就有什么。
+    """
+
+    async def test_news_evidence_reaches_director_and_writer(self, connection: sqlite3.Connection) -> None:
+        topic_id = seed_topic(connection, evidence="一家三口一氧化碳中毒身亡。")
+        director = FakeDirector(data=outline())
+        writer = FakeWriter(data=writer_output())
+        await build(connection, director=director, writer=writer).draft(topic_id=topic_id, persona=persona())
+        assert director.inputs[0].facts == "一家三口一氧化碳中毒身亡。"
+        assert writer.inputs[0].facts == "一家三口一氧化碳中毒身亡。"
+
+    async def test_a_topic_without_news_evidence_gets_no_facts(self, connection: sqlite3.Connection) -> None:
+        """不是新闻来的选题 ⇒ 空串（渲染成「（无 …）」，而不是让模型以为有事实可依）。"""
+        topic_id = seed_topic(connection)
+        director = FakeDirector(data=outline())
+        await build(connection, director=director).draft(topic_id=topic_id, persona=persona())
+        assert director.inputs[0].facts == ""
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -328,3 +418,75 @@ class TestReadActiveScript:
         _, sentences = read_active_script(connection, report.task_id)  # type: ignore[misc]
         assert all(len(row.text) <= 28 for row in sentences)
         assert [row.seq for row in sentences] == list(range(1, len(sentences) + 1))
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 二级产物：缺位时**写稿前自动补一次**
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestAutoOutline:
+    """二级（视频标题 + 核心论点）以前只有面板上那颗手动按钮能触发 —— 实际链路里几乎
+    从不发生，于是三级拿到 ``OUTLINE_UNSET``，「围绕核心论点深挖」这句指令**没有论点
+    可围绕**，只能写成表面叙事；改了 outliner 提示词也看不到效果（那一级压根没跑）。
+    这里把「自动补」与两条兜底钉死。
+    """
+
+    async def test_draft_fills_the_second_level_when_it_is_missing(
+        self, connection: sqlite3.Connection
+    ) -> None:
+        topic_id = seed_topic(connection)
+        outliner = FakeOutliner(data=outline_output())
+        writer = FakeWriter(data=writer_output())
+        report = await build(connection, outliner=outliner, writer=writer).draft(
+            topic_id=topic_id, persona=persona()
+        )
+        assert report.ok
+        assert len(outliner.inputs) == 1
+        # ★ 论点真的喂给了三级 —— 否则「深挖内核」没有任何东西可挖
+        assert writer.inputs[0].core_argument == "表面是价格，内核是信任"
+        assert writer.inputs[0].outline_title == "原标题够好就别改"
+
+    async def test_the_generated_outline_is_persisted(self, connection: sqlite3.Connection) -> None:
+        topic_id = seed_topic(connection)
+        await build(connection, outliner=FakeOutliner(data=outline_output())).draft(
+            topic_id=topic_id, persona=persona()
+        )
+        row = OutlineRepo(connection).get(topic_id)
+        assert row is not None and row.title == "原标题够好就别改"
+
+    async def test_an_existing_outline_is_not_regenerated(self, connection: sqlite3.Connection) -> None:
+        """已经有了就**不再烧一次调用**（自动补是"缺位时"的兜底，不是每篇都跑）。"""
+        topic_id = seed_topic(connection)
+        service = build(connection, outliner=FakeOutliner(data=outline_output()))
+        await service.draft(topic_id=topic_id, persona=persona())
+        second = FakeWriter(data=writer_output())
+        outliner = FakeOutliner(data=outline_output())
+        await build(connection, outliner=outliner, writer=second).draft(topic_id=topic_id, persona=persona())
+        assert outliner.inputs == []
+        assert second.inputs[0].outline_title == "原标题够好就别改"
+
+    async def test_without_an_outliner_the_title_falls_back_to_the_topic(
+        self, connection: sqlite3.Connection
+    ) -> None:
+        """没接 Outliner ⇒ 标题用**一级选题标题**，而不是 ``OUTLINE_UNSET``。
+
+        用户口径：原标题已经够好了。落到 ``OUTLINE_UNSET`` 上等于让模型「按选题自行
+        发挥」一个标题 —— 而标题是最不该自由发挥的东西（它是观众看到的第一行字）。
+        """
+        topic_id = seed_topic(connection, title="汉堡包做成月饼")
+        writer = FakeWriter(data=writer_output())
+        report = await build(connection, writer=writer).draft(topic_id=topic_id, persona=persona())
+        assert report.ok
+        assert writer.inputs[0].outline_title == "汉堡包做成月饼"
+        assert writer.inputs[0].core_argument is None
+
+    async def test_a_failed_outliner_does_not_block_the_draft(self, connection: sqlite3.Connection) -> None:
+        """best-effort：二级失败也**必须**写得出稿（退回一级标题）。"""
+        topic_id = seed_topic(connection, title="汉堡包做成月饼")
+        writer = FakeWriter(data=writer_output())
+        report = await build(connection, outliner=FakeOutliner(data=None, ok=False), writer=writer).draft(
+            topic_id=topic_id, persona=persona()
+        )
+        assert report.ok
+        assert writer.inputs[0].outline_title == "汉堡包做成月饼"

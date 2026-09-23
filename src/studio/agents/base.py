@@ -83,6 +83,7 @@ def persona_variables(persona: PersonaConfig) -> dict[str, str]:
         "audience": persona.audience,
         "catchphrases": "、".join(persona.catchphrases),
         "forbidden": "、".join(persona.forbidden),
+        "speaker_names": "、".join(persona.speaker_names) or "（未配置）",
         "style_hint": persona.style_hint or "（无特别要求）",
     }
 

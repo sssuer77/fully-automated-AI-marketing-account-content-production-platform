@@ -36,10 +36,13 @@ import {
   assetMediaUrl,
   assetThumbUrl,
   deleteAsset,
+  deleteVoiceSegment,
   fetchAssetPage,
   fetchAssetStats,
+  fetchVoiceSegments,
   ingestAssets,
   patchAsset,
+  pruneOrphans,
   uploadAssets,
   uploadVoice,
   type AssetItem,
@@ -50,9 +53,12 @@ import {
   type FlatKind,
   type IngestBody,
   type IngestReport,
+  type PruneReport,
   type ScannedAsset,
   type UploadedFile,
   type UploadResult,
+  type VoiceSegmentRemoval,
+  type VoiceSegments,
 } from "@/api/endpoints/assets";
 import { fetchCompliance, type ComplianceView } from "@/api/endpoints/publish";
 import { useChannelStream } from "@/composables/useTaskStream";
@@ -85,6 +91,12 @@ export interface AssetsApi {
   uploadVoice: typeof uploadVoice;
   /** 删掉一条素材（`purge` 决定盘上那份动不动）。 */
   deleteAsset: typeof deleteAsset;
+  /** 一个音色的逐段现状（裁定 381：段号 / 时长 / 那一行文本）。 */
+  fetchVoiceSegments: typeof fetchVoiceSegments;
+  /** 删掉一段参考音（服务端会重编号 + 同步 `ref.txt`）。 */
+  deleteVoiceSegment: typeof deleteVoiceSegment;
+  /** 清掉盘上认得出、库里没有、且本身不合格的孤儿（裁定 384）。 */
+  pruneOrphans: typeof pruneOrphans;
   /** R2 来源登记留档（T5.5）：这一屏与发布面板**共用同一份**（§06.11 要求两处常驻）。 */
   fetchCompliance: typeof fetchCompliance;
 }
@@ -97,6 +109,9 @@ let api: AssetsApi = {
   uploadAssets,
   uploadVoice,
   deleteAsset,
+  fetchVoiceSegments,
+  deleteVoiceSegment,
+  pruneOrphans,
   fetchCompliance,
 };
 
@@ -121,7 +136,8 @@ export const KIND_LABELS: Record<AssetKind, string> = {
 /** 往哪放素材（面板常驻显示，省得用户去翻文档）。 */
 export const KIND_HINTS: Record<AssetKind, string> = {
   broll: "data/assets/mc_parkour/parkour_<名字>.mp4",
-  voice: "data/voice_src/<音色 id>/ref_01.wav + ref.txt + profile.json（占位音看 profile.json 的 origin）",
+  voice:
+    "data/voice_src/<音色 id>/ref_01.wav …（段数不设上限，越多音色越稳）+ ref.txt + profile.json（占位音看 profile.json 的 origin）",
   bgm: "data/assets/bgm/bgm_<名字>.mp3",
 };
 
@@ -633,6 +649,20 @@ export const useAssetsStore = defineStore("assets", () => {
   /** R2 来源登记留档（T5.5）：与发布面板共用同一份。 */
   const compliance = ref<ComplianceView | null>(null);
 
+  // ── 音色的逐段管理（裁定 381）──────────────────────────────────
+  /** 展开着逐段表的那一行（同时只有一行；音色才有）。 */
+  const segmentsId = ref<string | null>(null);
+  /** 按音色 id 缓存的逐段现状（`null` 值不存在 —— 没拉过就是没这个键）。 */
+  const segments = ref<Record<string, VoiceSegments>>({});
+  const segmentsBusy = ref(false);
+  /** 正在删的那一段（按名字；`null` = 没有在途的删段）。 */
+  const segmentPending = ref<string | null>(null);
+  /** 上一次删段的回执（重编号那本账要显示出来）。 */
+  const segmentResult = ref<VoiceSegmentRemoval | null>(null);
+  /** 上一次孤儿清理的回执（`null` = 这一屏还没点过）。 */
+  const pruneReport = ref<PruneReport | null>(null);
+  const pruneBusy = ref(false);
+
   // ── 分页与筛选（三个数各自独立：换一个就回第 1 页）────────────────
   const pageIndex = ref(1);
   const pageSize = ref(DEFAULT_PAGE_SIZE);
@@ -683,6 +713,9 @@ export const useAssetsStore = defineStore("assets", () => {
       enabledFilter.value = "all";
       editingId.value = null;
       upload.value = null;
+      segmentsId.value = null;
+      segmentResult.value = null;
+      pruneReport.value = null;
     }
   }
 
@@ -757,6 +790,31 @@ export const useAssetsStore = defineStore("assets", () => {
   }
 
   /**
+   * 清掉这一类的**孤儿**（裁定 384）：盘上认得出、库里没有、**而且本身就不合格**。
+   *
+   * `dryRun: true` ⇒ 只报"会清掉哪些"，一个字节都不动（面板点第一下用它）。真删了
+   * 东西 ⇒ 盘上变了、未入库那一批也跟着变，所以重拉一次；预览不动盘，没必要。
+   *
+   * 合格的孤儿**不会被清**（它们该入库），后端照实回在 `kept` 里 —— 面板必须把那一段
+   * 显示出来，否则用户会以为"清了一遍，怎么还剩着"。
+   */
+  async function prune(dryRun: boolean): Promise<PruneReport | null> {
+    pruneBusy.value = true;
+    error.value = null;
+    try {
+      const result = await api.pruneOrphans(kind.value, dryRun);
+      pruneReport.value = result;
+      if (!result.dry_run) await refresh();
+      return result;
+    } catch (failure) {
+      error.value = describeError(failure);
+      return null;
+    } finally {
+      pruneBusy.value = false;
+    }
+  }
+
+  /**
    * 上传文件到某一类（跑酷 / BGM）—— 落盘与入库是**同一个请求**。
    *
    * 与 `scan` 分开而不是复用它：上传的对象是"浏览器刚递过来的字节"，扫描的对象是
@@ -826,6 +884,69 @@ export const useAssetsStore = defineStore("assets", () => {
    *
    * 与 `setEnabled` 共用 `pendingId`：两件事都改这一行，同时只该有一个在飞。
    */
+  // ── 音色的逐段管理（裁定 381）──────────────────────────────────
+
+  /**
+   * 展开 / 收起某一行的逐段表（音色专用）。
+   *
+   * 每次**重新拉一次**（不靠缓存）：逐段表的判据是**盘上现在是什么样**，而盘上的东西
+   * 可能刚被上一次上传、或者被别的进程改过 —— 显示一份过期的段列表，用户会照着它去删
+   * 一段已经不存在的音频。
+   */
+  async function toggleSegments(item: AssetItem): Promise<void> {
+    if (segmentsId.value === item.id) {
+      segmentsId.value = null;
+      return;
+    }
+    segmentsId.value = item.id;
+    segmentResult.value = null;
+    await loadSegments(item.id);
+  }
+
+  /** 拉一个音色的逐段现状（失败时**保留旧的那一份**，只是把错误说出来）。 */
+  async function loadSegments(voiceId: string): Promise<VoiceSegments | null> {
+    segmentsBusy.value = true;
+    error.value = null;
+    try {
+      const next = await api.fetchVoiceSegments(voiceId);
+      segments.value = { ...segments.value, [voiceId]: next };
+      return next;
+    } catch (failure) {
+      error.value = describeError(failure);
+      return null;
+    } finally {
+      segmentsBusy.value = false;
+    }
+  }
+
+  /**
+   * 删掉一个音色里的一段参考音（**删完服务端会重编号**，所以删完必须重拉）。
+   *
+   * 库里那一行也跟着变（段数 / 总时长）⇒ 连列表一起刷新：面板上那个「N 段」是
+   * 用户判断「覆盖/删除到底生效没有」的那个数，它晚一拍就白说了。
+   */
+  async function removeSegment(voiceId: string, name: string): Promise<boolean> {
+    segmentPending.value = name;
+    error.value = null;
+    try {
+      const result = await api.deleteVoiceSegment(voiceId, name);
+      segmentResult.value = result;
+      segments.value = { ...segments.value, [voiceId]: result.segments };
+      await refresh();
+      return true;
+    } catch (failure) {
+      error.value = describeError(failure);
+      return false;
+    } finally {
+      segmentPending.value = null;
+    }
+  }
+
+  /** 某一行的逐段现状（没拉过就是 `null`，面板据此显示「读取中」）。 */
+  function segmentsFor(voiceId: string): VoiceSegments | null {
+    return segments.value[voiceId] ?? null;
+  }
+
   async function remove(item: AssetItem, purge: boolean): Promise<boolean> {
     pendingId.value = item.id;
     error.value = null;
@@ -948,6 +1069,13 @@ export const useAssetsStore = defineStore("assets", () => {
     overwrite,
     voiceId,
     voiceText,
+    segmentsId,
+    segments,
+    segmentsBusy,
+    segmentPending,
+    segmentResult,
+    pruneReport,
+    pruneBusy,
     pageIndex,
     pageSize,
     query,
@@ -960,6 +1088,7 @@ export const useAssetsStore = defineStore("assets", () => {
     degradedNote,
     fields,
     wsStatus,
+    segmentsFor,
     // 动作
     open,
     refresh,
@@ -969,10 +1098,14 @@ export const useAssetsStore = defineStore("assets", () => {
     setEnabledFilter,
     loadCompliance,
     scan,
+    prune,
     uploadFiles,
     uploadVoiceFiles,
     setEnabled,
     remove,
+    toggleSegments,
+    loadSegments,
+    removeSegment,
     applyPatch,
     toggleEditor,
     saveFields,

@@ -46,6 +46,7 @@ from studio.core.config import OutputsConfig
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.paths import StudioPaths
 from studio.render.profiles import resolve_profile
+from studio.render.sticker import StickerPlan, plan_stickers
 from studio.render.subtitle import resolve_font_dir
 from studio.render.watermark import plan_watermark
 from studio.services.render_job_service import RenderJob, RenderJobService, list_videos
@@ -102,6 +103,35 @@ def _subtitle_status(outputs: OutputsConfig, paths: StudioPaths) -> tuple[bool, 
     return True, None
 
 
+def _stickers_hint(
+    applied: tuple[str, ...],
+    skipped: list[StickerPlan],
+    swapping: list[str],
+) -> str | None:
+    """贴图这一句提示（``None`` ⇒ 没有要说的话，面板不显示横幅）。
+
+    与水印那条"贴 / 不贴"不同，这里要说的是**哪几层上了、哪几层没上**：
+    配置里开着三层而只上了一层，是"图没放进盘上"这类问题最直接的表现 ——
+    只报一个布尔的话，人只会看到"有贴图"，然后对着成片找那两层不存在的图。
+
+    ``swapping`` 是"**配齐了讲话图**的层"（不是"一定会换图的层"）。措辞刻意写成
+    "配了讲话图（出片时按稿子逐句说话人换图）"：这一屏手上**没有稿子、也没有时间
+    轴**，谁在哪句讲话只有出片那一步知道。写成"会换图"就是替渲染路径下结论 ——
+    面板绿灯、成片不换，正是这个项目里最贵的一种谎话（陷阱 223）。
+    """
+    if not applied and not skipped and not swapping:
+        return None
+    parts: list[str] = []
+    if applied:
+        parts.append(f"会贴上 {'、'.join(applied)}")
+    if swapping:
+        parts.append(f"{'、'.join(swapping)} 配了讲话图（出片时按稿子逐句说话人换图）")
+    for item in skipped:
+        if item.spec.enabled:
+            parts.append(f"{item.spec.name} 跳过（{item.skipped_reason}）")
+    return "；".join(parts) if parts else None
+
+
 @router.get("/api/v1/render/console", response_model=RenderConsoleResponse)
 def get_console(request: Request) -> RenderConsoleResponse:
     """面板首屏：一次拿全（可选参数 + 在跑的任务 + 最近任务 + 成片列表）。"""
@@ -118,6 +148,22 @@ def get_console(request: Request) -> RenderConsoleResponse:
         home=state.paths.home,
     )
     subtitle_enabled, subtitle_hint = _subtitle_status(outputs, state.paths)
+    stickers = plan_stickers(
+        outputs.stickers,
+        canvas_width=profile.width,
+        canvas_height=profile.height,
+        home=state.paths.home,
+    )
+    applied = tuple(item.spec.name for item in stickers if item.applied)
+    skipped = [item for item in stickers if not item.applied]
+    # "配齐了讲话图"的判据是 `speaking_problem is None`（配置齐 + 讲话图可用），
+    # **不是** `swaps` —— `swaps` 还要"有讲话区间"，而这一屏算不出来（没读稿子）。
+    # 于是这里给的是"这一层配好了，换不换看稿子"，不是"这一层会换图"。
+    swapping = [
+        item.spec.name
+        for item in stickers
+        if item.applied and item.spec.speaker and item.speaking_problem is None
+    ]
 
     return RenderConsoleResponse.model_validate(
         {
@@ -135,6 +181,8 @@ def get_console(request: Request) -> RenderConsoleResponse:
             "watermark_hint": watermark.skipped_reason,
             "subtitle_enabled": subtitle_enabled,
             "subtitle_hint": subtitle_hint,
+            "stickers_applied": list(applied),
+            "stickers_hint": _stickers_hint(applied, skipped, swapping),
         }
     )
 

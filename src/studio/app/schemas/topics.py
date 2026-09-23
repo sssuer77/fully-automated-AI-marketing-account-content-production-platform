@@ -27,12 +27,14 @@ from studio.services.input_service import ImportReport
 from studio.services.script_service import DraftReviewOutcome, OutlineReport
 from studio.services.topic_service import (
     AnalyzeReport,
+    ClearTopicsOutcome,
     DirectionDeleteOutcome,
     DirectionEditOutcome,
     DirectionOutcome,
     IdeateReport,
     ManualDirectionOutcome,
     ManualTopicOutcome,
+    NewsPullReport,
     TopicDeleteOutcome,
     TopicEditOutcome,
 )
@@ -40,6 +42,8 @@ from studio.services.topic_service import (
 __all__ = [
     "AnalyzeBody",
     "AnalyzeResult",
+    "ClearTopicsBody",
+    "ClearTopicsResult",
     "DirectionCard",
     "DirectionDeleteResult",
     "DirectionEditResult",
@@ -229,12 +233,17 @@ class DirectionEditResult(BaseModel):
 
 
 class DirectionDeleteResult(BaseModel):
-    """删掉的那个方向 + **被它带走的候选条数**（级联删除要如实报数）。"""
+    """删掉的那个方向 + **被它带走的候选条数**（级联删除要如实报数）。
+
+    ``detached_task_count`` = 被带走的候选里**已经派生过任务**的条数 —— 那些任务不跟着走，
+    照跑。不报这一条的话，用户会以为"删了方向 ⇒ 那些活也没了"。
+    """
 
     direction_id: str
     title: str
     deleted: bool
     cascaded_topics: int = 0
+    detached_task_count: int = 0
 
     @classmethod
     def from_outcome(cls, outcome: DirectionDeleteOutcome) -> DirectionDeleteResult:
@@ -333,6 +342,51 @@ class IdeateResult(BaseModel):
             dropped=report.dropped,
             demoted=report.demoted,
             outcomes=[DirectionOutcomeModel.from_outcome(item) for item in report.outcomes],
+        )
+
+
+class NewsSkipItem(BaseModel):
+    """一条没被留下的新闻（``reason`` 是给人看的一句话）。"""
+
+    title: str
+    reason: str
+
+
+class NewsPullResult(BaseModel):
+    """一次「拉今日新闻 ⇒ 评测 ⇒ 留方向」的结果（``ok=False`` 也返回 200 —— 原因在体内）。
+
+    ``ok`` 说的是**评测这一步跑通没有**，不是"留下几条"：跑了但一条都没挑中（``ok=True``
+    + ``kept=[]``）与压根没跑起来（``ok=False`` + ``error_code``）是两件事 —— 前者不需要
+    用户做任何事，后者要他去配通道。
+    """
+
+    ok: bool
+    source: str = ""
+    fetched: int = 0
+    evaluated: int = 0
+    batch_id: str | None = None
+    kept_count: int = 0
+    kept: list[DirectionCard]
+    skipped: list[NewsSkipItem]
+    warnings: list[str]
+    error_code: str | None = None
+    error_message: str | None = None
+
+    @classmethod
+    def from_report(cls, report: NewsPullReport) -> NewsPullResult:
+        """``NewsPullReport`` → 响应模型（卡片直接由**落库那一行**造，不经中间快照）。"""
+        return cls(
+            ok=report.ok,
+            source=report.source,
+            fetched=report.fetched,
+            evaluated=report.evaluated,
+            batch_id=report.batch_id,
+            kept_count=report.kept_count,
+            kept=[DirectionCard.from_row(row) for row in report.kept],
+            skipped=[NewsSkipItem(title=item.title, reason=item.reason) for item in report.skipped],
+            warnings=list(report.warnings),
+            error_code=report.error_code,
+            error_message=report.error_message,
         )
 
 
@@ -500,14 +554,51 @@ class TopicEditResult(BaseModel):
 
 
 class TopicDeleteResult(BaseModel):
-    """删掉的那一条（``deleted=False`` = 服务层到这一步时它已经不在了）。"""
+    """删掉的那一条（``deleted=False`` = 服务层到这一步时它已经不在了）。
+
+    ``detached_task_id`` = 这条选题派生过的那条任务号 —— **它不跟着走**。删掉的是想法，
+    不是活：那条任务自己带着标题 / 角度 / 钩子，照跑。
+    """
 
     topic_id: str
     title: str
     deleted: bool
+    detached_task_id: str | None = None
 
     @classmethod
     def from_outcome(cls, outcome: TopicDeleteOutcome) -> TopicDeleteResult:
+        return cls(**outcome.to_dict())
+
+
+class ClearTopicsBody(_Body):
+    """清空选题面板的请求体（**两级**：先预览，再真删）。
+
+    ``dry_run`` 默认 ``True``：调用方**必须显式**说"我知道会删掉多少，删吧"。
+    默认成 ``False`` 的话，一个漏传请求体的客户端（``POST`` 不带 body）就会把
+    整个面板清空 —— 而这条链路上"漏传"是常态，不是例外。
+    """
+
+    dry_run: bool = Field(default=True, description="true ⇒ 只报会删掉多少，一个字节都不写")
+
+
+class ClearTopicsResult(BaseModel):
+    """一次「清除所有选题」的结果。
+
+    ``dry_run=True`` ⇒ 这是**预览**：两个数说"会删掉多少"，库里一个字节没动。
+    ``dry_run=False`` ⇒ 真删了，两个数说"实际删掉多少"（走的是同一个计数路径，
+    所以预览与真删报的是同一件事）。
+
+    ``detached_task_count`` = 被清掉的选题里**已经派生过任务**的条数 —— 那些任务不
+    跟着走，照跑。不报这一条的话，用户会以为"清了选题 ⇒ 那些活也没了"。
+    """
+
+    dry_run: bool
+    directions: int = 0
+    topics: int = 0
+    detached_task_count: int = 0
+
+    @classmethod
+    def from_outcome(cls, outcome: ClearTopicsOutcome) -> ClearTopicsResult:
         return cls(**outcome.to_dict())
 
 

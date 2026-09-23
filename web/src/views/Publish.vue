@@ -27,7 +27,11 @@ import AppButton from "@/components/AppButton.vue";
 import EmptyState from "@/components/EmptyState.vue";
 import PanelCard from "@/components/PanelCard.vue";
 import StatusDot from "@/components/StatusDot.vue";
-import type { Publication, PublishPlatformOption } from "@/api/endpoints/publish";
+import {
+  coverUrl,
+  type Publication,
+  type PublishPlatformOption,
+} from "@/api/endpoints/publish";
 import {
   MAX_JITTER_MIN,
   SCHEDULE_MODES,
@@ -62,6 +66,7 @@ import {
 } from "@/stores/reports";
 import {
   BOARD_STATUSES,
+  calibrationDetail,
   enqueueText,
   formatStamp,
   metricsText,
@@ -75,6 +80,14 @@ import {
   tickText,
   usePublishStore,
 } from "@/stores/publish";
+import {
+  accountTitle,
+  accountTone,
+  limitText,
+  platformOptionText,
+  usePublishAccountsStore,
+  type AccountDraft,
+} from "@/stores/publishAccounts";
 
 const publish = usePublishStore();
 
@@ -84,6 +97,10 @@ const schedules = useSchedulesStore();
 // 报告再单独一个（60s）：它看的是「到点那一刻多出一份」，比计划还慢。
 const reports = useReportsStore();
 
+// 账号配置（T6.4）单独一个 store，而且**不轮询**：账号只有在本屏动手才会变，
+// 写完当场刷新即可（见 store 注释）。
+const accounts = usePublishAccountsStore();
+
 onMounted(() => {
   // 进面板即接线：一次拉齐看板 + 待人工 + 合规；有活在跑时 store 自己按
   // `PUBLISH_POLL_MS` 轮询，离开面板必须停 —— 否则切走之后还在每两秒问一次后端。
@@ -92,6 +109,8 @@ onMounted(() => {
   schedules.start();
   // 报告更慢（60s）：一份报告只可能在到点那一刻多出来，问得再勤也不会早一秒。
   reports.start();
+  // 账号清单拉一次就够（不轮询）：加号 / 改号都在本屏，写完自己会刷新。
+  accounts.start();
 });
 onUnmounted(() => {
   publish.stop();
@@ -128,6 +147,31 @@ const statusBlocks = computed<Block[]>(() => {
 const endedRows = computed(() => publish.endedRows);
 const manualRows = computed(() => publish.manualRows);
 const metricsRows = computed(() => publish.metrics);
+/** 账号行（含停用的）+ 其中启用的个数（副标题要用）。 */
+const accountRows = computed(() => accounts.accounts);
+const enabledAccountCount = computed(
+  () => accountRows.value.filter((row) => row.enabled ?? true).length,
+);
+/**
+ * 「账号配置」那一行的副标题。
+ *
+ * **总开关的状态必须写在这里**：它是"配好了也发不出去"的唯一原因，而它住在
+ * `config/publish.yaml` 的 `enabled` 里 —— 面板上没有开关，人只能靠这段话知道。
+ * 之前它只出现在下面那串 notes 里，于是真机上真的发生了"账号配好、码也扫了、
+ * 投递也成功了，什么都没发出去"（2026-09-23）。
+ */
+const accountSubtitle = computed(() => {
+  if (accountRows.value.length === 0) return "还没读到账号清单";
+  const parts = [
+    `${accountRows.value.length} 个号（启用 ${enabledAccountCount.value} 个）`,
+    "改完立刻生效，不需要重启",
+    "新号要人工扫码一次",
+  ];
+  if (!accounts.publishEnabled) {
+    parts.push("★ 总开关 publish.enabled=false —— 现在发不出去（投递会进死信）");
+  }
+  return parts.join(" · ");
+});
 /** 上一轮回收的结论（没跑过 ⇒ 空串，不占屏）。 */
 const lastTick = computed(() => tickText(publish.metricsTick));
 /** 投递那块的两份读（清单 + 勾选）。 */
@@ -137,6 +181,19 @@ const enqueueWarning = computed(() => publish.enqueueWarning);
 const compliance = computed(() => publish.compliance);
 const preview = computed(() => publish.handoffPreview);
 const result = computed(() => publish.handoffResult);
+/** 刚出的那张封面（`null` = 这一屏还没出过）。 */
+const cover = computed(() => publish.coverResult);
+/**
+ * 封面图的可显示地址（`ok=false` 时没有图 ⇒ 空串，`v-if` 就不会画那个 `<img>`）。
+ *
+ * 用 `/publish/covers/{文件名}` 而不是文件绝对路径：浏览器读不到 `D:\...`，
+ * 而把 `data/` 整块挂成静态目录会让**所有**产物（含稿件与留痕）都能被猜地址读到。
+ */
+const coverSrc = computed(() =>
+  publish.coverName ? coverUrl(publish.coverName) : "",
+);
+/** 封面那几条"照做但如实记账"的话（契约里它是可省的数组 ⇒ 这里收一次口）。 */
+const coverWarnings = computed<string[]>(() => cover.value?.warnings ?? []);
 
 /** 顶部那一行数字（六个状态一个不少 —— 少了哪个都会让人以为"这类不存在"）。 */
 const summary = computed(() => {
@@ -156,6 +213,16 @@ function onEnqueueTask(event: Event): void {
   publish.setEnqueueTaskId((event.target as HTMLInputElement).value);
 }
 
+function onCoverTask(event: Event): void {
+  publish.setCoverTaskId((event.target as HTMLInputElement).value);
+}
+
+/** 封面的回执那一行：出来了就说清是哪一帧抽的，没出来就照抄服务端给的那句话。 */
+function coverText(outcome: NonNullable<typeof cover.value>): string {
+  if (!outcome.ok) return "这张没出来 —— 按无封面发布（平台用首帧）";
+  return `抽的是第 ${outcome.frame_at_ms} ms 那一帧`;
+}
+
 /**
  * 一个平台下「投哪几个号」的那行小字（**只有多账号平台才画**）。
  *
@@ -170,6 +237,34 @@ function accountCaption(option: PublishPlatformOption): string {
 
 function onReason(publicationId: string, event: Event): void {
   publish.setReason(publicationId, (event.target as HTMLInputElement).value);
+}
+
+/**
+ * 这条是不是卡在**短信验证**上（平台要人在浏览器窗口里点「获取验证码」再输码）。
+ *
+ * 判据取错误文案里的那几个字，而不是某个错误码：这一条**不是**失败分类，它是
+ * "自动这条路走完了，接下来要人" —— 后端就是用它来决定文案里该不该出现
+ * 「人工过验证」的，面板跟着同一句话走就够了。认不出 ⇒ 照常画那三个按钮，不猜。
+ */
+function needsHumanVerify(row: Publication): boolean {
+  return `${row.error_code ?? ""}${row.error_message ?? ""}`.includes("验证");
+}
+
+/**
+ * 账号表单里任意一个输入框 -> store（`checkbox` 取 `checked`，数字框转成数字）。
+ *
+ * 与下面定时计划那个 `onDraft` 同一手法：**表单校验全留给后端**（它给的 422 带逐字段
+ * 的错误），前端只负责把输入搬进草稿。
+ */
+function onAccountDraft(event: Event, key: keyof AccountDraft): void {
+  const target = event.target as HTMLInputElement;
+  const raw = target.type === "checkbox" ? target.checked : target.value;
+  const value = key === "dailyLimit" || key === "minGapMin" ? Number(raw) : raw;
+  accounts.setDraft({ [key]: value } as Partial<AccountDraft>);
+}
+
+function onAccountReason(accountId: string, event: Event): void {
+  accounts.setReason(accountId, (event.target as HTMLInputElement).value);
 }
 
 // ── 定时计划（T5.6）────────────────────────────────────────────
@@ -348,6 +443,13 @@ function onCancelReason(publication: Publication): void {
             <span>{{ optionText(option) }}</span>
           </label>
 
+          <!-- 校准状态（T5.14）：平台启用、开关打开、账号也配了，而选择器是**猜的**
+               —— 那一行与抖音在屏幕上长得一模一样。这句话就是让它们不一样：
+               一条是"发出去不可撤销"，另一条是"发出去大概率先卡在选择器上"。 -->
+          <p v-if="calibrationDetail(option) !== ''" class="hint">
+            {{ calibrationDetail(option) }}
+          </p>
+
           <!-- 账号细分（T5.8）：勾中的平台**真有多个号**时才画。
                勾上平台 = 这个平台下的号**全投**；取消某一个 = 只投剩下的。 -->
           <div
@@ -398,7 +500,309 @@ function onCancelReason(publication: Publication): void {
       </p>
     </PanelCard>
 
-    <!-- ③ R2 合规提示：**常驻**（§06.11），不是可关的横幅 -->
+    <!-- ②b 封面（T5.1 追加 · §06.3）：出图 → 看一眼 → 再投递。
+         放在「投递」后面，是因为它写进 `tasks.context_json.cover_path`，而**发布器读的
+         就是那个字段** —— 先出图、再点投递，那条片子才会带着它走；反过来投完再出，
+         发出去的还是平台首帧。 -->
+    <PanelCard
+      title="封面"
+      subtitle="成片里抽一帧（背景）+ 合成配置里的贴图（居中）+ 标题（黄字黑边）→ 1080×1920 JPEG"
+    >
+      <template #actions>
+        <AppButton
+          size="sm"
+          variant="primary"
+          :loading="publish.coverBusy"
+          :disabled="!publish.canMakeCover"
+          @click="publish.makeCoverForTask()"
+        >
+          出封面
+        </AppButton>
+      </template>
+
+      <div class="form">
+        <label class="f f--task">
+          <span class="f__key">任务号</span>
+          <input
+            class="field mono"
+            type="text"
+            placeholder="出片完成的任务号"
+            :value="publish.coverTaskId"
+            @change="onCoverTask"
+          />
+        </label>
+      </div>
+
+      <p v-if="publish.coverError" class="alert alert--error">{{ publish.coverError }}</p>
+
+      <div v-if="cover" class="preview">
+        <div class="preview__head">
+          <StatusDot
+            :tone="cover.ok ? 'ok' : 'warn'"
+            :label="cover.ok ? '封面已出' : '没有封面'"
+          />
+          <span class="preview__title">{{ coverText(cover) }}</span>
+          <span class="preview__stale mono">
+            {{ cover.source === "agent" ? "模型写的文案" : "规则兜底文案" }}
+          </span>
+        </div>
+
+        <img v-if="coverSrc !== ''" class="shot" :src="coverSrc" :alt="`封面 ${cover.task_id}`" />
+
+        <ul v-if="coverWarnings.length > 0" class="rows">
+          <li v-for="(item, index) in coverWarnings" :key="index" class="row">
+            <StatusDot tone="warn" label="注意" />
+            <span class="row__val">{{ item }}</span>
+          </li>
+        </ul>
+
+        <p v-if="cover.fallback_background && cover.ok" class="preview__note">
+          背景退成了纯色底（抽帧失败）—— 文字与人物都在，只是底不是片子里的画面。
+        </p>
+      </div>
+
+      <p class="hint">
+        封面**没有**也能发（平台用首帧），所以这一屏不出红字。颜色 / 描边 / 用哪一层人物
+        贴图都在「合成配置」的 <span class="mono">cover</span> 与
+        <span class="mono">stickers</span> 里改 —— 这一屏只负责画。
+      </p>
+    </PanelCard>
+
+    <!-- ③ 账号配置（T6.4 · §06.2.4）：加号 / 改号 / 停用 / 删号 —— 写回 config/publish.yaml。
+         放在「投递」后面：投递那块的勾选框就是从这份清单里长出来的，先看见号、再决定投给谁。 -->
+    <PanelCard
+      title="账号配置"
+      :subtitle="accountSubtitle"
+    >
+      <template #actions>
+        <AppButton size="sm" :loading="accounts.loading" @click="accounts.refresh()">刷新</AppButton>
+        <AppButton size="sm" variant="primary" @click="accounts.beginCreate()">加一个号</AppButton>
+      </template>
+
+      <p v-if="accounts.error" class="alert alert--error">{{ accounts.error }}</p>
+      <p v-else-if="accounts.notice" class="alert alert--ok">{{ accounts.notice }}</p>
+
+      <ul v-if="accountRows.length > 0" class="rows">
+        <li v-for="row in accountRows" :key="row.account_id" class="row row--stack">
+          <div class="row__head">
+            <StatusDot :tone="accountTone(row)" :label="row.enabled ? '启用' : '停用'" />
+            <span class="row__title">{{ accountTitle(row) }}</span>
+            <span class="row__mono mono">{{ row.account_id }}</span>
+            <span class="row__spacer" />
+            <span class="row__note">{{ platformLabel(row.platform) }}</span>
+          </div>
+          <p class="row__sub">
+            {{ limitText(row) }} · 登录态目录
+            <span class="mono">{{ row.runtime_profile_dir }}</span>
+          </p>
+          <p class="row__sub">{{ row.note }}</p>
+          <p v-if="accounts.loginId === row.account_id" class="row__sub">
+            浏览器窗口已经开在这台电脑上 —— 拿手机用
+            <strong>对应 App 里的「扫一扫」</strong>扫窗口里那个码，扫完在手机上点确认，
+            窗口会自己关掉（这一步最长等 3 分钟）。
+          </p>
+          <p v-if="!(row.profile_dir_matches_runtime ?? true)" class="row__sub">
+            配置里写的是 <span class="mono">{{ row.profile_dir }}</span> —— 那一列只用于
+            "登录态必须按账号隔离"的校验，运行期真正用的是上面那个目录。
+          </p>
+
+          <div class="row__actions">
+            <AppButton
+              size="sm"
+              variant="primary"
+              :loading="accounts.loginId === row.account_id"
+              :disabled="accounts.busyId !== null && accounts.loginId !== row.account_id"
+              @click="accounts.login(row)"
+            >
+              {{ accounts.loginId === row.account_id ? "等扫码中…" : "扫码登录" }}
+            </AppButton>
+            <AppButton
+              size="sm"
+              :disabled="accounts.busyId !== null"
+              title="无头探一眼登录态 —— 不写盘、不发东西"
+              @click="accounts.probe(row)"
+            >
+              检测登录态
+            </AppButton>
+            <AppButton
+              size="sm"
+              :disabled="accounts.busyId !== null"
+              @click="accounts.beginEdit(row)"
+            >
+              改
+            </AppButton>
+            <AppButton
+              size="sm"
+              :disabled="accounts.busyId !== null"
+              @click="accounts.toggleEnabled(row)"
+            >
+              {{ row.enabled ? "停用" : "启用" }}
+            </AppButton>
+            <AppButton
+              size="sm"
+              variant="danger"
+              :disabled="accounts.busyId !== null"
+              title="只从配置里删掉 —— 登录态目录（凭据）面板不碰"
+              @click="accounts.openReason(row.account_id)"
+            >
+              删除
+            </AppButton>
+          </div>
+
+          <div v-if="accounts.reasonFor === row.account_id" class="reason">
+            <input
+              class="field"
+              type="text"
+              placeholder="为什么删它（可空，写进 audit_ops）"
+              :value="accounts.reasonDraft[row.account_id] ?? ''"
+              @input="onAccountReason(row.account_id, $event)"
+            />
+            <AppButton
+              size="sm"
+              variant="danger"
+              :loading="accounts.busyId === row.account_id"
+              @click="accounts.remove(row)"
+            >
+              确认删除
+            </AppButton>
+            <AppButton size="sm" @click="accounts.closeReason()">算了</AppButton>
+          </div>
+        </li>
+      </ul>
+      <EmptyState
+        v-else
+        title="配置里一个账号都没有"
+        hint="下面那行就是加号的地方。没有账号时投递没有任何目标（整条会被跳过）。"
+      />
+
+      <!-- 怎么登录：这一块回答的是**第一次配号的人**唯一会卡住的那两个问题
+           （"账号 id 填什么" / "密码呢"）。它必须在**动手之前**被看到 ——
+           放进文档等于没写（面板才是唯一会被读到的地方）。 -->
+      <details class="howto" open>
+        <summary>怎么登录？—— <strong>没有密码</strong>，是拿手机扫一次码</summary>
+        <ol class="howto__steps">
+          <li>
+            <strong>先加一个号</strong>：下面那行「账号 id」是<strong>自己起的名</strong>，
+            不是平台的账号、也不是手机号 —— 它只是这份登录态在盘上的文件夹名。
+            面板已经替你填了一个（如 <span class="mono">acc_douyin</span>），可以直接用。
+          </li>
+          <li>
+            <strong>点这一行的「扫码登录」</strong>：会在
+            <strong>跑着 studio 服务的这台电脑</strong>上弹出一个浏览器窗口
+            （窗口里的人就是平台自己的登录页）。
+          </li>
+          <li>
+            <strong>用手机扫那个码</strong>：手机上对应的 App（抖音 / 快手 / 视频号）里
+            的「扫一扫」—— 不是微信扫一扫；扫完在手机上点确认。
+          </li>
+          <li>
+            窗口会<strong>自己关掉</strong>，这一行变成「登录过」。之后点「检测登录态」
+            可以随时再确认一次（不发任何东西）。
+          </li>
+        </ol>
+        <p class="hint">
+          本系统<strong>不存密码、不自动登录、不绕过验证码</strong>（R13）——
+          所以这一步永远是人做的，面板能做的只是把窗口替你打开、把结果记下来。
+          登录态只住在 <span class="mono">data/browser_profile/&lt;账号 id&gt;/</span> 里，
+          <strong>只属于这一个号</strong>：不要拷给别人、不要放进备份（§02.5）。
+        </p>
+      </details>
+
+      <div class="form">
+        <label class="f">
+          <span class="f__key">账号 id</span>
+          <input
+            class="field mono"
+            type="text"
+            :placeholder="accounts.suggestedAccountId"
+            :value="accounts.draft.accountId"
+            :disabled="accounts.editing"
+            @change="onAccountDraft($event, 'accountId')"
+          />
+        </label>
+        <label class="f">
+          <span class="f__key">平台</span>
+          <select
+            class="field"
+            :value="accounts.draft.platform"
+            @change="onAccountDraft($event, 'platform')"
+          >
+            <option v-for="option in accounts.platforms" :key="option.code" :value="option.code">
+              {{ platformOptionText(option) }}
+            </option>
+          </select>
+        </label>
+        <label class="f">
+          <span class="f__key">显示名（可空）</span>
+          <input
+            class="field"
+            type="text"
+            placeholder="主账号"
+            :value="accounts.draft.displayName"
+            @change="onAccountDraft($event, 'displayName')"
+          />
+        </label>
+        <label class="f f--task">
+          <span class="f__key">登录态目录（留空 = 建议值）</span>
+          <input
+            class="field mono"
+            type="text"
+            :placeholder="accounts.suggestedProfileDir"
+            :value="accounts.draft.profileDir"
+            @change="onAccountDraft($event, 'profileDir')"
+          />
+        </label>
+        <label class="f">
+          <span class="f__key">每天上限</span>
+          <input
+            class="field mono"
+            type="number"
+            :min="accounts.limits.daily_limit_min ?? 1"
+            :max="accounts.limits.daily_limit_max ?? 100"
+            :value="accounts.draft.dailyLimit"
+            @change="onAccountDraft($event, 'dailyLimit')"
+          />
+        </label>
+        <label class="f">
+          <span class="f__key">最小间隔（分钟）</span>
+          <input
+            class="field mono"
+            type="number"
+            :min="accounts.limits.min_gap_min_min ?? 0"
+            :max="accounts.limits.min_gap_min_max ?? 1440"
+            :value="accounts.draft.minGapMin"
+            @change="onAccountDraft($event, 'minGapMin')"
+          />
+        </label>
+        <label class="check">
+          <input
+            type="checkbox"
+            :checked="accounts.draft.enabled"
+            @change="onAccountDraft($event, 'enabled')"
+          />
+          <span>启用（停用 = 不参与投递与定时计划）</span>
+        </label>
+        <AppButton size="sm" variant="primary" :loading="accounts.saving" @click="accounts.save()">
+          {{ accounts.editing ? "保存改动" : "加这个号" }}
+        </AppButton>
+        <AppButton v-if="accounts.editing" size="sm" @click="accounts.cancelEdit()">取消</AppButton>
+      </div>
+
+      <p class="hint">
+        改的是 <span class="mono">{{ accounts.view?.config_path ?? "config/publish.yaml" }}</span>
+        的 <span class="mono">accounts:</span> 段 —— <strong>段外一个字节都不动</strong>
+        （platforms / precheck / 每行的注释原样留着）。<strong>删号不会删登录态目录</strong>
+        —— 那是凭据，要清得自己去清。
+        <br />
+        不想用面板时，扫码登录那条路在命令行上也一样（等价于上面那个「扫码登录」按钮）：
+        <span class="mono"
+          >studio publish dry-run --task &lt;任务号&gt; --account &lt;账号 id&gt; --show-browser</span
+        >
+      </p>
+      <p v-for="note in accounts.notes" :key="note" class="hint">{{ note }}</p>
+    </PanelCard>
+
+    <!-- ④ R2 合规提示：**常驻**（§06.11），不是可关的横幅 -->
     <PanelCard
       title="R2 来源登记"
       :subtitle="
@@ -622,6 +1026,14 @@ function onCancelReason(publication: Publication): void {
             取证：<span class="mono">{{ Object.keys(row.evidence ?? {}).join(" / ") }}</span>
           </p>
 
+          <p v-if="needsHumanVerify(row)" class="alert alert--warn">
+            这条卡在<b>短信验证</b>上：验证码发到<span class="mono">{{ row.account_id }}</span>
+            这个号绑定的手机上，而且要你本人<b>在那个浏览器窗口里</b>点「获取验证码」再输进去。
+            这时「重试」是没用的 —— 平台问的是"这台机器是不是你本人"，重试一百次只会弹一百次。
+            点下面的<b>「人工过验证」</b>：它会在<b>这台电脑</b>上开一个窗口，把片子重新传一遍、
+            点下发布，然后停在验证框前等你。你输完六位数，这里会自己接着走完并落库。
+          </p>
+
           <div class="row__actions">
             <AppButton
               size="sm"
@@ -630,6 +1042,15 @@ function onCancelReason(publication: Publication): void {
               @click="publish.retry(row)"
             >
               重试
+            </AppButton>
+            <AppButton
+              size="sm"
+              :disabled="publish.busy"
+              :loading="publish.assistFor === row.id"
+              title="在这台电脑上开一个可见窗口，把这条重新发一遍，停在验证框前等你输码（会重新上传一遍成片，最多等十几分钟）"
+              @click="publish.assist(row)"
+            >
+              人工过验证
             </AppButton>
             <AppButton
               size="sm"
@@ -650,6 +1071,13 @@ function onCancelReason(publication: Publication): void {
               标记已处理
             </AppButton>
           </div>
+
+          <p v-if="publish.assistFor === row.id" class="alert alert--warn">
+            窗口已经开在<b>这台电脑</b>上了。到那个浏览器窗口里点「获取验证码」、把手机上收到的
+            六位数填进去 —— 这里会一直等着（最多十几分钟），输完它自己接着走完。
+            等的时候<b>别在这一行上再点「重试」</b>：同一个账号只能开一个浏览器，
+            两条路一起跑，最坏的结果是这条内容发出去两遍。
+          </p>
 
           <div v-if="publish.reasonFor === row.id" class="reason">
             <input
@@ -1323,6 +1751,20 @@ function onCancelReason(publication: Publication): void {
   font-size: var(--text-xs);
 }
 
+/*
+ * 封面那一张图。限宽 + 圆角：1080×1920 原尺寸直接铺上去会把整块面板顶到屏幕外，
+ * 而这一屏要的是"扫一眼这张能不能用"，不是逐像素看。
+ */
+.shot {
+  display: block;
+  width: auto;
+  max-width: 220px;
+  max-height: 391px;
+  margin: 8px 0;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+}
+
 .preview__note {
   margin-top: var(--space-1);
   color: var(--text-secondary);
@@ -1472,5 +1914,32 @@ function onCancelReason(publication: Publication): void {
   color: var(--text-muted);
   font-size: var(--text-xs);
   line-height: 1.7;
+}
+
+/* 「怎么登录」：默认展开（第一次配号的人一定会卡在这里），但可以折起来 ——
+   配过号的人不需要每次都看见它。 */
+.howto {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle, transparent);
+  font-size: var(--text-xs);
+  line-height: 1.8;
+}
+
+.howto summary {
+  cursor: pointer;
+  color: var(--text);
+}
+
+.howto__steps {
+  margin: var(--space-2) 0 0;
+  padding-left: 1.4em;
+  color: var(--text-muted);
+}
+
+.howto__steps li {
+  margin-top: var(--space-2);
 }
 </style>

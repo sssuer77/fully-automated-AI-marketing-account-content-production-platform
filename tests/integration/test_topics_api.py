@@ -42,6 +42,7 @@ from studio.core.paths import StudioPaths
 from studio.core.persona_store import reset_persona_store
 from studio.db import migrate
 from studio.db.repositories import AuditRepo, DirectionRepo, TopicRepo
+from studio.domain.task_service import TaskService
 from studio.domain.text import count_chars
 from studio.services import InputService
 from studio.ws.hub import HubSettings
@@ -54,6 +55,7 @@ ANALYZE_URL = "/api/v1/topics/analyze"
 IDEATE_URL = "/api/v1/topics/ideate"
 SELECT_URL = "/api/v1/topics/select"
 MANUAL_URL = "/api/v1/topics/manual"
+CLEAR_URL = "/api/v1/topics/clear"
 HOT_IMPORT_URL = "/api/v1/hot/import"
 HOT_SUBMIT_URL = "/api/v1/hot/submit"
 
@@ -461,8 +463,8 @@ def test_select_with_draft_now_writes_a_script(
     run_planner_and_ideator(client, monkeypatch, paths, connection)
     topic_id = client.get(TOPICS_URL).json()["topics"][0]["id"]
 
-    # 写稿多两次 LLM 调用（Director + Writer）⇒ 重新脚本化，只留这两条
-    arm(monkeypatch, director_reply(), writer_reply())
+    # 写稿多三次 LLM 调用（Outliner + Director + Writer）⇒ 重新脚本化，只留这三条
+    arm(monkeypatch, outliner_reply(), director_reply(), writer_reply())
     response = client.post(SELECT_URL, json={"topic_ids": [topic_id], "draft_now": True})
     assert response.status_code == 200, response.text
     item = response.json()["selected"][0]
@@ -683,7 +685,12 @@ def test_delete_topic_removes_the_row_and_leaves_an_audit(
 
     response = client.delete(f"{TOPICS_URL}/{topic_id}")
     assert response.status_code == 200, response.text
-    assert response.json() == {"topic_id": topic_id, "title": "我自己想的一条", "deleted": True}
+    assert response.json() == {
+        "topic_id": topic_id,
+        "title": "我自己想的一条",
+        "deleted": True,
+        "detached_task_id": None,  # 手加的选题没有任务 ⇒ 没有要"留下"的东西
+    }
     assert TopicRepo(connection).get(topic_id) is None
     assert any(op.action == "topic.deleted" for op in AuditRepo(connection).list_recent(limit=20))
 
@@ -692,24 +699,34 @@ def test_delete_topic_removes_the_row_and_leaves_an_audit(
     assert missing.json()["code"] == "TOPIC_NOT_FOUND"
 
 
-def test_delete_topic_refuses_when_a_task_already_exists(
+def test_delete_topic_keeps_the_task_it_derived(
     client: TestClient,
     connection: sqlite3.Connection,
     paths: StudioPaths,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """已经派生过任务的选题不给删 —— 删了那条任务就再也写不出稿（不是门禁，是断链）。"""
+    """派生过任务也照删 —— 删掉的是**想法**，不是**活**：那条任务不跟着走，如实报出来。
+
+    原先那条 422 的理由是"删了那条任务就再也写不出稿"，而它随 ``ScriptService.draft`` 的
+    改造消失了：任务自己带着标题 / 角度 / 钩子（见 ``test_script_service`` 的续跑用例）。
+    换来的是一列删不掉的选题 —— 用户原话「堆积太多内容会难以管理」。
+    """
     run_planner_and_ideator(client, monkeypatch, paths, connection)
     topic_id = client.get(TOPICS_URL).json()["topics"][0]["id"]
     assert client.post(SELECT_URL, json={"topic_ids": [topic_id]}).status_code == 200
+    topic_row = TopicRepo(connection).get(topic_id)
+    assert topic_row is not None
+    task_id = topic_row.task_id
+    assert task_id
 
     response = client.delete(f"{TOPICS_URL}/{topic_id}")
-    assert response.status_code == 422, response.text
+    assert response.status_code == 200, response.text
     body = response.json()
-    assert body["code"] == "TOPIC_SELECT_INVALID"
-    assert body["context"]["task_id"]
-    assert body["remediation"]
-    assert TopicRepo(connection).get(topic_id) is not None
+    assert body["deleted"] is True
+    assert body["detached_task_id"] == task_id
+    assert TopicRepo(connection).get(topic_id) is None
+    # 任务**一个字节都没动**（删的是想法，不是活）
+    assert TaskService(connection).get(task_id).id == task_id
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1011,27 +1028,146 @@ def test_delete_direction_takes_its_candidates_with_it(
     assert missing.json()["code"] == "TOPIC_NOT_FOUND"
 
 
-def test_delete_direction_refuses_when_a_candidate_already_has_a_task(
+def test_delete_direction_keeps_the_tasks_its_candidates_derived(
     client: TestClient,
     connection: sqlite3.Connection,
     paths: StudioPaths,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """已经派生过任务的候选不给级联删 —— 删了那条任务就再也写不出稿。"""
+    """派生过任务也照删：候选一起走，候选上的任务**不跟着走** —— 两样都要如实报。
+
+    用户原话：「这种不再需要的方向应该直接删掉,即使已经派生任务,不然这里堆积太多内容
+    会难以管理」。只报 ``cascaded_topics`` 是不够的：那会让用户以为"删了方向 ⇒ 那些活
+    也没了"，于是去四池里找一条其实还在跑的任务。
+    """
     run_planner_and_ideator(client, monkeypatch, paths, connection)
     topic_id = client.get(TOPICS_URL).json()["topics"][0]["id"]
     row = TopicRepo(connection).get(topic_id)
     assert row is not None
     direction_id = row.direction_id
     assert client.post(SELECT_URL, json={"topic_ids": [topic_id]}).status_code == 200
+    topic_row = TopicRepo(connection).get(topic_id)
+    assert topic_row is not None
+    task_id = topic_row.task_id
+    assert task_id
 
     response = client.delete(f"{DIRECTIONS_URL}/{direction_id}")
-    assert response.status_code == 422, response.text
+    assert response.status_code == 200, response.text
     body = response.json()
-    assert body["code"] == "TOPIC_SELECT_INVALID"
-    assert body["context"]["task_ids"]
-    assert body["remediation"]
-    assert client.get(DIRECTIONS_URL).json()["directions"]
+    assert body["deleted"] is True
+    assert body["cascaded_topics"] >= 1
+    assert body["detached_task_count"] == 1
+    assert direction_id not in [item["id"] for item in client.get(DIRECTIONS_URL).json()["directions"]]
+    assert TopicRepo(connection).get(topic_id) is None
+    assert TaskService(connection).get(task_id).id == task_id
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ⑪b 清空 · 一键清除所有选题（左栏那颗按钮）
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_clear_topics_previews_without_touching_anything(
+    client: TestClient,
+    connection: sqlite3.Connection,
+    paths: StudioPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """第一下只预览：报三个数，两张表一个字节都不动、也不留痕。
+
+    面板上那颗按钮是**点两下**的（与 ``/assets/prune`` 同一条），所以预览必须是纯读。
+    """
+    run_planner_and_ideator(client, monkeypatch, paths, connection)
+    directions_before = connection.execute("SELECT COUNT(*) FROM content_directions").fetchone()[0]
+    topics_before = connection.execute("SELECT COUNT(*) FROM topic_candidates").fetchone()[0]
+    assert directions_before > 0 and topics_before > 0
+
+    response = client.post(CLEAR_URL, json={"dry_run": True})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["dry_run"] is True
+    assert body["directions"] == directions_before
+    assert body["topics"] == topics_before
+    assert body["detached_task_count"] == 0
+
+    assert connection.execute("SELECT COUNT(*) FROM content_directions").fetchone()[0] == directions_before
+    assert connection.execute("SELECT COUNT(*) FROM topic_candidates").fetchone()[0] == topics_before
+    assert AuditRepo(connection).list_recent(limit=10) == []
+
+
+def test_clear_topics_removes_everything_and_keeps_the_tasks(
+    client: TestClient,
+    connection: sqlite3.Connection,
+    paths: StudioPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """第二下真删：面板清空、**任务照跑**、审计留一行（用户原话：「堆积太多内容会难以管理」）。"""
+    run_planner_and_ideator(client, monkeypatch, paths, connection)
+    topic_id = client.get(TOPICS_URL).json()["topics"][0]["id"]
+    assert client.post(SELECT_URL, json={"topic_ids": [topic_id]}).status_code == 200
+    row = TopicRepo(connection).get(topic_id)
+    assert row is not None
+    task_id = row.task_id
+    assert task_id
+
+    response = client.post(CLEAR_URL, json={"dry_run": False})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["dry_run"] is False
+    assert body["directions"] > 0
+    assert body["topics"] > 0
+    assert body["detached_task_count"] == 1
+
+    assert client.get(DIRECTIONS_URL).json()["directions"] == []
+    assert client.get(TOPICS_URL).json()["topics"] == []
+    assert connection.execute("SELECT COUNT(*) FROM content_directions").fetchone()[0] == 0
+    assert connection.execute("SELECT COUNT(*) FROM topic_candidates").fetchone()[0] == 0
+    # 删掉的是想法，不是活：那条任务自己带着标题 / 角度 / 钩子，照跑
+    assert TaskService(connection).get(task_id).id == task_id
+
+    ops = AuditRepo(connection).list_recent(limit=5)
+    assert ops[0].action == "topics.cleared"
+    assert ops[0].target_type == "topic_pool"
+    assert ops[0].after == {"directions": 0, "topics": 0}
+
+
+def test_clear_topics_is_refused_while_a_long_task_runs(
+    client: TestClient,
+    connection: sqlite3.Connection,
+    paths: StudioPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """长任务在跑 ⇒ 409 ``TOPIC_BATCH_RUNNING``。
+
+    Planner / Ideator 正在往这两张表里写的时候清空，那批方向跑完会**自己长回来** ——
+    用户看到的是"清了，怎么又有了"，而两件事都没有报错。等它跑完再点。
+    """
+    run_planner_and_ideator(client, monkeypatch, paths, connection)
+    before = connection.execute("SELECT COUNT(*) FROM topic_candidates").fetchone()[0]
+
+    with topics_router._RUN_GUARD.hold("选题生成"):
+        response = client.post(CLEAR_URL, json={"dry_run": False})
+
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "TOPIC_BATCH_RUNNING"
+    assert connection.execute("SELECT COUNT(*) FROM topic_candidates").fetchone()[0] == before
+
+
+def test_clear_topics_on_an_empty_panel_is_a_no_op_without_audit(
+    client: TestClient,
+    connection: sqlite3.Connection,
+) -> None:
+    """空面板上点"清除"：两个数都是 0，**不留痕**（与 ``asset.prune`` 同一条）。"""
+    response = client.post(CLEAR_URL, json={"dry_run": False})
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "dry_run": False,
+        "directions": 0,
+        "topics": 0,
+        "detached_task_count": 0,
+    }
+    assert AuditRepo(connection).list_recent(limit=10) == []
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1058,7 +1194,7 @@ def test_draft_review_writes_a_script_and_hands_it_to_review(
     """
     run_planner_and_ideator(client, monkeypatch, paths, connection)
     topic_id = client.get(TOPICS_URL).json()["topics"][0]["id"]
-    arm(monkeypatch, director_reply(), writer_reply())
+    arm(monkeypatch, outliner_reply(), director_reply(), writer_reply())
 
     response = client.post(draft_review_url(topic_id))
     assert response.status_code == 200, response.text
@@ -1093,13 +1229,13 @@ def test_draft_review_reuses_the_script_instead_of_burning_another_call(
     paths: StudioPaths,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """再点一次 ⇒ **一个 token 都不烧**（重写会白烧 Director + Writer，还会盖掉正在审的那一版）。"""
+    """再点一次 ⇒ **一个 token 都不烧**（重写会白烧 Outliner/Director/Writer，还会盖掉正在审的那一版）。"""
     run_planner_and_ideator(client, monkeypatch, paths, connection)
     topic_id = client.get(TOPICS_URL).json()["topics"][0]["id"]
-    arm(monkeypatch, director_reply(), writer_reply())
+    arm(monkeypatch, outliner_reply(), director_reply(), writer_reply())
     first = client.post(draft_review_url(topic_id)).json()
 
-    transport = arm(monkeypatch, director_reply(), writer_reply())
+    transport = arm(monkeypatch, outliner_reply(), director_reply(), writer_reply())
     second = client.post(draft_review_url(topic_id))
     assert second.status_code == 200, second.text
     body = second.json()
@@ -1114,7 +1250,7 @@ def test_draft_review_reuses_the_script_instead_of_burning_another_call(
 
 
 def test_draft_review_needs_a_known_topic(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    arm(monkeypatch, director_reply(), writer_reply())
+    arm(monkeypatch, outliner_reply(), director_reply(), writer_reply())
     response = client.post(draft_review_url("tp_does_not_exist"))
     assert response.status_code == 404, response.text
     assert response.json()["code"] == "TOPIC_NOT_FOUND"
@@ -1148,7 +1284,7 @@ def test_the_draft_job_is_not_claimable_while_the_inline_draft_runs(
                 ).fetchone()[0]
             )
 
-    arm(monkeypatch, director_reply(), writer_reply(), probe=probe)
+    arm(monkeypatch, outliner_reply(), director_reply(), writer_reply(), probe=probe)
     response = client.post(draft_review_url(topic_id))
     assert response.status_code == 200, response.text
 

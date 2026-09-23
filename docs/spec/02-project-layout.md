@@ -121,7 +121,7 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │  │  └─ archive\                        #   已消费热点归档（90 天）
 │  ├─ feedback\                          # ★ 历史反馈：*.md（含 auto_*.md 自动回流）
 │  ├─ voice_src\                         # ★ 原声
-│  │  ├─ bigbear\{ref_01.wav, ref_02.wav, ref_03.wav, ref.txt, profile.json}
+│  │  ├─ bigbear\{ref_01.wav, ref_02.wav, …, ref.txt, profile.json}
 │  │  └─ littlebear\{...}
 │  ├─ assets\
 │  │  └─ mc_parkour\                     # ★ 我的世界跑酷素材包
@@ -237,9 +237,12 @@ Fully_Automated_AI_Marketing_Account_Content_Production_Platform\   # = STUDIO_H
 │  │  │                                  #      + 持久化 profile 会话；playwright 只在函数内 import
 │  │  ├─ ✅ selectors.py                  #   ✅ T5.2 选择器集中化：**装配期**就校验（缺项/版本/readback
 │  │  │                                  #      取值错 ⇒ 当场 `PUBLISH_SELECTOR_MISS`，不推迟到真机）
-│  │  ├─ ✅ selectors\{douyin,kuaishou,shipinhao,fixture}.yaml   # 页面选择器（可热修，R13）
+│  │  ├─ ✅ selectors\{douyin,kuaishou,shipinhao,xiaohongshu,   # 页面选择器（可热修，R13）
+│  │  │                bilibili,xigua,weibo,fixture}.yaml       #   `calibrated` / `known_gaps` 也在这
 │  │  ├─ ✅ platforms\{douyin,kuaishou,shipinhao}.py    # 一线真实现（只声明 `platform`）
-│  │  ├─ ✅ platforms\{xiaohongshu,bilibili,xigua,weibo}.py     # 二线：接口在、实现空（Q9）
+│  │  ├─ ✅ platforms\{xiaohongshu,bilibili,xigua,weibo}.py     # 二线真实现（同一套流程；
+│  │  │                                  #      ⚠️ CSS 未真机校准 ⇒ 出厂 enabled=false · T5.14）
+│  │  ├─ ✅ calibrate.py                  #   逐平台校准探针（**只读**：不点发布、不填框）
 │  │  ├─ ✅ platforms\fixture.py          #   本地靶页发布器（**自己就拒绝 `dry_run=False`**）
 │  │  ├─ ✅ fixtures\upload_form.html     #   靶页本体：真浏览器演练的靶子，点发布会回打本地服务器
 │  │  ├─ manual_queue.py                 #   待人工发布兜底
@@ -533,7 +536,7 @@ logs/
 | `config/llm.yaml` | 人工 | llm_client | 密钥走环境变量 |
 | `data/hot/*.md` | 人工粘贴 / `parse_hot.py` | planner / ideator | 解析失败行跳过并记 warn |
 | `data/feedback/*.md` | 人工 / `parse_feedback.py` / **发布回流（T5.5）** | planner / reviewer | 自动回流文件带 `auto_` 前缀 |
-| `data/voice_src/**` | 人工 / `ingest_voice_src.py` | TTS 服务（注册音色） | 质量校验：时长/信噪比/单发言人/无削波 |
+| `data/voice_src/**` | 人工 / `ingest_voice_src.py` | TTS 服务（注册音色） | 质量校验：时长/信噪比/单发言人/无削波；**环境闸门只预建 `voice_src\` 本身**，具体音色目录由上传 / `seed_placeholder_assets.py` 建 —— 预建具体音色 = 每次 dot-source 都凭空造出一条「盘上有、库里没有」的孤儿（陷阱 219） |
 | `data/assets/mc_parkour/**` | 人工 / `ingest_mc_parkour.py` | randomizer / render | `license` 缺失拒绝入库 |
 | `data/output/topics/` | draft worker | WebUI 选题/稿件面板 | — |
 | `data/output/voice/` | voice worker | render worker、WebUI 试听 | 24h TTL（`voice_master` 同） |

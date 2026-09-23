@@ -1050,6 +1050,17 @@ def _preview_url(voice_id: str) -> str:
     return f"{VOICES_URL}/{voice_id}/preview"
 
 
+def _seed_reference_audio(state: AppState, voice_id: str, *, payload: bytes) -> None:
+    """往 ``data/voice_src/<id>/`` 放一份参考音 + 一行逐字文本。
+
+    试听用的假引擎不读它 —— 它只影响**参考音指纹**，而那正是这一条要验的东西。
+    """
+    root = state.paths.voice_src_dir / voice_id
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "ref.txt").write_text("这一句是参考音的逐字文本。\n", encoding="utf-8")
+    (root / "ref_01.wav").write_bytes(payload)
+
+
 def _wait_for_preview(client: TestClient, voice_id: str, *, want: str) -> dict[str, Any]:
     """轮询到 ``want`` 那一态（真机上一次十几秒，这里假引擎是毫秒级）。"""
     deadline = time.monotonic() + PREVIEW_WAIT_SEC
@@ -1109,6 +1120,46 @@ def test_generate_then_play(client: TestClient, preview_engine: PreviewEngine, s
     rows = {row["id"]: row for row in client.get(VOICES_URL).json()["voices"]}
     assert rows[VOICE_DA]["preview_state"] == "ready"
     assert rows[VOICE_DA]["preview_url"] == ready["url"]
+
+
+def test_a_sample_from_the_previous_reference_audio_is_reported_stale(
+    client: TestClient,
+    preview_engine: PreviewEngine,
+    state: AppState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """★ 同名换了参考音 ⇒ 盘上那份样本不能再报 ``ready``（2026-09-23 · 用户原话）。
+
+    用户的换法是「删掉重传 / 勾覆盖重传」，**目录名不变**，而样本的文件名只由音色
+    id 决定（``preview_slug``）—— 于是旧样本还躺在原地、还能播，而它念的是**上一版**
+    参考音。把它当 ``ready`` 报出去，用户听到的就是旧嗓子，而面板上一切正常。
+    """
+    voice_id = "stalevoice"
+    # 这个音色要是「本机有」的，POST 才会真的去生成（`installed_voices` 那份
+    # 清单里没有它 —— 它是个参考音音色，不是系统音色）。
+    monkeypatch.setattr("studio.services.voice_service.list_voices_cached", lambda: (*INSTALLED, voice_id))
+    _seed_reference_audio(state, voice_id, payload=b"RIFF" + b"\x00" * 900)
+
+    started = client.post(_preview_url(voice_id))
+    assert started.status_code == 200, started.text
+    ready = _wait_for_preview(client, voice_id, want="ready")
+    assert ready["url"] is not None
+    assert len(preview_engine.calls) == 1
+
+    # 用户重传了另一段原声（同名、不同内容）
+    _seed_reference_audio(state, voice_id, payload=b"RIFF" + b"\x00" * 1400)
+
+    stale = client.get(_preview_url(voice_id)).json()
+    assert stale["status"] == "stale"
+    assert "参考音" in (stale["note"] or ""), "说了 stale 却不说为什么，等于没说"
+    # 盘上那份**还在**（可以播来对比），但不许再叫它 ready
+    assert stale["url"] == ready["url"]
+
+    # 重新生成之后回到 ready，而且是**新**参考音念的（引擎真的又跑了一次）
+    client.post(_preview_url(voice_id))
+    again = _wait_for_preview(client, voice_id, want="ready")
+    assert again["url"] == ready["url"]
+    assert len(preview_engine.calls) == 2
 
 
 def test_a_second_click_does_not_synthesize_again(client: TestClient, preview_engine: PreviewEngine) -> None:

@@ -125,6 +125,12 @@ class Cue:
     end_ms: int
     text: str
     style: str = "Main"
+    #: 这一句是谁说的（``script_sentences.speaker``）。空 ⇒ 不知道 / 没传。
+    #:
+    #: 与 :attr:`style` 分开：``style`` 是"画成哪个样式"（按首次出现顺序分配的
+    #: SpeakerA / SpeakerB，换一条片子名字就换颜色），``speaker`` 是"稿子里那个
+    #: 角色名"。人物贴图的换图认的是后者 —— 拿样式名去对，换一条片子就对不上了。
+    speaker: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,7 +215,15 @@ def build_cues(
         end = start + max(0, duration)
         cursor = end
         speaker = speakers[index] if speakers is not None and index < len(speakers) else ""
-        cues.append(Cue(start_ms=start, end_ms=end, text=sentence, style=styles.get(speaker, "Main")))
+        cues.append(
+            Cue(
+                start_ms=start,
+                end_ms=end,
+                text=sentence,
+                style=styles.get(speaker, "Main"),
+                speaker=speaker,
+            )
+        )
     return tuple(cues)
 
 
@@ -405,13 +419,14 @@ def build_ass(
       里猜）会让字号与边距全部等比缩放 —— 表现为"字幕比预期小一半"。
     - WrapStyle: 2 = 不做自动换行，只认显式换行符。默认的 0/1 会在行末自动折行，
       把我们已经排好的两行折成三行。
-    - MarginV 取 max(margin_bottom, safe_area.bottom)（§04.2.6 的安全区要求）。
+    - MarginV 取 ``config.margin_v``（= max(margin_bottom, safe_area.bottom)，§04.2.6）。
+      口径只有一份（在 ``SubtitleConfig`` 上）：面板上的「实际距底」与这里算出来的
+      必须是同一个数。
       配置里写小了不会出事，只会被抬到安全区下沿。
     """
     width, height = canvas
     safe = config.safe_area
-    margin_v = max(config.margin_bottom, safe.bottom)
-    margins = (safe.left, safe.right, margin_v)
+    margins = (safe.left, safe.right, config.margin_v)
 
     styles = [_style_line("Main", config=config, primary=_PRIMARY_WHITE, margins=margins)]
     for name in SPEAKER_STYLES:

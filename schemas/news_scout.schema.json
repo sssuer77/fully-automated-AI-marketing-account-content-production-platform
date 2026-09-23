@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://studio.local/schemas/news_scout.schema.json",
+  "title": "NewsScoutResult",
+  "description": "T5.12 今日新闻评测：逐条判定值不值得写 + 事件总结 + 建议方向（ref 必须原样回抄）",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "items"
+  ],
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref",
+          "keep",
+          "direction_title",
+          "rationale",
+          "event_summary"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "keep": {
+            "type": "boolean"
+          },
+          "direction_title": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "rationale": {
+            "type": "string",
+            "maxLength": 60
+          },
+          "event_summary": {
+            "type": "string",
+            "maxLength": 200
+          }
+        }
+      }
+    }
+  }
+}

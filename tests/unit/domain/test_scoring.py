@@ -353,6 +353,31 @@ class TestEvaluateRuleChannel:
         )
         assert detail.opening_ok is False
 
+    def test_cta_question_makes_ending_not_ok(self) -> None:
+        """结尾提问 ⇒ 结尾项 0 分（判据与 ``check_script`` 同源）。"""
+        detail = evaluate_rule_channel(
+            body_md="熊" * 700,
+            hook="开场",
+            cta="评论区打俩字：牛肉还是五仁？",
+            est_duration_ms=140_000,
+            catchphrases_hit=0,
+            forbidden=[],
+            rules=rules(),
+        )
+        assert detail.ending_ok is False
+
+    def test_a_flat_cta_keeps_ending_ok(self) -> None:
+        detail = evaluate_rule_channel(
+            body_md="熊" * 700,
+            hook="开场",
+            cta="便宜的东西，代价都在别处。",
+            est_duration_ms=140_000,
+            catchphrases_hit=0,
+            forbidden=[],
+            rules=rules(),
+        )
+        assert detail.ending_ok is True
+
     def test_default_rules_are_used_when_none_is_given(self) -> None:
         detail = evaluate_rule_channel(
             body_md="熊" * 700,
@@ -482,6 +507,22 @@ class TestAutoApprovedBy:
 # ══════════════════════════════════════════════════════════════════════
 # 改稿越界
 # ══════════════════════════════════════════════════════════════════════
+
+
+class TestCheckEditTitle:
+    """标题原先**完全没被检** ⇒ 改稿 Agent 可以顺手换掉一个没被指到的标题。"""
+
+    def test_an_unflagged_title_change_is_out_of_scope(self) -> None:
+        original = lines().model_copy(update={"title": "退休捐献被拒收：制度别凉了心"})
+        edited = original.model_copy(update={"title": "改了一个没人让我改的标题"})
+        report = check_edit(original, edited, [issue("hook")])
+        assert "edited:out_of_scope:title" in report.problems
+
+    def test_a_flagged_title_change_is_allowed(self) -> None:
+        original = lines().model_copy(update={"title": "老人登记遗体捐献被拒收，熊大：凉的不是他一个人的心"})
+        edited = original.model_copy(update={"title": "退休捐献被拒收：制度别凉了心"})
+        report = check_edit(original, edited, [issue("title")])
+        assert report.problems == []
 
 
 class TestAllowedSentences:

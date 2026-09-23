@@ -50,15 +50,20 @@ from studio.app.schemas.assets import (
     AssetLibraryModel,
     AssetPageModel,
     AssetPatchRequest,
+    AssetPruneRequest,
     AssetStatsResponse,
+    PruneReportModel,
     ScanReportModel,
     UploadedFileModel,
     UploadResultModel,
+    VoiceSegmentRemovalModel,
+    VoiceSegmentsModel,
 )
 from studio.assets.layout import ASSET_ID_PATTERN, VOICE_TEXT_NAME, AssetKind, root_for
 from studio.assets.upload import (
     check_suffix,
     copy_into_place,
+    prune_refs,
     ref_name,
     target_for,
     write_text_into_place,
@@ -67,8 +72,6 @@ from studio.assets.validate import (
     BGM_MIN_DURATION_MS,
     BROLL_LIBRARY_MIN_CLIPS,
     BROLL_LIBRARY_MIN_MS,
-    VOICE_MAX_SEGMENTS,
-    VOICE_MIN_SEGMENTS,
     VOICE_SEGMENT_MAX_MS,
     VOICE_SEGMENT_MIN_MS,
 )
@@ -89,6 +92,14 @@ router = APIRouter(tags=["assets"])
 #: 素材 id 的入参上限（与 `ASSET_ID_PATTERN` 是**同一条**正则：id 会进 SQL 参数、
 #: 会拼进文件名、会在 URL 里当 query，一个空格或一个 `..` 都是后面某处的事故）
 _ASSET_ID = PathParam(min_length=1, max_length=64, pattern=ASSET_ID_PATTERN)
+
+#: 音色 id 与素材 id 是**同一条**正则（音色目录名就是它的素材 id）
+_VOICE_ID = PathParam(min_length=1, max_length=64, pattern=ASSET_ID_PATTERN)
+
+#: 一段参考音的名字（``ref_01.wav``）。只挡路径分隔符与控制字符 —— **不在路径参数里
+#: 判段号**：形状对不对由服务层按 ``REF_STEM_PATTERN`` 说，那样错误信息里才有
+#: 「参考音的名字是 ref_01.wav 这种形状」这句人话（陷阱 #188 同一族）。
+_REF_NAME = PathParam(min_length=1, max_length=64, pattern=r"^[^/\\\x00-\x1f\x7f]+$")
 
 
 def _service(state: AppState) -> AssetService:
@@ -125,8 +136,6 @@ def _thresholds() -> dict[str, Any]:
         "broll_min_clips": BROLL_LIBRARY_MIN_CLIPS,
         "broll_min_duration_ms": BROLL_LIBRARY_MIN_MS,
         "bgm_min_duration_ms": BGM_MIN_DURATION_MS,
-        "voice_min_segments": VOICE_MIN_SEGMENTS,
-        "voice_max_segments": VOICE_MAX_SEGMENTS,
         "voice_segment_min_ms": VOICE_SEGMENT_MIN_MS,
         "voice_segment_max_ms": VOICE_SEGMENT_MAX_MS,
     }
@@ -240,6 +249,26 @@ def delete_asset(
     return service.delete(resolved, asset_id, purge=purge).to_dict()
 
 
+@router.post("/api/v1/assets/prune", response_model=PruneReportModel)
+def prune_assets(request: Request, body: AssetPruneRequest) -> PruneReportModel:
+    """清掉这一类的**孤儿**：盘上认得出、库里没有、**而且本身就不合格**。
+
+    为什么它不是 ``DELETE /assets/{id}`` 的一个参数
+    ----------------------------------------------
+    ``DELETE`` 的对象是**库里那一行**（裁定 369：默认只删行，``purge=true`` 才动
+    盘上那份），而孤儿反过来 —— 它**没有行**，``delete()`` 手上没有行就 404。把它
+    塞进 ``purge`` 里，会让同一个动词在两条路上语义相反（"删行顺带删文件" vs
+    "只有文件、没有行"），而那正是最难查的一类不一致（陷阱 #205 同族）。
+
+    合格的孤儿**不会被清**（它们该入库），这条判据在服务层，面板照实显示
+    ``kept`` 那一段。``dry_run=true`` ⇒ 一个字节都不动。
+    """
+    state: AppState = request.app.state.studio
+    service = _service(state)
+    report = service.prune_orphans(body.kind, dry_run=body.dry_run)
+    return PruneReportModel.model_validate(report.to_dict())
+
+
 @router.get("/api/v1/assets/list", response_model=AssetPageModel)
 def list_assets(
     request: Request,
@@ -298,6 +327,35 @@ def _ingest_now(
     if not ids:
         return None
     return ScanReportModel.model_validate(service.ingest(kind=kind, ids=ids, license=license).to_dict())
+
+
+def _text_line_count(path: Path) -> int:
+    """``ref.txt`` 的非空行数（**位置即对应**：第 N 行 ↔ 第 N 段）。"""
+    if not path.is_file():
+        return 0
+    body = path.read_text(encoding="utf-8", errors="replace")
+    return sum(1 for line in body.splitlines() if line.strip())
+
+
+def _voice_notes(root: Path, *, segments_written: int, text_written: bool) -> list[str]:
+    """覆盖之后**必须说清**的事（判据在盘上，不在我们这次的记忆里）。
+
+    最容易误解的一种：用户换了参考音、没填文字稿，于是 ``ref.txt`` 还是上一次那份 ——
+    文本与音频**对不上**，而克隆质量的下降要等到听了成片才发现。这件事必须当场说。
+    """
+    if text_written:
+        return []
+    lines = _text_line_count(root / VOICE_TEXT_NAME)
+    if lines == 0:
+        return []
+    if lines == segments_written:
+        return [
+            f"这次没填文字稿 ⇒ ref.txt 没动（还是上一次那 {lines} 行，正好对上这次的 {segments_written} 段）"
+        ]
+    return [
+        f"这次没填文字稿 ⇒ ref.txt 没动（上一次那 {lines} 行），而这次写进去 {segments_written} 段"
+        " —— 两者对不上：要么补上文字稿重传一次，要么在下面逐段管理里把多余的段删掉"
+    ]
 
 
 def _message(status: str, target: Path, original: str, suffix_note: str = "") -> str:
@@ -380,6 +438,8 @@ def upload_assets(
         root=str(root_for(state.paths, kind)),
         overwrite=overwrite,
         files=rows,
+        removed=[],
+        notes=[],
         report=_ingest_now(service, kind=kind, ids=ids, license=license),
         **_counts(rows),
     )
@@ -420,6 +480,8 @@ def upload_voice(
     ordered = sorted(files, key=lambda item: item.filename or "")
     rows: list[UploadedFileModel] = []
     written = 0
+    #: 这次**真的写进去**的段（覆盖时其余段会被清掉 —— 见裁定 381）
+    kept: list[str] = []
     segment = 0
     for upload in ordered:
         filename = upload.filename or ""
@@ -441,6 +503,7 @@ def upload_voice(
             rows.append(_skipped(filename, f"写盘失败：{exc}"))
             continue
         written += 1
+        kept.append(target.name)
         rows.append(
             UploadedFileModel(
                 filename=filename,
@@ -450,6 +513,7 @@ def upload_voice(
             )
         )
 
+    text_written = False
     if ref_text is not None and ref_text.strip():
         body = "\n".join(line.strip() for line in ref_text.splitlines() if line.strip()) + "\n"
         text_target = root / VOICE_TEXT_NAME
@@ -461,6 +525,7 @@ def upload_voice(
             rows.append(_skipped(VOICE_TEXT_NAME, f"写盘失败：{exc}"))
         else:
             written += 1
+            text_written = True
             rows.append(
                 UploadedFileModel(
                     filename=VOICE_TEXT_NAME,
@@ -470,14 +535,69 @@ def upload_voice(
                 )
             )
 
+    # 覆盖 = **镜像**（裁定 381）：这次传进来的就是全部，其余段清掉并逐条报出来。
+    # 守卫：只在勾了覆盖、**且这次确实写进去过**的时候清 —— 一次全失败的上传不该把
+    # 用户现有的音色清空。
+    removed = list(prune_refs(root, kept)) if overwrite and kept else []
+    notes = _voice_notes(root, segments_written=len(kept), text_written=text_written)
+
     return UploadResultModel(
         kind=str(AssetKind.VOICE),
         root=str(root),
         overwrite=overwrite,
         files=rows,
+        removed=removed,
+        notes=notes,
         report=_ingest_now(service, kind=AssetKind.VOICE, ids=[voice_id] if written else [], license=license),
         **_counts(rows),
     )
+
+
+@router.get("/api/v1/assets/voice/{voice_id}/segments", response_model=VoiceSegmentsModel)
+def get_voice_segments(request: Request, voice_id: str = _VOICE_ID) -> VoiceSegmentsModel:
+    """一个音色的**逐段现状**（裁定 381）。
+
+    为什么这件事值得一个端点
+    ------------------------
+    音色的"能不能用"不取决于库里那一行，而取决于目录里躺着哪几段、每段多长、
+    ``ref.txt`` 有没有与它们一一对应。以前这三件事只有入库那一刻知道，用户想"看看
+    现在到底什么样"、或者想删掉一段，面板上一个字都没有 —— 于是只能去资源管理器里
+    翻目录，而翻完也不知道哪一段是对的。
+
+    判据与入库**同一份**：这里不重算时长 / 采样率 / 削波，全走 ``check_voice``。
+    """
+    state: AppState = request.app.state.studio
+    service = _service(state)
+    return VoiceSegmentsModel.model_validate(service.voice_segments(voice_id).to_dict())
+
+
+@router.delete(
+    "/api/v1/assets/voice/{voice_id}/segments/{name}",
+    response_model=VoiceSegmentRemovalModel,
+)
+def delete_voice_segment(
+    request: Request,
+    voice_id: str = _VOICE_ID,
+    name: str = _REF_NAME,
+) -> VoiceSegmentRemovalModel:
+    """删掉一段参考音（**删完重编号 + 同步 ``ref.txt``** —— 裁定 381）。
+
+    为什么这是删一段、而不是改一段
+    ------------------------------
+    改一段 = 用同样的名字换一份音频，那条路是**上传**（勾「覆盖同名」）。这个端点回答的是
+    "这段我不想要了" —— 比如当年为了凑够段数把同一个文件复制了一份，或者某一段里混进了
+    杂音。以前唯一的办法是把整个音色删掉重传，而重传要把**所有**段都再选一遍。
+
+    为什么重编号必须报出来
+    ----------------------
+    位置即对应（``ref.txt`` 第 N 行 ↔ 第 N 段）。删掉第 2 段之后原来的 ``ref_03.wav``
+    会变成 ``ref_02.wav`` —— 用户手上的文件名变了，而**静默改名不行**。回执里的
+    ``renamed`` 就是这本流水账。
+    """
+    state: AppState = request.app.state.studio
+    service = _service(state)
+    result = service.remove_voice_segment(voice_id, name)
+    return VoiceSegmentRemovalModel.model_validate(result.to_dict())
 
 
 # ══════════════════════════════════════════════════════════════════════

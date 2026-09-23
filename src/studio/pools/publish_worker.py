@@ -64,11 +64,10 @@ import asyncio
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import timedelta
 from pathlib import Path
 from typing import Any, Final, NoReturn
 
-from studio.core.clock import format_iso, now_iso, utc_now
+from studio.core.clock import now_iso, utc_now
 from studio.core.config import (
     AccountConfig,
     PlatformConfig,
@@ -104,7 +103,12 @@ from studio.publish.base import (
 )
 from studio.publish.ratelimit import DAILY_LIMIT_REASON, RateDecision, decide
 from studio.services.log_service import LogService
-from studio.services.publish_service import resolve_account, resolve_final_video, resolve_platform
+from studio.services.publish_service import (
+    next_metric_at,
+    resolve_account,
+    resolve_final_video,
+    resolve_platform,
+)
 from studio.services.script_service import read_active_script
 
 __all__ = [
@@ -215,6 +219,7 @@ class PublishPlatformHandler:
         log: LogService | None = None,
         runner: Callable[[Any], Any] = asyncio.run,
         headless: bool = True,
+        config_loader: Callable[[], PublishConfig] | None = None,
     ) -> None:
         """装配一个发布池处理器。
 
@@ -223,6 +228,9 @@ class PublishPlatformHandler:
             （§4.6.1 的签名就是 ``async``），而队列那侧全是同步调用。
         :param headless: 默认无头。首次扫码登录要可见浏览器，那是**人工一次性**动作
             （``studio publish dry-run --headed``），常驻 worker 不开窗口。
+        :param config_loader: 每次认领前重读配置的实现（``None`` ⇒ 钉在装配期那一份）。
+            真 worker 传 :func:`_load_publish_config`（见 :meth:`_refresh_config`）；
+            单测注入 ``publish=`` 时不传 —— 那正是"这一条要用这份配置跑"的表达。
         """
         self._paths = paths
         self._connection = connection
@@ -231,6 +239,7 @@ class PublishPlatformHandler:
         self._log = log
         self._runner = runner
         self._headless = headless
+        self._config_loader = config_loader
         self._dry_run_default = bool(publish.dry_run)
         self._store = JobStore(connection)
         self._repo = PublicationRepo(connection)
@@ -247,6 +256,7 @@ class PublishPlatformHandler:
                 code=ErrorCode.VALIDATION_FAILED,
                 context={"unit_type": ctx.unit_type, "accepted": sorted(self.unit_types)},
             )
+        self._refresh_config()
         started_at = now_iso()
         platform, account_hint = parse_unit_ref(ctx.unit_ref)
         platform_cfg = self._platform_config(platform)
@@ -542,6 +552,34 @@ class PublishPlatformHandler:
 
     # ── 守卫 ────────────────────────────────────────────────────────────
 
+    def _refresh_config(self) -> None:
+        """认领一条之前重读配置 —— **面板改完立刻生效，不用重启 worker**。
+
+        为什么不能钉在装配期那一份（真机坑 2026-09-23）
+        ----------------------------------------------
+        装配期那份是"进程启动那一刻的环境事实"，而**面板会改这份事实**：账号配置
+        区块写完 `config/publish.yaml` 之后，面板上那个号是启用状态、点「投递」也
+        成功排进了作业 —— 而 worker 手里还是旧快照，于是报
+        ``平台 douyin 上没有启用的账号 acc_douyin``（或旧开关值下的 ``PUBLISH_DISABLED``）。
+        用户看到的是"面板上明明配好了、什么都没发出去"，而**发布面板上连一条记录
+        都不会出现**（守卫跑在建 ``publications`` 那一行之前）⇒ 只能靠猜。
+
+        代价与取舍
+        ----------
+        每发一条多读一次配置（10 份小 yaml，毫秒级），而一条发布单元本身要开浏览器、
+        跑八步（秒级到分钟级）—— 这个代价可以忽略。用 :func:`load_config` 而**不是**
+        :func:`load_publish_config`：前者与装配期读的是同一份（含 ``publish.local.yaml``
+        覆盖层），抄成两份会让"启动时用覆盖层、热重载丢掉覆盖层"变成一个安静的错值。
+
+        ``config_loader is None`` ⇒ 什么都不做：那是单测 / CLI 注入固定配置的表达。
+        """
+        if self._config_loader is None:
+            return
+        self._publish = self._config_loader()
+        # ``dry_run`` 也跟着走：它和 ``enabled`` 一样是"这次要不要真发"的开关，
+        # 两者分开读会出现"开关是新的、演练标记是旧的"这种半新半旧的组合。
+        self._dry_run_default = bool(self._publish.dry_run)
+
     def _platform_config(self, platform: str) -> PlatformConfig:
         """平台配置；未知平台 / 未启用平台都抛（**不猜**）。
 
@@ -552,11 +590,13 @@ class PublishPlatformHandler:
         cfg = resolve_platform(self._publish, platform)
         if not cfg.enabled:
             raise StudioError(
-                f"平台 {platform} 一期未启用（§06.2.1 · Q9）",
+                f"平台 {platform} 未启用（config/publish.yaml → platforms.{platform}.enabled: false）",
                 code=ErrorCode.PUBLISH_NOT_IMPLEMENTED,
                 context={"platform": platform},
                 remediation=(
-                    "一期只实现 douyin / kuaishou / shipinhao；二线平台先把 platforms 里那段 enabled 打开"
+                    f"要发这个平台：① 先跑 `studio publish calibrate --platform {platform}` "
+                    "把选择器校准（七个平台里只有 douyin 验过）② 在 config/publish.yaml 里"
+                    f"把 platforms.{platform}.enabled 打开，并为它配一个账号"
                 ),
             )
         return cfg
@@ -606,7 +646,10 @@ class PublishPlatformHandler:
             "发布开关是关的（config/publish.yaml → enabled: false）",
             code=ErrorCode.PUBLISH_DISABLED,
             context={"task_id": ctx.task_id, "platform": ctx.unit_ref},
-            remediation="确认要真发之后再打开 enabled；只验证链路请用 dry-run",
+            remediation=(
+                "确认要真发之后把 config/publish.yaml 的 enabled 改成 true —— "
+                "改完**不用重启** worker，下一条就生效；只验证链路请用 dry-run"
+            ),
         )
 
     def _settled(
@@ -731,11 +774,13 @@ class PublishPlatformHandler:
         return title, caption_plan.text, caption_plan.tags, cover, warnings
 
     def _next_metric_at(self) -> str | None:
-        """数据回收的第一个时点（T+1h，``metrics_schedule_hours`` 的第一项）。"""
-        hours = [int(h) for h in self._publish.metrics_schedule_hours if int(h) > 0]
-        if not hours:
-            return None
-        return format_iso(utc_now() + timedelta(hours=min(hours)))
+        """数据回收的第一个时点 —— 与「人工过验证」共用同一份算法。
+
+        算法本身搬去了 :func:`~studio.services.publish_service.next_metric_at`：
+        面板上那条人工发布与 worker 自动发布必须落在同一个时点，两处各算一遍
+        早晚会漂（见那条函数的注释）。
+        """
+        return next_metric_at(self._publish)
 
     # ── 留痕 ────────────────────────────────────────────────────────────
 
@@ -828,6 +873,21 @@ class PublishPlatformHandler:
         )
 
 
+def _publish_config_loader(paths: StudioPaths) -> Callable[[], PublishConfig]:
+    """热重载用的读取器：与装配期**同一个函数**（``load_config``），因此含覆盖层。
+
+    为什么不做成 ``load_publish_config``：那一份**不含** ``publish.local.yaml``
+    覆盖层（它的用途是面板每次刷新只读一份文件）。拿它热重载会让"启动时用覆盖层、
+    之后的每一条丢掉覆盖层"变成一个安静的错值 —— 与发布面板那份取舍不同，
+    这里要的是"和启动时读到的完全一样，只是更新"。
+    """
+
+    def load() -> PublishConfig:
+        return load_config(paths).bundle.publish
+
+    return load
+
+
 def build_publish_handler(
     *,
     paths: StudioPaths,
@@ -844,8 +904,13 @@ def build_publish_handler(
     而池 worker 是"起一次、跑到关停"的常驻进程（与 ``build_voice_handler`` 同一条）。
 
     配置缺省**在这里读一次**（``load_config`` 会强校验）：平台 / 账号 / 限频 / 演练开关
-    都是"这次进程启动时定的环境事实"。放进单元里就是"每发一条先读八份 yaml"，
-    而其中任何一份写错都会在**第一次发布**时才炸 —— 那时作业已经在跑发布流程了。
+    都是"这次进程启动时定的环境事实"。启动期强校验的价值不变：**缺平台表 / 缺账号
+    ⇒ worker 起不来**，而不是发到一半才炸。
+
+    但**跑起来之后**配置还会被改（发布面板的「账号配置」就在改它）—— 所以注入一个
+    ``config_loader`` 让每条单元重读一次（见 ``PublishPlatformHandler._refresh_config``）。
+    调用方显式传了 ``publish=`` ⇒ 不注入 loader：那是"钉住这一份配置"的表达
+    （单测与 CLI 演练要的正是这个）。
     """
     resolved = connection if connection is not None else connect(paths.db_file)
     bundle = load_config(paths).bundle
@@ -857,6 +922,7 @@ def build_publish_handler(
         log=log if log is not None else LogService(resolved),
         runner=runner,
         headless=headless,
+        config_loader=None if publish is not None else _publish_config_loader(paths),
     )
 
 

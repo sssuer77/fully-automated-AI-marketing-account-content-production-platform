@@ -1,28 +1,84 @@
 # ── 抖音创作服务平台 · 选择器（T5.2 · §06.5.2「选择器集中化」· R13 可热修）─────────────
-# ⚠️ **未实测初稿**：结构（要哪些键）可信，具体 CSS 值待**真机校准**（§06.2.2 把
-#    "实测校准"写成了 T5.2 的现场动作，而它需要一个已登录的真实账号）。
-#    改法见 docs/runbook/publish_selector.md —— 只改本文件，**不改代码**。
-#    改完顺手把 version 改掉：它会被写进 publications.evidence_json，
-#    事后靠它回答"这条是哪个版本的选择器发的"。
+#
+# ★ **已校准**（``calibrated: true`` · ``calibrated_at: 2026-09-23``）—— 这是唯一一份
+#   **在真机上逐条验过**的 pack：八步用到的那些选择器，2026-09-23 用真实账号在真页面上
+#   跑过一遍，并因此改掉了七处（陷阱 #212 / #225 / #226 / #227 / #228 / #229 都出在这份
+#   文件里）。下面每段注释里写的都是那一次的证据。
+#
+# ⚠️ **但"校准过"不等于"全验过"**：数据回收那五条（``metric_*``）**仍然是未实测初稿**
+#   —— 它们要一条**真的发出去过**的作品才验得了，见下面的 ``known_gaps``。
+#
+#   改法见 docs/runbook/publish_selector.md —— 只改本文件，**不改代码**。
+#   改完顺手把 version 改掉：它会被写进 publications.evidence_json，
+#   事后靠它回答"这条是哪个版本的选择器发的"。
 platform: douyin
-version: "2026-09-18"
+version: "2026-09-23.4"
+calibrated: true
+calibrated_at: "2026-09-23"
+
+#: 已经**确认**没做的（不是猜测）：面板会跟着"校准"那一列一起显示出来。
+known_gaps:
+  - "**数据回收那五条没验过**（`metric_row` / `metric_views` / `metric_likes` / `metric_comments` / `metric_shares`，另加 `metric_completion_rate`）：验它们要一条**真的发出去过**的作品，所以 2026-09-23 那次校准验不到。装配期只能保证 `metric_row` 含 `{post_id}`（否则会去读第一条作品的数据）。"
+  - "**`metric_completion_rate` 留空**：抖音的完播率在哪个元素上没确认。留空 ⇒ 那条趋势里少一个点，不影响发布。"
 
 urls:
   upload: "https://creator.douyin.com/creator-micro/content/upload"
   manage: "https://creator.douyin.com/creator-micro/content/manage"
 
 selectors:
-  login_ok: "div.creator-header__user-info"
-  login_required: "div.login-container, div.qrcode-login"
+  # ── 登录态的两个标志（**2026-09-23 真机校准**：已登录 / 未登录两侧都验过）──────
+  # 为什么是 `[class*=...]` 而不是某个类名：抖音的类名**带哈希后缀** —— 页面上真实的
+  # 那个是 `dropdown-wrapper-sdUW26 avatar-wrapper-DIbwVi`，精确类选择器
+  # `div.avatar-wrapper` 永远命不中。子串匹配才活得过下一次改版。
+  #
+  # 上一版写的是 `div.creator-header__user-info` 与 `div.login-container, div.qrcode-login`
+  # —— 那四个选择器在**两种状态下都不存在**，于是 `_logged_in()` 恒为 False：
+  # 人扫完码、平台已经把页面换成创作中心，这里仍然报"没扫到"，一路等到 180 秒超时。
+  # 症状正是"我明明扫了，它说没扫到"（陷阱 #212）。
+  login_ok: "div[class*='avatar-wrapper']"
+  login_required: "div[class*='douyin-login-container'], div.douyin_login_new_class, div[class*='login-card']"
   upload_input: "input[type=file][accept*='video']"
   title_input: "input[placeholder*='标题']"
   caption_input: "div.editor-kit-container div[contenteditable=true], div[contenteditable=true]"
-  upload_progress: "div.progress-bar, span.upload-percent"
+  # ── 上传进度（**2026-09-23 真机校准**）───────────────────────────────
+  # 旧值 `div.progress-bar, span.upload-percent` 在页面上**一个都不存在**，而
+  # `_wait_upload` 把"看不到进度元素"读成了"已经传完" ⇒ 选完文件 ~1s 就往下走：
+  # 190MB 的成片还在 0%，标题文案已经填完、发布按钮已经点下去，平台回一句
+  # "你还有上次未发布的视频，是否继续编辑？"，整条发布卡在 600s 单元超时上（陷阱 #225）。
+  # 真机上的元素是 `div.upload-progress-inner-qmkWAk`，`text_content` 就是干净的
+  # `14%` 这种写法（实测：0% → 58% → … → 94%），类名带哈希后缀 ⇒ 照例用子串匹配。
+  # ⚠️ **不要再加更宽的备选**（`div[class*='upload-progress']`）：选择器列表取的是
+  # **文档序第一个**匹配，而更宽的那个会命中外层的上传面板 —— 它的 `text_content`
+  # 是"文件名 + 上传中 + 已上传 182.1MB/182.1MB + 当前速度…"一整块，
+  # 于是"到 100% 了吗"变成了在一个大段文字里找子串。
+  upload_progress: "div[class*='upload-progress-inner']"
   cover_trigger: "div.cover-upload, span:has-text('设置封面')"
   cover_input: "input[type=file][accept*='image']"
-  publish_button: "button:has-text('发布')"
-  success_marker: "div.success-page, text=发布成功"
-  reject_marker: "div.audit-reject, text=审核不通过"
+  # ── 发布按钮（**2026-09-23 真机校准**）──────────────────────────────
+  # ⚠️ **必须用 `:text-is()`（全等），不能用 `:has-text()`（包含）**：
+  # 左侧导航那一项叫「作品发布」，它在文档序里**排在真按钮前面**，于是
+  # `button:has-text('发布')` 命中的是导航项 —— 点下去只是切了个页面、表单被重置，
+  # 真按钮一次都没被碰过。症状是"点了发布什么都没发生"，然后第 ⑦ 步一路等到超时
+  # （陷阱 #227）。真按钮的类是 `button-dhlUZE primary-cECiOJ fixed-J9O8Yw`。
+  publish_button: "button:text-is('发布')"
+  # 挡在发布按钮上的平台提示弹层（**2026-09-23 真机**：第一次上传成片时右下角弹
+  # "视频预览功能"，那个"我知道了"压在发布按钮的命中区上）。可选：找不到就算了。
+  dismiss_overlay: "button:text-is('我知道了')"
+  # ⚠️ **不能用 `text=` 引擎前缀**：Playwright 只允许它**单独**出现，写成
+  # `div.success-page, text=发布成功` 会直接抛
+  # `Unexpected token "=" while parsing css selector` —— 而 `_present()` 把异常吞成
+  # `False`，于是"发布成功"永远判不出来，第 ⑦ 步一路等到 600s 超时（陷阱 #226）。
+  # `:text("…")` 是 Playwright CSS 的伪类，可以安全地跟在逗号后面。
+  # ⚠️ **必须 `:text-is()`（全等）**：`:text()` 是**子串**匹配，而页面上有一句提示
+  # 「视频发布成功后，价格将无法更改」—— 它里面就有"发布成功"四个字，于是在
+  # **发布之前**就被判成"发布成功"了。真机 2026-09-23 因此把一条**根本没发出去**的
+  # 内容记成了 published（陷阱 #229）。判据必须钉在"这一整块就是这四个字"上。
+  success_marker: "div.success-page, :text-is('发布成功')"
+  reject_marker: "div.audit-reject, :text-is('审核不通过')"
+  # 平台要求**短信验证**时弹出的那个框（2026-09-23 真机：点下发布之后弹出来）。
+  # 这是个人工步骤（R13：不自动登录、也不替人过验证），所以它不是"失败"而是
+  # "自动这条路走完了、接下来等人" ⇒ 转 manual_required 并说清要做什么。
+  verify_marker: ":text-is('接收短信验证码')"
 
   # ── 数据回收（T5.4 · §06.6）───────────────────────────────────────────
   # ⚠️ 与上面那批一样是**未实测初稿**。`metric_row` 里的 `{post_id}` 会被换成
@@ -43,5 +99,16 @@ readback:
   caption: text
 
 markers:
-  login_expired_text: ["登录已过期", "请重新登录", "扫码登录"]
+  # 不含"扫码登录"：那是**登录页自己的按钮文案**，两种状态（从没登录过 / 登录过期）
+  # 下都在页面上 —— 拿它当判据等于永远判成"过期"。2026-09-23 真机实测：一个全新的
+  # 空 profile 探出来的提示是"登录态已过期，需人工重新扫码登录"，而这个号从来没登录过。
+  # 真正能区分的是"被平台踢下线"时才会出现的这两句。
+  login_expired_text: ["登录已过期", "请重新登录"]
   review_rejected_text: ["审核不通过", "内容违规", "未通过审核"]
+
+  # ── 第 ⑦ 步的**第二个**成功判据（2026-09-23 真机）────────────────────
+  # 抖音发布成功后**不发**"发布成功"这几个字，而是把页面跳到内容管理列表
+  # （`/creator-micro/content/manage`）。只认元素的话，一条**已经发出去**的内容会在
+  # 600s 之后被记成失败 —— 而那时人已经在平台上看到它了（陷阱 #228）。
+  # 判据是"地址里出现这个片段"，与 `urls.manage` 同一个页面。
+  success_url_contains: ["creator-micro/content/manage"]

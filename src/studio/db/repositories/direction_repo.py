@@ -155,15 +155,20 @@ class DirectionRepo:
         rationale: str,
         priority: int = 100,
         risk_flags: Sequence[str] = (),
+        grounded_on: Sequence[Mapping[str, Any]] = (),
         status: str = "open",
     ) -> DirectionRow:
-        """人工写一个方向 ⇒ 返回**写完之后**那一行。
+        """单条写一个方向（人工写的 / 今日新闻挑出来的都走这里）⇒ 返回**写完之后**那一行。
 
         ``seq`` 由这里自己算（``next_seq``）：调用方不该为了插一行先去查一次最大值，
         那样"算序号"与"写行"之间就有了一个别人可以插进来的窗口。
 
         ``llm_model`` / ``prompt_version`` 留空 —— 人写的方向**没有**模型与提示词可溯源，
         填上任何一个都是假账（``audit_ops`` 里有这次人工新增）。
+
+        ``grounded_on`` 给的是**纯数据**（``{type, ref_id, kind, quote}``，同
+        :meth:`insert_batch`）：人工写的方向照旧空着（人没说依据，就不替他说），
+        今日新闻挑出来的方向带着那条新闻的**事件总结**（见 ``topic_service._news_evidence``）。
         """
         if status not in STATUSES:
             raise ValueError(f"非法方向状态：{status}（合法：{sorted(STATUSES)}）")
@@ -176,7 +181,7 @@ class DirectionRepo:
                 )
                 VALUES (?, ?, (
                     SELECT COALESCE(MAX(seq), 0) + 1 FROM content_directions WHERE batch_id = ?
-                ), ?, ?, '[]', ?, ?, ?)
+                ), ?, ?, ?, ?, ?, ?)
                 RETURNING {_SELECT_COLUMNS}
                 """,
                 (
@@ -185,6 +190,7 @@ class DirectionRepo:
                     batch_id,
                     title,
                     rationale,
+                    json.dumps(list(grounded_on), ensure_ascii=False),
                     int(priority),
                     json.dumps(list(risk_flags), ensure_ascii=False),
                     status,
@@ -231,6 +237,19 @@ class DirectionRepo:
             ).fetchone()
             cascaded = int(counted[0]) if counted else 0
             self._connection.execute("DELETE FROM content_directions WHERE id = ?", (direction_id,))
+        return cascaded
+
+    def clear(self) -> int:
+        """清空所有方向 ⇒ 返回**被一起带走的选题条数**。
+
+        与 :meth:`delete` 同一条：候选是 ``ON DELETE CASCADE`` 跟着走的，所以条数必须
+        在删之前数出来 —— 删完就再也数不到了，而"这一下带走了 13 条候选"正是面板必须
+        如实告诉人的事。
+        """
+        with transaction(self._connection, immediate=True):
+            counted = self._connection.execute("SELECT COUNT(*) FROM topic_candidates").fetchone()
+            cascaded = int(counted[0]) if counted else 0
+            self._connection.execute("DELETE FROM content_directions")
         return cascaded
 
     def count_topics(self, direction_id: str) -> int:

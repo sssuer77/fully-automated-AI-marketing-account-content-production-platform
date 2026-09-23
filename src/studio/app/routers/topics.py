@@ -27,7 +27,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 from fastapi import APIRouter, Query, Request
 
@@ -37,6 +37,8 @@ from studio.app.schemas.topics import (
     MAX_PAGE,
     AnalyzeBody,
     AnalyzeResult,
+    ClearTopicsBody,
+    ClearTopicsResult,
     DirectionCard,
     DirectionDeleteResult,
     DirectionEditResult,
@@ -55,6 +57,7 @@ from studio.app.schemas.topics import (
     ManualDirectionResult,
     ManualTopicBody,
     ManualTopicResult,
+    NewsPullResult,
     OutlineItem,
     OutlineResult,
     OutlineSaveBody,
@@ -94,16 +97,30 @@ class _RunGuard:
         self._lock = threading.Lock()
         self._holder: str | None = None
 
+    @property
+    def busy(self) -> str | None:
+        """正在跑的那个长任务（没有 ⇒ ``None``）。
+
+        给**不是长任务、但会跟长任务抢同一批数据**的动作用：清空选题面板就是那一个
+        —— 它跑起来只要几毫秒，所以它自己不占这把锁，但它必须在锁**空着**的时候跑
+        （见 :func:`clear_topics`）。
+        """
+        return self._holder
+
+    def refuse(self, label: str) -> NoReturn:
+        """拒掉一个动作：长任务跑着的时候，它跟那个任务抢的是同一批数据。"""
+        running = self._holder or "另一个长任务"
+        raise StudioError(
+            f"{running}正在运行，请等它跑完",
+            code=ErrorCode.TOPIC_BATCH_RUNNING,
+            context={"running": running, "requested": label},
+            remediation="进度见「实时日志」面板；跑完再点一次，不要重复提交",
+        )
+
     @contextmanager
     def hold(self, label: str) -> Iterator[None]:
         if not self._lock.acquire(blocking=False):
-            running = self._holder or "另一个长任务"
-            raise StudioError(
-                f"{running}正在运行，请等它跑完",
-                code=ErrorCode.TOPIC_BATCH_RUNNING,
-                context={"running": running, "requested": label},
-                remediation="进度见「实时日志」面板；跑完再点一次，不要重复提交",
-            )
+            self.refuse(label)
         self._holder = label
         try:
             yield
@@ -196,9 +213,9 @@ def patch_direction(request: Request, direction_id: str, body: DirectionPatchBod
 def delete_direction(request: Request, direction_id: str) -> DirectionDeleteResult:
     """删一个方向，**它下面的候选一起走**（级联）。
 
-    唯一拦下的情形：那个方向下已经有候选派生了任务 —— 那种候选被级联删掉之后，
-    它那条任务就再也写不出稿（不是门禁，是断链）。响应里带上 ``cascaded_topics``
-    让人看得见这一下删掉了多少条。
+    派生过任务也照删：删掉的是想法，不是活 —— 那些候选上的任务不跟着走，照跑（任务自己
+    带着标题 / 角度 / 钩子）。响应里带上 ``cascaded_topics``（这一下删掉了多少条候选）与
+    ``detached_task_count``（其中几条已经有任务），两样都要让人看得见。
     """
     state: AppState = request.app.state.studio
     outcome = topic_service_for(state).delete_direction(direction_id=direction_id)
@@ -325,7 +342,7 @@ def patch_topic(request: Request, topic_id: str, body: TopicPatchBody) -> TopicE
 
 @router.delete("/api/v1/topics/{topic_id}", response_model=TopicDeleteResult)
 def delete_topic(request: Request, topic_id: str) -> TopicDeleteResult:
-    """删一条选题（**已经派生过任务的那条不给删** —— 删了那条任务就再也写不出稿）。"""
+    """删一条选题（**派生过任务也照删**）。"""
     state: AppState = request.app.state.studio
     outcome = topic_service_for(state).delete_topic(topic_id=topic_id)
     return TopicDeleteResult.from_outcome(outcome)
@@ -398,6 +415,52 @@ def clear_topic_outline(request: Request, topic_id: str) -> OutlineResult:
     state: AppState = request.app.state.studio
     report = script_service_for(state, with_agents=False).clear_outline(topic_id=topic_id)
     return OutlineResult.from_report(report)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 清空 · 一键清除所有选题
+# ══════════════════════════════════════════════════════════════════════
+
+
+@router.post("/api/v1/topics/clear", response_model=ClearTopicsResult)
+def clear_topics(request: Request, body: ClearTopicsBody | None = None) -> ClearTopicsResult:
+    """清空整个选题面板（**所有方向 + 所有选题**；``dry_run`` ⇒ 只报数）。
+
+    三处刻意的取舍：
+
+    - **点两下**（与 ``/assets/prune`` 同一条）：``dry_run=true`` 先报会删掉多少，第二下
+      才真删。这一下动辄删掉几十行，而"到底删了多少"在删完之后只能去审计页翻。
+    - **长任务在跑就拒**（409 ``TOPIC_BATCH_RUNNING``）：Planner / Ideator 正在往这张表里
+      写的时候清空，那批方向跑完会**自己长回来** —— 用户看到的是"清了，怎么又有了"，
+      而两件事都没有报错。它自己不是长任务（几毫秒），所以不占那把锁，只是**要求锁空着**。
+    - **任务不跟着走**：派生过任务的那些选题照删，任务照跑（``detached_task_count`` 如实报）。
+    """
+    state: AppState = request.app.state.studio
+    payload = body or ClearTopicsBody()
+    if _RUN_GUARD.busy is not None:
+        _RUN_GUARD.refuse("清除所有选题")
+    outcome = topic_service_for(state).clear_all(dry_run=payload.dry_run)
+    return ClearTopicsResult.from_outcome(outcome)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 今日新闻 · 一键拉取（T5.12）
+# ══════════════════════════════════════════════════════════════════════
+
+
+@router.post("/api/v1/topics/news-pull", response_model=NewsPullResult)
+async def pull_today_news(request: Request) -> NewsPullResult:
+    """一键拉取今日社会新闻 ⇒ 模型评测 ⇒ 值得写的落成方向（**长任务**：抓取 + 若干次 LLM）。
+
+    与 ``analyze`` / ``ideate`` 共用同一把单飞守卫：三者都是「点下去等一会儿」的长任务，
+    同时跑只会让日志与预算互相打架。抓取失败 ⇒ 抛 ``NEWS_FETCH_FAILED``（422/500 由应用级
+    handler 兜），因为那是"今天这条链路真的没通"，不该假装成"今天没有值得写的新闻"。
+    """
+    state: AppState = request.app.state.studio
+    service = topic_service_for(state)
+    with _RUN_GUARD.hold("今日新闻拉取"):
+        report = await service.pull_news_directions(persona=active_persona())
+    return NewsPullResult.from_report(report)
 
 
 # ══════════════════════════════════════════════════════════════════════

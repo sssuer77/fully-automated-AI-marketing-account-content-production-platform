@@ -27,23 +27,16 @@
 （1080×1920 ⇒ 720×1280 的保底档）必须**重算**，不能拿旧计划改个数字继续用。
 :func:`resolve_watermark` 就是那个重算入口。
 
-为什么不引 Pillow 读 PNG
-------------------------
-只为拿「宽 / 高 / 有没有透明通道」三个事实就拖进一个图像库不划算。PNG 的 IHDR 是
-**固定结构**的定长块，``tRNS`` 只是一个块类型 —— 扫一遍块表就够，**零第三方依赖**。
-
-实测口径（``probe_watermark`` 认什么）
-------------------------------------
-- 文件头必须是 PNG 签名 ``\\x89PNG\\r\\n\\x1a\\n``（扩展名叫 .png 不算数）；
-- 第一个块必须是 ``IHDR``，宽高必须 > 0；
-- **透明通道**：颜色类型 4（灰度+alpha）或 6（真彩+alpha）⇒ 有；
-  颜色类型 0/2 配 ``tRNS``（透明色键）⇒ 也算有；调色板（3）配 ``tRNS`` ⇒ 有。
-  调色板**没有** ``tRNS`` ⇒ 整张图不透明 ⇒ 判为不可用：那会是一块盖住画面的实心方块。
+PNG 解析在 :mod:`studio.render.png_probe`
+---------------------------------------
+"在不在 / 多大 / 有没有透明通道"三个事实的问法是**通用**的 —— 人物贴图（T6.5）问的
+是同一件事。所以解析与那套实测口径只有一份，在 :mod:`studio.render.png_probe`；
+本模块的 :func:`probe_watermark` 只是它的一个**按名字**的入口（水印这一侧的调用方
+不必知道贴图模块的存在）。
 """
 
 from __future__ import annotations
 
-import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
@@ -56,7 +49,9 @@ from studio.core.config import (
     WatermarkPosition,
 )
 from studio.core.errors import ErrorCode, RenderError
-from studio.core.files import file_sha256
+from studio.render.alignment import even_floor
+from studio.render.png_probe import PNG_SIGNATURE as _PNG_SIGNATURE
+from studio.render.png_probe import PngAsset, probe_png
 
 __all__ = [
     "CANVAS_WIDTH_DIVISOR",
@@ -72,28 +67,15 @@ __all__ = [
     "resolve_watermark",
 ]
 
-#: PNG 文件头签名（8 字节，固定）
-PNG_SIGNATURE: Final[bytes] = b"\x89PNG\r\n\x1a\n"
-
 #: 水印宽度上限 = 画布宽 / 这个数（§04.2.8.2：禁止超过画布 1/4）。
 #: 定义在 `core/config.py`（面板与编译器共用同一个口径），这里只是转出。
-#: 扫块表的上限：``tRNS`` 必在 ``IDAT`` 之前，正常 PNG 前几个块就能看到。
-#: 这个上限只防"块表被构造得极长"的病态文件，不是正常路径。
-_MAX_CHUNKS: Final[int] = 64
+#: 水印这一侧继续按名字导出 :data:`PNG_SIGNATURE`（测试夹具造真 PNG 时要用）。
+PNG_SIGNATURE: Final[bytes] = _PNG_SIGNATURE
 
-#: 块数据长度上限（1 MiB）：超过这个数说明不是水印图（正常水印 < 1 MB），
-#: 直接判不可用，避免对着一个几 GB 的"PNG"做 seek 循环。
-_MAX_CHUNK_BYTES: Final[int] = 1 << 20
-
-
-class _PngError(Exception):
-    """内部信号：PNG 读不出来 / 不合规。**不对外抛** —— 由 :func:`probe_watermark`
-    转成"如实报告的问题"。
-
-    为什么不直接抛 ``RenderError``：``probe`` 的契约是"永远给出一份事实"，
-    它同时服务面板（缺文件是**正常状态**，要显示成一行红字而不是 500）与渲染路径
-    （缺文件 ⇒ 跳过水印）。
-    """
+#: 水印资产 = 通用 PNG 实测结果。**保留这个名字**是因为它出现在 manifest 与测试里，
+#: 而"水印的图"与"贴图的图"在这三个事实上没有任何区别 —— 各自起一个类型只会让
+#: 两个调用方没法共用同一个 :func:`probe_png`。
+WatermarkAsset = PngAsset
 
 
 class WatermarkSpec(BaseModel):
@@ -140,46 +122,6 @@ class WatermarkSpec(BaseModel):
             "width_px": self.width_px,
             "opacity": self.opacity,
             "apply_to": self.apply_to,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class WatermarkAsset:
-    """盘上那个 PNG 的**实测事实**（不是配置里写的，是量出来的）。
-
-    ``problem`` 为空且 ``exists`` 为真且 ``has_alpha`` 为真 ⇒ 可用。
-    ``probe_watermark`` 永远返回本对象（**不抛**）：面板要显示"缺文件"这一行红字，
-    而"缺文件"不是异常，是一个状态。
-    """
-
-    path: Path
-    exists: bool
-    width_px: int | None
-    height_px: int | None
-    has_alpha: bool
-    sha256: str
-    problem: str | None = None
-
-    @property
-    def usable(self) -> bool:
-        return (
-            self.exists
-            and self.problem is None
-            and self.has_alpha
-            and bool(self.width_px)
-            and bool(self.height_px)
-        )
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "path": self.path.as_posix(),
-            "exists": self.exists,
-            "width_px": self.width_px,
-            "height_px": self.height_px,
-            "has_alpha": self.has_alpha,
-            "sha256": self.sha256,
-            "problem": self.problem,
-            "usable": self.usable,
         }
 
 
@@ -295,117 +237,18 @@ def resolve_watermark(
 # ══════════════════════════════════════════════════════════════════════
 
 
-def _read_png_header(path: Path) -> tuple[int, int, bool]:
-    """扫块表，返回 ``(宽, 高, 有没有透明通道)``；不合规 ⇒ ``_PngError``。"""
-    with path.open("rb") as handle:
-        if handle.read(len(PNG_SIGNATURE)) != PNG_SIGNATURE:
-            raise _PngError("不是 PNG（文件头签名不匹配）")
-
-        width = height = 0
-        has_alpha = False
-        seen_ihdr = False
-
-        for _ in range(_MAX_CHUNKS):
-            header = handle.read(8)
-            if len(header) < 8:
-                break
-            length, chunk_type = struct.unpack(">I4s", header)
-            if length > _MAX_CHUNK_BYTES:
-                raise _PngError(f"PNG 块长度异常：{chunk_type!r} 声明 {length} 字节")
-
-            if chunk_type == b"IHDR":
-                if seen_ihdr:
-                    raise _PngError("PNG 出现了两个 IHDR")
-                data = handle.read(13)
-                if len(data) < 13:
-                    raise _PngError("PNG 被截断（IHDR 不足 13 字节）")
-                width, height, _depth, color_type, _comp, _filt, _interlace = struct.unpack(">IIBBBBB", data)
-                seen_ihdr = True
-                # 颜色类型 4（灰度+alpha）/ 6（真彩+alpha）自带 alpha 通道；
-                # 0/2/3 要看到 tRNS 才算有透明（调色板没 tRNS ⇒ 实心方块）。
-                has_alpha = color_type in (4, 6)
-                handle.seek(length - 13 + 4, 1)
-                continue
-
-            if chunk_type == b"IDAT":
-                break
-            if chunk_type == b"tRNS":
-                has_alpha = True
-            handle.seek(length + 4, 1)
-
-    if not seen_ihdr:
-        raise _PngError("PNG 缺 IHDR（文件损坏或不是 PNG）")
-    if width <= 0 or height <= 0:
-        raise _PngError(f"PNG 尺寸非法：{width}x{height}")
-    return width, height, has_alpha
-
-
 def probe_watermark(path: Path) -> WatermarkAsset:
-    """实测水印 PNG（**永不抛**）。面板与 CLI 用它显示"水印现在什么状态"。"""
-    if not path.is_file():
-        return WatermarkAsset(
-            path=path,
-            exists=False,
-            width_px=None,
-            height_px=None,
-            has_alpha=False,
-            sha256="",
-            problem="文件不存在",
-        )
+    """实测水印 PNG（**永不抛**）。面板与 CLI 用它显示"水印现在什么状态"。
 
-    digest = file_sha256(path)
-    try:
-        width, height, has_alpha = _read_png_header(path)
-    except _PngError as exc:
-        return WatermarkAsset(
-            path=path,
-            exists=True,
-            width_px=None,
-            height_px=None,
-            has_alpha=False,
-            sha256=digest,
-            problem=str(exc),
-        )
-    except OSError as exc:  # 权限 / 被占用 / 读到一半被删
-        return WatermarkAsset(
-            path=path,
-            exists=True,
-            width_px=None,
-            height_px=None,
-            has_alpha=False,
-            sha256=digest,
-            problem=f"读不出来：{exc}",
-        )
-
-    if not has_alpha:
-        return WatermarkAsset(
-            path=path,
-            exists=True,
-            width_px=width,
-            height_px=height,
-            has_alpha=False,
-            sha256=digest,
-            problem="PNG 没有透明通道（会盖住一块实心画面）",
-        )
-
-    return WatermarkAsset(
-        path=path,
-        exists=True,
-        width_px=width,
-        height_px=height,
-        has_alpha=True,
-        sha256=digest,
-    )
+    实现只有一份，在 :func:`studio.render.png_probe.probe_png` —— 贴图问的是同一件事，
+    两个调用方各自决定**怎么用**这个结论，但"什么算可用"的口径必须一致。
+    """
+    return probe_png(path)
 
 
 # ══════════════════════════════════════════════════════════════════════
 # 编译期摆放
 # ══════════════════════════════════════════════════════════════════════
-
-
-def _even_floor(value: int) -> int:
-    """向下取到偶数（yuv420p 色度对齐；``-2`` 的语义就是"取偶"）。"""
-    return value - value % 2
 
 
 def place_watermark(
@@ -430,13 +273,13 @@ def place_watermark(
         return None
 
     width = spec.width_px
-    height = _even_floor(round(width * asset.height_px / asset.width_px))
+    height = even_floor(round(width * asset.height_px / asset.width_px))
     height = max(height, 2)
     margin_x, margin_y = spec.margin_px
 
     if spec.position == "center":
-        x = _even_floor((canvas_width - width) // 2)
-        y = _even_floor((canvas_height - height) // 2)
+        x = even_floor((canvas_width - width) // 2)
+        y = even_floor((canvas_height - height) // 2)
     else:
         x = margin_x if spec.position.endswith("left") else canvas_width - width - margin_x
         y = margin_y if spec.position.startswith("top") else canvas_height - height - margin_y

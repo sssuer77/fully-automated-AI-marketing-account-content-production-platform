@@ -202,11 +202,15 @@ def test_report_places_a_valid_watermark(
     assert report.watermark.asset.usable is True
     placement = report.watermark.placement
     assert placement is not None
-    assert placement.width_px == 270
-    assert placement.height_px == 134
+    # 宽按 `width_ratio` 算（那个数写在 `config/outputs.yaml` 里、随真机调参变），
+    # 高由素材宽高比推出来（夹具是 400×200 ⇒ 2:1；取偶最多差 1px）。
+    # 写死 270 / 134 的用例会在"我调了水印宽度"时报警 —— 而那件事没坏。
+    width = outputs.watermark.width_px_for(1080)
+    assert placement.width_px == width
+    assert abs(placement.height_px - width / 2) <= 1
     assert placement.x % 2 == 0
     assert placement.y % 2 == 0
-    assert placement.x == 1080 - 270 - 48
+    assert placement.x == 1080 - width - 48
 
 
 def test_report_skips_an_unusable_watermark(
@@ -226,7 +230,7 @@ def test_report_skips_an_unusable_watermark(
 def test_report_uses_the_selected_profile_canvas(
     outputs: OutputsConfig, outputs_home: StudioPaths, watermark_path: Path
 ) -> None:
-    """保底档 720 宽 ⇒ 水印像素宽跟着变（180 = round(0.25*720)）。"""
+    """保底档 720 宽 ⇒ 水印像素宽跟着变（同一个比例换个画布就是另一个像素数）。"""
     write_png(watermark_path, width=400, height=200)
     report = build_render_profile_report(
         outputs,
@@ -235,10 +239,11 @@ def test_report_uses_the_selected_profile_canvas(
         name=FALLBACK_PROFILE_NAME,
     )
     assert report.profile.canvas == (720, 1280)
-    assert report.watermark.spec.width_px == 180
+    width = outputs.watermark.width_px_for(720)
+    assert report.watermark.spec.width_px == width
     placement = report.watermark.placement
     assert placement is not None
-    assert placement.x == 720 - 180 - 48
+    assert placement.x == 720 - width - 48
 
 
 def test_report_carries_the_width_warning(
@@ -250,6 +255,11 @@ def test_report_carries_the_width_warning(
     """
     outputs.profiles["douyin_1080x1920_30fps_v1"] = outputs.profiles["douyin_1080x1920_30fps_v1"].model_copy(
         update={"width": 1078}
+    )
+    # 比例**自己设**成 0.25：这条测的是"越界 ⇒ 夹取 + 取偶"这条路径，而仓库里的调参值
+    # （0.1）在 1078 宽下根本够不到 1/4 —— 靠它测不到夹取，用例会静悄悄地变成空转。
+    outputs = outputs.model_copy(
+        update={"watermark": outputs.watermark.model_copy(update={"width_ratio": 0.25})}
     )
     write_png(watermark_path, width=400, height=200)
     report = build_render_profile_report(
@@ -289,5 +299,5 @@ def test_report_dict_is_json_ready(
     )
     assert payload["watermark"]["enabled"] is True
     assert payload["watermark"]["asset"]["has_alpha"] is True
-    assert payload["watermark"]["placement"]["width_px"] == 270
+    assert payload["watermark"]["placement"]["width_px"] == outputs.watermark.width_px_for(1080)
     assert payload["profile"]["output_args"][:2] == ["-c:v", "libx264"]

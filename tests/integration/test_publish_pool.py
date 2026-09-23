@@ -43,6 +43,7 @@ from typing import Any, ClassVar
 
 import pytest
 from fastapi.testclient import TestClient
+from tests.support import restore_factory_accounts
 
 from studio.app.deps import AppState, build_state
 from studio.app.main import create_app
@@ -168,6 +169,9 @@ def paths(tmp_path: Path) -> StudioPaths:
         shutil.copyfile(source, value.config_dir / source.name)
 
     publish = value.config_dir / "publish.yaml"
+    # 账号段摆回出厂（"出厂有一个 douyin 号 acc_main + 一个演练台"）：盘上那份是
+    # 操作员的运行期状态，而这一层验的是**发布池**本身（见 tests/support.py）。
+    restore_factory_accounts(publish)
     text = publish.read_text(encoding="utf-8")
     # 只换**顶格**那一行：``handoff`` 与二线平台的 ``enabled`` 都是缩进的，不该跟着翻。
     text = text.replace("\nenabled: false", "\nenabled: true")
@@ -502,6 +506,23 @@ class TestPlatformOptions:
         second = items["xiaohongshu"]
         assert second["selectable"] is False
         assert "未启用" in second["note"]
+
+    def test_the_calibration_column_comes_from_the_pack(self, client: TestClient) -> None:
+        """★ "这个平台的选择器验过没有"**过了 HTTP 那一层**（T5.14）。
+
+        算法在 ``publish_service`` 里已经有一条用例了；这一条验的是它**真的出现在
+        面板拿到的 JSON 里** —— 少一个字段（比如忘了加进 schema）不会报任何错，
+        面板只会把那一列画成空的，而"空的"看起来与"没问题"一模一样。
+
+        七份 pack 里只有抖音那份写着 ``calibrated: true``（它的 ``known_gaps`` 也一并
+        报出来：校准修不了"数据回收那一组还没验过"）。
+        """
+        items = {item["code"]: item for item in client.get(PLATFORMS_URL).json()["items"]}
+        assert items["douyin"]["calibration"] == "calibrated"
+        assert "已真机校准" in items["douyin"]["calibration_note"]
+        assert any("数据回收" in gap for gap in items["douyin"]["known_gaps"])
+        assert items["xiaohongshu"]["calibration"] == "uncalibrated"
+        assert items["other"]["calibration"] == "n/a", "演练台不是平台，没有「真机校准」这回事"
 
     def test_the_real_platform_says_dead_letter_while_the_switch_is_off(
         self, rig: Rig, client: TestClient

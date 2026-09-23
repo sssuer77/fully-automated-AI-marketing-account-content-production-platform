@@ -163,6 +163,33 @@ def test_voice_change_is_a_miss(tmp_path: Path, cache: TtsCache) -> None:
     assert len(engine.calls) == 2
 
 
+def test_new_reference_audio_under_the_same_name_is_a_miss(tmp_path: Path, cache: TtsCache) -> None:
+    """★ 同名换参考音也必须重念（2026-09-23）。
+
+    用户换参考音的做法是「删掉重传 / 勾覆盖重传」，**目录名不变** —— 而 ``voice``
+    参数只是一个名字。指纹（``voice_fingerprint``）是唯一能把这两次分开的东西：
+    少了它，配音池会一句不落地命中旧音频，而库里写着「换音色成功」。
+    """
+    engine = FakeEngine()
+    synthesize_sentence(
+        "同一句话",
+        out_path=tmp_path / "s001.wav",
+        cache=cache,
+        engine=engine,
+        voice="bigbear",
+        voice_fingerprint="aaaa1111bbbb",
+    )
+    synthesize_sentence(
+        "同一句话",
+        out_path=tmp_path / "s001.wav",
+        cache=cache,
+        engine=engine,
+        voice="bigbear",
+        voice_fingerprint="cccc2222dddd",
+    )
+    assert len(engine.calls) == 2
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 归一化：念的是归一化后的文本，键也是
 # ══════════════════════════════════════════════════════════════════════

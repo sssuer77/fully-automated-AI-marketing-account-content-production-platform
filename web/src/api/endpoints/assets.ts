@@ -1,10 +1,11 @@
 // 素材库 REST 面（T4.8 · §3.3.14 / §4.3.1 / §04.5.12）。
 //
-// 九个端点对应面板上的九件事
+// 十个端点对应面板上的十件事
 // ------------------------
 // 看（`GET /assets`）、要数字（`GET /assets/stats`）、**看一类的一页**（`GET /assets/list`）、
 // 扫盘入库（`POST /assets/ingest`）、标记（`PATCH /assets/{id}`）、预览（`GET /assets/{id}/thumb`）、
-// 试听（`GET /assets/{id}/media`）、上传（`POST /assets/upload` / `POST /assets/voice`）。
+// 试听（`GET /assets/{id}/media`）、上传（`POST /assets/upload` / `POST /assets/voice`）、
+// 清孤儿（`POST /assets/prune`）。
 //
 // 为什么"看"有两个端点
 // --------------------
@@ -105,6 +106,19 @@ export type AssetPatchBody = BodyJson<"/api/v1/assets/{asset_id}", "patch">;
 
 /** 一次删除的回执（`purged` 是**真的从盘上删掉的路径**，见后端 `AssetDeleteModel`）。 */
 export type AssetDeleteResult = OkJson<"/api/v1/assets/{asset_id}", "delete">;
+export type PruneReport = OkJson<"/api/v1/assets/prune", "post">;
+export type PrunedOrphan = PruneReport["removed"][number];
+export type KeptOrphan = PruneReport["kept"][number];
+
+/** 一个音色的**逐段现状**（`GET /assets/voice/{id}/segments` · 裁定 381）。 */
+export type VoiceSegments = OkJson<"/api/v1/assets/voice/{voice_id}/segments", "get">;
+export type VoiceSegment = VoiceSegments["segments"][number];
+
+/** 删掉一段参考音的回执（`renamed` 是重编号的流水账，**必须显示**）。 */
+export type VoiceSegmentRemoval = OkJson<
+  "/api/v1/assets/voice/{voice_id}/segments/{name}",
+  "delete"
+>;
 
 const ASSETS_PATH = "/api/v1/assets";
 
@@ -222,7 +236,7 @@ export function deleteAsset(
 }
 
 /**
- * 上传一个音色的参考音（§4.3.1：2–3 段、每段 2–30 秒 —— 下限见裁定 369），并当场入库。
+ * 上传一个音色的参考音（§4.3.1：段数**不设上限**、每段 2–30 秒 —— 裁定 369 / 377），并当场入库。
  *
  * 参考音的**顺序**由服务端按原文件名排序决定（`ref.txt` 第 N 行 ↔ 第 N 段），
  * 面板要把"第 N 段 ← 哪个原文件"逐条显示出来。
@@ -241,6 +255,59 @@ export function uploadVoice(request: VoiceUploadRequest, signal?: AbortSignal): 
     ),
     { signal },
   );
+}
+
+/**
+ * 一个音色的逐段现状：段号 / 文件名 / 时长 / **同一位置的那行文本**。
+ *
+ * 位置即对应（`ref.txt` 第 N 行 ↔ 第 N 段）—— 所以 `text` 是「按位置取的那一行」，
+ * 不是按文件名里的编号去查。判据与入库同一份（服务端 `check_voice`）。
+ */
+export function fetchVoiceSegments(
+  voiceId: string,
+  signal?: AbortSignal,
+): Promise<VoiceSegments> {
+  return apiGet<VoiceSegments>(
+    `${ASSETS_PATH}/voice/${encodeURIComponent(voiceId)}/segments`,
+    { signal },
+  );
+}
+
+/**
+ * 删掉一段参考音（**删完重编号 + 同步 `ref.txt`** —— 裁定 381）。
+ *
+ * 为什么这是删一段、而不是改一段：改一段走的是上传（勾「覆盖同名」）。这里回答的是
+ * 「这段我不想要了」—— 比如当年为了凑段数把同一个文件复制了一份。
+ */
+export function deleteVoiceSegment(
+  voiceId: string,
+  name: string,
+  signal?: AbortSignal,
+): Promise<VoiceSegmentRemoval> {
+  return apiDelete<VoiceSegmentRemoval>(
+    `${ASSETS_PATH}/voice/${encodeURIComponent(voiceId)}/segments/${encodeURIComponent(name)}`,
+    { signal },
+  );
+}
+
+/**
+ * 清掉这一类的**孤儿**（裁定 384）：盘上认得出、库里没有、**而且本身就不合格**。
+ *
+ * 为什么它不能挂在 `deleteAsset` 上：`DELETE /assets/{id}` 的对象是**库里那一行**，
+ * 而孤儿**没有行** —— 后端在那条路上手上没有行就直接 404。所以"盘上有、库里没有"
+ * 的东西以前在面板上**删不掉**，那句「盘上有 N 条还没入库」于是变成一条永远动不了的
+ * 警告。
+ *
+ * `dryRun: true` ⇒ 只报"会清掉哪些"，一个字节都不动（面板点第一下用它）。
+ * 合格的孤儿**不会被清**（它们该入库），后端照实回在 `kept` 里 —— 面板要把那一段
+ * 显示出来，否则用户会以为"清了一遍，怎么还剩着"。
+ */
+export function pruneOrphans(
+  kind: AssetKind,
+  dryRun: boolean,
+  signal?: AbortSignal,
+): Promise<PruneReport> {
+  return apiPost<PruneReport>(`${ASSETS_PATH}/prune`, { kind, dry_run: dryRun }, { signal });
 }
 
 /** 缩略图地址（交给 `<img src>`；**没有缩略图时是 404**，组件据此显示占位）。 */

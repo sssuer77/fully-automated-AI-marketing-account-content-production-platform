@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from studio.core.config import CoverConfig
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.paths import StudioPaths
 from studio.domain.cover import (
@@ -30,6 +31,7 @@ from studio.domain.cover import (
 from studio.publish.cover import (
     DEFAULT_FRAME_AT_MS,
     CoverResult,
+    CoverSticker,
     build_cover,
     measure_text_width,
     resolve_cover_font,
@@ -164,6 +166,21 @@ def _cover_paths(tmp_path: Path) -> StudioPaths:
     return StudioPaths(home=home, data_dir=home / "data")
 
 
+def _sticker(tmp_path: Path) -> CoverSticker:
+    """一张摆在封面中央的主体贴图（真机形状：1080 宽画布、人物 324×576）。"""
+    image = tmp_path / "hero.png"
+    image.write_bytes(b"\x89PNG\r\n")
+    return CoverSticker(
+        name="hero",
+        path=image,
+        x=378,
+        y=672,
+        width_px=324,
+        height_px=576,
+        opacity=1.0,
+    )
+
+
 def _build(tmp_path: Path, runner: Any, **overrides: Any) -> CoverResult:
     target = tmp_path / "cover.partial.jpg"
     source = tmp_path / "final.mp4"
@@ -202,12 +219,116 @@ class TestBuildCoverArgv:
         assert chain.count("drawtext=") == 4
         assert "离谱" in chain and "跑酷" in chain and "地图" in chain and "点个关注" in chain
 
-    def test_highlight_gets_its_own_colour(self, tmp_path: Path) -> None:
+    def test_the_title_is_yellow_with_a_dark_outline(self, tmp_path: Path) -> None:
+        """默认样式就是用户给的那张示例：**黄字 + 粗黑边**。
+
+        黄不是审美取舍：跑酷素材本身是花花绿绿的，白字压上去会被底吃掉，而黄字黑边
+        在**任何**底色上都跳出来。所以这条钉的是"底色由配置给、描边真的画上"。
+        """
         runner = FakeRunner()
         _build(tmp_path, runner)
         chain = runner.calls[0][runner.calls[0].index("-vf") + 1]
-        assert "fontcolor=0xFFD400" in chain  # 高亮色
-        assert "fontcolor=white" in chain  # 正文色
+        assert "fontcolor=0xFFD400" in chain
+        assert "bordercolor=black" in chain
+        assert "borderw=10" in chain
+
+    def test_highlight_gets_its_own_colour(self, tmp_path: Path) -> None:
+        """高亮词与正文**必须**是两个颜色 —— 否则"拆段"那套机制等于没做。"""
+        runner = FakeRunner()
+        _build(tmp_path, runner)
+        chain = runner.calls[0][runner.calls[0].index("-vf") + 1]
+        assert "fontcolor=0xFFD400" in chain  # 正文
+        assert "fontcolor=0xFFFFFF" in chain  # 高亮
+
+    def test_the_style_comes_from_the_config(self, tmp_path: Path) -> None:
+        """颜色 / 描边 / 压暗带全部现读配置 —— 换一种底素材只改一行，不用改代码。"""
+        runner = FakeRunner()
+        _build(
+            tmp_path,
+            runner,
+            style=CoverConfig(
+                title_color="0x00FF00", highlight_color="0x0000FF", outline=0, scrim=0.0
+            ),
+        )
+        chain = runner.calls[0][runner.calls[0].index("-vf") + 1]
+        assert "fontcolor=0x00FF00" in chain
+        assert "fontcolor=0x0000FF" in chain
+        assert "borderw" not in chain, "outline=0 ⇒ 一个描边参数都不该出现"
+        assert "drawbox=" not in chain, "scrim=0 ⇒ 不画压暗带"
+
+
+class TestBuildCoverSticker:
+    """封面主体（T5.1 追加）：成片里抽的一帧 + 合成配置里的贴图。
+
+    为什么这一组值得单独一块：它是**从 ``-vf`` 换到 ``-filter_complex``** 的那一处。
+    两条路都留着（没有贴图时命令逐字节不变），所以"换过去了没有"必须有用例盯着 ——
+    写错了的话 ffmpeg 会**静默丢掉**其中一路（``-vf`` 只认最后一条），
+    症状是"封面出来了，就是没有人物"。
+    """
+
+    def test_no_sticker_keeps_the_single_vf(self, tmp_path: Path) -> None:
+        """没有贴图 ⇒ 命令与改前同形（真机验过很多遍的那一串，不该被顺手换掉）。"""
+        runner = FakeRunner()
+        _build(tmp_path, runner)
+        argv = runner.calls[0]
+        assert argv.count("-vf") == 1
+        assert "-filter_complex" not in argv
+
+    def test_a_sticker_switches_to_filter_complex(self, tmp_path: Path) -> None:
+        runner = FakeRunner()
+        _build(tmp_path, runner, sticker=_sticker(tmp_path))
+        argv = runner.calls[0]
+        assert "-vf" not in argv, "-vf 只吃一路输入 —— 有贴图时必须换成 filter_complex"
+        assert argv.count("-filter_complex") == 1
+        assert argv[argv.index("-map") + 1] == "[out]"
+
+    def test_the_sticker_is_the_second_input(self, tmp_path: Path) -> None:
+        """贴图恒为输入 1（背景恒为输入 0）—— 背景是抽的帧还是纯色底都一样。"""
+        runner = FakeRunner()
+        sticker = _sticker(tmp_path)
+        _build(tmp_path, runner, sticker=sticker)
+        argv = runner.calls[0]
+        assert argv[argv.index(str(sticker.path)) - 1] == "-i"
+        assert argv.count("-i") == 2, "背景 + 贴图，两路输入"
+
+    def test_the_graph_overlays_then_draws_the_text(self, tmp_path: Path) -> None:
+        """顺序：背景 ⇒ 叠贴图 ⇒ 压暗带与文字。反过来的话字会被人物盖住。"""
+        runner = FakeRunner()
+        sticker = _sticker(tmp_path)
+        _build(tmp_path, runner, sticker=sticker)
+        graph = runner.calls[0][runner.calls[0].index("-filter_complex") + 1]
+        overlay = graph.index("overlay=")
+        assert overlay < graph.index("drawtext=")
+        assert f"overlay={sticker.x}:{sticker.y}" in graph
+        assert f"scale={sticker.width_px}:{sticker.height_px}" in graph
+        assert graph.rstrip().endswith("[out]")
+
+    def test_opacity_goes_through_the_alpha_channel(self, tmp_path: Path) -> None:
+        """透明度走 ``colorchannelmixer=aa=``（与成片里那条逐字同构）。
+
+        不做这一步的话人物是**实心**贴上去的：透明区会被当成黑色，人物周围一圈黑边。
+        """
+        runner = FakeRunner()
+        sticker = _sticker(tmp_path)
+        _build(tmp_path, runner, sticker=sticker)
+        graph = runner.calls[0][runner.calls[0].index("-filter_complex") + 1]
+        assert "format=rgba" in graph
+        assert "colorchannelmixer=aa=1" in graph
+
+    def test_the_plan_records_what_was_drawn(self, tmp_path: Path) -> None:
+        """画了什么就得记什么（"这张封面为什么长这样"要有人能回答）。"""
+        runner = FakeRunner()
+        sticker = _sticker(tmp_path)
+        result = _build(tmp_path, runner, sticker=sticker)
+        assert result.plan["sticker"]["name"] == "hero"
+        assert result.plan["sticker"]["x"] == sticker.x
+        assert result.plan["style"]["title_color"] == "0xFFD400"
+
+    def test_no_sticker_is_recorded_as_none(self, tmp_path: Path) -> None:
+        """没贴人物也要留痕 —— ``None`` 与"这个字段不存在"是两件事。"""
+        runner = FakeRunner()
+        result = _build(tmp_path, runner)
+        assert result.plan["sticker"] is None
 
     def test_ss_precedes_i(self, tmp_path: Path) -> None:
         """``-ss`` 必须在 ``-i`` 前面（跳过去再解），否则整段视频都要解一遍。"""

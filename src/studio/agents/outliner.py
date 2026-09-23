@@ -8,20 +8,34 @@
 ③ 返回 OutlineOutput（结构由 JSON Schema 与 pydantic 两道闸门兜住）
 ```
 
-为什么这一级**不做**规则重试
-----------------------------
-Director 有 ``outline_retries``（段数 / 字数合计 / 时长区间全是可校验的硬规则），
-这一级的产物只有两个自由文本字段 —— 除了长度没有可机检的东西，而长度已经由
-schema 卡住（超长会走网关的修复重试）。再包一层"不合规就重写"只是在给
-"标题不够好"这种**主观**判断装一个假的客观闸门。
+为什么这一级**现在有**规则重试（2026-09-23 追加）
+--------------------------------------------
+原先的理由是"除了长度没有可机检的东西"。现在多了一条**当场可判的事实**：
+标题里不得出现说话人标签（用户口径：这个账号只是借这两个角色的口讨论社会问题，
+观众能看到的字里不该出现"谁在说"）。有可机检的规则就要接闸 —— 否则那一条判据
+只是一句注释，真机那条「…，熊大：凉的不是他一个人的心」照样会落库。
+
+⚠️ 但"标题够不够得体、够不够书面"仍然是**主观**判断，这一级不装那道假闸门：
+那一条归提示词与 Reviewer。
 """
 
 from __future__ import annotations
 
-from studio.agents.base import AgentContext, AgentResult, BaseAgent
-from studio.domain.script import OutlineInput, OutlineOutput
+from typing import ClassVar
 
-__all__ = ["OutlinerAgent"]
+from studio.agents.base import AgentContext, AgentResult, BaseAgent
+from studio.domain.script import (
+    FACTS_UNSET,
+    OutlineInput,
+    OutlineOutput,
+    OutlineReport,
+    check_outline_title,
+)
+
+__all__ = ["TITLE_RETRIES", "OutlinerAgent"]
+
+#: 标题不合规时的重写次数（与 Director 的 ``OUTLINE_RETRIES`` 同口径）
+TITLE_RETRIES: int = 2
 
 
 class OutlinerAgent(BaseAgent[OutlineInput, OutlineOutput]):
@@ -32,11 +46,32 @@ class OutlinerAgent(BaseAgent[OutlineInput, OutlineOutput]):
     schema_name = "outline_result"
     output_model = OutlineOutput
 
+    title_retries: ClassVar[int] = TITLE_RETRIES
+
     async def run(self, ctx: AgentContext, payload: OutlineInput) -> AgentResult[OutlineOutput]:
         topic = payload.topic
-        return await self._invoke(
-            ctx,
-            topic_title=topic.title,
-            topic_angle=payload.angle or topic.angle,
-            topic_reason=topic.reason,
-        )
+        hint = ""
+        last: AgentResult[OutlineOutput] | None = None
+        for _ in range(1 + self.title_retries):
+            result = await self._invoke(
+                ctx,
+                topic_title=topic.title,
+                topic_angle=payload.angle or topic.angle,
+                topic_reason=topic.reason,
+                facts=payload.facts or FACTS_UNSET,
+                retry_hint=hint,
+            )
+            if not result.ok or result.data is None:
+                return result
+            report = check_outline_title(result.data.title, names=tuple(ctx.persona.speaker_names))
+            last = result.model_copy(update={"warnings": [*result.warnings, *_title_warnings(report)]})
+            if report.ok:
+                return last
+            hint = "上一版标题不合格：" + report.describe() + "。请重写完整 JSON，不要解释。"
+
+        assert last is not None  # 循环至少执行一次
+        return last
+
+
+def _title_warnings(report: OutlineReport) -> list[str]:
+    return [f"outline_title:{problem}" for problem in report.problems]

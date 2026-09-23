@@ -14,6 +14,7 @@ from typing import Any, cast
 
 import pytest
 import yaml
+from tests.support import factory_accounts
 
 from studio.core.paths import StudioPaths
 from studio.db.engine import MIGRATIONS_DIR, connect, iter_statements, transaction
@@ -183,8 +184,9 @@ def test_publish_rate_limit_seeded(connection: sqlite3.Connection) -> None:
     payload = json.loads(row["rate_limit_json"])
     assert payload == {"daily_limit": 3, "min_gap_min": 30, "window": "local_day"}
 
-    publish_yaml = yaml.safe_load((REPO_ROOT / "config" / "publish.yaml").read_text(encoding="utf-8"))
-    account = next(a for a in publish_yaml["accounts"] if a["account_id"] == "acc_main")
+    # 对的是**出厂**那份账号（`tests/support.py`），不是盘上那份：盘上那份是操作员的
+    # 运行期状态（面板会就地改它），拿它当基线会让"操作员改了个额度"变成这里红。
+    account = next(a for a in factory_accounts() if a["account_id"] == "acc_main")
     assert payload["daily_limit"] == account["daily_limit"]
     assert payload["min_gap_min"] == account["min_gap_min"]
 

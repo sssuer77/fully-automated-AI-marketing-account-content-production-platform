@@ -80,8 +80,78 @@ watermark:
   position: bottom_right        # top_left | top_right | bottom_left | bottom_right
   margin_x: 48
   margin_y: 420
-  width_ratio: 0.25             # 相对画布宽度；上限 0.25（T3.2 夹取）
-  opacity: 1.0
+  width_ratio: 0.1             # 相对画布宽度；上限 0.25（T3.2 夹取）
+  opacity: 0.0
+
+# 人物贴图（T6.5）：透明 PNG 蒙在画面上，**可以有好几层**
+#
+# 与水印的区别：水印是**角标**（画布 1/4 宽以内、标识账号），贴图是**主体**
+# （人物竖长，可以占大半屏）。所以两者各有一份参数 —— 把人物塞进水印那条
+# "上限 0.25"里，1080 宽下最多 270px，做不了主体。
+#
+# 每一层是**一个命名块**（与上面的 profiles 同构），名字随便起，只用来认人：
+# 面板上按这个名字列出每一层，manifest 里也按这个名字留痕。
+#
+# ★ 想加一层：把下面任意一段**整块复制**一份、改个名字即可（缩进要对齐）。
+#   面板改不了"多一行少一行"，所以新增/删除槽位只能在文件里做 —— 加完之后
+#   这一层的每一个字段都能在面板上编辑。写好后重开面板就能看到新的一层。
+#
+# 层数不限；**声明顺序 = 叠放顺序**（先声明的在下面）。三层的关系固定是
+# 贴图在最下、字幕压在贴图上、水印压在最上面（字幕是内容、水印是标识，都不该被人物盖住）。
+#
+# ★ 换图（T6.5 追加）：`speaker` 写"这一层代表谁讲话"、`speaking_path` 写"他讲话时
+#   换成哪张图"。出片时按**时间轴**里逐句的 `speaker` 判断谁在讲：讲 ⇒ 换成
+#   `speaking_path`，讲完 ⇒ 换回 `path`。两张图**共用同一份摆放**（位置与尺寸都不变
+#   —— 换图时挪一下位置，人物会在开口那一瞬间跳一下）。
+#   说话人的名字要与稿子里的 `script_sentences.speaker` 一致（本项目里是 bigbear /
+#   littlebear）。对不上 ⇒ 这一层全程都是普通图，原因会写进成片 manifest 与面板。
+#
+# 每一层都是**可选**的：enabled=false / 图不在盘上 / 图没有透明通道 / 放不进画布
+# ⇒ 只跳过这一层，其余照常出片（与水印同一条"装饰不阻塞成片"的口径）。
+stickers:
+  # 主讲人物。name 只是一个标识，不参与渲染。
+  hero:
+    enabled: true            # 关掉 ⇒ 这一层完全不参与渲染
+    path: templates/douyin_9x16_default/assets/images/stickers/hero.png
+    speaker: bigbear           # 这一层代表谁讲话（对齐 script_sentences.speaker）
+    speaking_path: templates/douyin_9x16_default/assets/images/stickers/hero_speeking.png
+    position: bottom_right     # top_left | top_right | bottom_left | bottom_right | center
+    margin_x: 48
+    margin_y: 0              # 别小于 subtitle.safe_area.bottom（抖音底部交互区会盖住脚）
+    height_ratio: 0.3         # 占画布**高度**的比例（上限 1.0 = 顶满画面）
+    opacity: 1.0               # 人物一般要实心；半透明会让"人"看着像鬼影
+
+  # 客串 / 次要人物。它同时是一份可以照抄的模板（整块复制、改个名字就是新的一层）。
+  guest:
+    enabled: true
+    path: templates/douyin_9x16_default/assets/images/stickers/guest.png
+    speaker: littlebear
+    speaking_path: templates/douyin_9x16_default/assets/images/stickers/guest_speeking.png
+    position: bottom_left
+    margin_x: 48
+    margin_y: 0
+    height_ratio: 0.3
+    opacity: 1.0
+
+# 封面（T5.1 追加 · §06.3）：发布页点「出封面」时画的那张 1080×1920 JPEG
+#
+# 一张封面由三样东西叠出来：**成片里抽的一帧**（背景）⇒ **合成配置里的贴图**
+# （下面 stickers 里挑一层，居中摆）⇒ **标题**（大字、黄字黑边，压在画面下方）。
+#
+# 为什么颜色 / 描边放在这里而不是写死在代码里：封面是给人看的那一格，同一支片子
+# 换一种底素材（雪地 / 白墙 / 夜场）就得换色。改这里 ⇒ 下一张封面就是新样式。
+#
+# 为什么贴图是**居中**摆、而不是照 stickers 里的 position：成片里人物缩在右下角
+# 是为了给字幕让位；封面上没有字幕，人物要当主体（居中），标题压在它下面。
+#
+# 颜色只认 `0xRRGGBB` 这一种写法（**要加引号**，不然 YAML 会把它读成十六进制整数）。
+cover:
+  title_color: "0xFFD400"      # 主文案颜色（黄）
+  highlight_color: "0xFFFFFF"  # 高亮词颜色；与上面**必须不同**，否则高亮等于没做
+  outline: 10                  # 描边像素宽（0 = 不描边）；黄字压在亮底上全靠它
+  scrim: 0.0                   # 文字区背后的压暗带（0 = 不画）。黄字黑边自己就够读，
+                               # 压暗带会把跑酷画面压成灰的；底素材偏亮时可调到 0.3~0.5
+  sticker: ""                  # 用 stickers 里的哪一层；空 = 第一个开着且贴得上的
 
 # 音频总线（T3.6）
 audio:
@@ -106,10 +176,10 @@ subtitle:
   font_size: 64
   outline: 4
   shadow: 2
-  margin_bottom: 420          # 实际 MarginV = max(这个值, safe_area.bottom)
+  margin_bottom: 420          # 面板「距底」可改；实际 MarginV = max(这个值, safe_area.bottom)
   max_chars_per_line: 13      # 1080 宽 / 64px 字 ≈ 15 字，留点余量
   max_lines: 2
-  safe_area:                  # 文字安全区（抖音底部交互区 ~420px）
+  safe_area:                  # 文字安全区（抖音底部交互区 ~420px）；bottom = 面板「底部安全区」，可改
     top: 220
     bottom: 420
     left: 60

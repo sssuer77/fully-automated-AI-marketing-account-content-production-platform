@@ -214,6 +214,7 @@ class RenderFinalHandler:
                 text="".join(row.text for row in rows),
                 sentences=tuple(row.text for row in rows),
                 sentence_voices=active_script_voices(self._connection, ctx.task_id, paths=self._paths),
+                sentence_speakers=tuple(row.speaker for row in rows),
             )
 
         started_at = now_iso()

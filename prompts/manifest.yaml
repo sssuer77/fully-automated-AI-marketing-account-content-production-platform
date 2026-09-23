@@ -12,7 +12,7 @@ prompts:
   shared.persona_block:
     user: shared/persona_block.md
     version: "1"
-    sha256: 3010b3e5a50d31e2880f18220ef94fa4ac85fc76ab71e185a5b0d326465de576
+    sha256: 484e6753523622691a642af419d44bed21750da6b1649316fdefa46ee451612b
     description: 人物（频道定位）注入块 —— 所有 Agent 的 user 消息前缀
 
   shared.json_contract:
@@ -39,48 +39,54 @@ prompts:
     system: ideator/system.md
     user: ideator/user.jinja
     version: "1"
-    sha256: 6d194e02666fd8fdc77193b98841ab6e70cadff019d4f2832044f47bdd1fb71a
+    sha256: e3f5bc60dc45a3be1ee0b9fb1e327f60068a3d419238399ed3551ffafd2f2193
     description: 批量选题（单方向 3–5 个 + 禁重复）
 
   outliner:
     system: outliner/system.md
     user: outliner/user.jinja
     version: "1"
-    sha256: 965c0aca1af57069ee3af05e7aa882834818fd14d26a7b30e103310bd3493406
+    sha256: 2bc95a0f04dd60974cd8b6ad2a50664a75344991109921c6ea4fd7d0edba7124
     description: 选题定稿（视频标题 + 核心论点 · 文案三级流水线的二级）
 
   director:
     system: director/system.md
     user: director/user.jinja
     version: "1"
-    sha256: 20271ade4d785786fc7cc516244035bd5c8f08187dd3b8a8b3468ecb2f6db949
+    sha256: 7c1691b4e8ad361211369259b892e91d19a92414a92ddbbf6ca9fcf11ddbc067
     description: 内容导演（钩子 + 3–5 段大纲 + CTA + 时长预估）
 
   writer:
     system: writer/system.md
     user: writer/user.jinja
     version: "1"
-    sha256: 04a2fca560c8778eb239fca8df587b335b6b84327d1fcaeebb01d99a2ee45db7
+    sha256: 0f5f5c4395609e5897bdf6971298e96f4d1910df53f238eefdf8bff457bd1bbb
     description: 口播编剧（600–800 字 + 逐句表 + 口癖/禁区自检）
 
   reviewer:
     system: reviewer/system.md
     user: reviewer/user.jinja
     version: "1"
-    sha256: fa4c86ae7584e5af38e378d28cd0a0ab62a0c2304506bfe02571484e62e1a895
+    sha256: 362bab388656d496bf7db1e7a3049a5696e03e0502a3afed343a1dadbcd604bc
     description: 双通道评分（LLM 六维度 + 问题清单；总分与等级由服务端算）
 
   editor:
     system: editor/system.md
     user: editor/user.jinja
     version: "1"
-    sha256: 23957d069f38b35af363b63b77030e0917141e527d92855d9a96b1d45ea70abb
+    sha256: 55c74086d795e5581301e0e3b4faca7427d868908bdd18f50785840e3e629591
     description: 改稿（只改被指出的问题；≤2 轮）
 
   cover:
     system: cover/system.md
     user: cover/user.jinja
     version: "1"
-    sha256: 6f5d2094bdb1181eb407771a31daef0c170a980720673987cfa9469adc98bbb1
+    sha256: 0a846300556596efa41afc61fb02ad9fed726d6a0068c8761f16047b28a82a9e
     description: 封面文案（主/次文案 + 高亮词 + 抽帧时刻；禁区自检）
 
+  news_scout:
+    system: news_scout/system.md
+    user: news_scout/user.jinja
+    version: "1"
+    sha256: f82a7c3f8bdaaf18c3be528b4b6e279b7fa69ab59bf92243a737c37afc24f7e0
+    description: 今日新闻评测（值不值得写 + 建议方向；ref 原样回抄）

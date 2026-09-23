@@ -17,17 +17,22 @@ import yaml
 from studio.core.config import (
     CONFIG_FILE_NAMES,
     SECRETS_FILE_NAME,
+    AccountConfig,
     ConfigBundle,
     LlmConfigHotReload,
     effective_paths,
     llm_config_provider,
     load_config,
     load_llm_config,
+    load_publish_config,
+    parse_publish_account,
     redact,
     set_llm_profile_model,
+    write_publish_accounts,
 )
 from studio.core.errors import ConfigError, ErrorCode
 from studio.core.paths import StudioPaths
+from tests.support import restore_factory_publish_config
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 REAL_CONFIG_DIR = REPO_ROOT / "config"
@@ -45,6 +50,11 @@ def config_paths(tmp_path: Path) -> StudioPaths:
     # 模板文件也要在（报错信息会指向 config/<name>.example.yaml）
     for example in REAL_CONFIG_DIR.glob("*.example.yaml"):
         shutil.copy2(example, home / "config" / example.name)
+    # publish.yaml 是**面板会就地改写**的那一份（T6.4）：账号段与总开关都是操作员的
+    # 运行期状态。这一层验的是**出厂**那份（"出厂有一个 douyin 号" / "出厂不发出去"），
+    # 所以把它摆回出厂 —— 否则"在面板上删过一个号、打开过开关"会让这一整片红在与
+    # 它们无关的地方（见 tests/support.py）。
+    restore_factory_publish_config(home / "config" / "publish.yaml")
     return StudioPaths(home=home, data_dir=home / "data")
 
 
@@ -701,3 +711,143 @@ def test_publish_guard_blocks_confirm_free_without_accounts(config_paths: Studio
 
     _edit(config_paths, "publish", mutate)
     _expect(config_paths, ErrorCode.CONFIG_INVALID)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 面板改账号：按行改写 config/publish.yaml（T6.4）
+# ══════════════════════════════════════════════════════════════════════
+#
+# 这一组验的不是"写进去了"，而是**只写了该写的地方**：
+# 那份文件里 ``platforms`` 段、``precheck`` 段、以及每行行尾的注释都是"为什么这么配"
+# 的唯一记录，被面板顺手抹掉一次，就再也回不来了（同 `set_llm_profile_model` 的取舍）。
+
+
+def _publish_text(paths: StudioPaths) -> str:
+    return (paths.config_dir / "publish.yaml").read_text(encoding="utf-8")
+
+
+def _accounts_block(text: str) -> str:
+    """``accounts:`` 段到下一个顶层键之间的正文（**含**段头那一行）。"""
+    head = text.index("\naccounts:")
+    tail = text.index("\nplatforms:")
+    return text[head + 1 : tail]
+
+
+def _account(**overrides: Any) -> AccountConfig:
+    payload: dict[str, Any] = {
+        "account_id": "dy_backup",
+        "platform": "douyin",
+        "display_name": "抖音副号",
+        "profile_dir": "data/browser_profile/dy_backup",
+        "enabled": True,
+        "daily_limit": 2,
+        "min_gap_min": 60,
+    }
+    return AccountConfig.model_validate(payload | overrides)
+
+
+def test_write_publish_accounts_appends_and_leaves_the_rest_alone(config_paths: StudioPaths) -> None:
+    """加一个号：段外一个字节都不动（``platforms`` / ``precheck`` / 注释全留着）。"""
+    before = _publish_text(config_paths)
+    write_publish_accounts(config_paths, [*load_publish_config(config_paths).accounts, _account()])
+    after = _publish_text(config_paths)
+
+    assert [account.account_id for account in load_publish_config(config_paths).accounts] == [
+        "acc_main",
+        "_rehearsal",
+        "dy_backup",
+    ]
+    # 段外（头 + platforms 之后）逐字未变
+    assert before.split("\naccounts:")[0] == after.split("\naccounts:")[0]
+    assert before.split("\nplatforms:", 1)[1] == after.split("\nplatforms:", 1)[1]
+    # 新条目长成了出厂文件那个形状（字段齐全、缩进两级）
+    assert "  - account_id: dy_backup\n" in after
+    assert "    daily_limit: 2\n" in after
+
+
+def test_write_publish_accounts_keeps_inline_comments_when_updating(config_paths: StudioPaths) -> None:
+    """改一个值：行尾那句注释**必须还在** —— 它是"这个字段为什么这么配"的记录。"""
+    accounts = list(load_publish_config(config_paths).accounts)
+    accounts[0] = accounts[0].model_copy(update={"daily_limit": 5})
+
+    write_publish_accounts(config_paths, accounts)
+    text = _publish_text(config_paths)
+
+    assert "    daily_limit: 5\n" in text
+    assert "    profile_dir: data/browser_profile/acc_main   # 持久化登录态（.gitignore）\n" in text
+
+
+def test_write_publish_accounts_drops_the_removed_account_comments(config_paths: StudioPaths) -> None:
+    """删一个号：**它上方那几行注释跟着走**（留着就是一段描述不存在账号的文字）。"""
+    accounts = [a for a in load_publish_config(config_paths).accounts if a.account_id != "_rehearsal"]
+
+    write_publish_accounts(config_paths, accounts)
+    block = _accounts_block(_publish_text(config_paths))
+
+    assert "_rehearsal" not in block
+    assert "本地演练台的账号" not in block
+    # 段级注释（属于 platforms: 的开场白）不能被顺手带走
+    assert "# 一线平台（一期必做）" in _publish_text(config_paths)
+
+
+def test_write_publish_accounts_writes_an_explicit_empty_list(config_paths: StudioPaths) -> None:
+    """删光了要留 ``accounts: []``：光秃秃的 ``accounts:`` 读回来是 ``None`` ⇒ 下一次加载炸。"""
+    write_publish_accounts(config_paths, [])
+
+    assert load_publish_config(config_paths).accounts == []
+    assert "accounts: []\n" in _publish_text(config_paths)
+
+
+def test_write_publish_accounts_refuses_duplicate_profile_dir(config_paths: StudioPaths) -> None:
+    """两个号共用一个 ``profile_dir`` ⇒ 拒绝，且**盘上一个字节都不动**。"""
+    before = _publish_text(config_paths)
+    accounts = [
+        *load_publish_config(config_paths).accounts,
+        _account(profile_dir="data/browser_profile/acc_main"),
+    ]
+
+    with pytest.raises(ConfigError) as excinfo:
+        write_publish_accounts(config_paths, accounts)
+
+    assert excinfo.value.code is ErrorCode.CONFIG_INVALID
+    assert "profile_dir" in str(excinfo.value.context)
+    assert _publish_text(config_paths) == before
+
+
+def test_write_publish_accounts_is_idempotent(config_paths: StudioPaths) -> None:
+    """同一份清单写两次 ⇒ 第二次一个字节都不改（mtime 白跳会惊动热重载）。"""
+    accounts = [*load_publish_config(config_paths).accounts, _account()]
+    write_publish_accounts(config_paths, accounts)
+    once = _publish_text(config_paths)
+
+    write_publish_accounts(config_paths, accounts)
+
+    assert _publish_text(config_paths) == once
+
+
+def test_write_publish_accounts_can_refill_after_emptying(config_paths: StudioPaths) -> None:
+    """``accounts: []`` 之后再加号 ⇒ 头行上的 ``[]`` 要清掉（否则列表接在它后面是非法 YAML）。"""
+    write_publish_accounts(config_paths, [])
+    write_publish_accounts(config_paths, [_account(account_id="acc_second")])
+
+    assert [a.account_id for a in load_publish_config(config_paths).accounts] == ["acc_second"]
+    assert "accounts: []" not in _publish_text(config_paths)
+
+
+def test_parse_publish_account_reports_form_errors_as_validation_failed() -> None:
+    """表单不合法 ⇒ 422 那一档（``VALIDATION_FAILED``）+ 逐字段的错误，面板据此标红。"""
+    with pytest.raises(ConfigError) as excinfo:
+        parse_publish_account({"account_id": "acc_x", "platform": "tiktok", "profile_dir": "data/x"})
+
+    assert excinfo.value.code is ErrorCode.VALIDATION_FAILED
+    fields = {row["field"] for row in excinfo.value.context["errors"]}
+    assert any("platform" in field for field in fields)
+
+
+def test_parse_publish_account_quotes_ambiguous_scalars() -> None:
+    """``display_name: yes`` 读回来是**布尔** —— 渲染时必须加引号（否则下次加载炸）。"""
+    account = parse_publish_account(
+        {"account_id": "acc_y", "platform": "douyin", "profile_dir": "data/x", "display_name": "yes"}
+    )
+
+    assert account.display_name == "yes"

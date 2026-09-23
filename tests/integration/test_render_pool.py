@@ -65,6 +65,11 @@ def _stage_home(tmp_path: Path) -> StudioPaths:
         Path(__file__).resolve().parents[2] / "config" / "outputs.yaml",
         paths.config_dir / "outputs.yaml",
     )
+    shutil.copytree(
+        Path(__file__).resolve().parents[2] / "prompts",
+        paths.home / "prompts",
+        dirs_exist_ok=True,
+    )
     clip = paths.mc_parkour_dir / "parkour_test.mp4"
     clip.parent.mkdir(parents=True, exist_ok=True)
     result = run_command(

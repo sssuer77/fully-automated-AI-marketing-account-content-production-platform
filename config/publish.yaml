@@ -3,7 +3,7 @@
 #   两个开关必须**同时**满足才允许无人确认发布。
 schema_version: "1.0"
 
-enabled: false                 # ★ 出厂关闭：不发出去，先跑通链路
+enabled: true                  # ★ 出厂是 false（R14 不可逆）；2026-09-23 人工打开 ⇒ 真发
 require_confirm: true          # 发布前确认闸（复用 §04.4.4 确认闸机制）
 dry_run: false                 # true ⇒ 走完流程到"确认发布"前一步并截图
 
@@ -13,14 +13,6 @@ handoff:
 
 # D1：结构支持多账号，默认只启用 1 个
 accounts:
-  - account_id: acc_main
-    platform: douyin
-    display_name: 主账号
-    profile_dir: data/browser_profile/acc_main   # 持久化登录态（.gitignore）
-    enabled: true
-    daily_limit: 3
-    min_gap_min: 30
-
   # 本地演练台的账号（T5.9）。它不是任何平台的账号：登录态目录与真账号**物理隔离**，
   # 发的也是本地靶页。daily_limit 拉满、间隔为 0 —— 演练要能连着跑好几遍。
   - account_id: _rehearsal
@@ -30,6 +22,14 @@ accounts:
     enabled: true
     daily_limit: 100
     min_gap_min: 0
+
+  - account_id: acc_douyin
+    platform: douyin
+    display_name: ''
+    profile_dir: data/browser_profile/acc_douyin
+    enabled: true
+    daily_limit: 3
+    min_gap_min: 30
 
 # 一线平台（一期必做）
 platforms:
@@ -94,7 +94,12 @@ platforms:
     cover_required: false
     selectors_version: "2026-09-18"
 
-# 二线平台（保留接口与 profile，一期 enabled=false · Q9）
+# 二线平台（T5.14：真实现与选择器**都已接线**，但那份 CSS **没在真机上校准过** —— 所以
+# 出厂仍是 enabled=false，面板上会显示 ⚠️「选择器未校准」。逐个跑
+# `uv run studio publish calibrate --platform <code>`，按输出改完 yaml、写回
+# calibrated: true / calibrated_at，再把这里的 enabled 翻成 true。理由见
+# docs/runbook/publish_selector.md §7：顺序反过来的话，面板上会出现一个"能投、
+# 但一定发不出去"的平台，而它看起来与抖音一模一样。）
   xiaohongshu:
     publisher: xiaohongshu
     profile: xhs_1080x1440_30fps_v1

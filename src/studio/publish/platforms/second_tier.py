@@ -1,32 +1,39 @@
-"""二线平台的**空实现**（§06.2.1 · Q9：接口已定，实现可空）。
+"""二线平台的**真实现**（§06.2.1 平台矩阵的后四行）。
 
-为什么留一个空实现而不是干脆不登记
-----------------------------------
-"没有这个平台"与"这个平台还没做"对调用方是两件事：
-- 前者 ⇒ ``PUBLISH_NOT_IMPLEMENTED``（我们的注册表里查不到）；
-- 后者 ⇒ 同样是 ``PUBLISH_NOT_IMPLEMENTED``，但 ``context`` 里带着**为什么**。
+这一档原本是**空实现**（Q9：一期只做一线，二线保留接口）
+--------------------------------------------------------
+改成真实现的理由很具体：空实现把"没做"与"做了但**没在真机上校准**"变成了
+**看起来一样的**两件事 —— 两者都只有一行灰字、都发不出去。而现在这两件事分得开了：
 
-而 ``health()`` 必须能回答（哪怕答案是"不可用"）：发布面板要列全部七个平台
-（§06.12），列表里那些灰色的行不该让面板整个报错。
+- **没做** ⇒ 注册表里查不到这个代号（``PUBLISH_NOT_IMPLEMENTED``）；
+- **做了、但没真机校准** ⇒ 是**真实现**：能投递、能演练、能采数，而 pack 自己声明
+  ``calibrated: false``，面板上那一列照实显示，``known_gaps`` 说清还差什么。
 
-``health()`` 返回 ``ready=False`` 而**不是抛异常**：探测一个还没实现的平台
-不是异常情况，是正常情况（Q9 就是这么定的）。
+后者比前者诚实得多：它把"这个平台还差一次校准"变成一句**能照着做**的话
+（``studio publish calibrate --platform xiaohongshu``），而不是一句"未实现"。
+
+⚠️ **代价要说在前面**：这四份 pack 的 CSS **一条都没在真机上验过**（连 ``urls``
+也是初稿）。所以 ``config/publish.yaml`` 里它们的 ``enabled`` 仍然是 ``false`` ——
+打开它等于"我知道它会失败，我就想看看它怎么失败"。真要用，先跑 calibrate。
+
+为什么四个类都只有一行 ``platform``
+-----------------------------------
+平台差异只允许出现在三个地方（§4.6.1）：选择器 yaml、``config/publish.yaml`` 的平台段、
+以及本目录的子类。这四家在那八步上与抖音**没有任何差别**，所以子类只声明代号 ——
+与 ``douyin.py`` 里那段注释是同一条规矩。
+
+⚠️ **已知还缺的平台特有流程**（写在 pack 的 ``known_gaps`` 里，面板上跟着显示）：
+B 站的**必选分区**是个级联下拉，八步里没有这一步。真要做，那一段写在
+``platforms/bilibili.py`` 里，**不许**往 ``playwright_publisher.py`` 里加
+``if platform == "bilibili"``。
 """
 
 from __future__ import annotations
 
 from typing import ClassVar
 
-from studio.core.errors import ErrorCode, PublishError
-from studio.publish.base import (
-    Publisher,
-    PublisherContext,
-    PublishHealth,
-    PublishMetrics,
-    PublishRequest,
-    PublishResult,
-    register_publisher,
-)
+from studio.publish.base import register_publisher
+from studio.publish.playwright_publisher import PlaywrightPublisher
 
 __all__ = [
     "BilibiliPublisher",
@@ -35,49 +42,30 @@ __all__ = [
     "XiguaPublisher",
 ]
 
-_HINT = "二期平台：一期只保留接口与 profile（§06.2.1 · Q9）"
-
-
-class _SecondTierPublisher(Publisher):
-    """二线平台的公共行为（**只声明 platform 即可**）。"""
-
-    platform: ClassVar[str] = ""
-
-    def __init__(self, ctx: PublisherContext) -> None:
-        super().__init__(ctx)
-
-    async def health(self) -> PublishHealth:
-        return PublishHealth.unknown(f"{self.platform} {_HINT}")
-
-    async def publish(self, req: PublishRequest) -> PublishResult:
-        return PublishResult.failure(
-            ErrorCode.PUBLISH_NOT_IMPLEMENTED,
-            f"{self.platform} {_HINT}",
-        )
-
-    async def fetch_metrics(self, platform_post_id: str) -> PublishMetrics:
-        raise PublishError(
-            f"{self.platform} {_HINT}",
-            code=ErrorCode.PUBLISH_NOT_IMPLEMENTED,
-            context={"platform": self.platform, "platform_post_id": platform_post_id},
-        )
-
 
 @register_publisher
-class XiaohongshuPublisher(_SecondTierPublisher):
+class XiaohongshuPublisher(PlaywrightPublisher):
+    """小红书创作服务平台。"""
+
     platform: ClassVar[str] = "xiaohongshu"
 
 
 @register_publisher
-class BilibiliPublisher(_SecondTierPublisher):
+class BilibiliPublisher(PlaywrightPublisher):
+    """B 站创作中心（⚠️ 必选分区那一步还没做，见模块注释与 pack 的 ``known_gaps``）。"""
+
     platform: ClassVar[str] = "bilibili"
 
 
 @register_publisher
-class XiguaPublisher(_SecondTierPublisher):
+class XiguaPublisher(PlaywrightPublisher):
+    """西瓜视频创作平台。"""
+
     platform: ClassVar[str] = "xigua"
 
 
 @register_publisher
-class WeiboPublisher(_SecondTierPublisher):
+class WeiboPublisher(PlaywrightPublisher):
+    """微博视频号（创作中心）。"""
+
     platform: ClassVar[str] = "weibo"

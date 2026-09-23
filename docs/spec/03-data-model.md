@@ -102,7 +102,7 @@ CREATE TABLE personas (
   audience      TEXT NOT NULL,                               -- 受众（"18-35 男性、游戏/动漫"）
   catchphrases_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(catchphrases_json)),  -- 口癖
   forbidden_json    TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(forbidden_json)),     -- 禁区
-  style_hint    TEXT,
+  style_hint    TEXT,                                       -- 风格提示（钩子节奏 / 结尾纪律：把观点钉死、不得提问）
   target_chars_min INTEGER NOT NULL DEFAULT 600,             -- 原文 §2.2④
   target_chars_max INTEGER NOT NULL DEFAULT 800,
   max_duration_ms  INTEGER NOT NULL DEFAULT 180000,          -- 原文"3分钟以内"
@@ -366,7 +366,7 @@ CREATE TABLE script_sentences (
   tts_audio_path TEXT,                                        -- data/output/voice/<task_id>/s007.wav
   tts_duration_ms INTEGER,                                    -- ffprobe 实测（时间轴唯一来源）
   tts_sample_rate INTEGER,
-  tts_hash      TEXT,                                         -- ★ 缓存键
+  tts_hash      TEXT,                                         -- ★ 缓存键（含参考音指纹，见 §04.3.6）
   tts_attempts  INTEGER NOT NULL DEFAULT 0,
   tts_error     TEXT,
 
@@ -820,7 +820,7 @@ CREATE TABLE publications (
   task_id           TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   platform          TEXT NOT NULL CHECK (platform IN (
                       'douyin','kuaishou','shipinhao',          -- 一线（一期必做）
-                      'xiaohongshu','bilibili','xigua','weibo', -- 二线（一期仅接口）
+                      'xiaohongshu','bilibili','xigua','weibo', -- 二线（T5.14：实现已接线）
                       'other')),
   account_id        TEXT NOT NULL,
   profile_key       TEXT,                                       -- 平台输出 profile（如 douyin_9x16_default）
@@ -876,6 +876,11 @@ BEGIN
   UPDATE publications SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = NEW.id;
 END;
 ```
+
+> ⚠️ 上面这段 DDL 与迁移文件 `0004_publish.sql` **逐字一致**（迁移**只增不改** —— 改了会
+> `DB_MIGRATION_CHECKSUM_MISMATCH`），所以那一行注释在**历史文件**里仍写着"一期仅接口"。
+> 平台的**清单**没有变（一直是这七个 + `other`）；变的是**实现**：二线四个从空实现换成了
+> 真实现（T5.14），"能不能真发"现在由 `selectors/<code>.yaml` 的 `calibrated` 回答。
 
 **发布状态机（独立于任务状态机）**
 
@@ -1191,7 +1196,7 @@ END;
 CREATE TABLE IF NOT EXISTS voice_profiles (
   id            TEXT PRIMARY KEY,              -- 目录名，即 voice_id（进 tasks.tts_voice_id）
   path          TEXT NOT NULL UNIQUE,          -- data/voice_src/<id>
-  ref_count     INTEGER NOT NULL,              -- 参考音段数（§4.3.1：2–3 段）
+  ref_count     INTEGER NOT NULL,              -- 参考音段数（§4.3.1；**不设上下限**，裁定 379）
   total_duration_ms INTEGER NOT NULL,          -- 各段之和（面板按它排序 / 显示）
   sample_rate   INTEGER,                       -- 各段里**最低**的采样率（§4.3.1：≥ 16 kHz）
   peak_db       REAL,                          -- 各段里**最高**的峰值（§4.3.1：≤ −1.0 dBFS）
@@ -1232,6 +1237,10 @@ CREATE INDEX IF NOT EXISTS idx_voice_enabled ON voice_profiles(enabled);
 素材目录是用户的地盘：机器往里写一个 `profile.json`，下一次扫描就分不清这份来源登记
 是用户填的还是脚本生成的。占位素材的 `profile.json` 由**生成脚本**自己写（`origin: generated`），
 那是「造文件」而不是「改资产」。
+
+唯一会**动** `data/voice_src/` 里文件的，是用户自己点的那两下：上传时勾「覆盖同名」⇒ 清掉
+这次没写到的 `ref_NN.*`（**裁定 381**，覆盖 = 镜像），以及删除音色时勾 `purge` ⇒ 连目录一起
+删（**裁定 369**）。没有后台任务会去改它。
 
 ---
 
@@ -1313,7 +1322,7 @@ class JobStore(Protocol):
 
     async def unlock_dependents(self, *, pool: PoolName) -> list[str]: ...
     async def reclaim_expired(self, *, pool: PoolName) -> list[str]:
-        """sweeper 周期调用（每 15s）。"""
+        """sweeper 周期调用（每 15s）。**落地**：pool worker 空转那一拍自己调，进程启动再强制一次。"""
 
     async def stats(self, *, pool: PoolName) -> PoolStats: ...
     async def dead_letters(self, *, pool: PoolName, limit: int = 100) -> list[Job]: ...
@@ -1386,6 +1395,12 @@ UPDATE jobs SET status = 'pending', updated_at = updated_at
          WHERE dep.value NOT IN (SELECT id FROM jobs WHERE status = 'succeeded')))
 RETURNING id;
 ```
+
+> **③ 由谁调（真机 2026-09-23 补）**：**每个 pool worker 自己**，空转那一拍一次
+> （`worker_base.SWEEP_INTERVAL_SEC = 15s`），进程启动时再**强制**一次（先收上一次运行留下的尸首）。
+> 在此之前只有 `pipeline run` 空转时调过一次、且只有 `voice` 池 —— 而认领守卫是
+> `running_count >= concurrency`，**并发为 1 的池里一行过期孤儿就是永久停摆**（`voice` 池 84 条
+> 待配音被一行孤儿堵死一个半小时，面板上一切正常）。见 todolist §10.17 / 陷阱 234。
 
 | 机制 | 参数 | 说明 |
 | --- | --- | --- |

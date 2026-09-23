@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from studio.core.config import OutputsConfig
+from studio.core.config import OutputsConfig, StickerConfig
 from studio.core.errors import ErrorCode, RenderError
 from studio.core.paths import StudioPaths
 from studio.render.composite import (
@@ -25,11 +25,15 @@ from studio.render.composite import (
     build_composite_argv,
     build_filter_graph,
     duration_ms_for,
+    enable_expr,
     parse_out_time_us,
     progress_percent,
+    video_label,
 )
 from studio.render.mixdown import MixSettings
 from studio.render.profiles import resolve_profile
+from studio.render.speech import SpeakingPlan
+from studio.render.sticker import StickerPlan, plan_stickers
 from studio.render.watermark import plan_watermark
 
 from .conftest import write_png
@@ -400,3 +404,146 @@ def test_a_render_never_pushes_more_than_a_hundred_ticks() -> None:
     assert len(ticks) == 100
     assert ticks[-1] == (99, PROGRESS_TOTAL, "合成中 99%")
     assert PROGRESS_TOTAL not in [done for done, _t, _n in ticks], "编码期间不许报 100%"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 人物贴图：讲话时换图（T6.5 追加 · 裁定 391）
+# ══════════════════════════════════════════════════════════════════════
+
+STICKER_REL = "templates/t/assets/images/stickers/hero.png"
+STICKER_SPEAKING_REL = "templates/t/assets/images/stickers/hero_speaking.png"
+
+
+def _sticker_plans(
+    outputs_home: StudioPaths,
+    speaking: SpeakingPlan | None = None,
+    *,
+    speaker: str = "bigbear",
+    speaking_size: tuple[int, int] = (600, 1200),
+) -> tuple[StickerPlan, ...]:
+    """造一层真的贴得上的贴图（``speaking`` 给了就再配一张讲话图）。
+
+    走的是**真** :func:`plan_stickers`（而不是手搓一个 ``StickerPlan``）：换图那三个
+    条件（贴上了 + 讲话图可用 + 有区间）就写在它里面，手搓一份等于把判据抄第二遍。
+    """
+    home = outputs_home.home
+    write_png(home / STICKER_REL, width=600, height=1200)
+    if speaking is not None:
+        write_png(home / STICKER_SPEAKING_REL, width=speaking_size[0], height=speaking_size[1])
+    config = StickerConfig(
+        enabled=True,
+        path=STICKER_REL,
+        speaker=speaker if speaking is not None else "",
+        speaking_path=STICKER_SPEAKING_REL if speaking is not None else None,
+        position="bottom_right",
+        margin_x=48,
+        margin_y=420,
+        height_ratio=0.45,
+        opacity=1.0,
+    )
+    return plan_stickers(
+        {"hero": config},
+        canvas_width=1080,
+        canvas_height=1920,
+        home=home,
+        speaking=speaking,
+    )
+
+
+def _talking(spans: tuple[tuple[int, int], ...] = ((0, 1000),)) -> SpeakingPlan:
+    return SpeakingPlan(by_speaker={"bigbear": spans}, source="timeline")
+
+
+def test_a_sticker_layer_adds_one_overlay(
+    outputs: OutputsConfig, outputs_home: StudioPaths, tmp_path: Path
+) -> None:
+    """没配讲话图 ⇒ 还是**一层 overlay**，一个字都不多（与水印"没有就不加"同一条）。"""
+    request = _request(outputs, tmp_path, stickers=_sticker_plans(outputs_home))
+    graph = build_filter_graph(request)
+    assert graph.count("overlay=") == 1
+    assert "enable=" not in graph
+
+
+def test_speaking_adds_a_second_mutually_exclusive_overlay(
+    outputs: OutputsConfig, outputs_home: StudioPaths, tmp_path: Path
+) -> None:
+    """★ 讲话那一层变成**两个互斥**的 overlay（不是把讲话图叠在普通图上面）。
+
+    叠着画会在边缘露出下面那张的半个身子 —— 两张图是两次导出的画，轮廓未必逐像素重合。
+    """
+    plans = _sticker_plans(outputs_home, _talking(((0, 1000), (2000, 3500))))
+    assert plans[0].swaps is True
+    graph = build_filter_graph(_request(outputs, tmp_path, stickers=plans))
+    assert graph.count("overlay=") == 2
+    assert "enable='not(between(t,0.000,1.000)+between(t,2.000,3.500))'" in graph
+    assert "enable='between(t,0.000,1.000)+between(t,2.000,3.500)'" in graph
+
+
+def test_the_two_overlays_share_one_position(
+    outputs: OutputsConfig, outputs_home: StudioPaths, tmp_path: Path
+) -> None:
+    """换图**不挪位置**：两张图用同一个 ``x/y`` 与同一份缩放（否则人物会跳一下）。"""
+    plans = _sticker_plans(outputs_home, _talking())
+    placement = plans[0].placement
+    assert placement is not None
+    graph = build_filter_graph(_request(outputs, tmp_path, stickers=plans))
+    at = f"overlay={placement.x}:{placement.y}:format=auto"
+    assert graph.count(at) == 2
+    box = f"scale={placement.width_px}:{placement.height_px}"
+    assert graph.count(box) == 2, "两张图各自缩放，但参数必须一样"
+
+
+def test_the_speaking_image_is_a_separate_input(
+    outputs: OutputsConfig, outputs_home: StudioPaths, tmp_path: Path
+) -> None:
+    """讲话图**另占一路输入** —— 合成一路会让两张图在时间轴上互相覆盖。"""
+    plans = _sticker_plans(outputs_home, _talking())
+    argv = build_composite_argv(_request(outputs, tmp_path, stickers=plans))
+    assert str(outputs_home.home / STICKER_REL) in argv
+    assert str(outputs_home.home / STICKER_SPEAKING_REL) in argv
+    assert argv.count("-i") == 4, "底片 + 配音 + 普通图 + 讲话图"
+
+
+def test_a_layer_that_cannot_swap_stays_a_single_overlay(
+    outputs: OutputsConfig, outputs_home: StudioPaths, tmp_path: Path
+) -> None:
+    """★ 配了讲话图、但这个人这条片子里没词 ⇒ 退回**一个** overlay，且那一路输入都不加。
+
+    只判"配没配讲话图"是不够的：那样会白加一路输入，还在滤镜图里留下一个永远不显示的
+    节点（"到底换没换"从此只能靠猜）。
+    """
+    plans = _sticker_plans(
+        outputs_home, SpeakingPlan(by_speaker={"littlebear": ((0, 1000),)}, source="timeline")
+    )
+    assert plans[0].applied is True
+    assert plans[0].swaps is False
+    graph = build_filter_graph(_request(outputs, tmp_path, stickers=plans))
+    assert graph.count("overlay=") == 1
+    assert "enable=" not in graph
+    argv = build_composite_argv(_request(outputs, tmp_path, stickers=plans))
+    assert str(outputs_home.home / STICKER_SPEAKING_REL) not in argv
+
+
+@pytest.mark.parametrize(
+    ("intervals", "expected"),
+    [
+        ((), ""),
+        (((0, 1000),), "between(t,0.000,1.000)"),
+        (((1234, 5678),), "between(t,1.234,5.678)"),
+        (((0, 1000), (2000, 3500)), "between(t,0.000,1.000)+between(t,2.000,3.500)"),
+    ],
+)
+def test_enable_expr_turns_milliseconds_into_a_window(
+    intervals: tuple[tuple[int, int], ...], expected: str
+) -> None:
+    """毫秒 ⇒ 秒（三位小数 = 1ms 分辨率），多段用加法当"或"（ffmpeg 没有逻辑或）。"""
+    assert enable_expr(intervals) == expected
+
+
+def test_the_sticker_layer_ends_on_the_vstk_label(
+    outputs: OutputsConfig, outputs_home: StudioPaths, tmp_path: Path
+) -> None:
+    """收尾标签与 ``-map`` 必须对得上（对不上时 ffmpeg 的报错读不出原因）。"""
+    request = _request(outputs, tmp_path, stickers=_sticker_plans(outputs_home, _talking()))
+    assert video_label(request) == "vstk"
+    assert any(node.endswith("[vstk]") for node in build_filter_graph(request).split(";"))

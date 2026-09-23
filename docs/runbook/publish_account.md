@@ -27,6 +27,16 @@ uv run studio publish dry-run --task <task_id> --platform douyin --json
 
 ## 2. 重新扫码（一次性人工动作）
 
+> **面板上就能做（T6.4）**：发布面板 →「账号配置」→ 那一行的「**扫码登录**」。
+> 点下去之后会在**跑着 studio 服务的那台电脑**上弹出一个浏览器窗口，拿手机上对应的
+> App 扫窗口里那个码即可（扫完窗口自己关掉，最长等 3 分钟）。下面这条命令是等价的手工路子
+> —— 手上没有面板、或者要连着看 `health` 的细节时用它。
+>
+> **扫完之后面板 1 秒内就会变**（等待期间每秒问一次页面）。如果窗口里明明已经进了创作
+> 中心、面板却一直"等扫码中…"直到 3 分钟超时，那**不是**没扫上，是登录判据没认出来 ——
+> **别重扫**（真机坑 2026-09-23 就是这样，两个号都扫上了却都报失败），
+> 看 `publish_selector.md` 的 §4.1。
+
 ```powershell
 uv run studio publish dry-run --task <task_id> --platform douyin --show-browser
 ```
@@ -41,6 +51,10 @@ uv run studio publish dry-run --task <task_id> --platform douyin --show-browser
 为什么必须走 `dry-run` 而不是单开一个浏览器：持久化 profile 是**按账号隔离的目录**，
 用别的浏览器打开同一个目录不会写回我们认的那个 profile —— 看起来"登上了"，
 下一次发布照样报过期。
+
+**没有密码这一步**：本系统不存你的平台密码、也没有任何地方能填它（R13 合规底线）。
+登录只发生在**你扫码那一下**，之后凭据就是 `data/browser_profile/<account_id>/`
+这一整个目录。
 
 > **不要**把 `data/browser_profile/` 拷给别人、也不要放进任何备份。
 > 它等于这个账号的登录凭据（§02.5 明确：不得进入任何备份 / GC 流程）。
@@ -71,7 +85,16 @@ uv run studio publish manual-done --id <publication_id> --reason "已在平台�
 
 ## 4. 多账号：加一个账号要动什么
 
-结构上支持多账号（D1），出厂**只启用一个**（`acc_main`）。新增第二个账号：
+结构上支持多账号（D1），出厂**只启用一个**（`acc_main`）。新增第二个账号有两条路，
+**先走第一条**：
+
+**① 面板（T6.4 · 推荐）**：发布面板 →「账号配置」→ 填 id / 平台 / 显示名 / 限频 → 保存。
+面板**只改写** `config/publish.yaml` 的 `accounts:` 段（其余段与注释一个字节都不碰），
+**不需要重启任何进程** —— CLI / REST / **publish worker** 读的是同一份文件
+（worker 每条单元认领前重读一次，见 `publish_worker._refresh_config`）。加完它当场会
+提醒你「还要扫码一次」（第 2 节）。
+
+**② 手改 YAML**（下面这份就是面板写回去的那个形状；想一次加一批、或者手上没有面板时用）：
 
 ```yaml
 # config/publish.yaml
@@ -127,6 +150,20 @@ uv run studio publish queue --json
 
 `queue` 每条都带 `account_id` —— 看到 `PUBLISH_LOGIN_EXPIRED` 先确认是**哪一个**
 账号，别顺手把另一个也停了。
+
+### 4.3 停用还是删号（面板上两个不一样的按钮）
+
+| 想干什么 | 用哪个 | 后果 |
+| --- | --- | --- |
+| 这个号先歇着，登录态留着 | **停用**（`enabled: false`） | 投递与定时都不再选它；`data/browser_profile/<id>/` 原样留着，随时启用回来 |
+| 这个号再也不用了 | **删号** | 只从 `config/publish.yaml` 里删掉那一条（连同它上方那几行注释）。**登录态目录不动** —— 面板不碰凭据（§02.5），要清得自己去删 `data/browser_profile/<id>/` |
+
+两个动作都写一行 `audit_ops`（`publish.account_updated` / `publish.account_removed`），
+删号还带上你填的那句理由 —— 它是三个月后唯一能回答"这个号当时为什么删了"的东西。
+
+> 面板上那个 `profile_dir` 是**声明**，不是运行期真正用的目录：发布时用的是
+> `data/browser_profile/<account_id>/`（§06.2.4）。两者不一致时面板会当场标出来 ——
+> 这一列的作用是"登录态必须按账号隔离"的唯一性校验，写歪了它也不会有任何效果。
 
 ## 5. 这一条为什么不做成自动的
 

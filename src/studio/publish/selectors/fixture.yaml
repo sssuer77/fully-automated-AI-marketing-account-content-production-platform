@@ -6,6 +6,9 @@
 #    CHECK 约束里 ⇒ 它永远不可能被落库成一条真实发布记录（见 platforms/fixture.py）。
 platform: fixture
 version: "2026-09-18"
+# 这份**没有** ``calibrated`` / ``known_gaps``：那两个字段回答的是"这个平台的选择器
+# 验过没有"，而靶页**不是平台**（它自己就是那个"真值"，没有改版这回事）。
+# 面板上演练台那一行也不显示校准状态 —— 见 ``platform_options``。
 
 urls:
   # 占位：真地址由 FixturePublisher 在装配期替换成 fixtures/upload_form.html 的 file:// URL。
@@ -46,5 +49,9 @@ readback:
   caption: text
 
 markers:
-  login_expired_text: ["登录已过期", "请重新登录", "扫码登录"]
+  # ⚠️ **不含"扫码登录"**（陷阱 #212）：它是**登录页自己的按钮文案**，两种状态
+  #    （从没登录过 / 登录过期）下都在页面上 —— 拿它当判据等于永远判成"过期"。
+  #    靶页上这一条本来就不该出现（它没有二维码），顺手对齐成与三份真 pack 一样的写法：
+  #    装配期的校验是**对所有 pack 一视同仁**的，靶页也不例外。
+  login_expired_text: ["登录已过期", "请重新登录"]
   review_rejected_text: ["审核不通过", "内容违规", "未通过审核"]

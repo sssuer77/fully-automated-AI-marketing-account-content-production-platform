@@ -15,6 +15,15 @@
 // 3. **一期只有表单**：拖拽定位水印与三层模板树（Video -> Scene -> Component）随 C13 延后二期
 //    （R17）。说清楚，用户才不会在面板上找一个不存在的拖拽框。
 //
+// 人物贴图（T6.5）为什么是"一层一张卡片、层数只读"
+// ----------------------------------------------
+// 层在 YAML 里是**命名块**（与 `profiles` 同构），一层一份参数。面板能改每层的每个字段，
+// 但**改不了"多一行少一行"** —— 加/删层要在文件里整块复制。所以层名在这里是标题而不是
+// 输入框：把"这里加不了层"直接写在面板上，比让人对着一个不存在的「+ 新增」找半天好。
+//
+// 尺寸按**画布高**的比例算（不是水印那条宽度占比）：人物是竖长的，按宽算会被锁死在
+// 1080 × 0.25 = 270px，做不了主体。所以面板上"高度占比"的上限是 1.0（顶满画面）。
+//
 // 为什么表单是 `:value` + `@input` 而不是 `v-model`
 // ------------------------------------------------
 // `draft` 可能是 `null`（配置读不出来）。`v-model` 在可空嵌套对象上要么报类型错、要么被迫
@@ -28,8 +37,11 @@ import PanelCard from "@/components/PanelCard.vue";
 import StatusDot from "@/components/StatusDot.vue";
 import {
   describeBound,
+  describeSticker,
   describeWatermark,
   qualityLabel,
+  stickerSpeakingTone,
+  stickerTone,
   useOutputsStore,
   watermarkTone,
 } from "@/stores/outputs";
@@ -52,6 +64,53 @@ const watermarkPx = computed<number | null>(() => {
   if (profile === undefined) return null;
   return Math.round(profile.width * draft.watermark.width_ratio);
 });
+
+/**
+ * 贴图每一层的**展示值**：草稿改了就以草稿为准。
+ *
+ * 为什么要过这一道：`height_px` 是服务端按**默认档画布高 × 配置里的 height_ratio** 算的，
+ * 用户在面板上把占比从 0.45 改成 0.6 之后那个像素高就是旧的了。这里用同一条算法重算
+ * （`round(画布高 × 占比)`），行上那行"约 xxx px"才会跟着输入框实时变。
+ *
+ * 只给高度不给宽度：实际宽度由素材自己的宽高比决定，面板上编不出来 —— 给一个"假设人物是
+ * 正方形"的估算值，只会让人按一个假数字去调。
+ */
+const stickerRows = computed(() =>
+  outputs.stickers.map((sticker) => {
+    const draft = form.value;
+    const layer = draft === null ? undefined : draft.stickers[sticker.name];
+    const profile = draft === null ? undefined : draft.profiles[draft.default_profile];
+    const heightRatio = layer?.height_ratio ?? sticker.height_ratio;
+    return {
+      name: sticker.name,
+      exists: sticker.exists,
+      usable: sticker.usable,
+      problem: sticker.problem,
+      enabled: layer?.enabled ?? sticker.enabled,
+      path: layer?.path ?? sticker.path,
+      speaker: layer?.speaker ?? sticker.speaker,
+      speakingPath: layer?.speaking_path ?? sticker.speaking_path ?? "",
+      speakingProblem: sticker.speaking_problem,
+      speakingWarnings: sticker.speaking_warnings,
+      position: layer?.position ?? sticker.position,
+      marginX: layer?.margin_x ?? sticker.margin_x,
+      marginY: layer?.margin_y ?? sticker.margin_y,
+      heightRatio,
+      opacity: layer?.opacity ?? sticker.opacity,
+      heightPx:
+        profile === undefined ? sticker.height_px : Math.round(profile.height * heightRatio),
+    };
+  }),
+);
+
+/**
+ * 开着、但**渲染贴不上**的层 —— 顶上那条横幅用。
+ *
+ * 判据是 `usable`（后端与渲染路径**同一份** `probe_png` 结论），不是 `exists`：
+ * 一个扩展名叫 `.png` 的 WebP / 没有 alpha 的 PNG 在盘上"存在"，而渲染每一层都会跳过。
+ * 面板要是只报前者，人看到的是"开关开着、绿点亮着、片子上就是没有人"。
+ */
+const stickersBroken = computed(() => outputs.stickersBroken);
 
 function parseInt0(input: Event): number | null {
   const raw = (input.target as HTMLInputElement).value.trim();
@@ -108,7 +167,84 @@ function onWatermarkFloat(key: "width_ratio" | "opacity", event: Event): void {
   draft.watermark[key] = parsed;
 }
 
-function onSubtitleInt(key: "font_size" | "outline" | "max_chars_per_line", event: Event): void {
+// 贴图的五个处理器都要先说出**哪一层**（`name` 是 YAML 里那个块名）。层不存在就什么都不做
+// —— 层数只能在文件里改，面板上永远只会处理服务端已经列出来的层。
+
+/**
+ * 勾选/取消一层贴图 ⇒ **立刻写盘**（开关不是表单字段，见 store 的 `saveToggle`）。
+ *
+ * 先改草稿再提交：提交的是 `dirtyChanges`（全部改动），所以这一格和"顺手改的占比"
+ * 一起走同一次写。提交失败（盘上被别处改过 / 后端拒了）时草稿**留着**，
+ * 面板顶上那两条横幅会说清为什么 —— 勾不会悄悄跳回去。
+ */
+async function onStickerBool(name: string, event: Event): Promise<void> {
+  const draft = form.value;
+  if (draft === null) return;
+  const sticker = draft.stickers[name];
+  if (sticker === undefined) return;
+  sticker.enabled = (event.target as HTMLInputElement).checked;
+  await outputs.saveToggle(`面板上${sticker.enabled ? "打开" : "关掉"}了人物贴图 ${name}`);
+}
+
+function onStickerText(name: string, event: Event): void {
+  const draft = form.value;
+  if (draft === null) return;
+  const sticker = draft.stickers[name];
+  if (sticker === undefined) return;
+  sticker.path = (event.target as HTMLInputElement).value;
+}
+
+/**
+ * 换图那两个文本框（T6.5 追加）：`speaker` = 这一层代表谁，`speaking_path` = 讲话时
+ * 换成哪张图。
+ *
+ * 两个都走 `@input`（与其他文本框一致）：它们是**纯本地**改动，改完点保存才提交 ——
+ * 每敲一个字符就写一次盘，等于把"半截路径"存进配置里。
+ */
+function onStickerSpeakingText(
+  name: string,
+  key: "speaker" | "speaking_path",
+  event: Event,
+): void {
+  const draft = form.value;
+  if (draft === null) return;
+  const sticker = draft.stickers[name];
+  if (sticker === undefined) return;
+  sticker[key] = (event.target as HTMLInputElement).value;
+}
+
+function onStickerPosition(name: string, event: Event): void {
+  const draft = form.value;
+  if (draft === null) return;
+  const sticker = draft.stickers[name];
+  if (sticker === undefined) return;
+  sticker.position = (event.target as HTMLSelectElement).value;
+}
+
+function onStickerInt(name: string, key: "margin_x" | "margin_y", event: Event): void {
+  const draft = form.value;
+  if (draft === null) return;
+  const sticker = draft.stickers[name];
+  if (sticker === undefined) return;
+  const parsed = parseInt0(event);
+  if (parsed === null) return;
+  sticker[key] = parsed;
+}
+
+function onStickerFloat(name: string, key: "height_ratio" | "opacity", event: Event): void {
+  const draft = form.value;
+  if (draft === null) return;
+  const sticker = draft.stickers[name];
+  if (sticker === undefined) return;
+  const parsed = parseFloat0(event);
+  if (parsed === null) return;
+  sticker[key] = parsed;
+}
+
+function onSubtitleInt(
+  key: "font_size" | "outline" | "margin_bottom" | "safe_area_bottom" | "max_chars_per_line",
+  event: Event,
+): void {
   const draft = form.value;
   if (draft === null || draft.subtitle === null) return;
   const parsed = parseInt0(event);
@@ -125,9 +261,18 @@ function onSubtitleInt(key: "font_size" | "outline" | "max_chars_per_line", even
       就是把它修回来，所以读取失败**不**返回错误页）
     </p>
 
-    <p v-if="outputs.watermarkMissing" class="alert alert--warn">
-      **水印 PNG 不在盘上**：{{ outputs.watermark?.path }} —— 出片**照常**，只是这一版不带水印
-      （水印是可选装饰，不阻塞渲染）。想要水印就把图放到这个路径，或改成盘上已有的那张。
+    <p v-if="outputs.watermarkBroken" class="alert alert--warn">
+      **水印这次贴不上**：{{ outputs.watermark?.path }} —— 出片**照常**，只是这一版不带水印
+      （水印是可选装饰，不阻塞渲染）。原因：{{ outputs.watermark?.problem ?? "文件不在盘上" }}。
+      修好就把图放到这个路径，或改成盘上已有的那张。
+    </p>
+
+    <p v-if="stickersBroken.length > 0" class="alert alert--warn">
+      **人物贴图有 {{ stickersBroken.length }} 层开着、但这次渲染贴不上** ——
+      片子上不会有它们（出片照常，其余层与字幕不受影响）：
+      <span v-for="sticker in stickersBroken" :key="sticker.name" class="broken">
+        {{ sticker.name }}：{{ sticker.problem ?? "原因不明" }}
+      </span>
     </p>
 
     <p v-if="outputs.conflict" class="alert alert--warn">
@@ -389,9 +534,12 @@ function onSubtitleInt(key: "font_size" | "outline" | "max_chars_per_line", even
           <span class="row__key">文件</span>
           <span class="row__val">
             <StatusDot
-              :tone="watermarkTone(outputs.watermark.exists)"
-              :label="outputs.watermark.exists ? '在盘上' : '找不到这张图'"
+              :tone="watermarkTone(outputs.watermark.usable)"
+              :label="outputs.watermark.usable ? '这张图会贴上' : '这次贴不上'"
             />
+            <span v-if="!outputs.watermark.usable" class="row__err">
+              {{ outputs.watermark.problem ?? "原因不明" }}
+            </span>
           </span>
         </div>
         <div class="row">
@@ -409,6 +557,230 @@ function onSubtitleInt(key: "font_size" | "outline" | "max_chars_per_line", even
         水印**固定**叠加（位置 / 边距 / 宽度 / 透明度四项）。边距必须是偶数 —— 奇数边距会让
         `overlay` 落在一个半像素上，出片边缘会有一道 1px 的偏移。宽度占比按**默认档的画布宽**
         换算，上面那行会实时跟着变。
+      </p>
+    </PanelCard>
+
+    <PanelCard
+      title="人物贴图"
+      :subtitle="
+        outputs.stickers.length === 0
+          ? '配置里没有 stickers 段'
+          : `${outputs.stickers.length} 层 · 叠放顺序固定：贴图 → 字幕 → 水印`
+      "
+    >
+      <EmptyState
+        v-if="form === null || outputs.stickers.length === 0"
+        title="没有可编辑的人物贴图"
+        hint="贴图是**可选装饰**：`config/outputs.yaml` 的 `stickers:` 段不在也能出片（只是不蒙人物）。想加一层，就把文件里任意一段整块复制一份、改个名字，重开面板即可编辑。"
+      />
+
+      <ul v-else class="list">
+        <li v-for="row in stickerRows" :key="row.name" class="item">
+          <div class="item__main">
+            <label class="check">
+              <input
+                type="checkbox"
+                :checked="row.enabled"
+                @change="onStickerBool(row.name, $event)"
+              />
+              <span class="item__title mono">{{ row.name }}</span>
+            </label>
+            <StatusDot
+              :tone="stickerTone(row.enabled, row.usable)"
+              :label="
+                !row.enabled
+                  ? '这一层关着，完全不参与渲染'
+                  : row.usable
+                    ? '这一层会贴上'
+                    : `开着，但这次贴不上：${row.problem ?? '原因不明'}`
+              "
+            />
+          </div>
+
+          <div class="grid">
+            <label class="f f--full">
+              <span class="f__key">图片路径（相对 STUDIO_HOME，透明 PNG）</span>
+              <input
+                class="field mono"
+                type="text"
+                :value="row.path"
+                @input="onStickerText(row.name, $event)"
+              />
+              <span v-if="errors[`stickers.${row.name}.path`]" class="f__err">
+                {{ errors[`stickers.${row.name}.path`] }}
+              </span>
+            </label>
+          </div>
+
+          <!--
+            换图（T6.5 追加）：这一层代表谁讲话、他讲话时换成哪张图。
+
+            ★ 这里的灯只说明"**配齐了**"，不说明"出片时一定会换" —— 谁在哪一句讲话
+            要看稿子与时间轴，这一屏手上没有这两样。所以下面那行小字必须留着：让人知道
+            去哪里看"到底换没换"（成片 manifest 的 stickers[].speaking）。
+          -->
+          <div class="grid">
+            <label class="f f--num">
+              <span class="f__key">代表谁讲话（稿子里的说话人）</span>
+              <input
+                class="field mono"
+                type="text"
+                :value="row.speaker"
+                placeholder="如 bigbear"
+                @input="onStickerSpeakingText(row.name, 'speaker', $event)"
+              />
+              <span v-if="errors[`stickers.${row.name}.speaker`]" class="f__err">
+                {{ errors[`stickers.${row.name}.speaker`] }}
+              </span>
+            </label>
+
+            <label class="f f--full">
+              <span class="f__key">讲话时的贴图（相对 STUDIO_HOME；空 ⇒ 这一层不换图）</span>
+              <input
+                class="field mono"
+                type="text"
+                :value="row.speakingPath"
+                @input="onStickerSpeakingText(row.name, 'speaking_path', $event)"
+              />
+              <span v-if="errors[`stickers.${row.name}.speaking_path`]" class="f__err">
+                {{ errors[`stickers.${row.name}.speaking_path`] }}
+              </span>
+            </label>
+
+            <StatusDot
+              :tone="stickerSpeakingTone(row.enabled, row.usable, row.speakingProblem)"
+              :label="
+                !row.enabled || !row.usable
+                  ? '这一层不参与渲染，换图也就无从谈起'
+                  : row.speakingProblem === null
+                    ? '讲话图配齐了；出片时按稿子逐句说话人换图（换没换看成片 manifest）'
+                    : `换图换不成：${row.speakingProblem}`
+              "
+            />
+          </div>
+
+          <p
+            v-if="row.enabled && row.usable && row.speakingProblem !== null"
+            class="f__err"
+          >
+            {{ row.speakingProblem }}
+          </p>
+          <p v-for="(warning, index) in row.speakingWarnings" :key="index" class="f__warn">
+            {{ warning }}
+          </p>
+          <p v-if="row.speakingPath.trim() !== ''" class="hint">
+            换图由**稿件与时间轴**决定：讲 ⇒ 换成讲话图，讲完 ⇒ 换回上面那张。这一屏
+            判不了"这个人这条片子里有没有词"，所以绿灯只说明配齐了 —— 真的换没换、
+            按哪份时间换的，写在成片 manifest 的 `stickers[].speaking` 里。
+          </p>
+
+          <div class="grid">
+            <label class="f f--num">
+              <span class="f__key">位置</span>
+              <select
+                class="field"
+                :value="row.position"
+                @change="onStickerPosition(row.name, $event)"
+              >
+                <option
+                  v-for="option in outputs.limits?.sticker.positions ?? []"
+                  :key="option"
+                  :value="option"
+                >
+                  {{ option }}
+                </option>
+              </select>
+              <span v-if="errors[`stickers.${row.name}.position`]" class="f__err">
+                {{ errors[`stickers.${row.name}.position`] }}
+              </span>
+            </label>
+
+            <label class="f f--num">
+              <span class="f__key">水平边距（偶数）</span>
+              <input
+                class="field mono"
+                type="number"
+                :value="row.marginX"
+                @input="onStickerInt(row.name, 'margin_x', $event)"
+              />
+              <span v-if="errors[`stickers.${row.name}.margin_x`]" class="f__err">
+                {{ errors[`stickers.${row.name}.margin_x`] }}
+              </span>
+            </label>
+
+            <label class="f f--num">
+              <span class="f__key">垂直边距（偶数）</span>
+              <input
+                class="field mono"
+                type="number"
+                :value="row.marginY"
+                @input="onStickerInt(row.name, 'margin_y', $event)"
+              />
+              <span v-if="errors[`stickers.${row.name}.margin_y`]" class="f__err">
+                {{ errors[`stickers.${row.name}.margin_y`] }}
+              </span>
+            </label>
+          </div>
+
+          <div class="grid">
+            <label class="f f--num">
+              <span class="f__key">高度占比（0-1）</span>
+              <input
+                class="field mono"
+                type="number"
+                step="0.01"
+                :value="row.heightRatio"
+                @input="onStickerFloat(row.name, 'height_ratio', $event)"
+              />
+              <span v-if="errors[`stickers.${row.name}.height_ratio`]" class="f__err">
+                {{ errors[`stickers.${row.name}.height_ratio`] }}
+              </span>
+            </label>
+
+            <label class="f f--num">
+              <span class="f__key">不透明度（0-1）</span>
+              <input
+                class="field mono"
+                type="number"
+                step="0.05"
+                :value="row.opacity"
+                @input="onStickerFloat(row.name, 'opacity', $event)"
+              />
+              <span v-if="errors[`stickers.${row.name}.opacity`]" class="f__err">
+                {{ errors[`stickers.${row.name}.opacity`] }}
+              </span>
+            </label>
+
+            <div class="f f--num">
+              <span class="f__key">换算</span>
+              <span class="row__val mono">
+                {{ describeSticker({ height_ratio: row.heightRatio, height_px: row.heightPx }) }}
+              </span>
+            </div>
+          </div>
+        </li>
+      </ul>
+
+      <p v-if="outputs.limits" class="hint">
+        尺寸按**画布高**的比例算（{{ describeBound(outputs.limits.sticker.height_ratio) }}）——
+        人物是竖长的，按宽算会在 1080 宽的画布上被锁死在 270px，做不了主体。
+        高度占比按**默认档的画布高**换算，上面那行"约 xxx px"会实时跟着输入框变；
+        实际宽度由素材自己的宽高比决定，面板编不出来。
+        边距必须是偶数 —— 奇数边距会让 `overlay` 落在一个半像素上，出片边缘会有一道 1px 的偏移。
+      </p>
+
+      <p class="hint">
+        **开关立刻生效**：勾上 / 取消这一层会**当场写盘**（不用点上面的保存）——
+        它长得就是个开关，勾完就该是那个状态。其余几格（路径 / 位置 / 边距 / 占比 / 透明度）
+        照旧改完点「保存」。
+      </p>
+
+      <p class="hint">
+        叠放顺序**固定**是「贴图 → 字幕 → 水印」（字幕是内容、水印是标识，都不该被人物盖住）；
+        多层贴图之间按 `config/outputs.yaml` 里的**声明顺序**，先声明的在下面。
+        **一层都没贴上不影响出片**：`enabled: false` / 图不在盘上 / 图没有透明通道 / 放不进画布
+        ⇒ 只跳过这一层，其余层与字幕照常。
+        **层数只能在文件里加**（把 `stickers:` 下任意一段整块复制、改个名字，重开面板即可编辑）。
       </p>
     </PanelCard>
 
@@ -461,11 +833,44 @@ function onSubtitleInt(key: "font_size" | "outline" | "max_chars_per_line", even
             {{ errors["subtitle.max_chars_per_line"] }}
           </span>
         </label>
+
+        <label class="f f--num">
+          <span class="f__key">距底</span>
+          <input
+            class="field mono"
+            type="number"
+            :value="form.subtitle.margin_bottom"
+            @input="onSubtitleInt('margin_bottom', $event)"
+          />
+          <span v-if="errors['subtitle.margin_bottom']" class="f__err">
+            {{ errors["subtitle.margin_bottom"] }}
+          </span>
+        </label>
+
+        <label class="f f--num">
+          <span class="f__key">底部安全区</span>
+          <input
+            class="field mono"
+            type="number"
+            :value="form.subtitle.safe_area_bottom"
+            @input="onSubtitleInt('safe_area_bottom', $event)"
+          />
+          <span v-if="errors['subtitle.safe_area_bottom']" class="f__err">
+            {{ errors["subtitle.safe_area_bottom"] }}
+          </span>
+        </label>
       </div>
 
       <p v-if="outputs.subtitle !== null" class="hint">
-        每行 {{ outputs.subtitle.max_lines }} 行封顶、距底 {{ outputs.subtitle.margin_bottom }} px、
-        阴影 {{ outputs.subtitle.shadow }} —— 这三项一期**不可编辑**（改它们要动版式，属于二期）。
+        字幕位置 = 「距底」与「底部安全区」里**大的那个**：现在实际距底
+        {{ outputs.subtitle.margin_v }} px。
+        <template v-if="outputs.subtitle.margin_v > outputs.subtitle.margin_bottom">
+          ⚠️ 你填的 {{ outputs.subtitle.margin_bottom }} px 被底部安全区
+          （{{ outputs.subtitle.safe_area_bottom }} px，平台的点赞/评论条就在那一片）抬上来了
+          —— 想再往下挪，把「底部安全区」一起调小。
+        </template>
+        每行 {{ outputs.subtitle.max_lines }} 行封顶、阴影 {{ outputs.subtitle.shadow }}
+        这两项一期**不可编辑**（改它们要动版式，属于二期）。
         断句按「每行字数」重排，改小了会让长句多占一行。
       </p>
     </PanelCard>
@@ -567,6 +972,13 @@ function onSubtitleInt(key: "font_size" | "outline" | "max_chars_per_line", even
   font-size: var(--text-xs);
 }
 
+/* 记账条目（目前只有"两张图宽高比不一致 ⇒ 会被压扁"那一条）：
+   与 `f__err` 分开 —— 一个是"这次不成"，一个是"成了但画风不对"。 */
+.f__warn {
+  color: var(--warn);
+  font-size: var(--text-xs);
+}
+
 .field {
   height: 24px;
   padding: 0 var(--space-2);
@@ -635,6 +1047,14 @@ function onSubtitleInt(key: "font_size" | "outline" | "max_chars_per_line", even
   gap: var(--space-1);
   align-items: center;
   color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+/** 「开着、但这次贴不上」的逐层原因（顶上那条横幅里逐条列出来）。 */
+.broken {
+  display: block;
+  margin-top: var(--space-1);
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
 }
 </style>

@@ -258,6 +258,51 @@ class TestCompareReadback:
         """方向反过来（平台**加**了 emoji？）也算 emoji 差异，不算真丢字。"""
         assert compare_readback("点个关注", "点个关注 😀").reason == "emoji_stripped"
 
+    def test_invisible_only_trailing_zero_width_space(self) -> None:
+        """真机 2026-09-23：抖音富文本编辑器在文案末尾塞了一个零宽空格（U+200B）。
+
+        它是编辑器撑住空行的哨兵，**不是**我们填进去的字，也不改变任何人读到的东西。
+        逐字比对会把它判成 ``mismatch``，于是一条"码也扫了、视频也传完了"的发布
+        卡在一个**看不见的字符**上（陷阱 #224）。
+        """
+        diff = compare_readback("来。点个关注，下集更狠。", "来。点个关注，下集更狠。\u200b")
+        assert diff.reason == "invisible_only"
+        assert not diff.matched
+        assert diff.invisible == ("U+200B",)
+        assert diff.detail == "回读只差不可见字符：U+200B —— 编辑器自己塞的哨兵，不是丢字"
+
+    def test_invisible_only_has_no_offset(self) -> None:
+        """不给偏移：那个下标指着一对"看起来完全一样"的字符，只会让人怀疑系统坏了。"""
+        diff = compare_readback("abc", "a\u200bbc")
+        assert diff.reason == "invisible_only" and diff.at is None
+
+    def test_invisible_only_when_the_platform_removes_ours(self) -> None:
+        """方向反过来（平台**删掉**我们文案里的零宽字符）同样是"只差不可见字符"。"""
+        diff = compare_readback("点个关注\u200b", "点个关注")
+        assert diff.reason == "invisible_only"
+        assert diff.invisible == ("U+200B",)
+
+    def test_invisible_codes_report_both_directions(self) -> None:
+        """码点清单取**对称差**：多了的、少了的都要说，否则一句"差在哪"都答不上。"""
+        assert compare_readback("a\u200b", "a\ufeff").invisible == ("U+200B", "U+FEFF")
+
+    def test_emoji_swallowed_plus_trailing_zero_width_space(self) -> None:
+        """回归点：真机形态是"emoji 被吞 **且** 尾部多一个零宽空格"。
+
+        去 emoji 的那两支若不先扔掉不可见字符，这个零宽空格会留下来，于是整条判定
+        退化成 ``mismatch`` —— 给操作员的建议从"去掉 emoji 重发"变成"去查选择器"，
+        方向全错（这正是 ``_classify`` 里两处 ``_drop_invisible`` 要防的事）。
+        """
+        assert compare_readback("点个关注 😀", "点个关注\u200b").reason == "emoji_stripped"
+
+    def test_whitespace_only_is_not_reclassified_as_invisible_only(self) -> None:
+        """两条判定的顺序不能反：只差空白仍然报 ``whitespace_only``。"""
+        assert compare_readback("第一行\n第二行", "第一行 第二行").reason == "whitespace_only"
+
+    def test_zero_width_joiner_is_not_treated_as_invisible(self) -> None:
+        """U+200D 参与 emoji 组合，**不能**收进不可见字符表 —— 收了会顺手放行"emoji 被吞"。"""
+        assert compare_readback("a\u200db", "ab").reason != "invisible_only"
+
 
 # ── 类型 ──────────────────────────────────────────────────────────────
 

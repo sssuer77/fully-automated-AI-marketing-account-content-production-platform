@@ -65,8 +65,11 @@ $StudioEnvDirs = @(
     (Join-Path $StudioDataDir 'hot')
     (Join-Path $StudioDataDir 'hot\archive')
     (Join-Path $StudioDataDir 'feedback')
-    (Join-Path $StudioDataDir 'voice_src\bigbear')
-    (Join-Path $StudioDataDir 'voice_src\littlebear')
+    # voice_src 只建**父目录**，不建 bigbear / littlebear 这两个具体音色目录。
+    # 那两个名字是《熊出没》占位音色，而音色 id 与展现名是解耦的（R2，用户可换），
+    # 写进环境闸门 = 每一次 dot-source 都凭空造出两个空目录，面板上就是两条
+    # 永远「盘上有、库里没有」的孤儿警告（裁定 384 / 陷阱 219），删了还会长回来。
+    (Join-Path $StudioDataDir 'voice_src')
     (Join-Path $StudioDataDir 'assets\mc_parkour')
     (Join-Path $StudioDataDir 'assets\bgm')
     (Join-Path $StudioDataDir 'output\topics')

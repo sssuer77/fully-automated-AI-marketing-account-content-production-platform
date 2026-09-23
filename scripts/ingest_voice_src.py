@@ -15,7 +15,7 @@
 --------------
 ```
 data/voice_src/<音色 id>/
-    ref_01.wav  ref_02.wav  ...   2–3 段，每段 10–30 秒
+    ref_01.wav  ref_02.wav  ...   段数**不设上限**（越多越稳），每段 2–30 秒
     ref.txt                       与 wav **一一对应**的逐字文本（每行一段，顺序同文件名）
     profile.json                  来源登记（URL / 录制日期 / 授权说明）⇒ R2 合规留档
 ```
@@ -46,9 +46,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from studio.assets.layout import AssetKind  # noqa: E402
 from studio.assets.validate import (  # noqa: E402
-    VOICE_MAX_SEGMENTS,
     VOICE_MIN_SAMPLE_RATE,
-    VOICE_MIN_SEGMENTS,
     VOICE_PEAK_CEILING_DB,
     VOICE_SEGMENT_MAX_MS,
     VOICE_SEGMENT_MIN_MS,
@@ -68,7 +66,7 @@ _ACTION_TEXT: Final[dict[IngestAction, str]] = {
 
 
 def _requirements() -> str:
-    """参考音的硬要求（**拒绝入库**的那四条）+ 旁车文件的作用。
+    """参考音的硬要求（**拒绝入库**的那三条）+ 旁车文件的作用。
 
     只在"没扫到东西"或"有东西被拒"时打印：那正是用户需要照着改的时候。
     每次跑都打一遍，会把成功那一次的结论淹掉。
@@ -76,8 +74,9 @@ def _requirements() -> str:
     seconds_min = VOICE_SEGMENT_MIN_MS // 1000
     seconds_max = VOICE_SEGMENT_MAX_MS // 1000
     return (
-        "参考音要求（§4.3.1，前四条不达标**拒绝入库**）：\n"
-        f"  段数     {VOICE_MIN_SEGMENTS}–{VOICE_MAX_SEGMENTS} 段，文件名 ref_01.wav 这种\n"
+        "参考音要求（§4.3.1，前三条不达标**拒绝入库**）：\n"
+        "  段数     **不设上限**（越多越稳：合成时会把各段拼成一段 prompt），至少 1 段；\n"
+        "           文件名 ref_01.wav 这种（两位数是排序，ref.txt 第 N 行 ↔ 第 N 段）\n"
         f"  单段时长 {seconds_min}–{seconds_max} 秒\n"
         f"  采样率   ≥ {VOICE_MIN_SAMPLE_RATE // 1000} kHz\n"
         f"  峰值     ≤ {VOICE_PEAK_CEILING_DB} dBFS（削波会被一起复刻）\n"

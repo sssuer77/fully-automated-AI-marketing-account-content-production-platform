@@ -1,0 +1,86 @@
+# ── 西瓜视频创作平台 · 选择器（T5.2 · §06.5.2「选择器集中化」· R13 可热修）───────────
+#
+# ⚠️⚠️ **未校准**（``calibrated: false``）—— 本文件里的 CSS **一条都没在真机上验过**。
+#    它是照着 ``douyin.yaml`` 那份**校准过的** pack 的**形状**写的：注释里每条"为什么
+#    这样写"都是抖音真机踩出来的**同类坑**（跨平台通用，注明了陷阱号），但**具体的
+#    类名、文案、地址都是初稿** —— 连 ``urls`` 也是（calibrate 第一步就是打开
+#    ``urls.upload``，打不开会立刻报出来）。
+#
+#    校准：``studio publish calibrate --platform xigua``。
+#    改法见 docs/runbook/publish_selector.md —— 只改本文件，**不改代码**。
+platform: xigua
+version: "2026-09-23.1"
+calibrated: false
+
+#: 已经**确认**没做的（不是猜测）：写在这里，面板会跟着"校准"那一列一起显示出来。
+known_gaps:
+  - "**16:9 模板**没做：西瓜以 16:9 为主（§06.2.2），而 `config/outputs.yaml` 里只有竖屏模板，字幕安全区是按 1080×1920 算的；`bili_1920x1080_30fps_v1` 只换了编码参数（§06.2.2 第 1 条：需另一个模板，不做自动裁切变形）。"
+
+urls:
+  upload: "https://studio.ixigua.com/upload"
+  manage: "https://studio.ixigua.com/content"
+
+selectors:
+  # ── 登录态的两个标志（**未校准初稿**）─────────────────────────────────
+  # ⚠️ 抖音的教训（陷阱 #212）：这两个标志必须**两种状态各验一次**（已登录 / 未登录），
+  #    而且"两种状态下都在"的文案不能当判据。精确类名（`div.user-info`）也不可靠 ——
+  #    抖音的类名带哈希后缀，那种写法四个选择器全部命不中，于是 `_logged_in()` 恒为
+  #    False：人扫完码、页面已经换了，这里仍然报"没扫到"。
+  login_ok: "div[class*='user-info'], div[class*='avatar'], img[class*='avatar']"
+  login_required: "div[class*='login-container'], div[class*='qrcode'], div[class*='login-box']"
+  upload_input: "input[type=file][accept*='video'], input[type=file][accept*='mp4']"
+  title_input: "input[placeholder*='标题']"
+  caption_input: "div[contenteditable=true], textarea[placeholder*='描述']"
+  # ── 上传进度（**未校准初稿**）────────────────────────────────────────
+  # ⚠️ 抖音的教训（陷阱 #225）：**不要**写宽的备选。选择器列表取**文档序第一个**匹配，
+  #    而更宽的那个会命中外层的上传面板 —— 它的 `text_content` 是一整块，于是
+  #    "到 100% 了吗"变成了在大段文字里找子串。反过来的那一面同样致命：进度元素
+  #    **命不中**时 `_wait_upload` 把"看不到进度"读成了"已经传完"。
+  upload_progress: "div[class*='progress-inner'], span[class*='percent']"
+  cover_trigger: "span:has-text('设置封面'), span:has-text('更换封面')"
+  cover_input: "input[type=file][accept*='image']"
+  # ── 发布按钮（**未校准初稿**）────────────────────────────────────────
+  # ⚠️ 抖音的教训（陷阱 #227）：**必须全等**（`:text-is()`）。侧栏里常有"发布作品"
+  #    这类文案，它在文档序里**排在真按钮前面** —— `:has-text('发布')` 命中的是它，
+  #    点下去只是切了个页面、表单被重置，真按钮一次都没被碰过。
+  #    装配期会**拒掉**用 `:has-text()` 的 `publish_button`。
+  publish_button: "button:text-is('发布')"
+  dismiss_overlay: "button:text-is('我知道了')"
+  # ── 结果页标志（**未校准初稿**）──────────────────────────────────────
+  # ⚠️ 陷阱 #226：不能用 `text=` 引擎前缀（Playwright 只允许它**单独**出现）。
+  # ⚠️ 陷阱 #229：不能用 `:text()`（**子串**）—— 页面上总有含这几个字的普通提示，
+  #    于是在**发布之前**就判成了成功。两条都是抖音真机上翻过的车，装配期都拦。
+  success_marker: "div[class*='publish-success'], :text-is('发布成功')"
+  reject_marker: ":text-is('审核不通过')"
+  # ⚠️ **故意留空**：没在真机上见过西瓜的验证框。猜一个的代价是**反向**的 ——
+  #    猜错会把一次正常的发布误判成"要人工过验证"（转 manual_required），而那条
+  #    记录本来能自己发完。留空 ⇒ 真遇到验证时走 600s 超时那条路（如实报失败）。
+  verify_marker: ""
+
+  # ── 数据回收（T5.4 · §06.6 · **未校准初稿**）─────────────────────────
+  # ⚠️ `metric_row` 里的 `{post_id}` 不是装饰：四个计数是**相对它**取的后代选择器。
+  #    少了它，选择器会命中**第一条**作品的行 —— 于是"这一条的数据"读的是别人的数，
+  #    而面板上两个数字都长得像正常的数（T5.4 最贵的一类错：错得看不出来）。
+  metric_row: "tr[data-id=\"{post_id}\"], div[data-post-id=\"{post_id}\"]"
+  metric_views: ".metric-views, span[data-metric=views]"
+  metric_likes: ".metric-likes, span[data-metric=likes]"
+  metric_comments: ".metric-comments, span[data-metric=comments]"
+  metric_shares: ".metric-shares, span[data-metric=shares]"
+  metric_completion_rate: ""
+
+readback:
+  title: value
+  caption: text
+
+markers:
+  # ⚠️ **不含"扫码登录"**（陷阱 #212）：那是**登录页自己的按钮文案**，两种状态
+  #    （从没登录过 / 登录过期）下都在页面上 —— 拿它当判据等于永远判成"过期"，
+  #    于是给一个"从来没登录过"的新号指了一条错路。装配期会**拒掉**含这一句的 pack。
+  login_expired_text: ["登录已过期", "请重新登录"]
+  review_rejected_text: ["审核不通过", "内容违规", "未通过审核"]
+  # ── 第 ⑦ 步的**第二个**成功判据（抖音真机教训 · 陷阱 #228）────────────
+  # 有些平台不发"发布成功"这几个字，而是把页面**跳走**；只认元素的话，一条**已经
+  # 发出去**的内容会在 600s 之后被记成失败（R14 不可逆，重试就是第二条）。
+  # ⚠️ 这个片段是**猜的**，而它只会"少命中"不会"误命中"：命不中等于没写这一条；
+  #    真正危险的是写一个**发布前地址里也有**的片段，那会在点下发布**之前**判成成功。
+  success_url_contains: ["studio.ixigua.com/content"]

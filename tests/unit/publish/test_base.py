@@ -11,10 +11,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import FrozenInstanceError
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import ClassVar
 
 import pytest
 
@@ -36,6 +35,7 @@ from studio.publish.base import (
 )
 from studio.publish.platforms import NON_PLATFORM_CODES, REAL_PLATFORMS
 from studio.publish.platforms.douyin import DouyinPublisher
+from studio.publish.playwright_publisher import PlaywrightPublisher
 
 # ── 上下文 ────────────────────────────────────────────────────────────
 
@@ -223,6 +223,17 @@ class TestPublisherAbc:
         assert (await stub.publish(_request())).ok
         assert (await stub.fetch_metrics("1")).views == 1
 
+    async def test_login_default_is_an_honest_not_implemented(self, tmp_paths: StudioPaths) -> None:
+        """没做扫码登录的实现 ⇒ **抛** ``PUBLISH_NOT_IMPLEMENTED``，不是回"没登录"。
+
+        回 ``ready=False`` 会让用户以为是自己没扫，于是去点第二次、第三次；
+        抛出来面板才能说"这个平台一期没做"。这两句话的下一步动作完全不同。
+        """
+        with pytest.raises(PublishError) as info:
+            await _StubPublisher(_ctx(tmp_paths)).login()
+        assert info.value.code == ErrorCode.PUBLISH_NOT_IMPLEMENTED
+        assert "stub" in info.value.message
+
 
 def _request() -> PublishRequest:
     return PublishRequest(task_id="01T", platform="stub", account_id="acc", video_path=Path("x.mp4"))
@@ -233,7 +244,7 @@ def _request() -> PublishRequest:
 
 class TestRegistry:
     def test_known_platforms_are_registered(self) -> None:
-        """§4.6.1 的注册表：一线三个真实现 + 二线四个空实现 + 靶页。"""
+        """§4.6.1 的注册表：七个真平台（一线 3 + 二线 4）+ 靶页。"""
         assert {"douyin", "kuaishou", "shipinhao"} <= set(PUBLISHERS)
         assert {"xiaohongshu", "bilibili", "xigua", "weibo"} <= set(PUBLISHERS)
 
@@ -297,28 +308,17 @@ class TestRegistry:
         assert "fixture" not in REAL_PLATFORMS
         assert set(REAL_PLATFORMS) == set(PUBLISHERS) - set(NON_PLATFORM_CODES)
 
-    def test_second_tier_health_does_not_raise(self) -> None:
-        """探测一个还没实现的平台不是异常情况（Q9 就是这么定的）。"""
-        publisher = get_publisher("bilibili")(_ctx(cast(StudioPaths, _FakePaths())))
-        health = asyncio.run(publisher.health())
-        assert not health.ready and "二期" in (health.hint or "")
+    def test_every_real_platform_is_a_real_implementation(self) -> None:
+        """七个真平台**全部**是真实现（二线那四个空壳换掉了）。
 
-    def test_second_tier_publish_returns_not_implemented(self) -> None:
-        publisher = get_publisher("weibo")(_ctx(cast(StudioPaths, _FakePaths())))
-        result = asyncio.run(publisher.publish(_request()))
-        assert result.error_code == ErrorCode.PUBLISH_NOT_IMPLEMENTED
+        为什么值得钉：注册表回答的是"实现**在不在**"，而"能不能发"是**另一个**问题
+        —— 它由 ``selectors/<platform>.yaml`` 的 ``calibrated`` / ``known_gaps`` 回答
+        （七个里只有抖音验过，见 ``test_selectors.py::TestCalibrationStatus``）。
+        把两件事混在一起正是空壳时代的毛病：那时"没做"与"做了但没校准"看起来一样。
 
-    def test_second_tier_fetch_metrics_raises(self) -> None:
-        publisher = get_publisher("xigua")(_ctx(cast(StudioPaths, _FakePaths())))
-        with pytest.raises(PublishError):
-            asyncio.run(publisher.fetch_metrics("1"))
-
-
-class _FakePaths:
-    """二线平台只读 ``browser_profile_dir``，不需要一个真 home。"""
-
-    def __init__(self) -> None:
-        self.browser_profile_dir = Path("data/browser_profile")
-
-    def __getattr__(self, name: str) -> Any:  # pragma: no cover - 兜底
-        raise AttributeError(name)
+        ⚠️ 这条**不开浏览器、不联网** —— 只是查注册表。原来那三条（"二线的 health 不抛"、
+        "publish 返回 NOT_IMPLEMENTED"）会**真的去启动 Chromium 打 B 站**：空壳时代它们
+        廉价，现在它们既慢又在联网。空壳没了，那三条也就没有了要验的东西。
+        """
+        for code in REAL_PLATFORMS:
+            assert issubclass(PUBLISHERS[code], PlaywrightPublisher), code

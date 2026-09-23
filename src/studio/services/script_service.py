@@ -67,7 +67,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Final, Protocol
+from typing import Any, Final, Protocol, cast
 
 from studio.agents.base import AgentContext, AgentResult
 from studio.core.config import PersonaConfig
@@ -78,10 +78,11 @@ from studio.core.paths import StudioPaths
 from studio.core.proto import EVENT_PAYLOAD_KEY, EventKind, Severity
 from studio.db import JobStore
 from studio.db.models import ScriptRow, SentenceRow, TopicOutlineRow, TopicRow
-from studio.db.repositories import AuditRepo, OutlineRepo, ScriptRepo, TopicRepo
+from studio.db.repositories import AuditRepo, DirectionRepo, OutlineRepo, ScriptRepo, TopicRepo
 from studio.domain.enums import TaskStatus, UnitType
 from studio.domain.models import TaskRead
 from studio.domain.script import (
+    FACTS_MAX,
     OUTLINE_ARGUMENT_MAX,
     OUTLINE_TITLE_MAX,
     DirectorInput,
@@ -97,7 +98,7 @@ from studio.domain.script import (
 from studio.domain.task_service import TaskService
 from studio.domain.topics import TopicSpec
 from studio.services.log_service import LogSink
-from studio.services.topic_service import topic_spec_from_row
+from studio.services.topic_service import direction_facts, topic_spec_from_row
 
 __all__ = [
     "DirectorLike",
@@ -298,6 +299,7 @@ class ScriptService:
         self._log = log
         self._tasks = tasks or TaskService(connection)
         self._topics = TopicRepo(connection)
+        self._directions = DirectionRepo(connection)
         self._scripts = ScriptRepo(connection)
         self._outlines = OutlineRepo(connection)
         self._audit = AuditRepo(connection)
@@ -313,6 +315,7 @@ class ScriptService:
         persona: PersonaConfig,
         actor: str = "user",
         trace_id: str | None = None,
+        source: str = "webui",
     ) -> OutlineReport:
         """让模型给这条选题定「视频标题 + 核心论点」（文案三级流水线的二级）。
 
@@ -329,7 +332,14 @@ class ScriptService:
             persona=persona,
             trace_id=trace_id or new_ulid(),
         )
-        result = await outliner.run(ctx, OutlineInput(topic=topic_spec_from_row(topic), angle=topic.angle))
+        result = await outliner.run(
+            ctx,
+            OutlineInput(
+                topic=topic_spec_from_row(topic),
+                angle=topic.angle,
+                facts=self._facts_for(topic),
+            ),
+        )
         if not result.ok or result.data is None:
             message = result.error_message or result.error_code or "Outliner 未返回标题与论点"
             self._emit(
@@ -359,7 +369,7 @@ class ScriptService:
             target_id=topic_id,
             after={"title": row.title, "core_argument": row.core_argument},
             reason="模型产出二级产物",
-            source="webui",
+            source=source,
         )
         self._emit(
             "info",
@@ -469,45 +479,74 @@ class ScriptService:
         trace_id: str | None = None,
         actor: str = "worker:draft#1",
     ) -> DraftReport:
-        """选题 ⇒ 大纲 ⇒ 成稿 ⇒ 落库。**不抛裸异常**：失败返回 ``ok=False`` 的报告。"""
+        """选题 ⇒ 大纲 ⇒ 成稿 ⇒ 落库。**不抛裸异常**：失败返回 ``ok=False`` 的报告。
+
+        ``topic_id`` 那一行**可以已经不在了**：选题被删（删方向 / 删候选）之后，已经排队的
+        那条任务照跑 —— 它自己带着要说什么（``tasks.title`` + ``payload_json`` 里的
+        ``angle`` / ``hook_type``）。删掉的是**想法**，不是**活**。只有"没有任务可依托、
+        选题又不存在"时才报 ``TOPIC_NOT_FOUND``（那才是真的无从下笔）。
+        """
         director, writer = self._require_agents()
         trace = trace_id or new_ulid()
-        topic = self._require_topic(topic_id)
+        topic = self._topics.get(topic_id)
 
-        spec = topic_spec_from_row(topic)
-        created = (
-            task_id is None and self._tasks.find_by_idempotency_key(self._idempotency_key(topic.id)) is None
-        )
-        task = (
-            self._create_task(topic, spec=spec, persona=persona, target_duration_ms=target_duration_ms)
-            if task_id is None
-            else self._tasks.get(task_id)
-        )
+        if topic is None:
+            if task_id is None:
+                # 没有任务可依托 ⇒ 真的无从下笔：这一句**一定抛**（`cast` 只是给类型一个交代）
+                self._require_topic(topic_id)
+            task = self._tasks.get(cast("str", task_id))
+            spec = _spec_from_task(task)
+            created = False
+        else:
+            spec = topic_spec_from_row(topic)
+            created = (
+                task_id is None
+                and self._tasks.find_by_idempotency_key(self._idempotency_key(topic.id)) is None
+            )
+            task = (
+                self._create_task(topic, spec=spec, persona=persona, target_duration_ms=target_duration_ms)
+                if task_id is None
+                else self._tasks.get(task_id)
+            )
         if task.status is TaskStatus.PENDING:
             self._tasks.transition(task.id, TaskStatus.DRAFTING, actor=actor, reason="开始写稿")
 
         duration = target_duration_ms or persona.max_duration_ms
         ctx = AgentContext(task_id=task.id, persona=persona, trace_id=trace)
 
-        # 二级产物（视频标题 + 核心论点）：有就**锁定**标题并当主线喂下去，没有就照旧
-        # 自由发挥 —— 二级是可选的一级，少一张表不能变成「写不出稿」。
-        saved_outline = self._outlines.get(topic.id)
-        locked_title = saved_outline.title if saved_outline is not None else None
+        # 二级产物（视频标题 + 核心论点）：有就**锁定**标题并当主线喂下去。
+        #
+        # 缺位时**自动补一次**，而不是「自由发挥」：这一级是「先说清楚要说什么」，
+        # 而它以前只有面板上那颗手动按钮能触发 —— 于是三级拿到的是 OUTLINE_UNSET，
+        # 「围绕核心论点深挖」这句指令**没有论点可围绕**，只能写成表面叙事；改了
+        # outliner 提示词也看不到效果，因为这一级压根没跑（topic_outlines 长期空表）。
+        # 自动补是 best-effort：模型不给就不给，退回下面的兜底，绝不因此写不出稿。
+        saved_outline = self._outlines.get(topic_id)
+        if saved_outline is None and topic is not None:
+            saved_outline = await self._auto_outline(topic_id=topic_id, persona=persona, trace=trace)
+        # 标题兜底 = 一级选题标题（用户口径：原标题已经够好了）。落到 OUTLINE_UNSET 上
+        # 等于让模型「按选题自行发挥」一个标题 —— 而标题是最不该自由发挥的东西。
+        locked_title = (saved_outline.title if saved_outline is not None else None) or spec.title
         core_argument = saved_outline.core_argument if saved_outline is not None else None
+
+        # 已知事实（今日新闻挑出来的方向才有）：**在服务层按方向回读**，不指望上游
+        # 哪一级的模型把它抄下来 —— 抄写会漂，而事实漂了就是幻觉（T5.12 增补）。
+        facts = self._facts_for(topic)
 
         outline_result = await director.run(
             ctx,
             DirectorInput(
                 topic=spec,
                 target_duration_ms=duration,
-                angle=topic.angle,
+                angle=spec.angle,
                 outline_title=locked_title,
                 core_argument=core_argument,
+                facts=facts,
             ),
         )
         if not outline_result.ok or outline_result.data is None:
             return self._failed(
-                topic=topic,
+                topic_id=topic_id,
                 task_id=task.id,
                 created=created,
                 code=outline_result.error_code or str(ErrorCode.SCRIPT_DRAFT_FAILED),
@@ -523,11 +562,12 @@ class ScriptService:
                 outline=outline,
                 outline_title=locked_title,
                 core_argument=core_argument,
+                facts=facts,
             ),
         )
         if not writer_result.ok or writer_result.data is None:
             return self._failed(
-                topic=topic,
+                topic_id=topic_id,
                 task_id=task.id,
                 created=created,
                 code=writer_result.error_code or str(ErrorCode.SCRIPT_DRAFT_FAILED),
@@ -585,7 +625,7 @@ class ScriptService:
         return DraftReport(
             ok=True,
             task_id=task.id,
-            topic_id=topic.id,
+            topic_id=topic_id,
             created_task=created,
             script_id=saved.script_id,
             version=saved.version,
@@ -755,6 +795,44 @@ class ScriptService:
             context={"topic_id": topic_id},
             remediation="先跑 `studio topics ideate` 生成选题，或用 `studio topics list` 确认 id",
         )
+
+    def _facts_for(self, topic: TopicRow | None) -> str:
+        """这条选题的**已知事实**（今日新闻挑出来的方向才有；其余是空串）。
+
+        为什么按 ``topic.direction_id`` 回读方向，而不是把事实抄进 ``topic_candidates``：
+        抄一份就多一处会漂的副本（人改了方向那一行，选题上那份还是旧的），而方向才是
+        事实的落点。方向被删、选题本来就是人工加的（``direction_id`` 指向别处）⇒ 回空串，
+        写稿照跑 —— 少几句事实，不是一次失败。
+
+        截到 :data:`FACTS_MAX`：它是个 pydantic 上限，超了会在建 ``WriterInput`` 时抛
+        ValidationError，把"多了一条依据"变成"这条选题写不出稿"。
+        """
+        if topic is None or not topic.direction_id:
+            return ""
+        direction = self._directions.get(topic.direction_id)
+        return "" if direction is None else direction_facts(direction)[:FACTS_MAX]
+
+    async def _auto_outline(
+        self, *, topic_id: str, persona: PersonaConfig, trace: str
+    ) -> TopicOutlineRow | None:
+        """写稿前自动补一次二级产物（**best-effort，绝不阻塞写稿**）。
+
+        为什么值得多花这一次调用：三级那句「围绕核心论点深挖价值观」要有一个**论点**
+        才落得下去。没有它，模型只能对着选题写表面叙事 —— 而这一级以前只在面板上
+        手动触发，实际链路里几乎从不发生。
+        """
+        if self._outliner is None:
+            return None
+        try:
+            report = await self.outline(
+                topic_id=topic_id, persona=persona, actor="system", trace_id=trace, source="worker"
+            )
+        except StudioError as exc:
+            logger.warning("script.auto_outline_failed", topic_id=topic_id, error=exc.message)
+            return None
+        if not report.ok:
+            return None
+        return self._outlines.get(topic_id)
 
     def _require_outliner(self) -> OutlineLike:
         """要生成二级产物时才检查 Outliner 是否装配（与 :meth:`_require_agents` 同一手法）。
@@ -932,7 +1010,7 @@ class ScriptService:
     def _failed(
         self,
         *,
-        topic: TopicRow,
+        topic_id: str,
         task_id: str,
         created: bool,
         code: str,
@@ -945,13 +1023,13 @@ class ScriptService:
         self._emit(
             "error",
             f"写稿失败：{message}",
-            payload={"task_id": task_id, "topic_id": topic.id, "error_code": code},
+            payload={"task_id": task_id, "topic_id": topic_id, "error_code": code},
         )
         self._fail_task(task_id, code=code, message=message, actor=actor)
         return DraftReport(
             ok=False,
             task_id=task_id,
-            topic_id=topic.id,
+            topic_id=topic_id,
             created_task=created,
             warnings=list(extra or []),
             error_code=code,
@@ -1054,6 +1132,32 @@ def _clean_outline_text(value: str, *, field: str, limit: int, topic_id: str) ->
 def _outline_snapshot(row: TopicOutlineRow) -> dict[str, Any]:
     """留痕里那两列（``before``/``after`` 同一份形状，方便逐列比对）。"""
     return {"title": row.title, "core_argument": row.core_argument}
+
+
+def _spec_from_task(task: TaskRead) -> TopicSpec:
+    """任务自带的那一份选题信息（**选题行已经被删掉**时的退路）。
+
+    ``tasks`` 建的时候就把标题抄在自己身上（``tasks.title``），``payload_json`` 里还带着
+    ``angle`` / ``hook_type`` —— 也就是说一条已经排队的活**本来就说得清自己要做什么**。
+    所以"选题没了"不该把它变成一条注定写不出稿的作业。
+
+    两处只能给个交代、给不出原值：
+
+    - ``reason``（提示词里的【为什么做它】）在 ``TaskPayload`` 里没有对应字段，而那一份是
+      §03.5.3 冻结的契约 ⇒ 这里给一句**实话**，而不是编一个理由；
+    - ``score`` 不是提示词的一部分（Director 只读标题 / 角度 / 理由）⇒ 给 0，把"没有分"说清楚。
+
+    为什么不用 ``task.context`` 兜：那是渲染/配音阶段的运行期上下文，与选题无关。
+    """
+    hook = task.payload.hook_type
+    return TopicSpec(
+        title=task.title,
+        hook_type=hook if hook is not None else "other",
+        angle=task.payload.angle or "",
+        exec_feasible=True,
+        score=0.0,
+        reason="（这条选题已从选题池删除，按任务自己记下的标题与角度继续）",
+    )
 
 
 def _sentence_payload(sentence: SentenceSpec) -> dict[str, Any]:

@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
+from studio.core.config import CoverConfig
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.fonts import system_font_dirs
 from studio.core.logging import get_logger
@@ -76,6 +77,7 @@ __all__ = [
     "COVER_TIMEOUT_SEC",
     "DEFAULT_FRAME_AT_MS",
     "CoverResult",
+    "CoverSticker",
     "build_cover",
     "measure_text_width",
     "resolve_frame_at_ms",
@@ -90,13 +92,16 @@ DEFAULT_FRAME_AT_MS: Final[int] = 1_500
 #: 抽不到帧时的纯色底（深灰 —— 白字在它上面永远可读）。
 COVER_BG_COLOR: Final[str] = "0x1F2430"
 
-#: 文字区背后的压暗带（``black@0.45``）与它上下各留的边距。
+#: 描边的颜色。**实心黑**而不是半透明的 ``black@0.85``：黄字压在跑酷那种花花绿绿的
+#: 底上时，半透明描边会让底色的明暗从边里透出来，字缘看着毛。描边要的就是"把字从底里
+#: 抠出来"这一件事，抠得越干脆越好。
+COVER_OUTLINE_COLOR: Final[str] = "black"
+
+#: 压暗带上下各留的边距。
 #:
-#: 为什么必须有这一条：底片是**别人的画面**，它可能是雪地、可能是白墙，
-#: 也可能（像本机的测试素材那样）已经烧了字幕。白色描边字压在这三种底上都读不清，
-#: 而用户看到的只是"这张封面好糊"，不会去想是对比度的事。
-#: 压暗带把"文字区"与"画面"分成两层，字就永远读得出来。
-COVER_SCRIM_ALPHA: Final[float] = 0.45
+#: 压暗带本身（画不画、多暗）是 ``config/outputs.yaml`` 的 ``cover.scrim`` ——
+#: 它是一道**取舍**：画上去字永远读得清，但底片会变成一张灰图（跑酷那种花花的画面
+#: 一压就没了）。取舍归用户，不归这里；这里只管"压暗带比文字块宽出多少"。
 COVER_SCRIM_PAD: Final[int] = 28
 
 #: JPEG 质量（§06.3：q=3）。
@@ -112,6 +117,43 @@ _MEASURE_CANVAS_H: Final[int] = 256
 _MEASURE_MIN_VAL: Final[int] = 128
 
 _BBOX_RE = re.compile(r"x1:(\d+) x2:(\d+) y1:(\d+) y2:(\d+) w:(\d+) h:(\d+)")
+
+
+@dataclass(frozen=True, slots=True)
+class CoverSticker:
+    """封面上的**主体贴图**：一张透明 PNG + 它在封面上的摆放（T5.1 追加）。
+
+    为什么与成片里那套（``render.sticker``）分开
+    --------------------------------------------
+    **摆放规则不一样**：成片里人物缩在右下角，是为了给字幕让位；封面上没有字幕，
+    人物要当主体、居中站，标题压在它下面。所以这里只留"画在哪、多大"。
+
+    "用哪张图、占多高"仍然是 ``config/outputs.yaml`` 的 ``stickers`` 说了算 ——
+    服务层把它解出来之后交给这里。**不在这里解析配置**，是因为解析要探盘
+    （``render.png_probe``），而 ``publish/`` 不得 import ``render/``（§02.1）。
+
+    路径是**绝对**的（与 ``render.sticker.StickerSpec.image_path`` 同一条：渲染进程的
+    CWD 不保证是仓库根，而这份东西会进 manifest）。
+    """
+
+    name: str
+    path: Path
+    x: int
+    y: int
+    width_px: int
+    height_px: int
+    opacity: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "path": self.path.as_posix(),
+            "x": self.x,
+            "y": self.y,
+            "width_px": self.width_px,
+            "height_px": self.height_px,
+            "opacity": self.opacity,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,12 +246,15 @@ def _drawtext(
     x: str,
     y: str,
     color: str,
-    border: bool,
+    outline: int,
 ) -> str:
     """一个 ``drawtext`` 过滤器。
 
     描边（``borderw``）不是装饰：底片是跑酷画面，什么颜色都有可能出现在字后面。
-    没有描边，白字在亮地方就消失了 —— 而用户看到的是"这张封面没标题"，不会去想是对比度的事。
+    没有描边，字在亮地方就消失了 —— 而用户看到的是"这张封面没标题"，不会去想是对比度的事。
+
+    宽度从 ``config/outputs.yaml`` 的 ``cover.outline`` 来（``0`` = 不描边）：
+    底素材越花，描边越要宽。写死一个 6 的话，"这张封面的字看不清"就只能靠改代码。
     """
     parts = [
         f"fontfile={font_arg}",
@@ -219,9 +264,9 @@ def _drawtext(
         f"x={x}",
         f"y={y}",
     ]
-    if border:
-        parts.append("borderw=6")
-        parts.append("bordercolor=black@0.85")
+    if outline > 0:
+        parts.append(f"borderw={outline}")
+        parts.append(f"bordercolor={COVER_OUTLINE_COLOR}")
     return "drawtext=" + ":".join(parts)
 
 
@@ -273,7 +318,7 @@ def measure_text_width(
             x="0",
             y="0",
             color="white",
-            border=False,
+            outline=0,
         )
         + f",bbox=min_val={_MEASURE_MIN_VAL}",
         "-frames:v",
@@ -309,6 +354,7 @@ def _drawtext_layer(
     top: int,
     color: str,
     highlight_color: str,
+    outline: int,
     width_of: Any,
 ) -> None:
     """把一组行按"先整行、再重叠高亮段"的顺序追加到**滤镜链**上。
@@ -334,7 +380,7 @@ def _drawtext_layer(
                     x=str(cursor),
                     y=y,
                     color=highlight_color if run.highlight else color,
-                    border=True,
+                    outline=outline,
                 )
             )
             cursor += width_of(run.text, font_size)
@@ -353,25 +399,41 @@ def _compose_argv(
     target: Path,
     font_file: Path,
     width_of: Any,
+    style: CoverConfig,
+    sticker: CoverSticker | None,
 ) -> list[str]:
-    """组装一条 ffmpeg 命令（抽帧 + 缩放铺满 + 文字）。
+    """组装一条 ffmpeg 命令（抽帧 + 缩放铺满 + 贴图 + 文字）。
 
     ``-ss`` 放在 ``-i`` **前面**：那是"跳过去再解"。放在后面会把前面那么多秒全解一遍，
     而封面只要一帧。（与 :func:`studio.core.media.extract_thumbnail` 同一条口径。）
 
     ``scale=...:force_original_aspect_ratio=increase,crop``：先按短边铺满、再裁成 9:16。
     直接 ``scale=1080:1920`` 会把横屏底片拉成高瘦的，人脸会变形。
+
+    ★ 有贴图时**必须**从 ``-vf`` 换成 ``-filter_complex``
+    ---------------------------------------------------
+    ``-vf`` 只吃**一路**输入。贴图是第二路（``-i hero.png``），两路要在同一条滤镜图里
+    相叠，所以只能写 ``-filter_complex`` + ``-map``。两条路都留着（而不是一律用
+    ``filter_complex``）是为了：没有贴图时命令与改前**逐字节相同** —— 那一串在真机上
+    验过很多遍，不该为了"少一个分支"把它换掉。
     """
     command = [ffmpeg, "-hide_banner", "-nostats", "-loglevel", "error"]
-    filters: list[str] = []
+    #: 背景那一段滤镜。``None`` = 背景是 lavfi 纯色（它本来就是画布尺寸，不用缩放）。
+    background: str | None = None
     if source is None:
         command.extend(["-f", "lavfi", "-i", f"color=c={COVER_BG_COLOR}:s={COVER_WIDTH}x{COVER_HEIGHT}:d=1"])
     else:
         command.extend(["-ss", f"{max(0, frame_at_ms) / 1000:.3f}", "-i", str(source)])
-        filters.append(
+        background = (
             f"scale={COVER_WIDTH}:{COVER_HEIGHT}:force_original_aspect_ratio=increase,"
             f"crop={COVER_WIDTH}:{COVER_HEIGHT}"
         )
+    # 贴图**永远是输入 1**（背景恒为输入 0）—— 不管背景是抽的帧还是 lavfi 纯色。
+    if sticker is not None:
+        command.extend(["-i", str(sticker.path)])
+
+    #: 文字那一段（压暗带 + 逐段 ``drawtext``）。顺序即执行顺序。
+    filters: list[str] = []
 
     font_arg = _font_arg(font_file)
     title_lines = [
@@ -383,20 +445,22 @@ def _compose_argv(
     top = cover_block_top(block_height)
     # 压暗带**先画**（滤镜链是按顺序执行的），文字才叠在它上面。
     # 高度按文字块算而不是铺满全屏：整屏压暗会让底片变成一张灰图，封面就不像封面了。
-    scrim_top = max(0, top - COVER_SCRIM_PAD)
-    scrim_bottom = min(COVER_HEIGHT, top + block_height + COVER_SCRIM_PAD)
-    filters.append(
-        f"drawbox=x=0:y={scrim_top}:w={COVER_WIDTH}:h={scrim_bottom - scrim_top}"
-        f":color=black@{COVER_SCRIM_ALPHA}:t=fill"
-    )
+    if style.scrim > 0:
+        scrim_top = max(0, top - COVER_SCRIM_PAD)
+        scrim_bottom = min(COVER_HEIGHT, top + block_height + COVER_SCRIM_PAD)
+        filters.append(
+            f"drawbox=x=0:y={scrim_top}:w={COVER_WIDTH}:h={scrim_bottom - scrim_top}"
+            f":color=black@{style.scrim:g}:t=fill"
+        )
     _drawtext_layer(
         filters=filters,
         font_arg=font_arg,
         lines=title_lines,
         font_size=title_size,
         top=top,
-        color="white",
-        highlight_color="0xFFD400",
+        color=style.title_color,
+        highlight_color=style.highlight_color,
+        outline=style.outline,
         width_of=width_of,
     )
     if sub_lines:
@@ -407,14 +471,40 @@ def _compose_argv(
             font_size=sub_size,
             top=top + len(title_lines) * line_height(title_size),
             color="white@0.92",
-            highlight_color="0xFFD400",
+            highlight_color=style.highlight_color,
+            outline=style.outline,
             width_of=width_of,
         )
 
-    # ★ 单条 ``-vf``（逗号连成一条滤镜链）—— 多个 ``-vf`` 只会生效最后一个。
-    command.extend(["-vf", ",".join(filters), "-frames:v", "1"])
+    if sticker is None:
+        # ★ 单条 ``-vf``（逗号连成一条滤镜链）—— 多个 ``-vf`` 只会生效最后一个。
+        head = [] if background is None else [background]
+        command.extend(["-vf", ",".join(head + filters), "-frames:v", "1"])
+    else:
+        command.extend(["-filter_complex", _filter_graph(background, filters, sticker), "-map", "[out]"])
+        command.extend(["-frames:v", "1"])
     command.extend(["-q:v", str(COVER_JPEG_QSCALE), "-y", str(target)])
     return command
+
+
+def _filter_graph(background: str | None, text_filters: list[str], sticker: CoverSticker) -> str:
+    """有贴图时的 ``-filter_complex`` 图（三段：背景 → 叠贴图 → 画字）。
+
+    为什么拆成一条 ``filter_complex`` 而不是多个 ``-vf``：见 :func:`_compose_argv`。
+
+    贴图那一段与成片里那条**逐字同构**（``scale`` ⇒ ``format=rgba`` ⇒
+    ``colorchannelmixer=aa=``）：``overlay`` 要在 alpha 上合成，而抽出来的帧是
+    ``yuv420p``；不先转 ``rgba``，透明度会被当成亮度用 —— 人物周围会出现一圈黑。
+    """
+    parts: list[str] = []
+    parts.append("[0:v]null[bg]" if background is None else f"[0:v]{background}[bg]")
+    parts.append(
+        f"[1:v]scale={sticker.width_px}:{sticker.height_px},format=rgba,"
+        f"colorchannelmixer=aa={sticker.opacity:g}[stk]"
+    )
+    parts.append(f"[bg][stk]overlay={sticker.x}:{sticker.y}:format=auto[ov]")
+    parts.append("[ov]" + ",".join(text_filters) + "[out]")
+    return ";".join(parts)
 
 
 def resolve_cover_font(paths: StudioPaths) -> Path:
@@ -476,6 +566,8 @@ def build_cover(
     target: Path,
     paths: StudioPaths,
     source: Path | None,
+    sticker: CoverSticker | None = None,
+    style: CoverConfig | None = None,
     ffmpeg: str | None = None,
     runner: Any = None,
     width_of: Any = None,
@@ -484,8 +576,13 @@ def build_cover(
 
     降级链写在这里：抽帧失败 ⇒ 纯色底（``fallback_background=True`` + 一条 ``warn``）；
     连纯色底都失败 ⇒ ``path=None``（无封面发布）。**两种降级都不抛**。
+
+    ``sticker`` 由**服务层**解好（它才知道 ``config/outputs.yaml`` 里有哪些层、图在不在
+    盘上）。这里只负责"把它画上去" —— 传 ``None`` ⇒ 与改前逐字节相同的命令。
+    ``style`` 缺省时用 :class:`CoverConfig` 的默认值（黄字黑边）。
     """
     warnings: list[str] = []
+    style = style or CoverConfig()
     font_file = resolve_cover_font(paths)
     take_width = width_of or (
         lambda text, size: measure_text_width(
@@ -526,6 +623,15 @@ def build_cover(
 
     plan = cover_plan_payload(output=output, title=title, sub=sub, title_size=title_size, sub_size=sub_size)
     plan["warnings"] = list(warnings)
+    # 画了什么就得记什么：这张封面上的颜色 / 描边 / 主体是谁，全都跟着 plan 走。
+    # 只留一句"出过一张封面"的话，下一个人看到一张不合意的图只能猜是哪一步的事。
+    plan["sticker"] = None if sticker is None else sticker.to_dict()
+    plan["style"] = {
+        "title_color": style.title_color,
+        "highlight_color": style.highlight_color,
+        "outline": style.outline,
+        "scrim": style.scrim,
+    }
 
     binary = ffmpeg or ffmpeg_binary()
     for use_source in (source, None):
@@ -541,6 +647,8 @@ def build_cover(
             target=target,
             font_file=font_file,
             width_of=take_width,
+            style=style,
+            sticker=sticker,
         )
         try:
             result = (runner or subprocess.run)(

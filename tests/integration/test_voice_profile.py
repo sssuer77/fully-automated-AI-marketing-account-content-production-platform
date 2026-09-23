@@ -16,9 +16,10 @@
 
 覆盖什么
 --------
-① §4.3.1 表格里「不通过 ⇒ **拒绝入库**」的那四条（段数 / 单段时长 / 削波 / 采样率）
+① §4.3.1 表格里「不通过 ⇒ **拒绝入库**」的那三条（单段时长 / 削波 / 采样率）
    逐条有用例，且都断言**库里没有那一行** —— 只断言 ``check.ok is False`` 不够：
-   拦在体检、漏在入库，是两件事；
+   拦在体检、漏在入库，是两件事。（**段数**原本是第四条，裁定 377 起不再是判据：
+   一段能用，很多段也能用；段数只影响音色稳不稳。）
 ② 旁车文件（``ref.txt`` / ``profile.json``）缺失或对不上只 ``warn``，不拦；
 ③ 一个坏音色不拖垮整批（第 2 个被拒，第 1 个照进）；
 ④ 默认 ``voice_map`` 能不能真的解析到占位音色 —— 这是 2026-09-17 修掉的一个真实
@@ -147,26 +148,35 @@ def _codes(items: Sequence[Problem]) -> list[str]:
     return [item.code for item in items]
 
 
-class TestFourRejections:
-    """§4.3.1 表格里「不通过 ⇒ 拒绝入库」的那四条 —— 一条都不能只是提醒。"""
+class TestRejections:
+    """§4.3.1 表格里「不通过 ⇒ 拒绝入库」的那三条 —— 一条都不能只是提醒。"""
 
-    def test_too_few_segments(
+    def test_one_segment_is_enough(
         self, service: AssetService, connection: sqlite3.Connection, paths: StudioPaths
     ) -> None:
+        """一段就入库（**裁定 377**），只是提醒"多给几段更稳"。
+
+        门槛拦下来的代价很具体：手边只有一句干净台词的人会**把同一个文件复制一份**
+        去凑数 —— 真机库里那条 ``sunxiaochuan`` 的两段 sha256 完全相同，就是这么来的。
+        """
         _voice(paths, durations=(SEGMENT_SECONDS,))
         asset = _ingested(service)
-        assert asset.check.ok is False
-        assert _codes(asset.check.problems) == ["too_few_refs"]
-        assert VoiceProfileRepo(connection).get("bigbear") is None
+        assert asset.check.ok is True
+        assert _codes(asset.check.problems) == []
+        assert "single_ref" in _codes(asset.check.warnings)
+        assert VoiceProfileRepo(connection).get("bigbear") is not None
 
-    def test_too_many_segments(
+    def test_many_segments_are_fine(
         self, service: AssetService, connection: sqlite3.Connection, paths: StudioPaths
     ) -> None:
-        _voice(paths, durations=(SEGMENT_SECONDS,) * 4)
+        """段数**不设上限**（**裁定 377**）—— 上限 3 是我们自己加的，引擎没有这条。"""
+        _voice(paths, durations=(SEGMENT_SECONDS,) * 6)
         asset = _ingested(service)
-        assert asset.check.ok is False
-        assert _codes(asset.check.problems) == ["too_many_refs"]
-        assert VoiceProfileRepo(connection).get("bigbear") is None
+        assert asset.check.ok is True
+        assert _codes(asset.check.problems) == []
+        row = VoiceProfileRepo(connection).get("bigbear")
+        assert row is not None
+        assert row.ref_count == 6
 
     def test_segment_too_short(
         self, service: AssetService, connection: sqlite3.Connection, paths: StudioPaths

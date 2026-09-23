@@ -8,19 +8,25 @@
 ``selectors_version`` 会随这次改版一起进 ``publications.evidence_json`` ——
 事后能回答"这条是哪个版本的选择器发的"。
 
-**本仓库里这些选择器是未实测的初稿**
-------------------------------------
-T5.2 的验收是"演练链路跑通"，而真机校准需要**一个已登录的真实账号**
-（§06.2.2 也把"实测校准"写成了 T5.2 的现场动作）。所以：
-- 结构（要哪些键、怎么校验）是这里定的，**这一层是可靠的**；
-- 具体的 CSS 值是按各平台创作页的公开结构写的**初稿**，第一次真机跑必然会改；
-- 改法见 ``docs/runbook/publish_selector.md``（改 yaml、不动代码）。
+**哪些 pack 验过、哪些没验过：这是一份数据，不是一句注释**
+--------------------------------------------------------
+真机校准需要**一个已登录的真实账号**（§06.2.2 把"实测校准"写成现场动作）。所以
+每个 pack 自己声明 ``calibrated`` / ``calibrated_at``，:class:`SelectorPack` 把它们
+读进来，面板上照实显示。**注释不拦人** —— "看起来挺像那么回事"最容易让人以为
+它验过了，而库里那条记录是**真发出去**的（R14 不可逆）。
 
-把这件事写在模块开头，是因为"选择器看起来挺像那么回事"最容易让人以为它验过了。
+``calibrated: false`` 的 pack **能用**（投递、演练都不拦），但面板会明说"这个平台的
+选择器还没真机校准过"。校准的入口是 ``studio publish calibrate --platform <code>``：
+它开一个可见窗口，把 pack 里每一条选择器在真页面上逐条跑一遍，报"命中几个 / 0 个"。
+
+**装配期只放行"结构上能跑"的 pack**（缺必需键、选择器写错、状态判据必然失灵 ⇒ 直接拒）。
+具体 CSS 值对不对是**真机校准**的事，这里判不了 —— 判得了的那几条，见
+:func:`_check_semantics`。
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -30,8 +36,11 @@ import yaml
 from studio.core.errors import ErrorCode, PublishError
 
 __all__ = [
+    "AMBIGUOUS_LOGIN_MARKERS",
     "DEFAULT_READBACK",
     "METRIC_KEYS",
+    "METRIC_SELECTOR_KEYS",
+    "OPTIONAL_SELECTORS",
     "POST_ID_PLACEHOLDER",
     "RATIO_METRIC_KEYS",
     "READBACK_KINDS",
@@ -61,6 +70,8 @@ OPTIONAL_SELECTORS: Final[tuple[str, ...]] = (
     "upload_progress",  # 上传进度元素（轮询百分比）
     "cover_trigger",  # 打开"设置封面"弹层的按钮（第 ④ 步）
     "cover_input",  # 弹层里的图片输入框（第 ④ 步）
+    "dismiss_overlay",  # 挡住发布按钮的平台提示弹层（第 ⑥ 步，点一下关掉它）
+    "verify_marker",  # 平台要求短信/人脸验证的框（第 ⑦ 步 ⇒ 转人工，R13）
     "success_marker",  # 结果页标志（第 ⑦ 步）
     "reject_marker",  # 审核不通过的标志（§06.10 的 PUBLISH_REVIEW_REJECTED）
     # ── 数据回收（T5.4 · §06.6）───────────────────────────────────────
@@ -91,6 +102,19 @@ METRIC_KEYS: Final[tuple[str, ...]] = ("views", "likes", "comments", "shares")
 #: 读取端按这个分组挑解析器，写库端按同一分组拼 payload —— 分组只此一份。
 RATIO_METRIC_KEYS: Final[tuple[str, ...]] = ("completion_rate",)
 
+#: 数据回收那一组（T5.4）的选择器键。
+#:
+#: 与"发布路径"那一组有一个**根本区别**：验它们要一条**真的发出去过**的作品 ——
+#: 管理页上一条作品都没有时，``metric_row`` 里的 ``{post_id}`` 没有东西可换，
+#: 于是探针只能报"跳过"。把"哪些键属于哪一组"放在**一处**（而不是让 calibrate
+#: 自己列一份），是因为加一个计数维度（比如收藏）时只该改 :data:`METRIC_KEYS`
+#: 一行 —— 抄成两份的那一刻，"新维度没被校准"就变成了一个安静的缺口。
+METRIC_SELECTOR_KEYS: Final[tuple[str, ...]] = (
+    "metric_row",
+    *(f"metric_{key}" for key in METRIC_KEYS),
+    *(f"metric_{key}" for key in RATIO_METRIC_KEYS),
+)
+
 #: 回读方式的取值（§06.5.3 第 ⑤ 步）。**为什么这是数据不是常量**：标题框在四个平台
 #: 上都是 ``<input>``（读 ``input_value``），而文案框有的是 ``<textarea>``（也是
 #: ``input_value``）、有的是 ``contenteditable``（只能读 ``inner_text``）——
@@ -106,6 +130,15 @@ REQUIRED_MARKERS: Final[tuple[str, ...]] = (
     "login_expired_text",  # 与"从未登录"区分开：见 PlaywrightPublisher.health
     "review_rejected_text",  # 平台审核不通过的提示语
 )
+
+#: **两种状态下都在页面上**的文案，因此不能拿来当 ``login_expired_text``。
+#:
+#: 真机 2026-09-23（陷阱 #212）：``login_expired_text`` 里带着"扫码登录"，而那是
+#: **登录页自己的按钮文案** —— 一个**全新、从没登录过**的 profile 也会命中它，
+#: 于是面板报"登录态已过期，需人工重新扫码登录"，而真相是"这个号从来没登录过"。
+#: 两句给的操作员动作**正好相反**（一个是"重新扫一次"，一个是"先扫一次"），
+#: 混成一句就等于给一半人指错路。
+AMBIGUOUS_LOGIN_MARKERS: Final[tuple[str, ...]] = ("扫码登录",)
 
 SELECTOR_KEY_GROUPS: Final[dict[str, tuple[str, ...]]] = {
     "required": REQUIRED_SELECTORS,
@@ -129,6 +162,30 @@ class SelectorPack:
     markers: dict[str, tuple[str, ...]]
     readback: dict[str, str]
     source: Path
+    #: 这份 pack 的**发布路径**选择器（八步用到的那些）**有没有在真机上逐条校准过**
+    #: （``studio publish calibrate``）。
+    #:
+    #: 为什么是数据而不是注释：注释不拦人，也不会出现在面板上。而"这个平台的选择器
+    #: 到底验过没有"是操作员决定"今天要不要拿它真发一条"时唯一要紧的信息 ——
+    #: 发出去就收不回来了（R14）。
+    #:
+    #: ⚠️ 它**不覆盖** :attr:`known_gaps`：校准的是"这些选择器对不对"，而
+    #: "还有没有一段流程压根没写"是另一件事（B 站的必选分区就是）。两件事都得让
+    #: 操作员看见 —— 只写"未校准"会让人以为"校准完就能发了"。
+    calibrated: bool = False
+    #: 校准日期（``YYYY-MM-DD``）。``calibrated=True`` 时**必须有**（见 :func:`_check_semantics`）：
+    #: "校准过"与"什么时候校准的"是同一件事的两半 —— 平台会改版，一份三年前的
+    #: 校准记录与没校准几乎一样没用。
+    calibrated_at: str = ""
+    #: 这个平台**已经确认没做**的部分（真机上撞到的、或规格书明写的必做步骤）。
+    #:
+    #: 为什么连"缺口"也要变成数据：校准状态回答的是"这些选择器验过没有"，而它
+    #: **回答不了**"这个平台还有没有一段流程压根没写"（比如 B 站的必选分区）。
+    #: 两件事都得让操作员在面板上看见 —— 只写"未校准"会让人以为"校准完就能发了"。
+    #:
+    #: 只写**已经确认**的（真机现场撞到的、或 §06.2.2 那种规格书明写的），不写猜测：
+    #: 猜出来的"缺口"会让人去修一个不存在的问题，与"假装做完了"一样贵。
+    known_gaps: tuple[str, ...] = ()
 
     def url(self, key: str) -> str:
         return self._get(self.urls, key, kind="url")
@@ -174,11 +231,15 @@ def load_selector_pack(platform: str, *, root: Path | None = None) -> SelectorPa
     """
     path = (root or selector_root()) / f"{platform}.yaml"
     if not path.is_file():
+        # 现有哪几份**当场列出来**（而不是写死在文案里）：平台是一批批加的，
+        # 写死的那句话会在"加了第四份 pack"之后变成一句错的指路。
+        existing = " / ".join(sorted(item.stem for item in (root or selector_root()).glob("*.yaml")))
         raise PublishError(
             f"没有 {platform} 的选择器文件：{path}",
             code=ErrorCode.PUBLISH_SELECTOR_MISS,
             context={"platform": platform, "path": path.as_posix()},
-            remediation="一期只带 douyin / kuaishou / shipinhao 三份（§06.2.1）",
+            remediation=f"在 selectors/ 下加一份 {platform}.yaml（骨架见 docs/runbook/publish_selector.md）；"
+            f"现有：{existing or '（一份都没有）'}",
         )
 
     try:
@@ -210,6 +271,35 @@ def load_selector_pack(platform: str, *, root: Path | None = None) -> SelectorPa
     missing = [key for key in REQUIRED_SELECTORS if not selectors.get(key)]
     if missing:
         raise _bad(path, f"缺少必需选择器：{', '.join(missing)}")
+    broken = {key: value for key, value in selectors.items() if _engine_prefix(value)}
+    if broken:
+        raise _bad(
+            path,
+            "这些选择器用了引擎前缀，而 Playwright 只允许它**单独**出现："
+            f"{broken} —— 写成 `div.x, text=文案` 会直接抛 "
+            '`Unexpected token "=" while parsing css selector`，而调用方把异常吞成'
+            '"元素不在"，于是整条流程一路等到超时（陷阱 #226）。要用文案就用 CSS 伪类 '
+            "`:text('文案')`。",
+        )
+    if _LOOSE_PUBLISH.search(selectors.get("publish_button", "")):
+        raise _bad(
+            path,
+            "publish_button 用了 `:has-text()`（**包含**匹配）。平台的导航项常常叫"
+            "「作品发布」/「发布作品」，而它在文档序里排在真按钮**前面** —— 于是点下去"
+            "只是切了个页面、表单被重置，真按钮一次都没被碰过。症状是"
+            '"点了发布什么都没发生"，然后第 ⑦ 步一路等到超时（陷阱 #227）。'
+            "用 `:text-is('发布')`（全等）钉住真按钮。",
+        )
+    loose_markers = {key: selectors[key] for key in _EXACT_TEXT_KEYS if ":text(" in selectors.get(key, "")}
+    if loose_markers:
+        raise _bad(
+            path,
+            f"这些结果页标志用了 `:text()`（**子串**匹配）：{loose_markers} —— 页面上总有一句"
+            "包含这几个字的**普通提示**（真机 2026-09-23：「视频发布成功后，价格将无法更改」"
+            '里就有"发布成功"），于是在**发布之前**就判成了成功，一条根本没发出去的内容被'
+            '记成 published（陷阱 #229）。判据要钉在"这一整块就是这几个字"上 ⇒ '
+            "用 `:text-is('发布成功')`。",
+        )
 
     readback = _string_map(path, payload.get("readback"), field="readback")
     bad_kinds = {key: value for key, value in readback.items() if value not in READBACK_KINDS}
@@ -231,6 +321,17 @@ def load_selector_pack(platform: str, *, root: Path | None = None) -> SelectorPa
         if not markers.get(key):
             raise _bad(path, f"缺少必需文本标记：markers.{key}")
 
+    calibrated = bool(payload.get("calibrated", False))
+    calibrated_at = str(payload.get("calibrated_at", "")).strip()
+    known_gaps = _string_list(path, payload.get("known_gaps"), field="known_gaps")
+    _check_semantics(
+        path,
+        selectors=selectors,
+        markers=markers,
+        calibrated=calibrated,
+        calibrated_at=calibrated_at,
+    )
+
     return SelectorPack(
         platform=platform,
         version=version,
@@ -239,7 +340,85 @@ def load_selector_pack(platform: str, *, root: Path | None = None) -> SelectorPa
         markers=markers,
         readback=readback,
         source=path,
+        calibrated=calibrated,
+        calibrated_at=calibrated_at,
+        known_gaps=known_gaps,
     )
+
+
+def _check_semantics(
+    path: Path,
+    *,
+    selectors: dict[str, str],
+    markers: dict[str, tuple[str, ...]],
+    calibrated: bool,
+    calibrated_at: str,
+) -> None:
+    """判据里**必然失灵**的那几条，在装配期就拒（而不是等真机上耗掉 600 秒）。
+
+    与上面那几条（缺键 / 引擎前缀 / 包含匹配）的分工
+    ------------------------------------------------
+    那几条判的是"**这句话写错了**"（Playwright 会抛、或者命中的是另一个元素）；
+    这里判的是"**这句话永远不成立**" —— 语法合法、也能命中，但它在**任何**状态下
+    都给不出可用答案。两类错误的现场症状一模一样（第 ⑦ 步一路等到超时），
+    所以都在这里拦。
+
+    每一条都对应一个真机踩过的坑，注释里写明是哪一个 —— 删掉任何一条之前，
+    先读那段注释。
+    """
+    # ① 两种状态下都在的文案不能当"登录已过期"的判据（陷阱 #212）。
+    ambiguous = [
+        text
+        for text in markers.get("login_expired_text", ())
+        for phrase in AMBIGUOUS_LOGIN_MARKERS
+        if phrase in text
+    ]
+    if ambiguous:
+        raise _bad(
+            path,
+            f"markers.login_expired_text 里有**两种状态下都会出现**的文案：{ambiguous} —— "
+            "它是**登录页自己的按钮文案**，于是「从没登录过」的号也被报成「登录态已过期」。"
+            "这两句话给的操作员动作正好相反（一个「重新扫一次」、一个「先扫一次」），"
+            "混成一句就等于给一半人指错路（陷阱 #212）。删掉它 —— 这一侧要的是"
+            "「被平台踢下线」时才会出现的那句（比如「登录已过期」）。",
+        )
+
+    # ② 第 ⑦ 步必须有一个**能成立**的成功判据。
+    #
+    # 抖音真机（陷阱 #228）：平台不发"发布成功"这几个字，而是把页面**跳走** ——
+    # 只认元素的话，一条**已经发出去**的内容会在 600 秒之后被记成失败，而那时人已经
+    # 在平台上看到它了。所以两个判据至少得有一个：元素标志、或者地址片段。
+    if not selectors.get("success_marker") and not markers.get("success_url_contains"):
+        raise _bad(
+            path,
+            "第 ⑦ 步**一个成功判据都没有**：success_marker 与 markers.success_url_contains "
+            "都空着。这样「发布成功」永远判不出来，每一次都会走到超时 —— 而超时之后"
+            "那条记录写的是「失败」，平台上却已经有了那条作品（R14 不可逆，重试就是第二条）。"
+            "至少给一个：页面上那句「发布成功」（用 `:text-is()`），或者平台跳走之后地址里的片段。",
+        )
+
+    # ③ metric_row 要能被"这一条作品"填进去。
+    #
+    # 占位符不是装饰：四个计数是**相对它**取的后代选择器。少了它，选择器会命中
+    # **第一条**作品的行 —— 于是"这一条的数据"读的是别人的数，而面板上两个数字
+    # 都长得像正常的数（T5.4 的数据回收最贵的一类错：错得看不出来）。
+    row = selectors.get("metric_row", "")
+    if row and POST_ID_PLACEHOLDER not in row:
+        raise _bad(
+            path,
+            f"metric_row 里没有 {POST_ID_PLACEHOLDER} 占位符：{row!r} —— 数据回收会去读"
+            "**第一条**作品那一行，于是「这一条的数据」其实是别人的数，而面板上两个数字"
+            "都长得像正常的数（T5.4）。",
+        )
+
+    # ④ "校准过"必须说得出是哪天。
+    if calibrated and not calibrated_at:
+        raise _bad(
+            path,
+            "calibrated: true 但没有 calibrated_at —— 「校准过」与「什么时候校准的」是同一件事"
+            "的两半：平台会改版，一份很久以前的校准记录与没校准几乎一样没用"
+            "（面板上那一列就是给人看这个的）。",
+        )
 
 
 def _string_map(path: Path, value: Any, *, field: str) -> dict[str, str]:
@@ -253,6 +432,48 @@ def _string_map(path: Path, value: Any, *, field: str) -> dict[str, str]:
         if text:
             out[str(key)] = text
     return out
+
+
+def _string_list(path: Path, value: Any, *, field: str) -> tuple[str, ...]:
+    """一串人写的说明（``known_gaps`` 这类）。缺 ⇒ 空；写成一个字符串也收下。"""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value.strip(),) if value.strip() else ()
+    if not isinstance(value, list):
+        raise _bad(path, f"{field} 必须是字符串或字符串列表")
+    out: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text:
+            out.append(text)
+    return tuple(out)
+
+
+#: 引擎前缀（``text=`` / ``xpath=`` …）。
+#:
+#: 判据是**"只要值里有逗号，整条就必须是 CSS"**：单独一个 ``text=文案`` 是合法的
+#: （Playwright 按前缀选引擎），但只要拼上第二个选择器，它整条就走 CSS 解析器，
+#: 于是抛 `Unexpected token "=" while parsing css selector`（2026-09-23 真机实测）。
+#: 而调用方把异常吞成"元素不在" ⇒ 发布成功也一路等到 600s 超时（陷阱 #226）。
+_ENGINE_PREFIX = re.compile(r"(?:^|,)\s*(?:text|xpath|css|id|data-testid|role|nth)=")
+
+
+def _engine_prefix(value: str) -> bool:
+    return "," in value and bool(_ENGINE_PREFIX.search(value))
+
+
+#: ``publish_button`` 里的**包含**匹配（``:has-text`` / ``text=``）。
+#:
+#: 发布按钮的文案都很短（"发布" / "发表"），而平台上总有一个更早出现的同名词
+#: （导航项「作品发布」就是）。包含匹配会命中那个 —— 点下去只是切页面、表单被重置，
+#: 真按钮一次都没被碰过，而现场看到的是"点了没反应"（陷阱 #227）。
+_LOOSE_PUBLISH = re.compile(r":has-text\(|(?:^|,)\s*text=")
+
+#: 这几个标志的文案都是**平台上的常用词**（"发布成功" / "审核不通过"），页面上几乎
+#: 一定有一句包含它们的普通提示 —— 子串匹配会命中那一句（见 ``load_selector_pack``
+#: 里那条校验 / 陷阱 #229）。
+_EXACT_TEXT_KEYS: Final[tuple[str, ...]] = ("success_marker", "reject_marker", "verify_marker")
 
 
 def _bad(path: Path, reason: str) -> PublishError:

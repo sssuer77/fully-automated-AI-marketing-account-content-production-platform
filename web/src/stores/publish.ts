@@ -26,6 +26,7 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 
 import {
+  assistPublication,
   cancelPublication,
   collectMetrics,
   enqueueTask,
@@ -34,6 +35,7 @@ import {
   fetchManualQueue,
   fetchPlatforms,
   fetchPublications,
+  makeCover,
   markManualDone,
   pushHandoff,
   retryPublication,
@@ -47,6 +49,8 @@ import {
   type Publication,
   type PublicationList,
   type PublishActionBody,
+  type PublishCoverBody,
+  type PublishCoverOutcome,
   type PublishEnqueueBody,
   type PublishEnqueueResponse,
   type PublishPlatformOption,
@@ -78,6 +82,8 @@ export interface PublishApi {
   retryPublication: typeof retryPublication;
   cancelPublication: typeof cancelPublication;
   markManualDone: typeof markManualDone;
+  assistPublication: typeof assistPublication;
+  makeCover: typeof makeCover;
   fetchHandoff: typeof fetchHandoff;
   pushHandoff: typeof pushHandoff;
   fetchCompliance: typeof fetchCompliance;
@@ -94,6 +100,8 @@ let api: PublishApi = {
   retryPublication,
   cancelPublication,
   markManualDone,
+  assistPublication,
+  makeCover,
   fetchHandoff,
   pushHandoff,
   fetchCompliance,
@@ -310,7 +318,54 @@ export function optionText(option: PublishPlatformOption): string {
   // 缺字段时按"没有"读，而不是让整屏炸掉。
   const accounts = option.accounts ?? [];
   const who = accounts.length > 0 ? accounts.join(" / ") : "没有启用的账号";
-  return `${platformLabel(option.code)} · 账号 ${who} · ${option.note}`;
+  const badge = calibrationBadge(option);
+  const tail = badge === "" ? "" : ` · ${badge}`;
+  return `${platformLabel(option.code)} · 账号 ${who} · ${option.note}${tail}`;
+}
+
+/**
+ * 这个平台的**选择器**验过没有（T5.14）→ 一句短话（勾选框那一行用）。
+ *
+ * 为什么这句话必须出现在"勾平台"的那一行上：七份 pack 里六份的 CSS 是**照着抖音
+ * 那份的形状猜的**。而"平台启用 + 发布开关打开 + 账号配好"这三个条件同时成立时，
+ * 那一行与抖音在屏幕上长得**一模一样** —— 而它投出去大概率发不出去（或者更糟：
+ * 发出去了却判不出来，见陷阱 #228，那会记成失败、重试就是第二条）。
+ *
+ * 状态是**文件里的一份事实**（`selectors/<x>.yaml` 的 `calibrated`），服务端算好给
+ * 我们（`platform_options`）—— 面板不猜，也不去自己读 yaml。
+ */
+export function calibrationBadge(option: PublishPlatformOption): string {
+  switch (option.calibration ?? "") {
+    case "calibrated":
+      return "";
+    case "uncalibrated":
+      return "⚠️ 选择器未校准";
+    case "broken":
+      return "⚠️ 选择器包装不起来";
+    default:
+      // `n/a`（本地靶页："真机校准"对它没有意义）与"后端还没给这个字段"都不加噪音。
+      return "";
+  }
+}
+
+/**
+ * 校准那件事的**完整一句话**（勾选框下面那行小字）；没什么可说时返回空串。
+ *
+ * 两件事合在一句里，因为它们**必须一起看**：
+ * - `calibration_note` 回答"这些选择器验过没有"；
+ * - `known_gaps` 回答"**还有没有一段流程压根没写**"（B 站的必选分区就是）。
+ * 只显示前者会让人以为"校准完就能发了" —— 而分区那一步压根没有。
+ *
+ * ⚠️ `known_gaps` **不分校准与否**都显示：抖音那份是校准过的，但它的数据回收那五条
+ * 要一条真发出去过的作品才验得了 —— 那也是一条"已知没做完"。
+ */
+export function calibrationDetail(option: PublishPlatformOption): string {
+  const parts: string[] = [];
+  const state = option.calibration ?? "";
+  if (state === "uncalibrated" || state === "broken") parts.push(option.calibration_note ?? "");
+  const gaps = option.known_gaps ?? [];
+  if (gaps.length > 0) parts.push(`已知缺口：${gaps.join("；")}`);
+  return parts.filter((part) => part !== "").join(" —— ");
 }
 
 /**
@@ -374,6 +429,16 @@ export const usePublishStore = defineStore("publish", () => {
   const busy = ref(false);
   const error = ref<string | null>(null);
   const notice = ref<string | null>(null);
+
+  /**
+   * 正在走「人工过验证」的那一条记录（`null` ⇒ 没有）。
+   *
+   * 为什么要**记住是哪一条**：这个动作会开一个浏览器窗口，而窗口出现在**跑着
+   * studio 的那台电脑**上。人在等的时候，屏上必须一直有那句"去窗口里输码"，
+   * 而且它得挂在他点的那一行上 —— 否则他会在别的行上再点一次，或者干脆以为
+   * 自己没点上。
+   */
+  const assistFor = ref<string | null>(null);
 
   // ── 数据回收三连（§06.6 采数 / §06.8 沉淀）───────────────────────────
 
@@ -457,6 +522,19 @@ export const usePublishStore = defineStore("publish", () => {
   const enqueueResult = ref<PublishEnqueueResponse | null>(null);
   const enqueueError = ref<string | null>(null);
 
+  // ── 封面（T5.1 追加 · §06.3）────────────────────────────────────────
+  /**
+   * 出封面用的任务号。
+   *
+   * 与投递 / 交付包各自一个输入框是**故意的**：三件事都按任务号取，但它们是三次
+   * 独立的操作（出封面 ⇒ 看一眼 ⇒ 再投递），共用一个输入框的话，改完封面再投递
+   * 就会连带把投递的目标也改掉 —— 而"我明明填的是 A"是查不完的悬案。
+   */
+  const coverTaskId = ref("");
+  const coverBusy = ref(false);
+  const coverResult = ref<PublishCoverOutcome | null>(null);
+  const coverError = ref<string | null>(null);
+
   // ── 交付包 ──────────────────────────────────────────────────────────
   const handoffTaskId = ref("");
   const handoffPreview = ref<HandoffPreview | null>(null);
@@ -487,6 +565,17 @@ export const usePublishStore = defineStore("publish", () => {
     ENDED_STATUSES.flatMap((status) => rowsOf(board.value, status)),
   );
   const complianceOk = computed(() => compliance.value?.ok ?? true);
+  const canMakeCover = computed(() => {
+    const wanted = coverTaskId.value.trim();
+    return wanted !== "" && wanted.length <= MAX_TASK_ID_CHARS;
+  });
+  /** 刚出的那张封面能不能看（`ok=false` 时没有可看的图）。 */
+  const coverName = computed<string | null>(() => {
+    const path = coverResult.value?.cover_path;
+    if (!path) return null;
+    const name = path.split(/[\\/]/).pop();
+    return name ? name : null;
+  });
   const canPreviewHandoff = computed(() => {
     const wanted = handoffTaskId.value.trim();
     return wanted !== "" && wanted.length <= MAX_TASK_ID_CHARS;
@@ -650,12 +739,87 @@ export const usePublishStore = defineStore("publish", () => {
     clearMessages();
   }
 
+  /**
+   * 人工过验证（T6.4 · 真机 2026-09-23）：开一个**可见**窗口，把这条重新发一遍，
+   * 停下来等人输验证码。
+   *
+   * 为什么不复用上面那条 `act` 壳：它是**长动作**（重新上传一遍 + 等人掏手机输码，
+   * 二十几分钟都可能），而 `act` 的语义是"点一下就回来"。差别落在两处：
+   * `assistFor` 把等待挂到**这一条**上（人还要能看见别的），`notice` 留着结论
+   * （等这么久之后，"它最后落在哪"不能一闪而过）。
+   */
+  async function assist(publication: Publication): Promise<boolean> {
+    busy.value = true;
+    assistFor.value = publication.id;
+    clearMessages();
+    try {
+      const result = await api.assistPublication(
+        publication.id,
+        actionBody("面板上点了「人工过验证」"),
+      );
+      notice.value = result.message;
+      await refresh();
+      await refreshQueue();
+      return true;
+    } catch (failure) {
+      error.value = describeError(failure);
+      return false;
+    } finally {
+      busy.value = false;
+      assistFor.value = null;
+    }
+  }
+
   function closeReason(): void {
     reasonFor.value = null;
   }
 
   function setReason(publicationId: string, value: string): void {
     reasonDraft.value = { ...reasonDraft.value, [publicationId]: value };
+  }
+
+  // ── 封面 ────────────────────────────────────────────────────────────
+
+  function setCoverTaskId(value: string): void {
+    coverTaskId.value = value;
+    // 换了任务号 ⇒ 上一张封面说的是**另一个任务号**的事，留着比没有更糟。
+    coverResult.value = null;
+    coverError.value = null;
+  }
+
+  /**
+   * 出封面（T5.1 追加）。
+   *
+   * 为什么 `ok=false` 也走 `notice` 而不是 `error`
+   * ---------------------------------------------
+   * 它是契约里写明的**合法结局**（抽帧失败 ⇒ 纯色底；连纯色底都失败 ⇒ 无封面发布，
+   * 平台用首帧）。画成红色故障的话，用户会去查一个不存在的问题；而这一屏真正该说
+   * 的是"这张没出来，按无封面发就行"。
+   */
+  async function makeCoverForTask(): Promise<boolean> {
+    const wanted = coverTaskId.value.trim();
+    if (wanted === "") {
+      coverError.value = "先填一个任务号。";
+      return false;
+    }
+    coverBusy.value = true;
+    coverError.value = null;
+    clearMessages();
+    try {
+      const body: PublishCoverBody = { use_agent: true };
+      const result = await api.makeCover(wanted, body);
+      coverResult.value = result;
+      notice.value = result.ok
+        ? "封面已出。接着投递这条任务，发出去的片子就会带着它。"
+        : "封面没出来，按 §06.3 走无封面发布（平台会用首帧）。";
+      return result.ok;
+    } catch (failure) {
+      coverResult.value = null;
+      coverError.value = describeError(failure);
+      return false;
+    } finally {
+      coverBusy.value = false;
+    }
   }
 
   // ── 交付包 ──────────────────────────────────────────────────────────
@@ -864,10 +1028,13 @@ export const usePublishStore = defineStore("publish", () => {
     retry,
     cancel,
     markDone,
+    assist,
     refresh,
     refreshQueue,
     refreshCompliance,
     refreshAll,
+    // 长动作（人工过验证）挂在哪一条上
+    assistFor,
     // 中间态
     reasonDraft,
     reasonFor,
@@ -893,6 +1060,15 @@ export const usePublishStore = defineStore("publish", () => {
     toggleEnqueuePlatform,
     toggleEnqueueAccount,
     enqueue,
+    // 封面
+    coverTaskId,
+    coverBusy,
+    coverResult,
+    coverError,
+    coverName,
+    canMakeCover,
+    setCoverTaskId,
+    makeCoverForTask,
     // 交付包
     handoffTaskId,
     handoffPreview,

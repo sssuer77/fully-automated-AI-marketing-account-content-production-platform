@@ -84,6 +84,7 @@ def deliver(
     *,
     fallback_profile: CompositeProfile | None = None,
     fallback_output: Path | None = None,
+    replan: Callable[[CompositeProfile], CompositeRequest] | None = None,
     on_progress: Callable[[str, int, int, str], None] | None = None,
 ) -> Delivery:
     """按 §04.2.8.6 出片：正常档 → （失败时）720P 保底档。
@@ -92,6 +93,12 @@ def deliver(
         （测试与"只想要这一档"的调用方走这条路）。
     :param fallback_output: 保底档的落盘路径。文件名带 ``_720p``，是为了让"哪支是保底
         产物"在**文件列表里**就看得出来 —— 只写在 manifest 里，人翻目录时看不到。
+    :param replan: "换一块画布 ⇒ 重来一份请求"的工厂。**装饰层的像素坐标必须重算**：
+        水印与人物贴图的摆放算的是"这一块画布下的具体像素"（见 ``render/watermark.py``
+        与 ``render/sticker.py`` 的 docstring），1080×1920 下算好的 x/y 拿到 720×1280
+        上就是另一个位置、甚至整个贴到画布外 —— 而 ``overlay`` 对越界**不报错**，
+        它只是把图裁掉，于是"保底档上没有水印 / 没有人物"会静默发生。
+        ``None`` ⇒ 只换 profile（**调用方要自己保证装饰层与画布无关**，测试走这条路）。
     """
 
     def relay(done: int, total: int, note: str) -> None:
@@ -112,7 +119,8 @@ def deliver(
         attempts.append(f"{request.profile.name}: {error.code.value}")
         if on_progress is not None:
             on_progress("render", 0, PROGRESS_TOTAL, f"正常档失败（{error.code.value}），换 720P 保底档重试")
-        retry = replace(request, profile=fallback_profile, output=fallback_output)
+        base = request if replan is None else replan(fallback_profile)
+        retry = replace(base, profile=fallback_profile, output=fallback_output)
         result = run_composite(retry, on_progress=relay)
         warnings = (
             *result.warnings,

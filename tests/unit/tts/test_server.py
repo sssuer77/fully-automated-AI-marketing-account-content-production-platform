@@ -12,7 +12,9 @@ from __future__ import annotations
 import os
 import threading
 import time
+import wave
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -20,12 +22,16 @@ from fastapi.testclient import TestClient
 
 from studio.core.config import TtsServerConfig
 from studio.core.errors import ErrorCode, StudioError
+from studio.core.media import probe_media
 from studio.core.paths import StudioPaths
 from studio.tts.cosyvoice import CosyVoiceBackend, EngineState, LoadResult, SynthResult
 from studio.tts.server import (
+    VOICE_PROMPT_GAP_MS,
+    VOICE_PROMPT_MAX_MS,
     SynthRequest,
     TtsService,
     VoiceRegistry,
+    build_prompt,
     create_app,
     resolve_out_path,
 )
@@ -190,6 +196,141 @@ class TestVoices:
         assert VoiceRegistry(tmp_path / "nope").list() == []
 
 
+# ── 参考音 ⇒ 一段 prompt（裁定 377）────────────────────────────────────
+
+
+def _voice_paths(tmp_path: Path, *, segments: int, lines: int) -> StudioPaths:
+    """造一个音色目录：``segments`` 段 wav + ``lines`` 行 ref.txt。"""
+    home = tmp_path / "studio"
+    data = home / "data"
+    root = data / "voice_src" / "bigbear"
+    root.mkdir(parents=True)
+    for index in range(1, segments + 1):
+        (root / f"ref_{index:02d}.wav").write_bytes(b"RIFF")
+    (root / "ref.txt").write_text(
+        "\n".join(f"第{index}句" for index in range(1, lines + 1)), encoding="utf-8"
+    )
+    return StudioPaths(home=home, data_dir=data)
+
+
+def _recorder(calls: list[list[str]]) -> Any:
+    """假的 ``run_command``：只记下 argv，不真跑 ffmpeg。"""
+
+    def run(argv: list[str], **kwargs: Any) -> Any:
+        calls.append(list(argv))
+        target = Path(argv[-1])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"RIFF")
+        return SimpleNamespace(ok=True, returncode=0, stdout="", stderr="", tail=lambda limit=400: "")
+
+    return run
+
+
+class TestPromptBuild:
+    """参考音怎么变成**一段** prompt —— 引擎一次只吃一段，所以拼是我们的事。
+
+    这里验的是"多段真的参与"（裁定 377）：改之前 ``resolve`` 只取 ``wavs[0]``，
+    第 2、3 段**从来没进过引擎** —— 用户给的参考音越多，白存的越多。
+    """
+
+    def test_one_segment_is_used_as_is_without_copying(self, tmp_path: Path) -> None:
+        """单段**不复制、不过 ffmpeg**：那是改之前的行为，零开销。"""
+        paths = _voice_paths(tmp_path, segments=1, lines=1)
+        ref = VoiceRegistry(paths.voice_src_dir).resolve("bigbear")
+        target = paths.tmp_dir / "tts_prompt" / "bigbear.wav"
+
+        prompt = build_prompt(ref, target)
+
+        assert prompt.wav == ref.ref_wavs[0]
+        assert prompt.text == "第1句"
+        assert prompt.used == ("ref_01.wav",)
+        assert prompt.dropped == ()
+        assert not target.exists()  # 一个字节都没写
+
+    def test_every_segment_goes_into_the_prompt(self, tmp_path: Path) -> None:
+        paths = _voice_paths(tmp_path, segments=3, lines=3)
+        ref = VoiceRegistry(paths.voice_src_dir).resolve("bigbear")
+        calls: list[list[str]] = []
+        target = paths.tmp_dir / "tts_prompt" / "bigbear.wav"
+
+        prompt = build_prompt(ref, target, duration_ms=lambda _path: 3_000, runner=_recorder(calls))
+
+        assert prompt.used == ("ref_01.wav", "ref_02.wav", "ref_03.wav")
+        assert prompt.dropped == ()
+        assert prompt.text == "第1句。第2句。第3句"
+        assert prompt.wav == target
+        assert len(calls) == 1
+        # 三路输入 + concat：少一路就是少一段原声
+        assert calls[0].count("-i") == 3
+        assert "concat=n=3:v=0:a=1[out]" in calls[0][calls[0].index("-filter_complex") + 1]
+
+    def test_segments_that_do_not_fit_are_dropped_and_reported(self, tmp_path: Path) -> None:
+        """超过 prompt 上限的段**整段丢掉**，而且**说出来** —— 不截半句。
+
+        截音频就得同时截文本（两者必须逐字对应），而"截到第几个字"没有可靠答案。
+        """
+        paths = _voice_paths(tmp_path, segments=3, lines=3)
+        ref = VoiceRegistry(paths.voice_src_dir).resolve("bigbear")
+        target = paths.tmp_dir / "tts_prompt" / "bigbear.wav"
+
+        prompt = build_prompt(ref, target, duration_ms=lambda _path: 20_000, runner=_recorder([]))
+
+        assert prompt.used == ("ref_01.wav",)
+        assert prompt.dropped == ("ref_02.wav", "ref_03.wav")
+        assert prompt.text == "第1句"
+
+    def test_the_cap_leaves_room_under_the_engine_hard_limit(self) -> None:
+        """上限必须**低于**引擎的 30 秒硬断言，还要容得下一段静音。
+
+        引擎那条是 ``assert speech.shape[1] / 16000 <= 30`` —— 超了是**当场抛异常**，
+        不是降级。留 1 秒是给重采样取整的余量。
+        """
+        assert VOICE_PROMPT_MAX_MS < 30_000
+        assert VOICE_PROMPT_MAX_MS + VOICE_PROMPT_GAP_MS < 30_000
+
+    def test_a_segment_without_its_text_is_not_usable(self, tmp_path: Path) -> None:
+        """没有对应逐字文本的段进不了 prompt —— 文本与音频必须一一对应。"""
+        paths = _voice_paths(tmp_path, segments=3, lines=2)
+        ref = VoiceRegistry(paths.voice_src_dir).resolve("bigbear")
+        assert len(ref.ref_wavs) == 2
+        assert len(ref.ref_texts) == 2
+
+
+class TestPromptBuildForReal:
+    """真 ffmpeg 拼一次 —— 滤镜图写错了，假件永远发现不了。"""
+
+    def test_real_concat_is_as_long_as_the_pieces_plus_the_gaps(self, tmp_path: Path) -> None:
+        paths = _voice_paths(tmp_path, segments=2, lines=2)
+        root = paths.voice_src_dir / "bigbear"
+        for name in ("ref_01.wav", "ref_02.wav"):
+            _write_tone(root / name, seconds=1.0)
+        ref = VoiceRegistry(paths.voice_src_dir).resolve("bigbear")
+
+        prompt = build_prompt(ref, paths.tmp_dir / "tts_prompt" / "bigbear.wav")
+
+        info = probe_media(prompt.wav)
+        assert info.duration_ms == pytest.approx(2_000 + VOICE_PROMPT_GAP_MS, abs=120)
+        assert info.sample_rate == 24_000
+        assert info.channels == 1
+
+
+def _write_tone(path: Path, *, seconds: float, rate: int = 24_000) -> None:
+    """写一段真的 PCM wav（方波）—— 拼接那一步必须喂真的能解码的东西。"""
+    frames = int(seconds * rate)
+    peak = int(0.5 * 32767)
+    period = max(2, rate // 200)
+    half = period // 2
+    high = peak.to_bytes(2, "little", signed=True) * half
+    low = (-peak).to_bytes(2, "little", signed=True) * (period - half)
+    body = ((high + low) * (frames // period + 1))[: frames * 2]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(body)
+
+
 # ── 落盘边界 ────────────────────────────────────────────────────────────
 
 
@@ -308,6 +449,9 @@ class TestHttp:
         payload = client.post("/synth", json=body).json()
         assert payload["out_path"] == "work/t1/tts/s001.wav"
         assert payload["engine"] == "cosyvoice2"
+        # 用上了哪几段要在响应里说清楚（裁定 377）：单段音色就是它自己那一段
+        assert payload["ref_wavs"] == ["ref_01.wav"]
+        assert payload["dropped_refs"] == []
 
     def test_unload_reports_freed_vram(self, client: Any) -> None:
         client.post("/warmup", json={})

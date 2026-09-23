@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, type Component } from "vue";
+import { computed, onMounted, ref, type Component } from "vue";
 
 import EmptyState from "@/components/EmptyState.vue";
 import StatusDot from "@/components/StatusDot.vue";
 import { useLogsStore } from "@/stores/logs";
 import { useOverviewStore } from "@/stores/overview";
-import { PANELS, useUiStore, type PanelId } from "@/stores/ui";
+import { PANELS, useUiStore, type DropPlace, type PanelId } from "@/stores/ui";
 import Assets from "@/views/Assets.vue";
 import Audit from "@/views/Audit.vue";
 import Library from "@/views/Library.vue";
@@ -66,6 +66,44 @@ const VIEWS: Partial<Record<PanelId, PanelView>> = {
 const activeView = computed(() => VIEWS[ui.activePanel] ?? null);
 const activeDef = computed(() => PANELS.find((panel) => panel.id === ui.activePanel) ?? PANELS[0]);
 
+// ── 侧边栏拖动排序 ─────────────────────────────────────────────────────────
+//
+// 拖的是**位置**，不是"点进去"：所以三个状态都只活在这里（顺序本身在 store），
+// 松手时只调一次 `ui.movePanelTo()`。落点用**相对位置**（某行的上/下半）而不是行号 ——
+// 拖动过程中行号会变，相对位置不会，而用户看到的那条插入线正是相对位置。
+const dragging = ref<PanelId | null>(null);
+const dropTarget = ref<{ id: PanelId; place: DropPlace } | null>(null);
+
+function startDrag(id: PanelId, event: DragEvent): void {
+  dragging.value = id;
+  // Firefox 不设 data 就不算一次拖动（`effectAllowed` 也是给它的）。
+  event.dataTransfer?.setData("text/plain", id);
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+}
+
+function hoverPanel(id: PanelId, event: DragEvent): void {
+  // 拖回自己身上 ⇒ 没有落点（不然会在原地画一条插入线，看起来像"插到这儿"）。
+  if (dragging.value === null || dragging.value === id) {
+    dropTarget.value = null;
+    return;
+  }
+  const row = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  dropTarget.value = { id, place: event.clientY > row.top + row.height / 2 ? "after" : "before" };
+}
+
+function dropPanel(): void {
+  const dragged = dragging.value;
+  const target = dropTarget.value;
+  if (dragged !== null && target !== null) ui.movePanelTo(dragged, target.id, target.place);
+  endDrag();
+}
+
+/** 拖完 / 拖到一半松手（`dragend` 一定会来）⇒ 清干净，不留一条悬着的插入线。 */
+function endDrag(): void {
+  dragging.value = null;
+  dropTarget.value = null;
+}
+
 // 挂载即接线：日志缓冲与健康轮询**与当前面板无关**地一直在攒，
 // 否则"切到日志面板才开始收日志"会让断线补齐这件事没法验证。
 onMounted(() => {
@@ -81,19 +119,40 @@ onMounted(() => {
         <span class="rail__title">制片台</span>
         <span class="rail__sub">本地部署 · 全自动</span>
       </div>
+      <!-- 顺序来自 `ui.orderedPanels`（可拖动，存在本浏览器里）；拖动只排位置、不切面板。 -->
       <nav class="rail__nav">
         <button
-          v-for="panel in PANELS"
+          v-for="panel in ui.orderedPanels"
           :key="panel.id"
           type="button"
           class="rail__item"
-          :class="{ 'rail__item--active': panel.id === ui.activePanel }"
+          :class="{
+            'rail__item--active': panel.id === ui.activePanel,
+            'rail__item--dragging': dragging === panel.id,
+            'rail__item--over-before':
+              dropTarget?.id === panel.id && dropTarget.place === 'before',
+            'rail__item--over-after': dropTarget?.id === panel.id && dropTarget.place === 'after',
+          }"
+          draggable="true"
           @click="ui.selectPanel(panel.id)"
+          @dragstart="startDrag(panel.id, $event)"
+          @dragover.prevent="hoverPanel(panel.id, $event)"
+          @drop.prevent="dropPanel()"
+          @dragend="endDrag()"
         >
           <span class="rail__label">{{ panel.label }}</span>
           <span v-if="!panel.ready" class="rail__task mono">{{ panel.task }}</span>
         </button>
       </nav>
+      <!-- 只在这一屏的顺序被改过时才出现：不然"恢复默认"是个点了没反应的按钮。 -->
+      <button
+        v-if="!ui.isDefaultOrder"
+        type="button"
+        class="rail__reset"
+        @click="ui.resetPanelOrder()"
+      >
+        恢复默认顺序
+      </button>
     </aside>
 
     <header class="topbar">
@@ -172,6 +231,10 @@ onMounted(() => {
 }
 
 .rail__nav {
+  /* 菜单比侧边栏高时**自己滚**（`min-height: 0` 是必须的：flex 子项默认不肯缩到内容以下，
+     少了它这一列会把下面那颗「恢复默认顺序」顶出屏幕）。 */
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -179,6 +242,8 @@ onMounted(() => {
 }
 
 .rail__item {
+  /* 插入线是绝对定位的伪元素，所以这一行必须是定位祖先 */
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -187,6 +252,31 @@ onMounted(() => {
   font-size: var(--text-md);
   text-align: left;
   border-radius: var(--radius-sm);
+}
+
+/* 被拖的那一项：压暗，让人一眼看出"它现在跟着指针走" */
+.rail__item--dragging {
+  opacity: 0.4;
+}
+
+/* 落点插入线：贴在被拖过去那一行的那一侧，与"松手之后它会出现在哪"是同一件事 */
+.rail__item--over-before::after,
+.rail__item--over-after::after {
+  content: "";
+  position: absolute;
+  left: var(--space-1);
+  right: var(--space-1);
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+}
+
+.rail__item--over-before::after {
+  top: -1px;
+}
+
+.rail__item--over-after::after {
+  bottom: -1px;
 }
 
 .rail__item:hover {
@@ -203,6 +293,21 @@ onMounted(() => {
 .rail__task {
   color: var(--text-muted);
   font-size: var(--text-xs);
+}
+
+/* 顺序被改过才出现（`v-if`）：贴在侧边栏底部，不与菜单项争视线 */
+.rail__reset {
+  margin-top: auto;
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  text-align: left;
+  border-radius: var(--radius-sm);
+}
+
+.rail__reset:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
 }
 
 .topbar {

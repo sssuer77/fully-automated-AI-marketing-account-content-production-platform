@@ -235,6 +235,7 @@ def synthesize_sentence(
     cache: TtsCache,
     engine: SentenceEngine | None = None,
     voice: str | None = None,
+    voice_fingerprint: str = "",
     speed: float = 1.0,
     emotion: str = "neutral",
     seed: int | None = None,
@@ -249,6 +250,10 @@ def synthesize_sentence(
     :param voice: 已解析的音色名。``None`` ⇒ 交给引擎自己挑 —— 但那样**每句都要
         重挑一次**（列音色要起一个 PowerShell，1–2 秒），所以池的装配方会解析一次
         再逐句传进来。
+    :param voice_fingerprint: 这个音色的**参考音指纹**（``tts/refprint.py``）。它进
+        缓存键：``voice`` 只是名字，而用户换参考音时名字不变（删掉重传 / 勾覆盖
+        重传）—— 只按名字记的话，换了嗓子之后每一句都命中旧音频。系统音色没有
+        参考音 ⇒ 空串。
     :param cache_only: **不许碰引擎**（配音熔断打开时池子传它）。缓存里有就交付，
         没有就抛 :attr:`~studio.core.errors.ErrorCode.TTS_ENGINE_UNAVAILABLE` ——
         而不是回一段静音。为什么要这个开关：熔断期间"缓存命中"是**免费的且真的能
@@ -270,6 +275,7 @@ def synthesize_sentence(
         engine=chosen.name,
         engine_revision=chosen.revision,
         voice_id=voice or "",
+        voice_fingerprint=voice_fingerprint,
         normalized_text=spoken,
         speed=speed,
         emotion=emotion,

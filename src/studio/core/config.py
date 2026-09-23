@@ -33,7 +33,7 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Final, Literal
@@ -88,9 +88,11 @@ __all__ = [
     "load_publish_config",
     "load_runtime_settings",
     "load_tts_config",
+    "parse_publish_account",
     "redact",
     "set_auto_approve_policy",
     "set_llm_profile_model",
+    "write_publish_accounts",
 ]
 
 logger = get_logger("studio.core.config")
@@ -177,6 +179,13 @@ class PersonaConfig(_FileConfig):
     audience: str = Field(min_length=2)
     catchphrases: list[str] = Field(min_length=2, max_length=20)
     forbidden: list[str] = Field(min_length=1, max_length=200)
+    #: 出场角色的**名字**（如「熊大」「熊二」）。用途只有一个：告诉机器"哪些词是角色名"，
+    #: 好在**观众能看到的字**里把它们拦下来 —— 这个账号只是借他们之口讲事，观众看到的
+    #: 字里不该出现名字（用户口径 2026-09-23）。
+    #:
+    #: 留空 = **不查这一条**（不是"没有名字"）：换角色时把这里改掉，规则就跟着走。
+    #: 它**不影响**配音选音色（那是 ``speaker`` / ``voice_map`` 的事）。
+    speaker_names: list[str] = Field(default_factory=list, max_length=8)
     style_hint: str = ""
     target_chars_min: int = Field(default=600, ge=100, le=5000)
     target_chars_max: int = Field(default=800, ge=100, le=8000)
@@ -190,6 +199,10 @@ class PersonaConfig(_FileConfig):
             raise ValueError("catchphrases 不得含空串")
         if any(not word.strip() for word in self.forbidden):
             raise ValueError("forbidden 不得含空串")
+        if any(not name.strip() for name in self.speaker_names):
+            raise ValueError("speaker_names 不得含空串")
+        if any(len(name.strip()) > 16 for name in self.speaker_names):
+            raise ValueError("speaker_names 每一项不得超过 16 个字")
         return self
 
 
@@ -670,6 +683,15 @@ ColorSpace = Literal["bt709", "bt601", "bt2020"]
 #: 水印位置（§04.2.8.2）。`center` 忽略边距 —— 居中时边距没有意义。
 WatermarkPosition = Literal["top_left", "top_right", "bottom_left", "bottom_right", "center"]
 
+#: ffmpeg 的颜色字面量（``0xRRGGBB``）—— 封面那几个颜色字段用。
+#:
+#: 只认这一种写法。ffmpeg 还认 ``red`` / ``0xFFD400@0.5`` 这些，但放行它们等于把
+#: "配置写错了"推迟到**出封面那一刻**才报，而那时用户看到的是一张没有标题的图，
+#: 日志里只有一行 ffmpeg 的 ``Invalid color`` —— 与本项目"配置错在保存时就拦下"
+#: 那条口径相反（水印位置枚举、边距偶数都是这么拦的）。
+_HEX_COLOR_PATTERN: Final[str] = r"^0x[0-9A-Fa-f]{6}$"
+HexColor = Annotated[str, Field(pattern=_HEX_COLOR_PATTERN)]
+
 #: 水印宽度上限的除数（§04.2.8.2：禁止超过画布 1/4）
 CANVAS_WIDTH_DIVISOR: Final[int] = 4
 
@@ -753,6 +775,129 @@ class WatermarkConfig(_Base):
         return max(width - width % 2, 2)
 
 
+class StickerConfig(_Base):
+    """★ 人物贴图（T6.5）—— 一张透明 PNG 蒙在画面上，**可以有好几层**。
+
+    与水印的关系：同一种东西（透明 PNG 的 ``overlay``），不同的用途。水印是**角标**
+    （画布 1/4 宽以内、压在右下角、标识账号），贴图是**主体**（可以占大半屏、人物
+    竖长、用来"把人物放进画面里"）。所以两者各自一份参数，不合并 —— 合并的结果是
+    水印那条"禁止超过画布 1/4"的上限会把人物锁死在 270px 宽（真机验证过：1080 宽下
+    人物只有 270×540，做不了主体）。
+
+    **命名块而不是列表**
+    --------------------
+    ``stickers`` 在 YAML 里是 ``名字 -> 参数`` 的块（与 ``profiles`` 同构），不是
+    序列。理由是写入路径：面板保存只逐行替换**冒号右边的标量**（``core/yaml_lines.py``），
+    它按设计改不了"多一行少一行"。用命名块 ⇒ 加一层贴图 = 在 YAML 里复制一段 8 行的
+    块，之后面板就能编辑它的每一个字段，而**注释与缩进一个字节都不会被毁**。
+
+    **按高度定尺寸，不按宽度**
+    --------------------------
+    人物是竖长的。按宽度算（``width_ratio``）会把"想让人物高一点"翻译成"把人物变宽"，
+    而人物的宽高比是素材定死的 —— 面板上那个数字与眼睛看到的尺寸对不上。
+    ``height_ratio`` 直接就是"占画布高度几成"，与水印的 ``width_ratio`` 各说各的那件
+    事，两个数字都直观。
+    """
+
+    #: 关掉的槽位**完全不参与渲染**（默认关：加一段 ``stickers`` 不该改变现有成片）。
+    enabled: bool = False
+    #: 相对 ``STUDIO_HOME``（与 ``watermark.path`` 同一条口径）。
+    path: _ConfigPath
+    #: 这一层代表稿子里的**哪个说话人**（``script_sentences.speaker``，如 ``bigbear``）。
+    #:
+    #: 它只用来回答"这一层什么时候在讲话"。空 ⇒ 这一层不换图（哪怕填了
+    #: ``speaking_path``）—— 不知道什么时候该换，就不该换。
+    speaker: str = Field(default="", max_length=64)
+    #: **讲话时**换成的那张图（相对 ``STUDIO_HOME``）。空 ⇒ 这一层不换图。
+    #:
+    #: 与 ``path`` 的尺寸关系：换图**不改变摆放**，两张图按同一个框缩放。所以两张图
+    #: 的宽高比最好一致 —— 不一致时 :func:`studio.render.sticker.plan_stickers` 会
+    #: 记一条 warning（人物会被压扁），但照常出片。
+    speaking_path: _ConfigPath | None = None
+    position: WatermarkPosition = "bottom_right"
+    margin_x: int = Field(default=48, ge=0, le=2000)
+    margin_y: int = Field(default=420, ge=0, le=2000)
+    #: 占画布**高度**的比例。上限 1.0 = 人物可以顶满画面（"贴图"本来就是主体，
+    #: 与水域那条 1/4 宽的上限不是一回事）。
+    height_ratio: float = Field(default=0.45, gt=0.0, le=1.0)
+    opacity: float = Field(default=1.0, ge=0.0, le=1.0)
+
+    @field_validator("margin_x", "margin_y")
+    @classmethod
+    def _margins_must_be_even(cls, value: int) -> int:
+        if value % 2:
+            raise ValueError(f"贴图边距必须为偶数（避免 overlay 1px 偏移）：{value}")
+        return value
+
+    @field_validator("speaking_path", mode="before")
+    @classmethod
+    def _a_blank_speaking_path_is_unset(cls, value: object) -> object:
+        """空串 ⇒ ``None``（= 没配），**不是** ``Path("")``。
+
+        面板上那是一个文本框：人清空它，本意是"这一层不换图"。不拦的话
+        ``Path("")`` 会变成 ``.``（当前目录），于是渲染路径报的是
+        "讲话图不在盘上：." —— 一句指不到真正原因的话（那看起来像一个**配错了的
+        路径**，而不是"我清空了它"）。
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    def height_px_for(self, canvas_height: int) -> int:
+        """最终像素高 = **按比例算** + **取偶**（T4.14）。
+
+        取偶的理由与水域那条一样：``overlay`` 的 y 必须为偶数（yuv420p 色度对齐），
+        而底角的 y 是 ``H - h - margin_y``（H 与 margin 都已偶数）⇒ 只有 h 取偶才能
+        保证 y 偶。宽度由素材宽高比推出来，另在 ``render/sticker.py`` 里取偶。
+
+        口径**只此一处**：面板（``services/outputs_service.py``）与编译器
+        （``render/sticker.py``）都调这个方法 —— 否则会出现"面板说 864、真正渲染
+        时用 862"这种对不上的错。
+        """
+        height = min(round(self.height_ratio * canvas_height), canvas_height)
+        return max(height - height % 2, 2)
+
+
+class CoverConfig(_Base):
+    """封面样式（T5.1 追加 · §06.3）。
+
+    为什么这几个数在文件里而不是写死在 ``publish/cover.py``
+    ------------------------------------------------------
+    封面是**给人看的那一格**：同一支片子，黄字黑边压在跑酷素材上最跳，换个底
+    （雪地 / 白墙 / 夜场）就得换色。写死在代码里 ⇒ 每换一次素材都要改代码、跑门禁、
+    重发一版；写在文件里 ⇒ 改一行，下一张封面就是新样式。
+
+    ``title_color`` / ``highlight_color`` 是 **ffmpeg 的颜色字面量**，直接进
+    ``drawtext`` 的 ``fontcolor=``（格式见 :data:`HexColor`）。
+
+    三件事各自回答一个问题：
+
+    - ``outline``：描边的像素宽（0 = 不描边）。**不是装饰** —— 底片是别人的画面，
+      什么颜色都可能出现在字后面；没有描边，黄字落在亮地方就消失了，而用户看到的
+      是"这张封面没标题"，不会去想是对比度的事；
+    - ``sticker``：封面主体用 ``stickers`` 里的**哪一层**。空 ⇒ 用第一个"开着且贴得上"
+      的层。默认空是**有意的**：加一层贴图不该要求回来改封面配置；
+    - ``title_color`` / ``highlight_color``：整行与高亮词各自的颜色。两者**必须不一样**，
+      否则 ``highlight_words`` 那套拆段机制就成了摆设（画两遍同色）。
+    """
+
+    #: 主文案颜色（默认黄 —— 与 ``config/outputs.yaml`` 里的示例一致）。
+    title_color: HexColor = "0xFFD400"
+    #: 高亮词颜色。默认白：主文案已经是黄的，而"比黄更亮"在黄字里是唯一还读得出来的
+    #: 差别 —— 换成红 / 绿那种"另一种花色"，标题就成了两种颜色打架。
+    highlight_color: HexColor = "0xFFFFFF"
+    #: 描边宽度（像素）。上限 40：再宽字就被自己的边糊住了。
+    outline: int = Field(default=10, ge=0, le=40)
+    #: 文字区背后的压暗带（``black@这个值``）。``0.0`` = 不画。
+    #:
+    #: 它原本是"白字压在亮底上读不清"的补丁（T5.1）。换成黄字 + 粗描边之后，
+    #: 读得清这件事由**描边**担了，压暗带反而会把底素材压成一张灰图 —— 所以
+    #: 默认值留 0.45（与旧行为一致），仓库里那一份设成 0.0。想要更稳就调大。
+    scrim: float = Field(default=0.45, ge=0.0, le=1.0)
+    #: 封面主体用哪一层贴图（``stickers`` 里的名字）。空 ⇒ 第一个开着且贴得上的。
+    sticker: str = Field(default="", max_length=64)
+
+
 class AudioConfig(_Base):
     voice_gain_db: float = Field(default=0.0, ge=-30.0, le=30.0)
     bgm_gain_db: float = Field(default=-21.0, ge=-60.0, le=10.0)
@@ -771,6 +916,10 @@ class SafeAreaConfig(_Base):
     字幕、标题卡这类"文字类组件"必须落在安全区内：抖音底部的点赞/评论条会盖住
     画面下方约 420px，标题区会盖住上方约 220px。写在配置里而不是代码常量里，
     是因为换平台（视频号 / B 站）这几个数不一样。
+
+    ``bottom`` 现在可以在面板上改（T3.5 追加 · 裁定 409）：它与 ``margin_bottom``
+    一起决定字幕的 ``MarginV``（取两者 max）——"想把字幕再往下挪一点"必须能改到
+    这一个，否则面板上那个「距底」就是个改不动结果的数。
     """
 
     top: int = Field(default=220, ge=0, le=2000)
@@ -782,12 +931,15 @@ class SafeAreaConfig(_Base):
 class SubtitleConfig(_Base):
     """烧进画面的字幕（T3.5 · §04.2.6）。
 
-    两个字段的口径值得单独说：
+    三个字段的口径值得单独说（T3.5 追加 · 裁定 409）：
 
-    - ``margin_bottom`` 是"字幕底边距画布底部的像素"。它与 ``safe_area.bottom``
-      取 **max** 之后才是 ASS 的 ``MarginV``（§04.2.6 的"MarginV ≥ safe_area.bottom"）。
-      配置里写小于安全区的值不会出事，只会被抬上来 —— 但默认值就直接写 420，
-      免得"配置说 260、实际渲 420"这种对不上的事发生。
+    - ``margin_bottom``（面板「距底」）= "我想把字幕放在离底多少像素"；
+    - ``safe_area.bottom``（面板「底部安全区」）= "平台交互区有多高，放进去会被盖住"。
+      两者取 **max** 之后才是 ASS 的 ``MarginV``（§04.2.6 的"MarginV ≥ safe_area.bottom"）。
+      写小于安全区的值不会出事，只会被抬上来 —— 而**"被抬上来"这件事现在是看得见的**：
+      真正生效的那个数（:attr:`margin_v`）跟着响应一起下发，面板在两者不一致时明说
+      "实际 N px（被底部安全区抬上来了）"。这两个数此前锁成只读，唯一理由是躲开
+      "配置说 260、实际渲 420"；既然它现在说得出口，就没有理由不让人改。
     - ``font_name`` 必须与**真实存在的字体家族名**一致，否则 libass 会画出一排
       豆腐块。这里默认写 Windows 自带的「微软雅黑」：本项目的 TTS 走 SAPI、
       进程管理走 taskkill，本来就是 Windows 专用，挑一个本机一定有的字体比
@@ -805,6 +957,16 @@ class SubtitleConfig(_Base):
     max_lines: int = Field(default=2, ge=1, le=6)
     safe_area: SafeAreaConfig = Field(default_factory=SafeAreaConfig)
 
+    @property
+    def margin_v(self) -> int:
+        """真正写进 ASS 的 ``MarginV`` —— **唯一口径**（§04.2.6）。
+
+        渲染路径（``render/subtitle.build_ass``）与面板上的「实际距底」读的都是它：
+        两处各算一遍 ``max``，就会出现"面板说 300、成片渲 420"这种对不上的事 ——
+        而这一屏此前不许编辑，正是为了躲开它（见类 docstring）。
+        """
+        return max(self.margin_bottom, self.safe_area.bottom)
+
 
 class BgmConfig(_Base):
     enabled: bool = True
@@ -819,6 +981,13 @@ class OutputsConfig(_FileConfig):
     default_profile: str = Field(min_length=1)
     profiles: dict[str, EncodingProfileConfig] = Field(min_length=1)
     watermark: WatermarkConfig
+    #: 人物贴图（T6.5）。**可以没有这一段** ⇒ 一层都不贴，照样出片 ——
+    #: 与"水印缺了就跳过"同一条"装饰不阻塞成片"的口径。
+    stickers: dict[str, StickerConfig] = Field(default_factory=dict)
+    #: 封面样式（T5.1 追加）。**可以没有这一段** ⇒ 用 :class:`CoverConfig` 的默认值
+    #: （黄字黑边）。缺省有值而不是"没有封面"：封面这条链路的其余部分（文案 / 抽帧 /
+    #: 落盘）本来就与这一节无关。
+    cover: CoverConfig = Field(default_factory=CoverConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
     subtitle: SubtitleConfig = Field(default_factory=SubtitleConfig)
     bgm: BgmConfig = Field(default_factory=BgmConfig)
@@ -2122,3 +2291,354 @@ def llm_config_provider(
     """给网关用的配置入口（**每次现取**，见 :class:`LlmConfigHotReload`）。"""
     hot = LlmConfigHotReload(paths, env=env)
     return hot.current
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 运行期可改的发布账号（T6.4 追加：面板上直接加号 / 改号 / 停用 / 删号）
+# ══════════════════════════════════════════════════════════════════════
+
+#: ``config/publish.yaml`` 里 ``accounts:`` 段头（写回时定位用）
+_PUBLISH_ACCOUNTS_HEAD: Final[re.Pattern[str]] = re.compile(r"^(\s*)accounts\s*:\s*(.*)$")
+
+#: 一条账号条目的首行 ``- account_id: <id>``；缩进是**量出来的**，不写死
+_PUBLISH_ACCOUNT_ITEM: Final[re.Pattern[str]] = re.compile(r"^(\s*)-\s+account_id\s*:\s*(\S+)\s*(.*)$")
+
+#: 条目内的一行 ``键: 值``。``(.*)`` 是行尾注释 —— 那份文件每行都带注释，
+#: 抹掉它等于毁掉"这个字段为什么这么配"的唯一记录（与 llm 那一份同一条）。
+_PUBLISH_SCALAR_LINE: Final[re.Pattern[str]] = re.compile(r"^(\s*)([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(\S*)(.*)$")
+
+#: 写盘时账号条目的字段顺序（身份在前、参数在后 —— 与出厂文件同形）
+_ACCOUNT_KEYS: Final[tuple[str, ...]] = (
+    "platform",
+    "display_name",
+    "profile_dir",
+    "enabled",
+    "daily_limit",
+    "min_gap_min",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _AccountEntry:
+    """盘上的一条账号条目：``account_id`` + 它的**整块行**（含紧贴在上面的注释）。
+
+    注释跟着条目走，而不是留在原地：那份文件里 ``_rehearsal`` 上面那三行注释写的正是
+    "它是什么、为什么 daily_limit 拉满"。删号时把注释留下，它就变成一段悬在半空、
+    描述一个已经不存在的账号的文字。
+    """
+
+    account_id: str
+    chunk: list[str]
+    #: ``chunk`` 在整份文件行表里的区间 ``[lead, end)``
+    lead: int
+    end: int
+
+
+def _render_scalar(value: object) -> str:
+    """把一个标量渲染成 YAML 片段（需要引号时交给 ``yaml.safe_dump`` 决定）。
+
+    为什么不一概裸写：``display_name: yes`` 读回来是**布尔** ``True``，
+    ``account_id: 123`` 读回来是**整数** —— 两者都会让下一次加载直接校验失败，
+    而故障现场离"当初在面板上填了什么"已经很远。交给 PyYAML 判引号，
+    判据只有一处（它加引号的那些值，读回来一定还是字符串）。
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    text = str(value)
+    # 打成一个**映射**再切出值，而不是直接 dump 这个标量：PyYAML 给顶层裸标量补的是
+    # ``hello\n...\n``（文档结束标记），留着会被原样写进配置行，多出一行孤零零的 ``...``。
+    # ``width`` 拉大：长 profile_dir 不该被折成两行。
+    dumped = yaml.safe_dump({"v": text}, allow_unicode=True, default_flow_style=False, width=10**6)
+    scalar = dumped.removeprefix("v: ").removesuffix("\n")
+    if "\n" in scalar:
+        # 值里带换行 ⇒ 折行 / 块标量都容易读错：退回 JSON 双引号（YAML 是它的超集）
+        return json.dumps(text, ensure_ascii=False)
+    return scalar
+
+
+def _account_values(account: AccountConfig) -> dict[str, str]:
+    """一条账号的**全部**字段（渲染后）—— 面板存的就是这一组，键顺序固定。"""
+    return {
+        "platform": _render_scalar(account.platform),
+        "display_name": _render_scalar(account.display_name),
+        "profile_dir": _render_scalar(account.profile_dir.as_posix()),
+        "enabled": _render_scalar(account.enabled),
+        "daily_limit": _render_scalar(account.daily_limit),
+        "min_gap_min": _render_scalar(account.min_gap_min),
+    }
+
+
+def _publish_accounts_span(lines: list[str], *, path: Path) -> tuple[int, int, int, int]:
+    """定位 ``accounts:`` 段：``(head_index, block_start, block_end, item_indent)``。
+
+    缩进**量出来**，不写死两个空格（与 :func:`_llm_profile_span` 同一条）：写死的话，
+    这份文件哪天整体缩进一段，这里就会改到别的段上去。
+    """
+    head_index: int | None = None
+    head_indent = 0
+    for index, raw in enumerate(lines):
+        match = _PUBLISH_ACCOUNTS_HEAD.match(raw.rstrip("\r\n"))
+        if match is not None:
+            head_index, head_indent = index, len(match.group(1))
+            break
+    if head_index is None:
+        raise ConfigError(
+            f"config/publish.yaml 里找不到 accounts: 段：{path}",
+            code=ErrorCode.CONFIG_MISSING,
+            context={"path": str(path), "key": "accounts"},
+            remediation="确认这份文件是 publish.yaml；缺这一段就照 §06.2.3 补一个 accounts:",
+        )
+
+    block_start = head_index + 1
+    block_end = len(lines)
+    for index in range(block_start, len(lines)):
+        body = lines[index].rstrip("\r\n")
+        if not body.strip() or body.lstrip().startswith("#"):
+            continue
+        if (len(body) - len(body.lstrip())) <= head_indent:
+            block_end = index
+            break
+
+    item_indent: int | None = None
+    for index in range(block_start, block_end):
+        match = _PUBLISH_ACCOUNT_ITEM.match(lines[index].rstrip("\r\n"))
+        if match is not None:
+            item_indent = len(match.group(1))
+            break
+    # 空段：按 YAML 常规缩进生成（``accounts:`` 下面两级）
+    return head_index, block_start, block_end, head_indent + 2 if item_indent is None else item_indent
+
+
+def _publish_account_entries(
+    lines: list[str], *, block_start: int, block_end: int, item_indent: int
+) -> list[_AccountEntry]:
+    """段内每一条账号的整块行（含紧贴上方的注释；空行是分隔符，不属于任何条目）。
+
+    两个边界都按**缩进**判，而不是"往上一直吸、往下一直吸"：
+
+    * **上方**：只有缩进 ≥ 条目缩进的注释才算这条账号的（段级注释在 0 缩进，
+      比如 ``accounts:`` 段尾那句 ``# 一线平台（一期必做）`` —— 它是 ``platforms:``
+      的开场白，跟着账号一起被搬走就成了悬在半空的半句话）；
+    * **下方**：条目自己的行是缩进 **>** 条目缩进的那些（``platform: …`` 等）。
+    """
+    starts = [
+        index
+        for index in range(block_start, block_end)
+        if (match := _PUBLISH_ACCOUNT_ITEM.match(lines[index].rstrip("\r\n"))) is not None
+        and len(match.group(1)) == item_indent
+    ]
+
+    entries: list[_AccountEntry] = []
+    for position, start in enumerate(starts):
+        match = _PUBLISH_ACCOUNT_ITEM.match(lines[start].rstrip("\r\n"))
+        if match is None:  # 上面那个列表推导已经判过一次，这里只是让类型收窄
+            continue
+        lower = starts[position - 1] if position > 0 else block_start
+        lead = start
+        while lead > lower:
+            above = lines[lead - 1].rstrip("\r\n")
+            if not above.lstrip().startswith("#"):
+                break
+            if (len(above) - len(above.lstrip())) < item_indent:
+                break
+            lead -= 1
+        upper = starts[position + 1] if position + 1 < len(starts) else block_end
+        content_end = start + 1
+        for index in range(start + 1, upper):
+            body = lines[index].rstrip("\r\n")
+            if not body.strip():
+                continue  # 条目内的空行：后面还有本条目自己的行就继续
+            if (len(body) - len(body.lstrip())) <= item_indent:
+                break
+            content_end = index + 1
+        entries.append(
+            _AccountEntry(
+                account_id=match.group(2),
+                chunk=list(lines[lead:content_end]),
+                lead=lead,
+                end=content_end,
+            )
+        )
+    return entries
+
+
+def _render_account_chunk(chunk: list[str], account: AccountConfig, *, key_indent: int) -> list[str]:
+    """按新值改写一条账号条目的行：**值换掉，行尾注释与缩进原样留着**。"""
+    values = _account_values(account)
+    missing = dict(values)
+    out: list[str] = []
+    for raw in chunk:
+        body = raw.rstrip("\r\n")
+        ending = raw[len(body) :] or "\n"
+        match = _PUBLISH_SCALAR_LINE.match(body)
+        if match is None or match.group(2) not in values:
+            out.append(raw)
+            continue
+        key = match.group(2)
+        out.append(f"{match.group(1)}{key}: {values[key]}{match.group(4)}{ending}")
+        missing.pop(key, None)
+    # 缺的键补在条目末尾（而不是硬塞进某一行的后面）：插在中间会打乱
+    # "身份 → 参数"的阅读顺序，而这条条目本来就该是那个形状。
+    for key in _ACCOUNT_KEYS:
+        if key in missing:
+            out.append(f"{' ' * key_indent}{key}: {missing[key]}\n")
+    return out
+
+
+def _new_account_chunk(account: AccountConfig, *, item_indent: int, key_indent: int) -> list[str]:
+    """新账号的整块行（``- account_id:`` 开头，字段顺序与出厂文件同形）。"""
+    values = _account_values(account)
+    chunk = [f"{' ' * item_indent}- account_id: {_render_scalar(account.account_id)}\n"]
+    chunk.extend(f"{' ' * key_indent}{key}: {values[key]}\n" for key in _ACCOUNT_KEYS)
+    return chunk
+
+
+def parse_publish_account(payload: Mapping[str, Any]) -> AccountConfig:
+    """把面板提交的一行账号配置校验成 :class:`AccountConfig`（**写盘之前**）。
+
+    「你刚提交的这一份不合法」⇒ ``VALIDATION_FAILED``（**422**）：面板据此把红字标到
+    对应输入框上（与设置页的密钥表单同一条取舍）。**文件本身**读不出来仍然是
+    ``CONFIG_INVALID``（400）—— 那是两件事：一个是"你写错了"，一个是"盘上那份坏了"。
+
+    ``context.errors`` 是 ``[{field, error}, …]``（字段路径已拼成点号形式）。
+    """
+    try:
+        return AccountConfig.model_validate(dict(payload))
+    except ValidationError as exc:
+        errors = _format_errors(exc)
+        raise ConfigError(
+            f"账号配置不合法（{len(errors)} 处问题）",
+            code=ErrorCode.VALIDATION_FAILED,
+            context={"errors": errors},
+            remediation=(
+                "account_id 1–64 字符；platform 必须是 platforms: 里定义过的代号；"
+                "profile_dir 不能为空；daily_limit 1–100；min_gap_min 0–1440"
+            ),
+        ) from exc
+
+
+def write_publish_accounts(paths: StudioPaths, accounts: Sequence[AccountConfig]) -> Path:
+    """把**整份**账号清单写回 ``config/publish.yaml``，返回该文件路径。
+
+    为什么按行改写而不是 ``yaml.safe_dump`` 整份重写
+    ----------------------------------------------
+    与 :func:`set_llm_profile_model` 同一条：这份文件几乎每一行都带注释（为什么演练台
+    的 daily_limit 拉满、为什么 profile_dir 必须按账号隔离、二线平台为什么 enabled=false）。
+    整份重写会把它们全抹掉 —— 于是"在面板上加了个账号"就永久毁掉了这份配置的可读性，
+    而它正是这个仓库里"为什么这么配"的唯一记录。
+
+    只动 ``accounts:`` 段里的条目行：段外的 ``platforms`` / ``precheck`` / 注释一个
+    字节都不碰。段内也只做三件事：改写已有条目的值（行尾注释保留）、追加新条目、
+    丢弃不在清单里的条目（连同它上方那几行注释）。
+
+    三条纪律
+    --------
+    ① **先校验、后落盘**：整份配置（含"写完之后"的账号清单）在**内存里**先过一遍
+       ``PublishConfig``，重复的 ``account_id`` / 重复的 ``profile_dir`` / 未定义的平台
+       都在写盘之前拦住 —— 写坏一份配置的代价是"下一次启动起不来"。
+    ② **写完立刻回读**（:func:`load_publish_config`）：写坏了要在这里炸，而不是等下一次
+       发布时才发现账号没进去。
+    ③ **已有条目不挪窝**：盘上的顺序就是它们的顺序（新号一律追加到段尾）。重排要把
+       注释跟着一起搬，收益只是"看起来整齐"，风险却是搬错一行。
+
+    :raises ConfigError: 文件缺失 / 找不到 ``accounts:`` 段 / 新清单过不了校验
+    """
+    path = paths.config_dir / "publish.yaml"
+    if not path.is_file():
+        raise ConfigError(
+            f"配置文件不存在：{path}",
+            code=ErrorCode.CONFIG_MISSING,
+            context={"path": str(path)},
+            remediation="确认 STUDIO_HOME 指向仓库根，且 config/publish.yaml 在位",
+        )
+
+    current = load_publish_config(paths)
+    try:
+        PublishConfig.model_validate(
+            {**current.model_dump(), "accounts": [account.model_dump() for account in accounts]}
+        )
+    except ValidationError as exc:
+        errors = _format_errors(exc)
+        raise ConfigError(
+            f"账号清单不合法（{len(errors)} 处问题）",
+            code=ErrorCode.CONFIG_INVALID,
+            context={"path": str(path), "errors": errors},
+            remediation=(
+                "account_id 不能重复；profile_dir 必须**每个账号一个**（登录态隔离）；"
+                "启用的账号其 platform 要在 platforms: 里定义过"
+            ),
+        ) from exc
+
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    head_index, block_start, block_end, item_indent = _publish_accounts_span(lines, path=path)
+    key_indent = item_indent + 2
+    existing = _publish_account_entries(
+        lines, block_start=block_start, block_end=block_end, item_indent=item_indent
+    )
+    by_id = {entry.account_id: entry for entry in existing}
+    wanted = {account.account_id: account for account in accounts}
+
+    chunks: list[list[str]] = [
+        _render_account_chunk(entry.chunk, wanted[entry.account_id], key_indent=key_indent)
+        for entry in existing
+        if entry.account_id in wanted
+    ]
+    chunks.extend(
+        _new_account_chunk(account, item_indent=item_indent, key_indent=key_indent)
+        for account in accounts
+        if account.account_id not in by_id
+    )
+
+    if not chunks:
+        # 一个账号都不剩：段里必须留一个**显式的空列表**。留一行光秃秃的 ``accounts:``
+        # 读回来是 ``None``，下一次加载直接报"accounts 不是列表" —— 而那正是
+        # "在面板上删掉了最后一个账号"的后果，用户完全想不到。
+        head = lines[head_index].rstrip("\r\n")
+        match = _PUBLISH_ACCOUNTS_HEAD.match(head)
+        comment = match.group(2).strip() if match is not None else ""
+        suffix = f"  {comment}" if comment.startswith("#") else ""
+        updated = [
+            *lines[:head_index],
+            f"{' ' * (len(head) - len(head.lstrip()))}accounts: []{suffix}\n",
+            *lines[block_end:],
+        ]
+    else:
+        body: list[str] = []
+        for chunk in chunks:
+            if body:
+                body.append("\n")  # 条目之间空一行（出厂文件就是这个写法）
+            body.extend(chunk)
+        region_start = existing[0].lead if existing else block_start
+        region_end = existing[-1].end if existing else block_start
+        tail = list(lines[region_end:block_end])
+        while tail and not tail[0].strip():
+            tail.pop(0)
+        if not any(line.strip() for line in tail):
+            tail = []
+        elif body:
+            tail.insert(0, "\n")
+        head_line = lines[head_index].rstrip("\r\n")
+        head_match = _PUBLISH_ACCOUNTS_HEAD.match(head_line)
+        inline = head_match.group(2).strip() if head_match is not None else ""
+        prefix = lines[:region_start]
+        if inline and not inline.startswith("#"):
+            # 头行上挂过 ``accounts: []``（把最后一个账号删掉之后留下的形状）：现在又要有
+            # 条目了，得先把那个 ``[]`` 清掉 —— 列表直接接在它后面是非法 YAML。
+            indent = head_line[: len(head_line) - len(head_line.lstrip())]
+            prefix = [
+                *lines[:head_index],
+                f"{indent}accounts:\n",
+                *lines[head_index + 1 : region_start],
+            ]
+        updated = [*prefix, *body, *tail, *lines[block_end:]]
+
+    path.write_text("".join(updated), encoding="utf-8", newline="\n")
+    load_publish_config(paths)  # 回读校验：写坏必须当场炸
+    logger.info(
+        "config.publish_accounts_written",
+        path=str(path),
+        accounts=[account.account_id for account in accounts],
+    )
+    return path

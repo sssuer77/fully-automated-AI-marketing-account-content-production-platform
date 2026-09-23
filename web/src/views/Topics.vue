@@ -4,7 +4,7 @@
 // 这一屏只回答四个问题，多一个都不放：
 // ① 模型给了哪些方向？—— 左侧方向卡片（含历史批次下拉与每方向选题数）；
 // ② 哪些选题值得做？—— 右侧瀑布流（分数 / 钩子 / 理由 / 相似提示）；
-// ③ 怎么把热点喂进来？—— 扫盘导入 或 直接粘一段（两种入口都在这里）；
+// ③ 怎么把热点喂进来？—— 一键拉今日新闻 / 扫盘导入 / 直接粘一段（三种入口都在这里）；
 // ④ 我勾的这几条进队了吗？—— 两步确认 + 逐条结果（失败带 code）。
 //
 // 为什么方向卡片要有"历史批次"
@@ -35,7 +35,10 @@ import {
   STATUS_LABELS,
   hookLabel,
   isTopicEvent,
+  newsFacts,
   scoreTone,
+  summarizeClear,
+  summarizeNews,
   topicStatusTone,
   useTopicsStore,
   type HotKind,
@@ -73,6 +76,37 @@ const subtitle = computed(() => {
 });
 
 const manualReady = computed(() => manualTitle.value.trim().length > 0);
+
+/** 上一次「拉今日新闻」的一句话小结（没拉过就是空串，那块就不画）。 */
+const newsSummary = computed(() =>
+  topics.lastNews === null ? "" : summarizeNews(topics.lastNews),
+);
+
+/**
+ * 上一次「清除所有选题」的**预览**小结（没预览过就是 `null`，那块就不画）。
+ *
+ * 只看 `dry_run === true` 的那一次：真删之后 `lastClear` 会被覆盖成结果，而结果不该
+ * 再弹一次确认框 —— 那会让用户以为"还没删，要不要再来一下"。
+ */
+const clearPreview = computed(() =>
+  topics.lastClear !== null && topics.lastClear.dry_run ? topics.lastClear : null,
+);
+
+/**
+ * 一键清除所有选题（**点两下**）。
+ *
+ * 第一下只**预览**（`dryRun=true`）：后端回三个数（几个方向 / 几条选题 / 其中几条已派生
+ * 任务），面板把它们摊开。这一下动辄删掉几十行，而"到底删了多少"在删完之后只能去审计页
+ * 翻 —— 所以预览与真删分成两次点击，而不是一个原生 `confirm()`：原生弹窗里放不下这三个
+ * 数，而"删了什么"正是用户唯一需要看到的东西。
+ */
+async function onClearTopics(): Promise<void> {
+  await topics.clearAll(true);
+}
+
+async function confirmClearTopics(): Promise<void> {
+  await topics.clearAll(false);
+}
 
 /** 分数展示（没打分就是没打分，不显示 0.0）。 */
 function formatScore(score: number | null | undefined): string {
@@ -385,6 +419,31 @@ useChannelStream("topics", onTopicEvent);
         <section class="dirs">
           <div class="dirnew">
             <div class="tool__row">
+              <AppButton
+                variant="primary"
+                size="sm"
+                :disabled="topics.busy || topics.newsBusy"
+                :loading="topics.newsBusy"
+                @click="topics.pullNews()"
+              >
+                一键拉取今日新闻
+              </AppButton>
+              <span class="tool__meta">
+                抓今日头条热榜（挂了自动换中新网）⇒ 模型逐条判「值不值得写」⇒
+                值得写的直接落成这一批的方向（与手写的排在一起，可改可删）。
+              </span>
+            </div>
+            <details v-if="topics.lastNews" class="news">
+              <summary class="news__summary">{{ newsSummary }}（点开看每条的判定）</summary>
+              <ul v-if="topics.lastNews.skipped.length > 0" class="news__list">
+                <li v-for="item in topics.lastNews.skipped" :key="item.title" class="news__item">
+                  <span class="news__title">{{ item.title }}</span>
+                  <span class="news__reason">{{ item.reason }}</span>
+                </li>
+              </ul>
+              <p v-else class="news__why">一条都没被跳过。</p>
+            </details>
+            <div class="tool__row">
               <input
                 v-model="dirTitle"
                 class="field field--wide"
@@ -407,14 +466,47 @@ useChannelStream("topics", onTopicEvent);
               </AppButton>
             </div>
             <span class="tool__meta">
-              手写方向**不经模型**：直接落在当前批次，与模型产的那批排在一起（可改可删）。
+              手写方向不经模型：直接落在当前批次，与模型产的那批排在一起（可改可删）。
             </span>
+          </div>
+
+          <div class="dirnew dirnew--danger">
+            <div class="tool__row">
+              <AppButton
+                size="sm"
+                :disabled="topics.busy || topics.newsBusy || topics.clearBusy"
+                :loading="topics.clearBusy"
+                @click="onClearTopics()"
+              >
+                一键清除所有选题
+              </AppButton>
+              <span class="tool__meta">
+                把这一屏的<strong>所有方向 + 所有选题</strong>一次清掉（含已入队 / 已淘汰的），
+                不可撤销。已经派生过任务的那些<strong>任务照跑</strong> —— 删掉的是想法，不是活。
+              </span>
+            </div>
+            <div v-if="clearPreview" class="dir__warn">
+              <p>
+                {{ summarizeClear(clearPreview) }}（不可撤销）。已经派生过任务的那些任务照跑，不受影响。
+              </p>
+              <div class="tool__row">
+                <AppButton
+                  size="sm"
+                  :disabled="topics.clearBusy"
+                  :loading="topics.clearBusy"
+                  @click="confirmClearTopics()"
+                >
+                  确认清除
+                </AppButton>
+                <AppButton size="sm" @click="topics.dismissClear()">取消</AppButton>
+              </div>
+            </div>
           </div>
 
           <EmptyState
             v-if="topics.directions.length === 0"
             title="还没有内容方向"
-            hint="上面可以直接手写一个；也可以点右上角「触发分析」，它会先扫 data/hot 与 data/feedback 再问 Planner。"
+            hint="上面可以一键拉今日新闻、也可以手写一个；点右上角「触发分析」则会先扫 data/hot 与 data/feedback 再问 Planner。"
           />
           <ul v-else class="dirs__list">
             <li v-for="group in topics.groups" :key="group.direction?.id ?? 'orphan'" class="dir">
@@ -427,6 +519,12 @@ useChannelStream("topics", onTopicEvent);
                 </span>
               </header>
               <p v-if="group.direction" class="dir__why">{{ group.direction.rationale }}</p>
+              <p
+                v-if="group.direction && newsFacts(group.direction.grounded_on)"
+                class="dir__facts"
+              >
+                事件：{{ newsFacts(group.direction.grounded_on) }}
+              </p>
               <p class="dir__meta mono">
                 选题 {{ group.topics.length }} 条 ·
                 已入队 {{ group.direction?.selected_count ?? 0 }} 条 ·
@@ -463,7 +561,7 @@ useChannelStream("topics", onTopicEvent);
                 <div v-else-if="dirConfirmId === group.direction.id" class="dir__edit">
                   <p class="dir__warn">
                     删掉《{{ group.direction.title }}》，它下面的 {{ group.topics.length }}
-                    条候选一起走（不可撤销）。
+                    条候选一起走（不可撤销）。已经派生过任务的那些任务照跑，不受影响。
                   </p>
                   <div class="tool__row">
                     <AppButton
@@ -628,7 +726,9 @@ useChannelStream("topics", onTopicEvent);
                         编辑
                       </AppButton>
                       <template v-if="confirmingId === item.id">
-                        <span class="tool__meta">删掉就没了（不可撤销）</span>
+                        <span class="tool__meta">
+                          删掉就没了（不可撤销）{{ item.task_id ? "；它的任务照跑，不受影响" : "" }}
+                        </span>
                         <AppButton size="sm" :disabled="topics.saving" @click="removeTopic(item)">
                           确认删除
                         </AppButton>
@@ -865,6 +965,14 @@ useChannelStream("topics", onTopicEvent);
   font-size: var(--text-xs);
 }
 
+/* 「事件」那一行（今日新闻挑出来的方向才有）：它与写稿时喂给模型的事实是同一份，
+   所以用正文字色画 —— 这一条比旁边的"为什么"更该被人看见。 */
+.dir__facts {
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  white-space: pre-line;
+}
+
 .dir__meta,
 .dir__risk {
   color: var(--text-muted);
@@ -888,6 +996,10 @@ useChannelStream("topics", onTopicEvent);
   padding: var(--space-2);
   border: 1px dashed var(--border-subtle);
   border-radius: var(--radius-sm);
+}
+
+.dirnew--danger {
+  border-color: var(--warn);
 }
 
 .dir__acts {
@@ -1133,6 +1245,43 @@ useChannelStream("topics", onTopicEvent);
 .tool__meta {
   color: var(--text-muted);
   font-size: var(--text-xs);
+}
+
+.news {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.news__summary {
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.news__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 12rem;
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.news__item {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: space-between;
+}
+
+.news__reason {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.news__why {
+  margin: var(--space-1) 0 0;
+  color: var(--text-muted);
 }
 
 .issues {

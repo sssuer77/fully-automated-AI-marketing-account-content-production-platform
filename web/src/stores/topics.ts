@@ -17,6 +17,7 @@ import {
   PAGE_SIZE,
   addManualTopic,
   analyzeTopics,
+  clearTopics,
   createDirection,
   deleteDirection,
   deleteTopic,
@@ -25,6 +26,7 @@ import {
   fetchTopics,
   ideateTopics,
   importHot,
+  pullTodayNews,
   selectTopics,
   submitHot,
   updateDirection,
@@ -34,6 +36,7 @@ import {
   generateTopicOutline,
   saveTopicOutline,
   type AnalyzeResult,
+  type ClearTopicsResult,
   type DirectionDeleteResult,
   type DirectionEditResult,
   type DirectionItem,
@@ -44,6 +47,7 @@ import {
   type ManualDirectionBody,
   type ManualTopicBody,
   type ManualTopicResult,
+  type NewsPullResult,
   type SelectFailure,
   type OutlineItem,
   type OutlineSaveBody,
@@ -98,6 +102,8 @@ export interface TopicsApi {
   clearTopicOutline: typeof clearTopicOutline;
   importHot: typeof importHot;
   submitHot: typeof submitHot;
+  pullTodayNews: typeof pullTodayNews;
+  clearTopics: typeof clearTopics;
 }
 
 let api: TopicsApi = {
@@ -119,6 +125,8 @@ let api: TopicsApi = {
   clearTopicOutline,
   importHot,
   submitHot,
+  pullTodayNews,
+  clearTopics,
 };
 
 /** 换掉部分实现（**只用于测试**：生产代码不调用它）。 */
@@ -267,6 +275,59 @@ export function summarizeEdit(result: TopicEditResult): string {
   return parts.join(" · ");
 }
 
+/**
+ * 一次"拉今日新闻"的一句话小结。
+ *
+ * 三件事分开说：**评测了几条**（模型真读了多少）、**留下几个方向**（结果）、**跳过几条**
+ * （代价）。合成一句"完成"会让人分不清"今天没有值得写的"与"模型根本没跑起来"。
+ */
+export function summarizeNews(result: NewsPullResult): string {
+  const parts = [`评测 ${result.evaluated} 条`];
+  parts.push(result.kept_count > 0 ? `留下 ${result.kept_count} 个方向` : "一条都没挑中");
+  if (result.skipped.length > 0) parts.push(`跳过 ${result.skipped.length} 条`);
+  return `${result.source || "今日新闻"}：${parts.join(" · ")}`;
+}
+
+/**
+ * 一次「清除所有选题」的一句话小结（`dryRun` 与非 `dryRun` 共用）。
+ *
+ * 三件事分开说：**删掉几个方向**、**几条选题**、**其中几条已派生任务**。合成一句
+ * "已清空"会让人以为那些已经排队的活也没了 —— 而它们**照跑**（后端只删想法，不删活）。
+ */
+export function summarizeClear(result: ClearTopicsResult): string {
+  if (result.directions === 0 && result.topics === 0) {
+    return result.dry_run ? "面板上已经没有可清的东西" : "面板本来就是空的";
+  }
+  const head = result.dry_run ? "会清掉" : "已清空";
+  const parts = [`${result.directions} 个方向`, `${result.topics} 条选题`];
+  let text = `${head}：${parts.join(" · ")}`;
+  if (result.detached_task_count > 0) {
+    text += result.dry_run
+      ? `（其中 ${result.detached_task_count} 条已派生任务，删了也照跑）`
+      : `（其中 ${result.detached_task_count} 条已派生任务，任务照跑）`;
+  }
+  return text;
+}
+
+/**
+ * 一条方向里**能当事实用**的那几句（今日新闻挑出来的方向才有；其余是空串）。
+ *
+ * 为什么要在面板上画它：这是新闻那条链路里唯一的事实来源 —— 写稿时它会原样进
+ * Director / Writer 的提示词（后端 `topic_service.direction_facts` → `script_service`）。
+ * 此前它只活在 payload 与 CLI 里，面板上看不见，于是"模型把这条新闻总结成了什么"
+ * 只能靠猜 —— 而恰恰是这一段决定了后面写稿会不会编。
+ *
+ * `kind === "news"` 与后端 `NEWS_EVIDENCE_KIND` 逐字一致（同 `STATUS_LABELS` 那类镜像）。
+ * 依据里其它几种（账号定位 / 热点 / 历史反馈）是**出处**，不是事实，这里不画。
+ */
+export function newsFacts(refs: { [key: string]: unknown }[]): string {
+  return refs
+    .filter((ref) => ref.kind === "news")
+    .map((ref) => String(ref.quote ?? "").trim())
+    .filter((quote) => quote.length > 0)
+    .join("\n");
+}
+
 /** 把一次请求失败翻成人话（与 `stores/scripts.ts` 同源；两个 store 之间不留依赖）。 */
 export function describeError(reason: unknown): string {
   if (reason instanceof ApiError) {
@@ -295,6 +356,13 @@ export const useTopicsStore = defineStore("topics", () => {
   const lastAnalyze = ref<AnalyzeResult | null>(null);
   const lastIdeate = ref<IdeateResult | null>(null);
   const lastImport = ref<ImportResult | null>(null);
+  const lastNews = ref<NewsPullResult | null>(null);
+  //: 今日新闻那条长任务在跑（与 `busy` 分开：别的长任务在跑时这颗按钮不该转圈）
+  const newsBusy = ref(false);
+  //: 「清除所有选题」在跑（同上：它自己不占后端那把长任务锁，但会被那把锁拦下）
+  const clearBusy = ref(false);
+  //: 上一次清除的读数（`dry_run=true` ⇒ 这是**预览**，库里还没动）
+  const lastClear = ref<ClearTopicsResult | null>(null);
   const manual = ref<ManualTopicResult | null>(null);
   const lastEdit = ref<TopicEditResult | null>(null);
   //: 二级产物按选题 id 存（`null` = 拉过了、确实还没有）。展开哪条拉哪条。
@@ -445,6 +513,67 @@ export const useTopicsStore = defineStore("topics", () => {
     }
   }
 
+  /**
+   * 一键拉取今日新闻（长任务）。
+   *
+   * 值得写的那些**已经落成方向**（后端写进当前批次），所以这里只把结果摆出来 + 重拉一次
+   * 列表 —— 面板不做第二套"挑中的新闻"清单：同一件事画两处，迟早对不上。
+   */
+  async function pullNews(): Promise<void> {
+    newsBusy.value = true;
+    clearMessages();
+    try {
+      const result = await api.pullTodayNews();
+      lastNews.value = result;
+      if (result.ok) {
+        notice.value = summarizeNews(result);
+      } else {
+        error.value = result.error_message ?? "新闻评测没产出（原因见「实时日志」面板）";
+      }
+      await refresh();
+    } catch (reason) {
+      error.value = describeError(reason);
+    } finally {
+      newsBusy.value = false;
+    }
+  }
+
+  /**
+   * 清除所有选题（**两级**：先 `dryRun` 预览，再真删）。
+   *
+   * 为什么不让调用方自己拼两次请求：这两次走的是**同一个端点、同一个计数路径**，
+   * 而"预览说 13 条、真删却是 12 条"这类不一致，只有在同一个函数里才守得住。
+   * 面板只管调两次。
+   *
+   * 真删之后**顺带清空勾选**：被删掉的那些可能正被勾着，留着已不存在的 id，下一次
+   * "入队"就会报一串"选题不存在"，而用户根本没做过那件事（与 `removeDirection` 同一条）。
+   */
+  async function clearAll(dryRun = true): Promise<ClearTopicsResult | null> {
+    clearBusy.value = true;
+    clearMessages();
+    try {
+      const result = await api.clearTopics(dryRun);
+      lastClear.value = result;
+      notice.value = summarizeClear(result);
+      if (!result.dry_run) {
+        await refresh();
+        checked.value = [];
+      }
+      return result;
+    } catch (reason) {
+      error.value = describeError(reason);
+      return null;
+    } finally {
+      clearBusy.value = false;
+    }
+  }
+
+  /** 收起"清除所有选题"的预览（用户点了取消）。 */
+  function dismissClear(): void {
+    lastClear.value = null;
+    clearMessages();
+  }
+
   /** 逐方向产出选题（长任务）。 */
   async function ideate(): Promise<void> {
     busy.value = true;
@@ -523,8 +652,10 @@ export const useTopicsStore = defineStore("topics", () => {
   /**
    * 删一个方向 —— **它下面的候选一起走**（级联）。
    *
-   * 后端会在响应里如实报出 `cascaded_topics`（被一起删掉的候选条数），面板照原样
-   * 说一遍：一句"已删除"背后其实是 7 条候选没了，那 7 条不该是无声的。
+   * 后端会在响应里如实报出两样：`cascaded_topics`（被一起删掉的候选条数）与
+   * `detached_task_count`（其中几条已经有任务）。面板照原样说一遍 —— 一句"已删除"背后
+   * 其实是 7 条候选没了，那 7 条不该是无声的；而那几条已经有任务的**照跑**，更不该被
+   * 说成"也删了"。
    */
   async function removeDirection(directionId: string): Promise<boolean> {
     directionBusy.value = directionId;
@@ -532,7 +663,11 @@ export const useTopicsStore = defineStore("topics", () => {
     try {
       const result = await api.deleteDirection(directionId);
       lastDirection.value = result;
-      notice.value = `已删除方向《${result.title}》（一并删掉 ${result.cascaded_topics} 条候选）`;
+      notice.value =
+        `已删除方向《${result.title}》（一并删掉 ${result.cascaded_topics} 条候选）` +
+        (result.detached_task_count > 0
+          ? ` · 其中 ${result.detached_task_count} 条已有任务，照跑`
+          : "");
       await refresh();
       // 被级联删掉的那些可能正被勾着：勾选里留着已不存在的 id，下一次"入队"就会
       // 报一串"选题不存在"，而用户根本没做过那件事。
@@ -646,15 +781,18 @@ export const useTopicsStore = defineStore("topics", () => {
   /**
    * 删一条选题（**不可撤销**）。
    *
-   * 已经派生过任务的选题会被后端拦下（422 + 任务号）—— 前端不自己判，把后端给的
-   * 原因与补救照原样摆出来，用户才知道下一步该干什么。
+   * **派生过任务也照删**：那条任务不跟着走（`detached_task_id`），照跑 —— 后端不会拦，
+   * 前端也不需要自己判。删掉的是想法，不是活；这一点要在小结里说出来，否则用户会以为
+   * "删了选题 ⇒ 那条活也没了"。
    */
   async function removeTopic(topicId: string): Promise<boolean> {
     saving.value = true;
     clearMessages();
     try {
       const result = await api.deleteTopic(topicId);
-      notice.value = `已删除《${result.title}》`;
+      notice.value =
+        `已删除《${result.title}》` +
+        (result.detached_task_id ? `（任务 ${result.detached_task_id} 照跑，不受影响）` : "");
       checked.value = checked.value.filter((id) => id !== topicId);
       await refresh();
       return true;
@@ -811,6 +949,10 @@ export const useTopicsStore = defineStore("topics", () => {
     lastAnalyze,
     lastIdeate,
     lastImport,
+    lastNews,
+    newsBusy,
+    clearBusy,
+    lastClear,
     manual,
     lastEdit,
     perDirection,
@@ -856,5 +998,8 @@ export const useTopicsStore = defineStore("topics", () => {
     clearOutline,
     scanHot,
     submitHotText,
+    pullNews,
+    clearAll,
+    dismissClear,
   };
 });

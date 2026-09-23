@@ -76,6 +76,8 @@ function option(overrides: Partial<PublishPlatformOption> = {}): PublishPlatform
     selectable: true,
     accounts: ["acc_main"],
     note: "",
+    calibration: "calibrated",
+    calibration_note: "",
     ...overrides,
   };
 }

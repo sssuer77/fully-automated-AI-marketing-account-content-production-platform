@@ -95,6 +95,18 @@ _EXCERPT_RADIUS = 12
 #: 不回答"哪个字符属于哪个 emoji"（那是渲染层的事，而且是件很难做对的事）。
 _EMOJI = re.compile("[\U0001f000-\U0001faff\U00002600-\U000027bf\u2b00-\u2bff\ufe0f\u200d]")
 
+#: "看不见、但会出现在回读结果里"的格式字符（§06.5.3 第 ⑤ 步 · 真机 2026-09-23）。
+#:
+#: 抖音的富文本编辑器会在文案末尾塞一个**零宽空格**（U+200B）—— 那是编辑器用来撑住
+#: 空行的哨兵，不是我们填进去的字，也不改变任何人读到的东西。逐字比对会因此判成
+#: ``mismatch``，于是一条"码也扫了、视频也传完了"的发布卡在一个**看不见的字符**上。
+#:
+#: 为什么**不收** U+200C / U+200D（零宽非连接符 / 连接符）：它们参与 emoji 与印度语系
+#: 的字形组合（``_EMOJI`` 里已经含 U+200D）。把它们当"不可见"会顺手放行"emoji 被吞"，
+#: 而那正是回读要抓的东西。收在这里的都是纯排版控制符：软连字符、零宽空格、
+#: 方向标记（LRM / RLM）、双向文本嵌入与隔离、词连接符、BOM。
+_INVISIBLE = re.compile("[\u00ad\u200b\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]")
+
 
 # ── 标题 / 文案 / 话题 ────────────────────────────────────────────────
 
@@ -211,15 +223,17 @@ def _join(base: str, rendered: list[str]) -> str:
 class ReadbackDiff:
     """页面回读的标题/文案与请求的差异。
 
-    ``reason`` 的取值刻意分成五种而不是一个布尔：平台编辑器**吞法不同，处置也不同** ——
+    ``reason`` 的取值刻意分成六种而不是一个布尔：平台编辑器**吞法不同，处置也不同** ——
 
-    ================  ==========================================================
-    ``ok``            一致
-    ``empty``         输入框整个空了 ⇒ 多半是选择器点错了框，不是编辑器吞字
-    ``emoji_stripped`` emoji 被吃掉 ⇒ 去掉 emoji 后两边一致（改文案，别重填）
-    ``whitespace_only`` 只差空白/换行 ⇒ 编辑器把换行归一了（**通常可以放行**）
-    ``mismatch``      真丢字 ⇒ 重填 ≤2 次（§06.5.3）
-    ================  ==========================================================
+    ==================  ==========================================================
+    ``ok``              一致
+    ``empty``           输入框整个空了 ⇒ 多半是选择器点错了框，不是编辑器吞字
+    ``emoji_stripped``  emoji 被吃掉 ⇒ 去掉 emoji 后两边一致（改文案，别重填）
+    ``whitespace_only`` 只差空白/换行 ⇒ 编辑器把换行归一了（要不要放行由调用方定）
+    ``invisible_only``  只差**不可见字符**（零宽空格等）⇒ 编辑器自己塞的哨兵，
+                        **不是丢字**（见 :data:`_INVISIBLE`；要不要放行由调用方定）
+    ``mismatch``        真丢字 ⇒ 重填 ≤2 次（§06.5.3）
+    ==================  ==========================================================
     """
 
     matched: bool
@@ -227,12 +241,19 @@ class ReadbackDiff:
     at: int | None = None
     expected_excerpt: str = ""
     actual_excerpt: str = ""
+    #: 只在 ``invisible_only`` 时有值：两边对不上的那几个不可见字符（``U+200B`` 这种）。
+    #: 为什么要把码点带出来：这两个字符**在日志里长得一模一样** —— 只说"回读不一致"，
+    #: 看的人会以为是系统在胡说（T5.2 真机踩过同族的坑，见 :func:`_classify`）。
+    invisible: tuple[str, ...] = ()
 
     @property
     def detail(self) -> str:
         """一行可进日志/告警的说明（**不含**全文，避免把整篇文案写进日志）。"""
         if self.matched:
             return "回读一致"
+        if self.reason == "invisible_only":
+            names = "、".join(self.invisible) if self.invisible else "（码点未知）"
+            return f"回读只差不可见字符：{names} —— 编辑器自己塞的哨兵，不是丢字"
         if self.at is None:
             return f"回读不一致（{self.reason}）"
         return (
@@ -255,6 +276,12 @@ def compare_readback(expected: str, actual: str) -> ReadbackDiff:
     # ``empty`` 不给偏移：输入框整个空了的时候，"第 0 字符起"是个没有信息量的数字，
     # 而它会挤掉那一行里真正有用的东西（"框是空的 ⇒ 多半是选择器点错了"）。
     at = None if reason == "empty" else _first_difference(expected, actual)
+    if reason == "invisible_only":
+        # 只差不可见字符时**不给偏移**：那个下标指着一对"看起来完全一样"的字符，
+        # 除了让人怀疑系统坏了没有任何用。要说的是"差的是哪几个码点"。
+        return ReadbackDiff(
+            matched=False, reason=reason, at=None, invisible=_invisible_codes(expected, actual)
+        )
     if at is None:
         return ReadbackDiff(matched=False, reason=reason, at=None)
     radius = _EXCERPT_RADIUS
@@ -275,14 +302,21 @@ def _classify(expected: str, actual: str) -> str:
     会带上一行的结尾）。**只按去 emoji 后的原文比**，真实页面上的吞 emoji 会被判成
     ``mismatch`` —— 而那意味着操作员看到的建议从"去掉 emoji 重发"变成"去查选择器"，
     方向全错（T5.2 真机踩过）。
+
+    **两条排除都要忽略不可见字符**（:func:`_drop_invisible`），这是真机 2026-09-23
+    补上的：平台在文案末尾塞零宽空格（U+200B）之后，"emoji 被吞"的典型形态变成了
+    ``点个关注 😀`` vs ``点个关注\u200b`` —— 只按去 emoji 后的原文比会把那个零宽空格
+    留下来，于是它退化成 ``mismatch``，又回到上面那个"方向全错"的老坑。
     """
     if not actual.strip():
         return "empty"
     if _squash(expected) == _squash(actual):
         return "whitespace_only"
-    if _EMOJI.findall(expected) != _EMOJI.findall(actual) and _squash(_drop_emoji(expected)) == _squash(
-        _drop_emoji(actual)
-    ):
+    if _squash(_drop_invisible(expected)) == _squash(_drop_invisible(actual)):
+        return "invisible_only"
+    if _EMOJI.findall(expected) != _EMOJI.findall(actual) and _squash(
+        _drop_emoji(_drop_invisible(expected))
+    ) == _squash(_drop_emoji(_drop_invisible(actual))):
         return "emoji_stripped"
     return "mismatch"
 
@@ -298,6 +332,21 @@ def _first_difference(left: str, right: str) -> int:
 def _squash(text: str) -> str:
     """去掉**全部**空白：编辑器把 ``\\n`` 换成空格、把连续空格并成一个时用它比对。"""
     return "".join(text.split())
+
+
+def _drop_invisible(text: str) -> str:
+    return _INVISIBLE.sub("", text)
+
+
+def _invisible_codes(expected: str, actual: str) -> tuple[str, ...]:
+    """两边对不上的不可见字符（**对称差**：多了的、少了的都算）。
+
+    对称差而不是"实际比期望多出来的那些"：平台**删掉**我们文案里的一个零宽字符同样是
+    "只差不可见字符"，只算一侧的话这种情况会回一个空的码点清单 —— 一句"差在哪"都答不上。
+    """
+    left = set(_INVISIBLE.findall(expected))
+    right = set(_INVISIBLE.findall(actual))
+    return tuple(sorted(f"U+{ord(ch):04X}" for ch in left ^ right))
 
 
 def _drop_emoji(text: str) -> str:

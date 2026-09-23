@@ -25,7 +25,7 @@ from studio.core.ids import new_ulid
 from studio.core.paths import StudioPaths
 from studio.db import connect, migrate
 from studio.db.models import FeedbackItemRow
-from studio.db.repositories import DirectionRepo, FeedbackItemRepo
+from studio.db.repositories import AuditRepo, DirectionRepo, FeedbackItemRepo, TopicRepo
 from studio.domain.topics import (
     DirectionSpec,
     FeedbackBatch,
@@ -157,13 +157,16 @@ def ctx(tmp_path: Path) -> Iterator[Ctx]:
         connection.close()
 
 
-def _service(ctx: Ctx, *, planner: Any, ideator: Any, classifier: Any = None) -> TopicService:
+def _service(
+    ctx: Ctx, *, planner: Any, ideator: Any, classifier: Any = None, log: Any = None
+) -> TopicService:
     return TopicService(
         ctx.connection,
         planner=planner,
         ideator=ideator,
         classifier=classifier,
         paths=ctx.paths,
+        log=log,
         input_service=InputService(ctx.connection, paths=ctx.paths),
     )
 
@@ -256,6 +259,49 @@ async def test_ideator_unknown_direction_id_is_an_empty_selection(ctx: Ctx) -> N
             persona=persona(), batch_id=planned.batch_id, direction_ids=["not-a-direction"]
         )
     assert excinfo.value.code == ErrorCode.TOPIC_DIRECTION_EMPTY
+
+
+async def test_visual_words_in_a_topic_are_warned_not_dropped(ctx: Ctx) -> None:
+    """模型把**画面**写进选题（"熊大用跑酷台阶算给你看"）⇒ 发 warn，**不**丢、**不**改。
+
+    真机踩到：跑酷只是底片，与选题无关，而候选里一直冒跑酷（§04.1.3 落地口径 6）。
+    这里钉两件事：① 这条 warn 真的发得出来；② 发 warn 之后那条选题**照旧入库** ——
+    拦掉会连带丢掉一条题材可能没问题的选题，而人只要看一眼日志就知道该改哪个词。
+    """
+    logs: list[dict[str, Any]] = []
+    service = _service(
+        ctx,
+        planner=FakePlanner(titles=["方向A"]),
+        ideator=FakeIdeator(titles=("熊大用跑酷台阶算给你看", "老楼装电梯这钱谁掏", "500万的房子该买还是租")),
+        log=lambda **entry: logs.append(entry),
+    )
+    planned = await service.run_planner(persona=persona())
+    assert planned.batch_id is not None
+
+    report = await service.run_ideator(persona=persona(), batch_id=planned.batch_id)
+
+    assert report.inserted == 3, "发 warn 不等于丢掉这条选题"
+    warnings = [entry for entry in logs if entry["level"] == "warn"]
+    assert len(warnings) == 1
+    assert "跑酷" in warnings[0]["message"]
+    assert warnings[0]["payload"]["words"] == ["跑酷"]
+
+
+async def test_a_clean_topic_says_nothing(ctx: Ctx) -> None:
+    """干净的一批**一条 warn 都不发** —— 否则这条判据会被噪声淹掉，然后被无视。"""
+    logs: list[dict[str, Any]] = []
+    service = _service(
+        ctx,
+        planner=FakePlanner(titles=["方向A"]),
+        ideator=FakeIdeator(titles=("老楼装电梯这钱谁掏", "500万的房子该买还是租", "29.9元月饼为啥卖爆")),
+        log=lambda **entry: logs.append(entry),
+    )
+    planned = await service.run_planner(persona=persona())
+    assert planned.batch_id is not None
+
+    await service.run_ideator(persona=persona(), batch_id=planned.batch_id)
+
+    assert [entry for entry in logs if entry["level"] == "warn"] == []
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -355,6 +401,132 @@ async def test_include_auto_feedback_off_keeps_them_out_of_the_prompt(ctx: Ctx) 
     assert any("include_auto_feedback" in warning for warning in report.warnings)
     # 0913.md 的 2 条人工 + 1 条自动：**一条都没删**，只是没进摘要。
     assert FeedbackItemRepo(ctx.connection).count() == 3
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 清空 · 一键清除所有选题
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _seed_pool(ctx: Ctx, *, directions: int = 2, per_direction: int = 3) -> list[str]:
+    """造一批方向 + 候选 ⇒ 返回全部选题 id（**不带任务**）。"""
+    ids = DirectionRepo(ctx.connection).insert_batch(
+        batch_id="b-clear",
+        directions=[
+            {"title": f"方向{index}", "rationale": f"理由{index}", "grounded_on": [], "priority": 100}
+            for index in range(1, directions + 1)
+        ],
+    )
+    rows = [
+        {
+            "direction_id": direction_id,
+            "seq": seq,
+            "title": f"选题 {direction_id}-{seq}",
+            "angle": "角度",
+            "exec_feasible": True,
+            "status": "candidate",
+        }
+        for direction_id in ids
+        for seq in range(1, per_direction + 1)
+    ]
+    return TopicRepo(ctx.connection).insert_many(rows)
+
+
+def _empty_service(ctx: Ctx) -> TopicService:
+    return _service(ctx, planner=FakePlanner(), ideator=FakeIdeator())
+
+
+def test_clear_all_preview_reports_and_writes_nothing(ctx: Ctx) -> None:
+    """``dry_run`` ⇒ 只报数：两个表一个字节都不动，也不留痕。
+
+    面板上那颗按钮是**点两下**的（第一下预览、第二下真删），所以预览必须是纯读 ——
+    它要是顺手写点什么，"点一下看看"就变成了一次不可撤销的操作。
+    """
+    topic_ids = _seed_pool(ctx, directions=2, per_direction=3)
+    TopicRepo(ctx.connection).set_status(topic_id=topic_ids[0], status="queued", task_id="t-1")
+
+    outcome = _empty_service(ctx).clear_all(dry_run=True)
+
+    assert outcome.dry_run is True
+    assert outcome.directions == 2
+    assert outcome.topics == 6
+    assert outcome.detached_task_count == 1
+    assert DirectionRepo(ctx.connection).count() == 2
+    assert TopicRepo(ctx.connection).count() == 6
+    assert AuditRepo(ctx.connection).list_recent(limit=10) == []
+
+
+def test_clear_all_removes_everything_and_keeps_the_tasks(ctx: Ctx) -> None:
+    """真删：两张表清空，**任务不跟着走**，留痕 + 日志各一条。
+
+    用户原话：「堆积太多内容会难以管理」。删掉的是想法，不是活 —— 派生过任务的那些选题
+    照删，而它们上的任务一条都不动（任务自己带着标题 / 角度 / 钩子）。
+    """
+    topic_ids = _seed_pool(ctx, directions=2, per_direction=3)
+    TopicRepo(ctx.connection).set_status(topic_id=topic_ids[0], status="queued", task_id="t-1")
+    TopicRepo(ctx.connection).set_status(topic_id=topic_ids[1], status="queued", task_id="t-2")
+    logged: list[tuple[str, str]] = []
+
+    def sink(**kwargs: Any) -> None:
+        logged.append((str(kwargs["level"]), str(kwargs["message"])))
+
+    outcome = _service(ctx, planner=FakePlanner(), ideator=FakeIdeator(), log=sink).clear_all(dry_run=False)
+
+    assert outcome.dry_run is False
+    assert outcome.directions == 2
+    assert outcome.topics == 6
+    assert outcome.detached_task_count == 2
+    assert DirectionRepo(ctx.connection).count() == 0
+    assert TopicRepo(ctx.connection).count() == 0
+
+    ops = AuditRepo(ctx.connection).list_recent(limit=5)
+    assert [op.action for op in ops] == ["topics.cleared"]
+    assert ops[0].target_type == "topic_pool"
+    assert ops[0].before == {"directions": 2, "topics": 6, "detached_task_count": 2}
+    assert ops[0].after == {"directions": 0, "topics": 0}
+
+    assert len(logged) == 1
+    assert "已清空选题面板" in logged[0][1]
+    assert "2 条已派生任务" in logged[0][1]
+
+
+def test_clear_all_leaves_the_inputs_and_outputs_alone(ctx: Ctx) -> None:
+    """清空**只动选题面板那两张表**：热点 / 反馈 / 任务都不是"面板上堆着的东西"。"""
+    _seed_pool(ctx, directions=1, per_direction=1)
+    before = {
+        "hot": ctx.connection.execute("SELECT COUNT(*) FROM hot_items").fetchone()[0],
+        "feedback": FeedbackItemRepo(ctx.connection).count(),
+    }
+
+    _empty_service(ctx).clear_all(dry_run=False)
+
+    assert ctx.connection.execute("SELECT COUNT(*) FROM hot_items").fetchone()[0] == before["hot"]
+    assert FeedbackItemRepo(ctx.connection).count() == before["feedback"]
+
+
+def test_clear_all_on_an_empty_panel_writes_no_audit(ctx: Ctx) -> None:
+    """空面板上点"清除"不留痕（与 ``asset.prune`` 同一条）：一条什么都没删的审计
+    会把审计页淹掉，而"我点了一下、它说没什么可清的"没有留档价值。"""
+    outcome = _empty_service(ctx).clear_all(dry_run=False)
+
+    assert (outcome.directions, outcome.topics, outcome.detached_task_count) == (0, 0, 0)
+    assert outcome.dry_run is False
+    assert AuditRepo(ctx.connection).list_recent(limit=10) == []
+
+
+def test_clear_all_preview_says_the_same_numbers_as_the_real_thing(ctx: Ctx) -> None:
+    """预览与真删走的是**同一个计数路径** ⇒ 预览说 6 条，真删就不会是别的数。
+
+    两处各数一遍的话，"预览说 13 条、真删删了 12 条"这类不一致没有任何地方会报错。
+    """
+    _seed_pool(ctx, directions=3, per_direction=2)
+    service = _empty_service(ctx)
+
+    preview = service.clear_all(dry_run=True)
+    real = service.clear_all(dry_run=False)
+
+    assert (preview.directions, preview.topics) == (real.directions, real.topics)
+    assert (real.directions, real.topics) == (3, 6)
 
 
 def test_mark_auto_refs_ignores_short_quotes() -> None:

@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import logging
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -21,10 +23,17 @@ import pytest
 from studio.core.config import AccountConfig, PlatformConfig
 from studio.core.errors import ErrorCode, PublishError
 from studio.core.paths import StudioPaths
-from studio.publish.base import PublisherContext, PublishRequest, PublishStatus
+from studio.publish import playwright_publisher
+from studio.publish.base import (
+    LOGIN_TIMEOUT_SEC,
+    PublisherContext,
+    PublishRequest,
+    PublishStatus,
+)
 from studio.publish.platforms.fixture import FixturePublisher
 from studio.publish.playwright_publisher import (
     READBACK_ATTEMPTS,
+    TOLERATED_READBACK_REASONS,
     PlaywrightPublisher,
 )
 from studio.publish.selectors import SelectorPack
@@ -40,6 +49,7 @@ PROGRESS = "#progress"
 PUBLISH = "#publish"
 SUCCESS = "#success"
 REJECT = "#reject"
+VERIFY = "#verify"
 POST_LINK = "#post-link"
 METRIC_ROW = '[data-post-id="{post_id}"]'
 METRIC_VIEWS = ".m-views"
@@ -66,7 +76,13 @@ class FakePage:
         login_page_text: str = "请扫码登录",
         eat: str = "",
         progress_ticks: int = 0,
+        progress_delay_ticks: int = 0,
+        progress_missing: bool = False,
+        progress_text: str = "",
+        redirect_to: str = "",
         result: str = "success",
+        verify_clears_after: int | None = None,
+        verify_leads_to_success: bool = True,
         title_readback: str | None = None,
         caption_readback: str | None = None,
         missing: frozenset[str] = frozenset(),
@@ -77,13 +93,45 @@ class FakePage:
         self.visited: list[str] = []
         self.clicks: list[str] = []
         self.uploaded: list[Any] = []
+        #: 每一次 ``fill`` 的 ``(选择器, 填进去的值)``。回读失败会重填 ≤2 次，
+        #: 所以"填了几次"是"有没有进重填循环"的直接证据。
+        self.fills: list[tuple[str, str]] = []
+        #: 关键动作的**先后**（"上传 → 看见进度 → 填字 → 点发布"）。
+        #: 第 ③ 步跑在上传还没完的时候，是"结果对不对"看不出来的那类错 ——
+        #: 只能靠顺序钉住（见 ``progress_delay_ticks``）。
+        self.events: list[str] = []
         self.screenshots: list[str] = []
         self.evaluate_calls: list[str] = []
         self._logged_in = logged_in
         self._login_page_text = login_page_text
         self._eat = eat
         self._progress_ticks = progress_ticks
+        #: 文件选上之后，进度条**隔几次轮询才出现**。真机上它不是立刻就有的：
+        #: 抖音先给一屏"加载中，请稍候…"，约 1~2s 后表单与进度条才渲染出来
+        #: （2026-09-23 真机实测）—— "看不到进度条"被读成"已经传完"正是那一坑。
+        self._progress_delay_ticks = progress_delay_ticks
+        #: 这个页面**根本没有**进度元素（有些平台不上报上传进度）。
+        self._progress_missing = progress_missing
+        #: 进度元素 ``text_content`` 的前缀。真机上进度条常常被裹在一个外层里，
+        #: 于是读到的是一大段（"已上传：100.0MB/182.1MB … 25%"）而不是干净的 `25%`。
+        self._progress_text = progress_text
+        self._progress_rounds = 0
+        self._uploading = False
         self._result = result
+        #: 「人过掉验证」的模拟：验证框前 ``verify_clears_after`` 次轮询还在，之后消失
+        #: ⇒ 成功页出现（真机上人输对码之后，平台自己把这次发布走完）。
+        #: ``None`` ⇒ 框一直在（人没动手 / 输错了），用来验"等不到"那条。
+        self._verify_clears_after = verify_clears_after
+        self._verify_rounds = 0
+        #: 框消失之后**平台是不是真的把这次发布走完了**。真机上大多数情况是
+        #: （人输对码 ⇒ 出现成功页），但"人点了取消 / 输错三次退出"是同一现象、
+        #: 不同结局 —— 而这两种结局正是要分开验的，所以它能单独关掉。
+        self._verify_leads_to_success = verify_leads_to_success
+        #: 人过掉验证之后置真 —— 成功判据看它（见 ``query_selector``）。
+        self._human_passed_verify = False
+        #: 点下发布之后页面会跳到哪儿（真机：抖音落到内容管理列表）。
+        #: 空 ⇒ 停在原地（与"平台只是原地换个元素"那种改版一致）。
+        self._redirect_to = redirect_to
         self._missing = missing
         self._title_readback = title_readback
         self._caption_readback = caption_readback
@@ -94,23 +142,47 @@ class FakePage:
         self._metric_text = dict(metric_text or {})
         self.title = ""
         self.caption = ""
+        #: 当前地址（真 Playwright 的 ``page.url``）。第 ⑦ 步的"平台把页面跳走了"
+        #: 那条判据读它（见 ``markers.success_url_contains``）。
+        self.url = ""
 
     # ── 动作 ────────────────────────────────────────────────────────
 
     async def goto(self, url: str, **_: Any) -> Any:
         self.visited.append(url)
+        self.url = url
         return None
 
     async def query_selector(self, selector: str) -> Any | None:
         if selector in self._missing:
             return None
+        if selector == PROGRESS:
+            # 上传面板的进度条：**选完文件之后**才可能出现在页面上，而且可能还要等
+            # 一两拍（见 ``progress_delay_ticks``）。轮次在这里推进：``_wait_upload``
+            # 每一轮先问在不在、再读文本。
+            self._progress_rounds += 1
+            if (
+                self._progress_missing
+                or not self._uploading
+                or self._progress_rounds <= self._progress_delay_ticks
+            ):
+                return None
+            self.events.append("progress:seen")
+            return object()
+        if selector == VERIFY and self._result == "verify":
+            # 验证框**不**走下面那张查表：它有一条时间轴（人什么时候把码输对）。
+            self._verify_rounds += 1
+            if self._verify_clears_after is not None and self._verify_rounds > self._verify_clears_after:
+                self._human_passed_verify = self._verify_leads_to_success
+                return None
+            return object()
         # 查表而不是 if 链：多一个"元素在不在"的判据时只加一行，不改控制流。
         present = {
             LOGIN_OK: self._logged_in,
             LOGIN_REQUIRED: not self._logged_in,
-            PROGRESS: self._progress_ticks > 0,
-            SUCCESS: self._result == "success",
+            SUCCESS: self._result == "success" or self._human_passed_verify,
             REJECT: self._result == "reject",
+            VERIFY: self._result == "verify",
         }
         return object() if present.get(selector, True) else None
 
@@ -120,21 +192,43 @@ class FakePage:
             raise TimeoutError(selector)
         return handle
 
+    async def query_selector_all(self, selector: str) -> Any:
+        """这个选择器命中几个。
+
+        八步里**一处都不用**它 —— 它只服务于 ``publish calibrate`` 那条探针
+        （校准要回答的第一个问题就是"这条猜出来的 CSS 在真页面上命中了几个"）。
+        这里仍然给一条实现，是因为 ``PageLike`` 是**结构化**协议：少一条方法 ⇒
+        ``FakeSession`` 不再是 ``BrowserSession`` ⇒ 本文件每一处 ``session_factory=``
+        都过不了 mypy（而那是 10 条与本层判据无关的报错）。
+        """
+        return [] if selector in self._missing else [object()]
+
     async def set_input_files(self, selector: str, files: Any) -> None:
         if selector in self._missing:
             raise RuntimeError(f"no element: {selector}")
         self.uploaded.append((selector, files))
+        self._uploading = True
+        self.events.append("upload")
 
     async def fill(self, selector: str, value: str) -> None:
         if selector in self._missing:
             raise RuntimeError(f"no element: {selector}")
+        self.fills.append((selector, value))
+        self.events.append(f"fill:{selector}")
         if selector == TITLE:
             self.title = value
         elif selector == CAPTION:
             self.caption = self._swallow(value)
 
     async def click(self, selector: str, **_: Any) -> None:
+        # 元素不在 ⇒ 真 Playwright 会一直等（等到超时抛错），这里照做：
+        # "点一个不存在的元素"静默成功，会让"弹层关掉了"这类判据在单测里变成假的。
+        if selector in self._missing:
+            raise TimeoutError(f"click: {selector}")
         self.clicks.append(selector)
+        self.events.append(f"click:{selector}")
+        if selector == PUBLISH and self._redirect_to:
+            self.url = self._redirect_to
 
     async def screenshot(self, *, path: Any, full_page: bool = False) -> bytes:
         # ``to_thread``：真 Playwright 的 screenshot 不阻塞事件循环，假页面也照做 ——
@@ -165,6 +259,7 @@ class FakePage:
             TITLE: self._title_value(),
             REJECT: "审核不通过",
             SUCCESS: "发布成功",
+            VERIFY: "接收短信验证码",
         }
         for suffix, text in self._metric_text.items():
             if selector.endswith(suffix):
@@ -173,10 +268,12 @@ class FakePage:
 
     async def text_content(self, selector: str) -> str | None:
         if selector == PROGRESS:
+            # 已经读到 100% 就不再重复报 —— 真页面上那个数字也会停住。
             if self._progress_ticks <= 0:
-                return None
+                return f"{self._progress_text}100%"
             self._progress_ticks -= 1
-            return "100%" if self._progress_ticks == 0 else "42%"
+            percent = "100%" if self._progress_ticks == 0 else "42%"
+            return f"{self._progress_text}{percent}"
         return await self.inner_text(selector)
 
     async def input_value(self, selector: str) -> str:
@@ -239,6 +336,49 @@ class FakeSession:
         self.exited += 1
 
 
+class ScanningPage(FakePage):
+    """扫完码之后才答"登上了"的页面（第 ``after`` 次被问才翻转）。
+
+    真机上的顺序是：窗口里是登录页 ⇒ 人掏手机扫 ⇒ 平台把页面换掉。所以"翻转"
+    发生在**问**的那一刻，而不是某个定时器上 —— 与真页面一致。
+    """
+
+    def __init__(self, *, after: int = 1, **kwargs: Any) -> None:
+        super().__init__(logged_in=False, **kwargs)
+        self._after = after
+        self._asked = 0
+
+    async def query_selector(self, selector: str) -> Any | None:
+        if selector == LOGIN_REQUIRED:
+            self._asked += 1
+            if self._asked >= self._after:
+                self._logged_in = True
+        return await super().query_selector(selector)
+
+
+class LateRenderPage(FakePage):
+    """首屏**还没渲染完**的页面：前几次问"登录标志在不在"都答"不在"。
+
+    真机实测（2026-09-23）：已登录的抖音创作中心在 ``domcontentloaded`` 之后 +0.1s
+    两个标志都不在、+1.0s 才出现头像。只问一次就把这个页面读成了"没登录"。
+    """
+
+    def __init__(self, *, after: int = 1, **kwargs: Any) -> None:
+        super().__init__(logged_in=False, **kwargs)
+        self._after = after
+        self._asked = 0
+        self._rendered = False
+
+    async def query_selector(self, selector: str) -> Any | None:
+        if selector in (LOGIN_OK, LOGIN_REQUIRED) and not self._rendered:
+            self._asked += 1
+            if self._asked < self._after:
+                return None
+            self._rendered = True
+            self._logged_in = True
+        return await super().query_selector(selector)
+
+
 # ── 夹具 ──────────────────────────────────────────────────────────────
 
 
@@ -280,7 +420,7 @@ def _pack(**overrides: Any) -> SelectorPack:
     )
 
 
-def _ctx(tmp_paths: StudioPaths) -> PublisherContext:
+def _ctx(tmp_paths: StudioPaths, *, await_manual_verify: bool = False) -> PublisherContext:
     return PublisherContext(
         paths=tmp_paths,
         account=AccountConfig(
@@ -295,6 +435,7 @@ def _ctx(tmp_paths: StudioPaths) -> PublisherContext:
             title_max=55,
             caption_max=1000,
         ),
+        await_manual_verify=await_manual_verify,
     )
 
 
@@ -320,6 +461,10 @@ def _publisher(
     *,
     pack: SelectorPack | None = None,
     settle_sec: float = 0.0,
+    progress_grace_sec: float = 0.0,
+    marker_wait_sec: float = 0.0,
+    await_manual_verify: bool = False,
+    manual_verify_wait_sec: float = 0.0,
 ) -> tuple[PlaywrightPublisher, FakeSession]:
     session = FakeSession(page)
 
@@ -327,10 +472,13 @@ def _publisher(
         platform = "douyin"
 
     publisher = _Publisher(
-        _ctx(tmp_paths),
+        _ctx(tmp_paths, await_manual_verify=await_manual_verify),
         pack=pack or _pack(),
         session_factory=lambda _ctx: session,
         settle_sec=settle_sec,
+        progress_grace_sec=progress_grace_sec,
+        marker_wait_sec=marker_wait_sec,
+        manual_verify_wait_sec=manual_verify_wait_sec,
     )
     return publisher, session
 
@@ -388,6 +536,48 @@ class TestOpenAndUpload:
         publisher._upload_timeout_sec = 0.05
         result = await publisher.publish(_request(tmp_path))
         assert result.error_code == ErrorCode.PUBLISH_TIMEOUT
+
+    async def test_upload_waits_for_a_progress_bar_that_appears_late(
+        self, tmp_paths: StudioPaths, tmp_path: Path
+    ) -> None:
+        """★ 真机坑（2026-09-23）：进度条**不是**选完文件就有的，而"看不到它"曾被读成"传完了"。
+
+        症状：190MB 的成片还在 0%，第 ③ 步已经把标题文案填完、发布按钮也点下去了，
+        平台回一句"你还有上次未发布的视频，是否继续编辑？"，整条发布卡在 600s 单元超时上。
+        判据必须是"**先看见、再消失**（或走到 100%）"。
+        """
+        page = FakePage(progress_ticks=1, progress_delay_ticks=2)
+        publisher, _ = _publisher(tmp_paths, page, progress_grace_sec=5.0)
+        assert (await publisher.publish(_request(tmp_path))).ok
+
+        order = page.events
+        assert order.index("upload") < order.index("progress:seen")
+        # 上传还没被看见之前，一个框都不许填（填了就等于在 0% 的页面上往下走）。
+        first_fill = next(index for index, item in enumerate(order) if item.startswith("fill:"))
+        assert order.index("progress:seen") < first_fill
+
+    async def test_a_page_without_a_progress_bar_falls_back_to_a_settle(
+        self, tmp_paths: StudioPaths, tmp_path: Path
+    ) -> None:
+        """有些页面根本没有进度元素 ⇒ 宽限期一过就退回"等一拍"，**不是**死等到超时。"""
+        page = FakePage(progress_missing=True)
+        publisher, _ = _publisher(tmp_paths, page, progress_grace_sec=0.0)
+        assert (await publisher.publish(_request(tmp_path))).ok
+        assert "progress:seen" not in page.events
+
+    async def test_a_byte_count_containing_100_is_not_read_as_done(
+        self, tmp_paths: StudioPaths, tmp_path: Path
+    ) -> None:
+        """进度元素外面裹一层时，文字里会出现"已上传 100.0MB/182.1MB"这种读数。
+
+        在那一大段里找子串 ``100`` 会把 **100MB 的成片**在 25% 时判成"传完了" ——
+        而"提前往下走"正是这块判据要防的事。要的是 ``100%``。
+        """
+        page = FakePage(progress_ticks=2, progress_text="已上传：100.0MB/182.1MB  25%")
+        publisher, _ = _publisher(tmp_paths, page, progress_grace_sec=5.0)
+        assert (await publisher.publish(_request(tmp_path))).ok
+        # 读了两轮（25% → 100%）才放行，而不是第一轮就往下走。
+        assert page.events.count("progress:seen") >= 2
 
 
 # ── 第 ③④步：填字 + 封面 ─────────────────────────────────────────────
@@ -470,6 +660,35 @@ class TestReadback:
         assert not result.ok
         assert "whitespace_only" in (result.error_message or "")
 
+    async def test_invisible_only_readback_is_tolerated(self, tmp_paths: StudioPaths, tmp_path: Path) -> None:
+        """真机 2026-09-23：编辑器在文案末尾塞了一个零宽空格（U+200B）⇒ **照样发**。
+
+        这不是"放宽判据"：文案一个字都没少，多出来的是编辑器自己的哨兵。判据本身
+        仍然说"两边不逐字相同"（``matched`` 为假），是**调用方**决定放行 —— 两者的
+        分工就是为这种情况留的。
+        """
+        page = FakePage(caption_readback="点个关注\u200b")
+        result = await _run(tmp_paths, tmp_path, page)
+        assert result.ok
+        # 一次就够：放行的这一类**不进重填循环**（进了就是三次 ``fill``）。
+        assert [selector for selector, _ in page.fills].count(CAPTION) == 1
+
+    async def test_invisible_only_is_logged_at_info(
+        self, tmp_paths: StudioPaths, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """放行要**留一句话**：这是全链路唯一一处"两边对不上、我们照样往下发"。
+
+        info 而不是 debug：平台每次都会塞那个哨兵 ⇒ 这条日志每次都会命中，写成 debug
+        等于默认级别下什么都没记（真机排查时正需要它）。
+        """
+        page = FakePage(caption_readback="点个关注\u200b")
+        with caplog.at_level(logging.INFO, logger=playwright_publisher.__name__):
+            assert (await _run(tmp_paths, tmp_path, page)).ok
+        released = [record.getMessage() for record in caplog.records]
+        assert any(
+            "回读放行（只差不可见字符）" in line and "文案" in line and "U+200B" in line for line in released
+        ), released
+
     async def test_caption_is_read_as_value_when_declared_textarea(
         self, tmp_paths: StudioPaths, tmp_path: Path
     ) -> None:
@@ -546,6 +765,40 @@ class TestDryRunStopsBeforePublish:
         assert PUBLISH in page.clicks
         assert result.status == PublishStatus.PUBLISHED
 
+    async def test_a_blocking_overlay_is_dismissed_first(
+        self, tmp_paths: StudioPaths, tmp_path: Path
+    ) -> None:
+        """★ 真机坑（2026-09-23）：平台提示弹层的按钮压在发布按钮的命中区上。
+
+        抖音第一次上传成片时会弹"视频预览功能 / 我知道了"，而 Playwright 的 ``click``
+        会**等**元素能收到指针事件（默认 60s）—— 那一步会安静地耗掉一整分钟。
+        弹层是装饰品，点掉它就好；点不掉也不该把这条片子卡死（同 ``cover_trigger``）。
+        """
+        page = FakePage()
+        pack = _pack(selectors={"dismiss_overlay": "#dismiss"})
+        publisher, _ = _publisher(tmp_paths, page, pack=pack)
+        assert (await publisher.publish(_request(tmp_path, dry_run=False))).ok
+        assert page.clicks.index("#dismiss") < page.clicks.index(PUBLISH)
+
+    async def test_a_dismiss_that_fails_is_not_a_failure(
+        self, tmp_paths: StudioPaths, tmp_path: Path
+    ) -> None:
+        """没有弹层（大多数时候）⇒ ``click`` 超时，**照常往下走**。"""
+        page = FakePage(missing=frozenset({"#dismiss"}))
+        pack = _pack(selectors={"dismiss_overlay": "#dismiss"})
+        publisher, _ = _publisher(tmp_paths, page, pack=pack)
+        assert (await publisher.publish(_request(tmp_path, dry_run=False))).ok
+        assert "#dismiss" not in page.clicks
+
+    async def test_no_dismiss_selector_means_no_extra_click(
+        self, tmp_paths: StudioPaths, tmp_path: Path
+    ) -> None:
+        """没声明就一次多余的点击都不发（默认 pack 与靶页都没有这个键）。"""
+        page = FakePage()
+        publisher, _ = _publisher(tmp_paths, page)
+        await publisher.publish(_request(tmp_path, dry_run=False))
+        assert page.clicks == [PUBLISH]
+
 
 # ── 第 ⑦⑧步：结果页 ─────────────────────────────────────────────────
 
@@ -584,6 +837,166 @@ class TestResult:
         result = await publisher.publish(_request(tmp_path, dry_run=False))
         assert result.error_code == ErrorCode.PUBLISH_TIMEOUT
 
+    async def test_a_redirect_away_is_also_a_success(self, tmp_paths: StudioPaths, tmp_path: Path) -> None:
+        """★ 真机坑（2026-09-23）：抖音**不发**"发布成功"，而是把页面跳到内容管理列表。
+
+        只认元素的话，一条**已经发出去**的内容会在 600s 之后被记成失败 —— 而那时人
+        已经在平台上看到它了。平台把页面跳走，是同一个事实的另一种说法（陷阱 #228）。
+        """
+        page = FakePage(result="nothing", redirect_to="https://example.invalid/manage")
+        pack = _pack(markers={"success_url_contains": ["/manage"]})
+        publisher, _ = _publisher(tmp_paths, page, pack=pack)
+        result = await publisher.publish(_request(tmp_path, dry_run=False))
+        assert result.ok and result.status == PublishStatus.PUBLISHED
+        assert result.evidence is not None and result.evidence.stage == "07-result"
+
+    async def test_a_rejection_still_wins_over_the_redirect(
+        self, tmp_paths: StudioPaths, tmp_path: Path
+    ) -> None:
+        """审核不通过的判据**排在前面**：跳走的同时页面写着"审核不通过" ⇒ 那是驳回。"""
+        page = FakePage(result="reject", redirect_to="https://example.invalid/manage")
+        pack = _pack(markers={"success_url_contains": ["/manage"]})
+        publisher, _ = _publisher(tmp_paths, page, pack=pack)
+        result = await publisher.publish(_request(tmp_path, dry_run=False))
+        assert result.error_code == ErrorCode.PUBLISH_REVIEW_REJECTED
+
+    async def test_no_url_marker_means_the_redirect_is_not_enough(
+        self, tmp_paths: StudioPaths, tmp_path: Path
+    ) -> None:
+        """没声明就不认（默认 pack 与靶页都没这个键）：判据是**平台自己选的**，不是默认。"""
+        page = FakePage(result="nothing", redirect_to="https://example.invalid/manage")
+        publisher, _ = _publisher(tmp_paths, page)
+        publisher._publish_timeout_sec = 0.05
+        result = await publisher.publish(_request(tmp_path, dry_run=False))
+        assert result.error_code == ErrorCode.PUBLISH_TIMEOUT
+
+    async def test_a_verification_prompt_goes_to_a_human(
+        self, tmp_paths: StudioPaths, tmp_path: Path
+    ) -> None:
+        """★ 真机坑（2026-09-23）：点下发布之后平台弹「接收短信验证码」。
+
+        这是**人的活**（R13：不替人过验证），但它是"自动这条路走完了、接下来等人"，
+        不是失败 —— 所以转 ``manual_required`` 并说清要做什么。不认这一条的话，
+        现场看到的是"卡在那里直到 600s 超时"，而屏幕上明明写着要做什么。
+        """
+        page = FakePage(result="verify")
+        pack = _pack(selectors={"verify_marker": "#verify"})
+        publisher, _ = _publisher(tmp_paths, page, pack=pack)
+        result = await publisher.publish(_request(tmp_path, dry_run=False))
+        assert result.status == PublishStatus.MANUAL_REQUIRED
+        assert "短信验证" in (result.error_message or "")
+        assert result.evidence is not None and result.evidence.screenshot_path is not None
+
+    async def test_verification_loses_to_a_rejection(self, tmp_paths: StudioPaths, tmp_path: Path) -> None:
+        """驳回的判据排在前面：页面同时写着"审核不通过" ⇒ 那是驳回，不是等人验证。"""
+        page = FakePage(result="reject")
+        pack = _pack(selectors={"verify_marker": "#verify"})
+        publisher, _ = _publisher(tmp_paths, page, pack=pack)
+        result = await publisher.publish(_request(tmp_path, dry_run=False))
+        assert result.error_code == ErrorCode.PUBLISH_REVIEW_REJECTED
+
+    async def test_no_verify_selector_means_no_extra_probe(
+        self, tmp_paths: StudioPaths, tmp_path: Path
+    ) -> None:
+        """没声明就不问（默认 pack 与靶页都没有这个键）—— 判据是**平台自己选的**。"""
+        page = FakePage(result="success")
+        publisher, _ = _publisher(tmp_paths, page)
+        assert (await publisher.publish(_request(tmp_path, dry_run=False))).ok
+
+
+class TestManualVerify:
+    """窗口前面**有人**时的第 ⑦ 步（T6.4 · 真机 2026-09-23「人工过验证」）。
+
+    与 :class:`TestResult` 里那条"弹验证框就转 manual_required"的差别**只有一个人**：
+    ``ctx.await_manual_verify``。判据一条都没变 —— 变的只是"弹框"这件事的读法：
+    没人时它是"自动流程到此为止"，有人时它是"轮到你了，我接着等"。
+
+    这里要钉住三件事：
+    - 人过掉验证 ⇒ 照旧由成功判据收场（**不是**因为"框没了"就算成功）；
+    - 人没动手 ⇒ 超时文案得说"验证框一直在"，而不是含糊的"等不到结果页"；
+    - 框没了但没看到结果页 ⇒ 文案要把人**先赶去平台上确认**，**不**引导他点重试
+      （万一已经发出去了，重试就是第二条，R14 不可逆）。
+    """
+
+    async def test_a_human_passing_the_verification_lets_the_publish_finish(
+        self, tmp_paths: StudioPaths, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(playwright_publisher, "POLL_SEC", 0.0)
+        page = FakePage(result="verify", verify_clears_after=2, post_url="https://example.invalid/post/1")
+        pack = _pack(selectors={"verify_marker": VERIFY})
+        publisher, _ = _publisher(
+            tmp_paths,
+            page,
+            pack=pack,
+            await_manual_verify=True,
+            manual_verify_wait_sec=5.0,
+        )
+        result = await publisher.publish(_request(tmp_path, dry_run=False))
+        assert result.ok
+        assert result.status == PublishStatus.PUBLISHED
+        assert result.url == "https://example.invalid/post/1"
+        # 人在窗口里动手这件事**看得见**：轮询真的问过那个框。
+        assert page.clicks.count(PUBLISH) == 1
+
+    async def test_a_verification_box_that_never_goes_away_times_out_saying_so(
+        self, tmp_paths: StudioPaths, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(playwright_publisher, "POLL_SEC", 0.0)
+        page = FakePage(result="verify")
+        pack = _pack(selectors={"verify_marker": VERIFY})
+        publisher, _ = _publisher(
+            tmp_paths,
+            page,
+            pack=pack,
+            await_manual_verify=True,
+            manual_verify_wait_sec=0.0,
+        )
+        # 两条上界都压到 0：这里验的是**文案**，不是真等 900 秒。
+        publisher._publish_timeout_sec = 0.05
+        result = await publisher.publish(_request(tmp_path, dry_run=False))
+        assert result.error_code == ErrorCode.PUBLISH_TIMEOUT
+        assert result.evidence is not None
+        tail = result.evidence.stderr_tail or ""
+        assert "验证框一直在" in tail
+        # 这一步之后窗口已经关了，所以下一句必须是"要接着发就再点一次"，
+        # 而不是"点重试"（重试只会再弹一次同一个框）。
+        assert "再点一次「人工过验证」" in tail
+
+    async def test_a_vanished_box_but_no_result_page_sends_the_human_to_check_first(
+        self, tmp_paths: StudioPaths, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """框没了**不等于**发成功：人可能只是点了取消。这时最要紧的是"先去平台上看看"。"""
+        monkeypatch.setattr(playwright_publisher, "POLL_SEC", 0.0)
+        page = FakePage(result="verify", verify_clears_after=1, verify_leads_to_success=False)
+        pack = _pack(selectors={"verify_marker": VERIFY})
+        publisher, _ = _publisher(
+            tmp_paths,
+            page,
+            pack=pack,
+            await_manual_verify=True,
+            manual_verify_wait_sec=0.0,
+        )
+        publisher._publish_timeout_sec = 0.05
+        result = await publisher.publish(_request(tmp_path, dry_run=False))
+        assert result.error_code == ErrorCode.PUBLISH_TIMEOUT
+        assert result.evidence is not None
+        tail = result.evidence.stderr_tail or ""
+        assert "验证框已经没了" in tail
+        # 万一它其实已经发出去了，引导他点「重试」就是引导他发第二条（R14 不可逆）。
+        assert "确认这条到底发出去没有" in tail
+
+    async def test_the_human_wait_only_raises_the_ceiling_never_lowers_it(
+        self, tmp_paths: StudioPaths
+    ) -> None:
+        """``max`` 而不是"直接换掉"：调用方显式调长的超时不该被这一条又缩回去。"""
+        publisher, _ = _publisher(tmp_paths, FakePage(), await_manual_verify=True)
+        publisher._publish_timeout_sec = 5_000.0
+        assert publisher._result_budget_sec() == 5_000.0
+
+        plain, _ = _publisher(tmp_paths, FakePage())
+        plain._publish_timeout_sec = 5_000.0
+        assert plain._result_budget_sec() == 5_000.0
+
 
 # ── 登录态探测 ───────────────────────────────────────────────────────
 
@@ -600,6 +1013,38 @@ class TestHealth:
         health = await publisher.health()
         assert not health.ready and not health.logged_in
         assert health.hint == "尚未登录，需人工扫码登录"
+
+    async def test_waits_for_the_first_screen_to_render(
+        self, tmp_paths: StudioPaths, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """★ 真机坑（2026-09-23）：``domcontentloaded`` 那一刻 SPA 还没渲染完。
+
+        实测：已登录的创作中心在 +0.1s 两个标志都不在、+1.0s 才出现头像。只问一次
+        就把一个**已经登录**的号报成"尚未登录" —— 人于是去重扫一个其实好好的号。
+        """
+        monkeypatch.setattr(playwright_publisher, "POLL_SEC", 0.0)
+        page = LateRenderPage(after=2)
+        publisher, _ = _publisher(tmp_paths, page, marker_wait_sec=5.0)
+
+        health = await publisher.health()
+
+        assert health.ready and health.logged_in
+        assert page._asked >= 2
+
+    async def test_markers_missing_is_unknown_not_logged_out(self, tmp_paths: StudioPaths) -> None:
+        """两个标志都没出现 ⇒ **不知道**，不是"你没登录"。
+
+        说成"没登录"会把人赶去扫码，而这句话唯一有资格说的是页面：它可能只是还没
+        渲染完，也可能是平台改版了 —— 两种的下一步动作都不是"再扫一次"。
+        """
+        page = FakePage(missing=frozenset({LOGIN_OK, LOGIN_REQUIRED}))
+        publisher, _ = _publisher(tmp_paths, page)
+
+        health = await publisher.health()
+
+        assert not health.ready and not health.logged_in
+        assert "都没出现" in (health.hint or "")
+        assert "尚未登录" not in (health.hint or "")
 
     async def test_expired_is_distinguished_from_never_logged_in(self, tmp_paths: StudioPaths) -> None:
         """§06.13 逐字要求"能正确报告'未登录'与'登录态已过期'"。
@@ -642,6 +1087,73 @@ class TestHealth:
         publisher, _ = _publisher(tmp_paths, page)
         await publisher.health()
         assert page.visited == ["https://example.invalid/manage"]
+
+
+class TestLogin:
+    """扫码登录（T6.4）：开**可见**窗口等人扫，扫完关掉、报结论。
+
+    这一组验的是"等待期间**不做**什么"——它比"做了什么"更容易出错：
+    重新导航会把码换掉、不关窗口会把 profile 占住。
+    """
+
+    async def test_waits_for_the_scan_then_reports_success(
+        self, tmp_paths: StudioPaths, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(playwright_publisher, "LOGIN_POLL_SEC", 0.0)
+        page = ScanningPage(after=1)
+        publisher, session = _publisher(tmp_paths, page)
+
+        health = await publisher.login(timeout_sec=5)
+
+        assert health.ready and health.logged_in
+        assert health.account_name == "测试账号"
+        # 窗口必须关掉：同一个账号的 profile **同时只能开一个浏览器**
+        assert session.exited == 1
+
+    async def test_polls_until_the_scan_lands(
+        self, tmp_paths: StudioPaths, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """人掏手机要时间 —— 第 3 次问才答"登上了"，照样要等到。"""
+        monkeypatch.setattr(playwright_publisher, "LOGIN_POLL_SEC", 0.0)
+        page = ScanningPage(after=3)
+        publisher, _ = _publisher(tmp_paths, page)
+
+        assert (await publisher.login(timeout_sec=5)).ready
+        assert page._asked >= 3
+
+    async def test_does_not_renavigate_while_waiting(
+        self, tmp_paths: StudioPaths, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """等扫码期间**只轮询、不重新导航**：登录页的码是一次性的。
+
+        每重新导航一次就换一张码 ⇒ 用户扫的那张在他按下确认的那一刻已经作废，
+        而症状是"我明明扫了，它说没扫到"—— 一句两边都自洽、没有任何地方会报错的谎话。
+        """
+        monkeypatch.setattr(playwright_publisher, "LOGIN_POLL_SEC", 0.0)
+        page = ScanningPage(after=4)
+        publisher, _ = _publisher(tmp_paths, page)
+
+        await publisher.login(timeout_sec=5)
+
+        assert page.visited == ["https://example.invalid/manage"]
+
+    async def test_timeout_is_a_hint_not_an_error(
+        self, tmp_paths: StudioPaths, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """等不到人扫码 ⇒ **不抛**：返回一句照做的话（"再点一次"），窗口照样关掉。"""
+        monkeypatch.setattr(playwright_publisher, "LOGIN_POLL_SEC", 0.0)
+        publisher, session = _publisher(tmp_paths, FakePage(logged_in=False))
+
+        health = await publisher.login(timeout_sec=0)
+
+        assert not health.ready and not health.logged_in
+        assert "没等到" in (health.hint or "")
+        assert session.exited == 1
+
+    def test_the_wait_has_a_shared_default(self) -> None:
+        """默认等待上限来自 ``LOGIN_TIMEOUT_SEC``（CLI / REST / 面板说的是同一个数）。"""
+        default = inspect.signature(PlaywrightPublisher.login).parameters["timeout_sec"].default
+        assert default == LOGIN_TIMEOUT_SEC
 
 
 # ── 其余约定 ─────────────────────────────────────────────────────────
@@ -739,6 +1251,15 @@ class TestConventions:
         """版本住在 yaml 里（可热修）。写成 ``ClassVar`` 会得到一个**永远不变**的版本号。"""
         publisher, _ = _publisher(tmp_paths, FakePage(), pack=_pack())
         assert publisher.selectors_version == "test-1"
+
+    async def test_only_invisible_differences_are_tolerated(self) -> None:
+        """放行名单**只有一项**，且必须只有一项。
+
+        ``whitespace_only`` / ``emoji_stripped`` 代表"文案真的变了"（换行被吃、emoji 被
+        吞），放行它们等于把第 ⑤ 步存在的理由取消掉。这条用例是那道闸：谁把这两个塞进
+        名单，这里就红。
+        """
+        assert frozenset({"invisible_only"}) == TOLERATED_READBACK_REASONS
 
     async def test_session_is_closed_on_success(self, tmp_paths: StudioPaths, tmp_path: Path) -> None:
         page = FakePage()

@@ -10,9 +10,16 @@
 【六个维度】（每项 0–10 分，comment ≤200 字，说清"为什么是这个分"）
 - `hook_opening` 开场钩子：前 3 秒抓不抓人？听完第一句还想不想听第二句？
 - `positioning_fit` 定位契合：是否贴合「{{role_desc}}」的定位与受众（{{audience}}）？
+  **标题也在这里判**：标题要跟一级标题同档（书面、有信息量）。写成台词腔、
+  满是口语碎词（“你得知道”“得有个准话”“到底谁来补”），或者出现角色名
+  （{{speaker_names}}）/ `某某：…` 这种“谁在说”的格式 ⇒ 记一条 `TITLE_COLLOQUIAL`
+  或 `NAME_LEAK`，`target` 填 `title`。
+  **这个账号的定位就是“用一个观点解释一件事”** —— 全篇有没有立起一个站得住的观点（熊大立论、熊二提出假设去试探），是这一项的主要判据；只是闲聊、没有主张 ⇒ 低分。
 - `oral_style` 口语化：像不像**真人张嘴说话**？（书面词、长定语、翻译腔一律扣分）
 - `emotion_rhythm` 情绪节奏：有没有起伏？是不是一路平铺直叙？
-- `ending_cta` 结尾引导：结尾的引导自不自然？硬广感太强要扣分。
+- `ending_cta` 结尾收束：结尾有没有**把观点钉死**（收成一句观众能记住的话）？
+  结尾**向观众提问 / 求评论互动**（“你说呢？”“评论区打俩字”）⇒ 直接判 0–3 分，
+  并在 `issues` 里给一条 `severity=block`、`target=cta` 的问题。硬广感太强同样扣分。
 - `forbidden` 禁区：有没有擦边、冒犯、绝对化承诺（"最""第一""保证"）？干净就给高分。
 
 【打分尺度】（请对齐这个尺度，否则分数没法横向比）
@@ -23,9 +30,12 @@
 - 0–2：基本不可用
 
 【issues 的写法】每条必须有这五个字段
-- `code`：大写短码（如 `HOOK_WEAK` / `ORAL_STIFF` / `CTA_HARD_SELL` / `RHYTHM_FLAT` / `RISK_WORD`）
+- `code`：大写短码（如 `HOOK_WEAK` / `TITLE_COLLOQUIAL` / `NAME_LEAK` / `ORAL_STIFF` /
+  `NO_ARGUMENT` / `FILLER_TALK` / `ENDING_QUESTION` / `CTA_HARD_SELL` / `RHYTHM_FLAT` /
+  `RISK_WORD`）
 - `severity`：`block`（必须改，不改不能用）/ `major`（影响效果）/ `minor`（锦上添花）
-- `target`：★ 问题**落在哪里**，只能填这四种之一
+- `target`：★ 问题**落在哪里**，只能填这五种之一
+  - `title`（标题）
   - `hook`（开场）
   - `segment:1` / `segment:2` / …（第 N 段；N 从 1 起，最多到 {{segment_count}}）
   - `cta`（结尾）

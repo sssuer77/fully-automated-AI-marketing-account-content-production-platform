@@ -458,10 +458,13 @@ class RenderJobService:
         text = request.text
         sentences = request.sentences
         sentence_voices = request.sentence_voices
+        sentence_speakers = request.sentence_speakers
         if not text.strip():
             rows = self._script_rows(request.task_id)
             text = "".join(row.text for row in rows)
             sentences = tuple(row.text for row in rows)
+            # 逐句说话人（人物贴图的换图按它算"谁在讲"）。与 `sentences` 同源同长。
+            sentence_speakers = tuple(row.speaker for row in rows)
             # 逐句音色（多角色稿子：整篇套一个嗓子会把旁白也念成熊大）。
             # 没有连接工厂 ⇒ 空元组（`_script_rows` 上面已经拦过这种情况，这里是类型收窄）。
             factory = self._connection_factory
@@ -470,7 +473,13 @@ class RenderJobService:
             )
 
         return produce_video(
-            replace(request, text=text, sentences=sentences, sentence_voices=sentence_voices),
+            replace(
+                request,
+                text=text,
+                sentences=sentences,
+                sentence_voices=sentence_voices,
+                sentence_speakers=sentence_speakers,
+            ),
             paths=self._paths,
             outputs=self._outputs,
             outputs_source=self._paths.config_dir / "outputs.yaml",

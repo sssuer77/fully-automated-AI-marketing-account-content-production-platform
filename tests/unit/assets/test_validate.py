@@ -21,7 +21,6 @@ from studio.assets.validate import (
     BGM_MIN_DURATION_MS,
     BROLL_MIN_USABLE_MS,
     VOICE_MIN_SAMPLE_RATE,
-    VOICE_MIN_SEGMENTS,
     VOICE_PEAK_CEILING_DB,
     VOICE_SEGMENT_MAX_MS,
     VOICE_SEGMENT_MIN_MS,
@@ -294,27 +293,38 @@ class TestCheckVoice:
     def test_no_reference_audio_at_all(self, tmp_path: Path) -> None:
         candidate = _voice_candidate(tmp_path, ["ref.txt", "profile.json"])
         result = check_voice(candidate, probe=_probe_ok(_info()), volume=_volume_ok())
-        assert set(_codes(result)) == {"no_refs", "too_few_refs"}
+        assert _codes(result) == ["no_refs"]
 
-    def test_one_segment_is_too_few(self, tmp_path: Path) -> None:
+    def test_one_segment_passes_with_a_warning(self, tmp_path: Path) -> None:
+        """一段也能入库（**裁定 377**）—— 引擎只需要一段，门槛是我们自己加的。
+
+        只给一段时给一条 warning（多给几段音色更稳），而不是拦下来：拦下来的代价很
+        具体 —— 手边只有一句干净台词的人会**把同一个文件复制一份**去凑数。
+        """
         candidate = _voice_candidate(tmp_path, ["ref_01.wav"])
         result = check_voice(
             candidate,
             probe=_probe_ok(_info(video=None, duration_ms=15_000)),
             volume=_volume_ok(),
         )
-        assert "too_few_refs" in _codes(result)
-        assert "too_many_refs" not in _codes(result)
+        assert result.ok is True
+        assert "single_ref" in _warning_codes(result)
 
-    def test_four_segments_is_too_many(self, tmp_path: Path) -> None:
-        names = [f"ref_0{index}.wav" for index in range(1, 5)]
+    def test_many_segments_are_fine(self, tmp_path: Path) -> None:
+        """段数**不设上限**（**裁定 377**）：多给几段是真的有用，不是负担。
+
+        上游只挡单段 >30s；"2–3 段"那条上限是我们自己抄进 §4.3.1 的。
+        """
+        names = [f"ref_{index:02d}.wav" for index in range(1, 6)]
         candidate = _voice_candidate(tmp_path, names)
         result = check_voice(
             candidate,
             probe=_probe_ok(_info(video=None, duration_ms=15_000)),
             volume=_volume_ok(),
         )
-        assert _codes(result) == ["too_many_refs"]
+        assert result.ok is True
+        assert len(result.segments) == 5
+        assert "single_ref" not in _warning_codes(result)
 
     def test_segment_length_window(self, tmp_path: Path) -> None:
         candidate = _voice_candidate(tmp_path, ["ref_01.wav", "ref_02.wav"])
@@ -487,7 +497,8 @@ class TestDispatch:
         assert "usable_too_short" in _codes(result)
 
     def test_constants_match_the_frozen_contract(self) -> None:
-        assert VOICE_MIN_SEGMENTS == 2
+        # 段数**故意没有常量**（裁定 377）：它不是判据 —— 引擎一次只吃一段 prompt，
+        # 段数是"越多越稳"的建议，不是"少了就拒"的门。
         assert BGM_MIN_DURATION_MS == 15_000
         assert VOICE_MIN_SAMPLE_RATE == 16_000
         assert VOICE_PEAK_CEILING_DB == -1.0

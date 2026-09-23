@@ -6,13 +6,14 @@
 切句：稿件逐句（渲染这条路）或 split_for_tts(文本)（只给了文本时）
       │
       ├─ synthesize(片段) → s001.wav  逐句落盘：可续传、可单句重试
-      │                                （已存在且非空的句子**跳过**，省掉重跑）
+      │                                （没变的话走缓存复制，变了就真的重念）
       └─ concat → voice_master.wav    拼接 + 统一到 48kHz 单声道
 ```
 
 为什么逐句落盘而不是整段一次合成
 --------------------------------
-① 断点续传：跑到第 30 句挂了，重跑从第 30 句接着来，不必把前 29 句再合成一遍；
+① 断点续传：跑到第 30 句挂了，重跑从第 30 句接着来 —— 前 29 句**命中缓存**
+   （键里含引擎、音色、参考音指纹与文本），是一次文件复制，不必再合成一遍；
 ② 单句重试：某句读错了只重合成那一句，而不是整条音轨；
 ③ 对齐的余地：将来要做"句 ↔ 镜头"对齐时，句子边界就是现成的锚点。
 
@@ -42,9 +43,10 @@ from studio.core.paths import StudioPaths
 from studio.tts.cache import TtsCache
 from studio.tts.engine_picker import EnginePicker, pick_speakable_voice
 from studio.tts.fallback import DEGRADE_AFTER_ATTEMPTS
+from studio.tts.refprint import voice_fingerprint
 from studio.tts.sapi import DEFAULT_RATE
 from studio.tts.segmenter import split_for_tts
-from studio.tts.sentence import SentenceEngine, synthesize_sentence
+from studio.tts.sentence import SentenceEngine, SentenceSynthesis, synthesize_sentence
 from studio.tts.text_normalize import Glossary, GlossaryStore
 
 __all__ = [
@@ -107,6 +109,8 @@ class VoiceResult:
     sentence_durations_ms: tuple[int, ...]
     voice_master: Path
     duration_ms: int
+    #: 这次**一句引擎都没碰**的句数（缓存命中）。它**不是**「盘上有文件就跳过」
+    #: —— 那个判据分不清那份文件是谁念的（见 ``synthesize_script`` 里的说明）。
     reused: int = 0
     #: 逐句音色（与 :attr:`sentences` 同序）。多角色稿子时与 :attr:`voice` 不是一回事
     sentence_voices: tuple[str | None, ...] = ()
@@ -267,23 +271,39 @@ def synthesize_script(
     reused = 0
     used_voices: list[str | None] = []
 
+    # 参考音指纹**这一次配音里只算一遍**（哈希要读盘，而逐句重算是白读）。
+    # 键用 ``str`` 而不是 ``str | None``：``None``（交给引擎自己挑）也要占一格。
+    fingerprints: dict[str, str] = {}
+
+    def fingerprint_for(voice_name: str | None) -> str:
+        key = voice_name or ""
+        if key not in fingerprints:
+            fingerprints[key] = (
+                "" if voice_name is None else voice_fingerprint(paths.voice_src_dir, voice_name)
+            )
+        return fingerprints[key]
+
     for index, sentence in enumerate(resolved, start=1):
         target = paths.sentence_wav(task_id, index)
         sentence_voice = _voice_for(per_sentence, index, chosen_voice)
         used_voices.append(sentence_voice)
-        # 断点续传：已经有非空的产物就跳过（重跑不重合成）。
-        if target.is_file() and target.stat().st_size > 0:
+        # 这里原先有一条「盘上有非空产物就跳过」的捷径（断点续传）。它被**删掉**了：
+        # 它判的是「这个文件在不在」，而不是「它是不是**这一轮要念的东西**」—— 换了
+        # 参考音（同名重传）或换了音色之后重跑，它会照旧把旧嗓子拼进母带，而每一步
+        # 日志都写着成功。现在每一句都过一遍缓存：键里含引擎、音色、**参考音指纹**
+        # 与文本 ⇒ 没变就是一次文件复制（毫秒级），变了就真的重念。
+        synthesis = _synthesize_with_retries(
+            sentence,
+            out_path=target,
+            cache=cache,
+            engine=engine,
+            voice=sentence_voice,
+            voice_fingerprint=fingerprint_for(sentence_voice),
+            speed=speed,
+            glossary=glossary,
+        )
+        if synthesis.cache_hit:
             reused += 1
-        else:
-            _synthesize_with_retries(
-                sentence,
-                out_path=target,
-                cache=cache,
-                engine=engine,
-                voice=sentence_voice,
-                speed=speed,
-                glossary=glossary,
-            )
         files.append(target)
         # 逐句实测：字幕计时只认这个数（见 VoiceResult 的注释）。
         durations.append(max(0, probe_media(target).duration_ms))
@@ -329,10 +349,13 @@ def _synthesize_with_retries(
     cache: TtsCache,
     engine: SentenceEngine,
     voice: str | None,
+    voice_fingerprint: str,
     speed: float,
     glossary: Glossary,
-) -> None:
+) -> SentenceSynthesis:
     """念这一句；抽风型失败就再来（最多 :data:`SENTENCE_ATTEMPTS` 次）。
+
+    返回这一句的结论（调用方按 ``cache_hit`` 数「一句都没碰引擎」的句数）。
 
     **失败时把产物删掉**：``synthesize_sentence`` 是让引擎**直接写** ``out_path`` 的，
     所以没过 QC 的那一段坏音频就躺在交付路径上。留着它，下一次重跑会把它当成
@@ -340,12 +363,13 @@ def _synthesize_with_retries(
     """
     for attempt in range(1, SENTENCE_ATTEMPTS + 1):
         try:
-            synthesize_sentence(
+            return synthesize_sentence(
                 sentence,
                 out_path=out_path,
                 cache=cache,
                 engine=engine,
                 voice=voice,
+                voice_fingerprint=voice_fingerprint,
                 speed=speed,
                 glossary=glossary,
             )
@@ -360,8 +384,7 @@ def _synthesize_with_retries(
                 voice=voice,
                 text=sentence[:40],
             )
-        else:
-            return
+    raise AssertionError("SENTENCE_ATTEMPTS 必须 ≥ 1（上面的循环一次都不跑）")
 
 
 def _voice_for(voices: Sequence[str | None], index: int, fallback: str | None) -> str | None:

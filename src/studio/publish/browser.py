@@ -70,8 +70,29 @@ class PageLike(Protocol):
         timeout: float | None = None,  # noqa: ASYNC109
     ) -> Any: ...
 
+    @property
+    def url(self) -> str:
+        """当前地址。
+
+        第 ⑦ 步的**第二个**成功判据：有些平台不发"发布成功"这几个字，而是把页面
+        **跳走**（抖音发布后落到内容管理列表）—— 那时"结果页标志"永远等不到，
+        而"地址变了"是平台给出的同一个事实（见 ``markers.success_url_contains``）。
+        """
+        ...
+
     async def query_selector(self, selector: str) -> Any | None:
         """元素在不在。**不等待** —— 等待会拖长"未登录"这种本该立刻返回的判定。"""
+        ...
+
+    async def query_selector_all(self, selector: str) -> Any:
+        """这个选择器命中**几个**（返回一个可 ``len()`` 的东西）。
+
+        八步里没有一处需要"数个数" —— 这一条是给 ``publish calibrate`` 那条探针加的：
+        校准要回答的第一个问题就是"这条选择器在真页面上命中了几个"，而"命中 0 个"与
+        "命中 3 个"对一条**猜出来**的 CSS 来说是两种完全不同的结论（前者要重写，后者
+        往往只是偏宽）。走 Playwright 自己的引擎而不是 ``document.querySelectorAll``：
+        ``:text-is()`` 这类伪类是 Playwright 特有的，浏览器里没有。
+        """
         ...
 
     async def wait_for_selector(

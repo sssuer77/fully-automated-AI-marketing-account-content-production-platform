@@ -154,18 +154,40 @@ def test_ass_declares_canvas_and_styles(subtitle: SubtitleConfig) -> None:
         assert f"Style: {style}," in body
 
 
+def _margin_v_of(config: SubtitleConfig) -> int:
+    body = build_ass([Cue(0, 1000, "你好")], config=config, canvas=(1080, 1920), title="t1")
+    main = next(line for line in body.splitlines() if line.startswith("Style: Main,"))
+    return int(main.split(",")[21])
+
+
 def test_margin_v_respects_the_safe_area(subtitle: SubtitleConfig) -> None:
     """★ MarginV ≥ safe_area.bottom（§04.2.6 的安全区要求）。"""
-    body = build_ass([Cue(0, 1000, "你好")], config=subtitle, canvas=(1080, 1920), title="t1")
-    main = next(line for line in body.splitlines() if line.startswith("Style: Main,"))
-    margin_v = int(main.split(",")[21])
-    assert margin_v >= subtitle.safe_area.bottom
+    assert _margin_v_of(subtitle) >= subtitle.safe_area.bottom
 
     # 配置里写小了不会出事 —— 会被抬到安全区下沿
     small = subtitle.model_copy(update={"margin_bottom": 10})
-    body_small = build_ass([Cue(0, 1000, "你好")], config=small, canvas=(1080, 1920), title="t1")
-    main_small = next(line for line in body_small.splitlines() if line.startswith("Style: Main,"))
-    assert int(main_small.split(",")[21]) >= subtitle.safe_area.bottom
+    assert _margin_v_of(small) == subtitle.safe_area.bottom == small.margin_v
+
+
+def test_margin_v_is_one_number_shared_with_the_panel(subtitle: SubtitleConfig) -> None:
+    """★ 写进 ASS 的那个数与面板上的「实际距底」是**同一个口径**（裁定 399）。
+
+    以前这一屏只读，理由正是"两个数取 max，写了未必生效"。现在生效值由
+    ``SubtitleConfig.margin_v`` 一处算出来、跟着响应下发给面板 —— 于是"往上挪"与
+    "往下挪"都做得到，而且面板说的数与成片渲的数是同一个。
+    """
+    # 往上挪：调大「距底」立刻生效（它比安全区大，max 取它）。
+    up = subtitle.model_copy(update={"margin_bottom": 640})
+    assert _margin_v_of(up) == 640 == up.margin_v
+
+    # 往下挪：把「底部安全区」一起调小才动得了（面板上那句提示说的就是这件事）。
+    down = subtitle.model_copy(
+        update={
+            "margin_bottom": 200,
+            "safe_area": subtitle.safe_area.model_copy(update={"bottom": 200}),
+        }
+    )
+    assert _margin_v_of(down) == 200 == down.margin_v
 
 
 def test_dialogue_uses_the_escape_sequence_for_line_breaks(subtitle: SubtitleConfig) -> None:

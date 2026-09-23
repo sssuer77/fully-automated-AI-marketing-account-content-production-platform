@@ -19,11 +19,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from studio.agents.cover import CoverAgent
 from studio.agents.director import DirectorAgent
 from studio.agents.feedback_classifier import FeedbackClassifierAgent
 from studio.agents.gateway import LogSink
 from studio.agents.gateway_factory import build_gateway
 from studio.agents.ideator import IdeatorAgent
+from studio.agents.news_scout import NewsScoutAgent
 from studio.agents.outliner import OutlinerAgent
 from studio.agents.planner import PlannerAgent
 from studio.agents.prompts import PromptLibrary
@@ -60,6 +62,7 @@ from studio.db.repositories import AuditRepo, DirectionRepo, TopicRepo
 from studio.domain.enums import AutoApprovePolicy
 from studio.pools.heartbeat import HeartbeatStore
 from studio.pools.runner import POOL_NAMES
+from studio.services import news_service
 from studio.services.asset_service import AssetService
 from studio.services.log_service import LogService
 from studio.services.metrics_service import (
@@ -75,6 +78,9 @@ from studio.services.persona_service import PersonaService
 from studio.services.pipeline_job_service import PipelineJobService
 from studio.services.pool_service import PoolService
 from studio.services.prompt_service import PromptService
+from studio.services.publish_accounts_service import PublishAccountsService, PublisherBuilder
+from studio.services.publish_assist_service import PublishAssistService
+from studio.services.publish_service import PublishService
 from studio.services.render_job_service import RenderJobService
 from studio.services.review_service import ReviewService
 from studio.services.script_service import ScriptService
@@ -98,7 +104,9 @@ __all__ = [
     "overview_service_for",
     "persona_service_for",
     "pool_service_for",
+    "publish_accounts_service_for",
     "publish_config_for",
+    "publish_cover_service_for",
     "review_service_for",
     "script_service_for",
     "settings_service_for",
@@ -190,6 +198,10 @@ class AppState:
     #: 素材库的外部工具（T4.8）。**由 `build_state` 注入**：REST 面每次现造服务，
     #: 注入点只有这一处，测试换一次假件就够（不必去 patch 路由模块的内部名字）。
     asset_tools: AssetTools = field(default_factory=AssetTools)
+    #: 发布器的装配器（T6.4）：账号面板的「检测登录态 / 扫码登录」要按账号造一个
+    #: Publisher。``None`` ⇒ 真的那个（会起浏览器）。与 `asset_tools` 同一条 ——
+    #: 换一次假件，单测就不必以"这台机器装没装 Chromium"为前提。
+    publish_publishers: PublisherBuilder | None = None
 
     def close(self) -> None:
         """关连接（Hub 由 `lifespan` 先停）。"""
@@ -203,6 +215,7 @@ def build_state(
     hub_settings: HubSettings | None = None,
     metrics_probe: Callable[..., ResourceSnapshot] | None = None,
     asset_tools: AssetTools | None = None,
+    publish_publishers: PublisherBuilder | None = None,
 ) -> AppState:
     """组装运行期依赖（`connections=None` ⇒ 按 `paths.db_file` 现造）。
 
@@ -210,6 +223,7 @@ def build_state(
         ``pump.tick()`` 不再碰 `nvidia-smi` 与真磁盘 —— 否则单测会随开发机的
         显存占用与剩余空间飘（那是最难查的一类 flaky）。
     :param asset_tools: 素材库的外部工具（``None`` ⇒ 真 ffmpeg / ffprobe）。
+    :param publish_publishers: 发布器装配器（``None`` ⇒ 真 Playwright）。
     """
     pool = connections if connections is not None else ThreadLocalConnections(paths.db_file)
     settings = load_runtime_settings(paths)
@@ -290,6 +304,7 @@ def build_state(
         voice_previews=VoicePreviewService(paths=paths),
         snapshots=snapshots,
         asset_tools=asset_tools or AssetTools(),
+        publish_publishers=publish_publishers,
     )
 
 
@@ -486,6 +501,23 @@ def settings_service_for(state: AppState) -> SettingsService:
     )
 
 
+def publish_accounts_service_for(state: AppState) -> PublishAccountsService:
+    """装配发布账号服务（面板加号 / 改号 / 停用 / 删号 —— 写回 ``config/publish.yaml``）。
+
+    与 :func:`settings_service_for` 同一条：审计与日志**必须**是应用持有的那两个
+    （现造一份 ⇒ 面板上做的改动不进 ``audit_ops``、不进日志面板）。
+
+    路径由 ``state.paths`` 给：``config/publish.yaml`` 与 ``data/browser_profile``
+    都从它派生 —— 测试用临时家目录时不会写到真仓库里。
+    """
+    return PublishAccountsService(
+        state.paths,
+        audit=AuditRepo(state.connections.get()),
+        log=state.logs.append,
+        publisher_builder=state.publish_publishers,
+    )
+
+
 def prompt_service_for(state: AppState) -> PromptService:
     """装配提示词面板服务（**必须**带上覆盖目录 `data/prompts`）。
 
@@ -496,6 +528,56 @@ def prompt_service_for(state: AppState) -> PromptService:
         PromptLibrary.load(state.paths.prompts_dir, override_root=state.paths.prompts_override_dir),
         audit=AuditRepo(state.connections.get()),
         log=state.logs.append,
+    )
+
+
+def publish_assist_service_for(state: AppState) -> PublishAssistService:
+    """装配「人工过验证」服务（T6.4 · 真机 2026-09-23）。
+
+    与 :func:`publish_accounts_service_for` 同一条：审计与日志**必须**是应用持有的
+    那两个 —— 现造一份的话，面板上点的那一下不进 ``audit_ops``、不进日志面板，
+    而这条动作恰恰是"人做了什么决定"里最该留痕的一类（它真的往平台上发东西）。
+
+    发布器装配器同样从 ``state.publish_publishers`` 来：测试注入假件之后，
+    这个端点不会去起真浏览器。
+    """
+    return PublishAssistService(
+        state.paths,
+        connection=state.connections.get(),
+        audit=AuditRepo(state.connections.get()),
+        log=state.logs.append,
+        publisher_builder=state.publish_publishers,
+    )
+
+
+def publish_cover_service_for(state: AppState) -> PublishService:
+    """装配「出封面」服务（T5.1 追加 · §06.3）。
+
+    与 CLI 的 ``_build_publish_service`` 同一条，**但合成配置的来源不同**：这里读的是
+    ``state.outputs``（热重载仓库）—— 面板刚在「合成配置」里改完贴图，发布页点出封面
+    就该用**新改的那一份**。CLI 那边没有这个仓库，所以现读文件。
+
+    每次现造（与 :func:`topic_service_for` 同一条）：网关持有熔断器与预算状态，
+    而 ``sqlite3.Connection`` 是线程亲和的。
+    """
+    connection = state.connections.get()
+    loaded = load_config(state.paths)
+    prompts = PromptLibrary.load(state.paths.prompts_dir, override_root=state.paths.prompts_override_dir)
+    gateway = build_gateway(
+        connection=connection,
+        llm=loaded.bundle.llm,
+        config_provider=llm_config_provider(state.paths),
+        paths=state.paths,
+        log=_gateway_log_sink(state.logs),
+        secrets=state.secrets.lookup,
+    )
+    return PublishService(
+        connection,
+        paths=state.paths,
+        publish=loaded.bundle.publish,
+        persona=active_persona(),
+        outputs=state.outputs.current().config,
+        cover_agent=CoverAgent(gateway, prompts),
     )
 
 
@@ -522,6 +604,10 @@ def topic_service_for(state: AppState) -> TopicService:
         planner=PlannerAgent(gateway, prompts),
         ideator=IdeatorAgent(gateway, prompts),
         classifier=FeedbackClassifierAgent(gateway, prompts),
+        scout=NewsScoutAgent(gateway, prompts),
+        # 走**模块属性**而不是 import 进来的那个名字：测试把 `news_service.fetch_news`
+        # 换成假件即可，不必连网关一起换。
+        news_fetcher=news_service.fetch_news,
         paths=state.paths,
         log=state.logs.append,
         include_auto_feedback=loaded.bundle.llm.planner.include_auto_feedback,

@@ -47,6 +47,7 @@ from studio.core.errors import ErrorCode, StudioError
 from studio.core.logging import get_logger
 from studio.core.media import probe_media
 from studio.core.paths import StudioPaths, preview_slug
+from studio.tts.refprint import voice_fingerprint
 from studio.tts.sapi import pick_voice
 from studio.tts.sentence import SapiEngine, SentenceEngine
 from studio.tts.service_engine import ResidentEngine, active_resident
@@ -58,6 +59,7 @@ __all__ = [
     "STATUS_MISSING",
     "STATUS_READY",
     "STATUS_RUNNING",
+    "STATUS_STALE",
     "PreviewSample",
     "VoicePreviewService",
     "preview_url",
@@ -72,17 +74,24 @@ PREVIEW_TEXT: Final[str] = "大家好，这里是当前音色的试听样本，�
 #: 试听样本的 url 前缀（面板把它交给 ``<audio src>``）。
 PREVIEW_URL_PREFIX: Final[str] = "/api/v1/media/voice_preview"
 
-#: 四态。``missing`` 与 ``failed`` 必须分开：前者是"还没生成"（点一下就行），
+#: 五态。``missing`` 与 ``failed`` 必须分开：前者是"还没生成"（点一下就行），
 #: 后者是"生成失败了"（再点一下大概率还是失败，得先看那句话）。
+#: ``stale``（2026-09-23 追加）是第三种「盘上有东西、但它不是你现在要的」：
+#: 参考音换过之后，旧样本**还在盘上**（文件名只由音色 id 决定，见 ``preview_slug``），
+#: 而它念的是**上一版**参考音。把它当 ``ready`` 报出去，用户听到的就是旧嗓子，
+#: 而面板上一切正常 —— 与配音缓存那条是同一个病（见 ``tts/refprint.py``）。
 STATUS_MISSING: Final[str] = "missing"
 STATUS_RUNNING: Final[str] = "running"
 STATUS_READY: Final[str] = "ready"
 STATUS_FAILED: Final[str] = "failed"
+STATUS_STALE: Final[str] = "stale"
 
 #: 念样本用的语速档（与 SAPI 的 ``rate`` 同一套刻度，0 = 正常）。
 PREVIEW_RATE: Final[int] = 0
 
-#: 旁车里记的字段（读的时候逐条校验，缺一个就当"没有旁车"—— 见 :meth:`VoicePreviewService.get`）。
+#: 旁车里记的**装饰性**字段（读的时候逐条校验，缺一个就当"没有旁车"—— 见
+#: :meth:`VoicePreviewService.get`）。``ref_fingerprint`` **不在**这一组里：它是判据
+#: 而不是装饰，缺了要按「算不出指纹」处理（⇒ ``stale``），不能跟着一起吞掉。
 _META_FIELDS: Final[tuple[str, ...]] = ("voice_id", "engine", "generated_at", "duration_ms")
 
 
@@ -148,6 +157,15 @@ def _engine_factory_for(paths: StudioPaths) -> EngineFactory:
     return build
 
 
+def _stale_note(recorded: str | None, current: str) -> str:
+    """样本与现在的参考音对不上时那句话 —— 要分得清**是哪一种对不上**。"""
+    if recorded is None:
+        return "这份样本是旧版本生成的（没记参考音指纹）—— 重新生成一次才能确认它念的是现在这份参考音"
+    if current == "":
+        return "这个音色现在没有可用的参考音了，盘上这份是上一版留下的 —— 先补参考音再重新生成"
+    return "参考音已经换过了（盘上这份是上一版念的）—— 点一下重新生成"
+
+
 def _no_sample(partial: Path) -> None:
     """引擎说成功、盘上却没有 —— 抽成一个函数是为了让 ``_generate`` 的 ``try`` 里
     只有"会抛的那几行"（TRY301）：异常消息里的路径要在**抛的那一刻**才取值。"""
@@ -179,25 +197,38 @@ class VoicePreviewService:
     # ── 对外 ────────────────────────────────────────────────────────────
 
     def get(self, voice_id: str) -> PreviewSample:
-        """**只读**：盘上有就 ``ready``，在生成就 ``running``，否则 ``missing``。"""
+        """**只读**：盘上有就 ``ready``（参考音换过 ⇒ ``stale``），在生成就 ``running``。
+
+        ``stale`` 的判据是**参考音指纹**（``tts/refprint.py``）：旁车里记着这份样本是
+        照着哪一版参考音念的，与现在的对不上就说明它已经不是「这个嗓子」的样本了。
+        旧版本写的旁车没有这个字段 ⇒ 按「算不出指纹」处理（也是 ``stale``）—— 我们
+        **证明不了**它念的是现在这份，那就不能替它说「好了」。
+        """
         with self._lock:
             running = voice_id in self._running
             failure = self._failures.get(voice_id)
 
+        # ``running`` 判在**文件之前**：重新生成一份 ``stale`` 的样本时，盘上那份旧的
+        # 还在（新的一会儿才覆盖它）—— 先判文件的话，面板在生成期间会看到「重新生成」，
+        # 于是它不再轮询（store 只在 ``running`` 时轮询），而那一次点击就白点了。
+        if running:
+            return PreviewSample(voice_id=voice_id, status=STATUS_RUNNING, note="正在生成试听样本")
         path = self._paths.voice_preview_wav(voice_id)
         if path.is_file():
             meta = self._read_meta(voice_id)
+            recorded = meta.get("ref_fingerprint")
+            current = voice_fingerprint(self._paths.voice_src_dir, voice_id)
+            stale = not isinstance(recorded, str) or recorded != current
             return PreviewSample(
                 voice_id=voice_id,
-                status=STATUS_READY,
+                status=STATUS_STALE if stale else STATUS_READY,
                 path=path,
                 url=preview_url(voice_id),
                 duration_ms=meta.get("duration_ms"),
                 engine=meta.get("engine"),
                 generated_at=meta.get("generated_at"),
+                note=None if not stale else _stale_note(recorded, current),
             )
-        if running:
-            return PreviewSample(voice_id=voice_id, status=STATUS_RUNNING, note="正在生成试听样本")
         if failure is not None:
             return PreviewSample(voice_id=voice_id, status=STATUS_FAILED, error=failure)
         return PreviewSample(voice_id=voice_id, status=STATUS_MISSING)
@@ -258,6 +289,10 @@ class VoicePreviewService:
                     "engine": getattr(engine, "name", None),
                     "generated_at": now_iso(),
                     "duration_ms": info.duration_ms if info.has_audio else None,
+                    # 这份样本照着**哪一版参考音**念的（`get()` 拿它判 `stale`）。
+                    # 生成开始前算一次：生成期间参考音又换了的话，下次 `get()` 会发现
+                    # 对不上 —— 那正是我们想要的（它确实不再是现在这份的样本）。
+                    "ref_fingerprint": voice_fingerprint(self._paths.voice_src_dir, voice_id),
                 },
             )
             with self._lock:

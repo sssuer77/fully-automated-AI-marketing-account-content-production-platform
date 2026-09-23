@@ -37,18 +37,22 @@ from typing import Any
 
 from studio.assets import validate
 from studio.assets.layout import (
+    REF_STEM_PATTERN,
     AssetCandidate,
     AssetKind,
     Discovery,
     discover,
     root_for,
     voice_profile,
+    voice_refs,
     voice_text,
 )
+from studio.assets.upload import ref_name
 from studio.assets.validate import (
     BROLL_LIBRARY_MIN_CLIPS,
     BROLL_LIBRARY_MIN_MS,
     AssetCheck,
+    Problem,
 )
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.files import stream_sha256
@@ -83,7 +87,10 @@ __all__ = [
     "AssetPage",
     "AssetService",
     "DisabledAssets",
+    "KeptOrphan",
     "PendingAsset",
+    "PruneReport",
+    "PrunedOrphan",
     "ScanReport",
     "ScanSection",
     "ScannedAsset",
@@ -457,6 +464,191 @@ class AssetDelete:
             "id": self.id,
             "purge": self.purge,
             "purged": list(self.purged),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class _PurgeAttempt:
+    """一次「删盘上那份」的尝试：``path`` 与 ``reason`` **恰有一个**非空。
+
+    为什么要一个只有两个字段的小对象，而不是 ``str | None``
+    ------------------------------------------------------
+    "没删成"有**两个完全不同**的原因，而它们该不该出现在面板上是相反的：
+    「盘上已经没有了」是正常的（用户自己在资源管理器里删过），「守卫拒绝」是一件
+    要查的事。合成一个 ``None``，调用方就只能二选一 —— 要么把正常情况报成异常，
+    要么把异常咽掉。
+    """
+
+    path: str | None = None
+    reason: str | None = None
+
+
+#: 体检结论里那些**只说库里的登记状态、不说盘上文件**的 code。
+#:
+#: 目前只有一条：``license_missing``。它进 ``problems`` 是对的（没有授权的素材不该
+#: 入库），但**不能拿它判断"盘上这份该不该删"** —— 孤儿之所以是孤儿，正是因为它还
+#: 没有库里那一行，而那一行才是存授权的地方。见 :meth:`AssetService.prune_orphans`。
+_REGISTRATION_ONLY_CODES: frozenset[str] = frozenset({"license_missing"})
+
+
+@dataclass(frozen=True, slots=True)
+class PrunedOrphan:
+    """一个被清掉的孤儿（``problems`` 是它该被清的理由，人话，面板直接显示）。"""
+
+    kind: AssetKind
+    id: str
+    path: str
+    problems: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": str(self.kind),
+            "id": self.id,
+            "path": self.path,
+            "problems": list(self.problems),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class KeptOrphan:
+    """一个**没被清**的孤儿，以及为什么留着（``reason`` 必须能直接给人看）。"""
+
+    kind: AssetKind
+    id: str
+    path: str
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": str(self.kind),
+            "id": self.id,
+            "path": self.path,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PruneReport:
+    """一次孤儿清理的结论（裁定 384）。
+
+    ``removed`` / ``kept`` / ``strays`` 三样**必须分开报**，因为它们对应三种
+    "盘上有、库里没有"，而用户对它们该做的动作完全不同：
+
+    - ``removed``：本身不合格 ⇒ 已经清掉（这才是这个动作做的事）；
+    - ``kept``：本身合格、只是没入库 ⇒ **该入库**。面板要说清是这一种，否则用户会
+      以为"清了一遍，怎么还剩着"；
+    - ``strays``：名字不合规、压根没被认出来 ⇒ 一个都没动（可能是他自己的原始
+      素材），但要如实列出来，让他知道这些**不在**这次清理的范围里。
+    """
+
+    kind: AssetKind
+    dry_run: bool
+    removed: tuple[PrunedOrphan, ...]
+    kept: tuple[KeptOrphan, ...]
+    strays: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": str(self.kind),
+            "dry_run": self.dry_run,
+            "removed": [item.to_dict() for item in self.removed],
+            "kept": [item.to_dict() for item in self.kept],
+            "strays": list(self.strays),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceSegment:
+    """音色目录里的**一段**参考音（逐段管理那一屏的一行）。
+
+    ``text`` 是 ``ref.txt`` 里**同一位置**那一行 —— 位置即对应（第 N 行 ↔ 第 N 段），
+    不是按文件名里的编号去查。对不上时它是 ``None``，面板据此画"这段没有对应文本"。
+    """
+
+    index: int
+    name: str
+    duration_ms: int | None
+    sample_rate: int | None
+    peak_db: float | None
+    text: str | None
+    problems: tuple[Problem, ...]
+
+    @property
+    def usable(self) -> bool:
+        return not self.problems
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "name": self.name,
+            "duration_ms": self.duration_ms,
+            "sample_rate": self.sample_rate,
+            "peak_db": self.peak_db,
+            "text": self.text,
+            "usable": self.usable,
+            "problems": [item.to_dict() for item in self.problems],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceSegments:
+    """一个音色目录的**逐段现状**（``GET /assets/voice/{id}/segments``）。
+
+    ``ref_count`` 与 ``text_lines`` **分开报**：两者不等就是"文本与参考音对不上"，
+    而那是克隆质量最直接的来源 —— 面板要能一眼看出对不上的是哪一段，而不是只收到
+    一句"有 warning"。
+    """
+
+    voice_id: str
+    root: str
+    ref_count: int
+    text_lines: int
+    segments: tuple[VoiceSegment, ...]
+    problems: tuple[Problem, ...]
+    warnings: tuple[Problem, ...]
+    enabled: bool | None
+    in_library: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "voice_id": self.voice_id,
+            "root": self.root,
+            "ref_count": self.ref_count,
+            "text_lines": self.text_lines,
+            "segments": [item.to_dict() for item in self.segments],
+            "problems": [item.to_dict() for item in self.problems],
+            "warnings": [item.to_dict() for item in self.warnings],
+            "enabled": self.enabled,
+            "in_library": self.in_library,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceSegmentRemoval:
+    """删掉一段参考音的结局（``DELETE /assets/voice/{id}/segments/{name}``）。
+
+    ``renamed`` 是**重编号**那一步的流水账：删掉第 2 段之后，原来的 ``ref_03.wav``
+    会变成 ``ref_02.wav`` —— 位置即对应，不重编号的话 ``ref.txt`` 第 2 行会配到
+    原来的第 3 段音频上。这件事必须报出来：用户手上的文件名变了，而**静默改名不行**。
+    """
+
+    voice_id: str
+    removed: str
+    removed_text: str | None
+    renamed: tuple[tuple[str, str], ...]
+    text_rewritten: bool
+    notes: tuple[str, ...]
+    segments: VoiceSegments
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "voice_id": self.voice_id,
+            "removed": self.removed,
+            "removed_text": self.removed_text,
+            "renamed": [{"from": src, "to": dst} for src, dst in self.renamed],
+            "text_rewritten": self.text_rewritten,
+            "notes": list(self.notes),
+            "segments": self.segments.to_dict(),
         }
 
 
@@ -1087,22 +1279,325 @@ class AssetService:
         """
         root = root_for(self._paths, kind).resolve()
         target = root / asset_id if kind is AssetKind.VOICE else Path(str(row.path))
+        attempt = self._purge_path(kind, target, root=root, asset_id=asset_id)
+        return () if attempt.path is None else (attempt.path,)
+
+    def _purge_path(self, kind: AssetKind, target: Path, *, root: Path, asset_id: str) -> _PurgeAttempt:
+        """删掉一个盘上路径（守卫 + 真删）。**一条路径的删法只有这一份**。
+
+        为什么把它从 :meth:`_purge_files` 里提出来：孤儿那条路
+        （:meth:`prune_orphans`）要删的是**库里没有行**的东西，手上只有"扫盘发现的
+        那个路径"，没有 ``row``。两条路各写一遍守卫，就会出现"删库里那条时守住、
+        删孤儿时忘了守"—— 而这里漏一次的代价是 ``shutil.rmtree`` 删掉一个不该删的
+        目录，且不可逆。
+
+        ``root`` 由调用方传进来（而不是这里现算）：它必须与"这次扫的是哪一类的
+        根目录"是**同一个值**，而那个值来自 :func:`~studio.assets.layout.root_for`
+        —— 这里不抄第二份。
+        """
         try:
             resolved = target.resolve()
         except OSError as exc:
             logger.warning("assets.purge_unresolvable", asset=asset_id, error=str(exc))
-            return ()
+            return _PurgeAttempt(reason=f"路径解析不了（{exc}）")
         if resolved == root or not resolved.is_relative_to(root):
             logger.warning("assets.purge_refused", asset=asset_id, path=str(resolved), root=str(root))
-            return ()
+            return _PurgeAttempt(reason="路径不在这一类的根目录之下（守卫拒绝）")
         if not resolved.exists():
             # 库里有一行、盘上早就没了：这不是错误（用户可能自己在资源管理器里删了）。
-            return ()
+            return _PurgeAttempt(reason="盘上已经没有了")
         if kind is AssetKind.VOICE:
             shutil.rmtree(resolved)
         else:
             resolved.unlink()
-        return (str(resolved),)
+        return _PurgeAttempt(path=str(resolved))
+
+    def prune_orphans(
+        self,
+        kind: AssetKind,
+        *,
+        dry_run: bool = False,
+        actor: str = "user",
+        source: str = "webui",
+        request_id: str | None = None,
+    ) -> PruneReport:
+        """清掉这一类的**孤儿**：盘上认得出、库里没有、**而且本身就不合格**。
+
+        为什么这件事需要一个动作
+        ------------------------
+        「盘上有、库里没有」的东西以前**删不掉**：:meth:`delete` 手上没有行就直接
+        404，而面板上那句「盘上有 N 条还没入库」于是变成一条**永远动不了的警告**。
+        用户能做的只有去资源管理器里手工删 —— 而素材目录名是约定的一部分（音色的
+        目录名就是它的 id），手工删很容易顺手删错一个。
+
+        为什么"孤儿"不等于"该删"
+        ------------------------
+        合格的孤儿**不该删**，该**入库**（那是另一颗按钮）：跑酷 / BGM 的未入库文件
+        出片照样挑得到（``render/assets.py`` 只列目录），删了等于凭空少一条底片。
+        所以这里只清**本身就不合格**的那些 —— 空目录、没有参考音、探测不了、没有
+        视频流、太短、削波…… 它们没有别的出路。合格的那批进 :attr:`PruneReport.kept`，
+        面板要照着它说"该入库，不是该删"。
+
+        判据为什么不能直接用 ``check.ok``
+        --------------------------------
+        ``check_broll`` / ``check_bgm`` 会把「授权没填」算进 ``problems``
+        （``license_missing``），而**孤儿之所以是孤儿，正是因为它还没有库里那一行**
+        —— 那一行才是存授权的地方。拿 ``check.ok`` 当判据，一条完好无损、只是还没
+        登记的底片会被当成垃圾删掉，而且删完**没有任何地方报错**。所以这里把
+        "登记状态"那几条（:data:`_REGISTRATION_ONLY_CODES`）从阻塞项里摘出去：
+        **它说的是库里的登记，不是盘上文件的毛病。**
+
+        没被认出来的（``strays``）一个都不动：名字不合规的东西可能是用户自己的原始
+        素材，而"认不出"不等于"没用"。报告里如实列出来。
+        """
+        section = self._scan_kind(kind, ids=None, license=None, dry_run=True)
+        root = root_for(self._paths, kind).resolve()
+        removed: list[PrunedOrphan] = []
+        kept: list[KeptOrphan] = []
+        for asset in section.assets:
+            if asset.stored:
+                # 库里有的不是孤儿：删它走 DELETE /assets/{id}（那条路连审计一起写）
+                continue
+            blocking = tuple(
+                item for item in asset.check.problems if item.code not in _REGISTRATION_ONLY_CODES
+            )
+            if not blocking:
+                kept.append(
+                    KeptOrphan(
+                        kind=kind,
+                        id=asset.id,
+                        path=asset.path,
+                        reason="本身合格，只是还没入库 —— 该入库，不是该删",
+                    )
+                )
+                continue
+            reasons = tuple(item.message for item in blocking)
+            if dry_run:
+                removed.append(PrunedOrphan(kind=kind, id=asset.id, path=asset.path, problems=reasons))
+                continue
+            attempt = self._purge_path(kind, Path(asset.path), root=root, asset_id=asset.id)
+            if attempt.path is None:
+                kept.append(
+                    KeptOrphan(
+                        kind=kind,
+                        id=asset.id,
+                        path=asset.path,
+                        reason=attempt.reason or "没删",
+                    )
+                )
+                continue
+            removed.append(PrunedOrphan(kind=kind, id=asset.id, path=attempt.path, problems=reasons))
+        report = PruneReport(
+            kind=kind,
+            dry_run=dry_run,
+            removed=tuple(removed),
+            kept=tuple(kept),
+            strays=section.strays,
+        )
+        if not dry_run and removed:
+            self._record_prune(report, actor=actor, source=source, request_id=request_id)
+        return report
+
+    def _record_prune(self, report: PruneReport, *, actor: str, source: str, request_id: str | None) -> None:
+        """孤儿清理的留痕（**只在真删了东西时**写）。
+
+        ``target_id`` 用**类别**而不是某一个 id：这个动作一次动一批，而 ``audit_ops``
+        一行只有一个 ``target_id``。删掉的 id 全进 ``after``，审计页照样看得到逐条明细。
+
+        没删成任何东西时**一条都不写**：空跑留痕会把审计页淹掉，而"我今天点了一下、
+        它说没什么可清的"这件事没有留档价值。
+        """
+        self._audit.record(
+            actor=actor,
+            action="asset.prune",
+            target_type=TARGET_TYPE,
+            target_id=str(report.kind),
+            before={"kind": str(report.kind), "orphans": len(report.removed) + len(report.kept)},
+            after={
+                "removed": [item.id for item in report.removed],
+                "kept": [item.id for item in report.kept],
+            },
+            source=source,
+            request_id=request_id,
+        )
+        self._emit(
+            "info",
+            f"素材孤儿清理：{report.kind} 清掉 {len(report.removed)} 个"
+            f"（{'、'.join(item.id for item in report.removed)}）",
+            payload={"kind": str(report.kind), "removed": [item.id for item in report.removed]},
+        )
+
+    # ── 音色：逐段管理（裁定 381）──────────────────────────────────
+
+    def voice_segments(self, voice_id: str) -> VoiceSegments:
+        """一个音色目录的逐段现状（**读盘 + 与入库同一份体检判据**）。
+
+        为什么这件事值得一个端点：音色的"能不能用"不取决于库里那一行，而取决于
+        目录里躺着哪几段、每段多长、``ref.txt`` 有没有与它们一一对应。以前这三件事
+        只有入库那条路知道，而它只在**入库的那一刻**说一次 —— 用户想"看看现在到底
+        是什么样"、或者想删掉一段，面板上一个字都没有。
+        """
+        candidate = self._voice_candidate(voice_id)
+        # 探测 / 音量走**注入的那一套**（与扫盘同源）：测试与排障都靠它把外部工具换掉，
+        # 漏传的话这里会偷偷去跑真 ffprobe —— 而同一台机器上"扫盘说能用、这里说读不了"
+        # 会是最难查的一种不一致。
+        check = validate.check_voice(candidate, probe=self._probe, volume=self._volume)
+        refs = voice_refs(candidate)
+        lines = _text_lines(candidate)
+        probed = {
+            index: (info, peak)
+            for index, info, peak in zip(check.segment_indexes, check.segments, check.peaks, strict=False)
+        }
+        rows: list[VoiceSegment] = []
+        for position, ref in enumerate(refs, start=1):
+            info, peak = probed.get(position, (None, None))
+            rows.append(
+                VoiceSegment(
+                    index=position,
+                    name=ref.name,
+                    duration_ms=None if info is None else info.duration_ms,
+                    sample_rate=None if info is None else info.sample_rate,
+                    peak_db=peak,
+                    text=lines[position - 1] if position <= len(lines) else None,
+                    problems=_segment_problems(check, position),
+                )
+            )
+        row = self._voice.get(voice_id)
+        return VoiceSegments(
+            voice_id=voice_id,
+            root=str(candidate.path),
+            ref_count=len(refs),
+            text_lines=len(lines),
+            segments=tuple(rows),
+            problems=check.problems,
+            warnings=check.warnings,
+            enabled=None if row is None else row.enabled,
+            in_library=row is not None,
+        )
+
+    def remove_voice_segment(
+        self,
+        voice_id: str,
+        name: str,
+        *,
+        actor: str = "user",
+        source: str = "webui",
+        request_id: str | None = None,
+    ) -> VoiceSegmentRemoval:
+        """删掉一段参考音（**删完重编号 + 同步 ``ref.txt``**）。
+
+        为什么必须重编号
+        ----------------
+        ``ref.txt`` 的第 N 行对应第 N 段 —— 位置即对应。删掉 ``ref_02.wav`` 却不重编号，
+        ``ref_03.wav`` 会顶上第 2 位，而第 2 行文本说的是**被删掉的那一段**的话。
+        于是克隆拿到的 prompt 是"这段音频 + 另一段音频的文本"，而复刻质量就是这么
+        掉下去的（而且没有任何地方会报错）。
+
+        为什么最后一段不能删
+        --------------------
+        删光之后这个音色就念不出来了，而库里那一行还在、面板上还是绿的。
+        "想整条不要了"走素材库的删除，"想换掉这一段"走覆盖上传 —— 两条都说得清。
+        """
+        stem = Path(name).stem
+        if REF_STEM_PATTERN.fullmatch(stem) is None or Path(name).name != name:
+            raise StudioError(
+                f"不是一段参考音的名字：{name}",
+                code=ErrorCode.ASSET_INVALID,
+                context={"voice_id": voice_id, "name": name},
+                remediation="参考音的名字是 ref_01.wav / ref_02.mp3 这种形状（路径分隔符不算名字的一部分）",
+            )
+        candidate = self._voice_candidate(voice_id)
+        refs = list(voice_refs(candidate))
+        names = [item.name for item in refs]
+        if name not in names:
+            raise StudioError(
+                f"这个音色里没有 {name}",
+                code=ErrorCode.ASSET_NOT_FOUND,
+                context={"voice_id": voice_id, "name": name, "refs": names},
+                remediation="刷新一下这一屏（盘上的文件可能刚被别处改过）",
+            )
+        if len(refs) <= 1:
+            raise StudioError(
+                "这是最后一段参考音，删了这个音色就念不出来了",
+                code=ErrorCode.ASSET_INVALID,
+                context={"voice_id": voice_id, "name": name},
+                remediation="整条不要 ⇒ 用素材库那一行的「删除」；想换掉这一段 ⇒ 勾「覆盖同名」重传",
+            )
+        position = names.index(name)
+        lines = _text_lines(candidate)
+        removed_text = lines[position] if position < len(lines) else None
+        refs[position].unlink()
+        kept = [item for index, item in enumerate(refs) if index != position]
+        renamed: list[tuple[str, str]] = []
+        # 升序重编号：目标序号恒 **≤** 原序号，所以不会撞上还没改名的段（被删掉的那个名字
+        # 此刻已经空出来了）—— 不需要"先改成临时名"那两步。
+        for index, item in enumerate(kept, start=1):
+            target = item.with_name(ref_name(index, item.name))
+            if target == item:
+                continue
+            item.rename(target)
+            renamed.append((item.name, target.name))
+        notes: list[str] = []
+        text_rewritten = False
+        text_path = voice_text(candidate)
+        if text_path is not None:
+            if len(lines) == len(refs):
+                body = "\n".join(line for index, line in enumerate(lines) if index != position) + "\n"
+                with text_path.open("w", encoding="utf-8", newline="\n") as handle:
+                    handle.write(body)
+                text_rewritten = True
+            else:
+                # 本来就对不上：删哪一行是**猜**。留着，把话说清楚。
+                notes.append(
+                    f"ref.txt 原本有 {len(lines)} 行、参考音有 {len(refs)} 段（本来就对不上）"
+                    f" ⇒ 这次没动它。现在剩 {len(kept)} 段，文本那几行要你自己对一遍。"
+                )
+        row = self._voice.get(voice_id)
+        if row is not None:
+            # 库里那行跟着刷（段数 / 总时长 / 最响那一段）。没入库的就只动盘 ——
+            # 拿一次"段数变了"去替用户决定"这条音色要不要入库"，是替得太多。
+            self.ingest(kind=AssetKind.VOICE, ids=[voice_id], license=None)
+        self._record(
+            AssetKind.VOICE,
+            voice_id,
+            action="asset.voice_segment_remove",
+            before={"ref_count": len(refs), "text_lines": len(lines)},
+            after={
+                "removed": name,
+                "renamed": [f"{src} ⇒ {dst}" for src, dst in renamed],
+                "ref_count": len(kept),
+                "text_rewritten": text_rewritten,
+            },
+            actor=actor,
+            source=source,
+            request_id=request_id,
+        )
+        return VoiceSegmentRemoval(
+            voice_id=voice_id,
+            removed=name,
+            removed_text=removed_text,
+            renamed=tuple(renamed),
+            text_rewritten=text_rewritten,
+            notes=tuple(notes),
+            segments=self.voice_segments(voice_id),
+        )
+
+    def _voice_candidate(self, voice_id: str) -> AssetCandidate:
+        """音色 id ⇒ 盘上那个目录的候选（**走与扫盘同一份发现逻辑**）。
+
+        自己拼一遍 ``root / voice_id`` 再 ``iterdir`` 也能跑，但那样"什么算这个音色的
+        文件"就有了第二份口径 —— 而这份口径决定的是"哪几段会被删掉"。
+        """
+        discovery = discover(self._paths, AssetKind.VOICE)
+        for candidate in discovery.candidates:
+            if candidate.id == voice_id:
+                return candidate
+        raise StudioError(
+            f"盘上没有这个音色的目录：{voice_id}",
+            code=ErrorCode.ASSET_NOT_FOUND,
+            context={"voice_id": voice_id, "root": str(discovery.root)},
+            remediation="先在这个面板上传参考音（POST /api/v1/assets/voice）",
+        )
 
     # ── 内部 ────────────────────────────────────────────────────────
 
@@ -1212,7 +1707,32 @@ _ACTION_TEXT: dict[str, str] = {
     "asset.enable": "素材启用",
     "asset.disable": "素材停用",
     "asset.update": "素材更新",
+    "asset.prune": "素材孤儿清理",
+    "asset.voice_segment_remove": "音色参考音删除",
 }
+
+
+def _text_lines(candidate: AssetCandidate) -> list[str]:
+    """``ref.txt`` 的非空行（**位置即对应**：第 N 行 ↔ 第 N 段）。
+
+    与 ``tts/server.py::_ref_lines`` 是同一条口径：空白行不算一段（否则一段参考音配到
+    一个空字符串，引擎那边会当成"这段没文本"）。
+    """
+    path = voice_text(candidate)
+    if path is None:
+        return []
+    body = path.read_text(encoding="utf-8", errors="replace")
+    return [line.strip() for line in body.splitlines() if line.strip()]
+
+
+def _segment_problems(check: AssetCheck, index: int) -> tuple[Problem, ...]:
+    """体检结论里**属于第 ``index`` 段**的那几条（判据的 code 就带着段号）。
+
+    ``ref_02_too_short`` / ``ref_02_clipped`` 这种命名是 ``check_voice`` 刻意留下的
+    —— 逐段管理这一屏靠它把"哪一段不合格"摆到那一段那一行上，而不是堆在页脚。
+    """
+    prefix = f"ref_{index:02d}_"
+    return tuple(item for item in check.problems if item.code.startswith(prefix))
 
 
 def _not_found(kind: AssetKind, asset_id: str) -> StudioError:

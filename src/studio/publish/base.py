@@ -37,6 +37,7 @@ from studio.core.errors import ErrorCode, PublishError
 from studio.core.paths import StudioPaths
 
 __all__ = [
+    "LOGIN_TIMEOUT_SEC",
     "PUBLISHERS",
     "REHEARSAL_PUBLISHER",
     "PublishEvidence",
@@ -51,6 +52,11 @@ __all__ = [
     "get_publisher",
     "register_publisher",
 ]
+
+#: 扫码登录的等待上限（T6.4）：人拿手机、开 App、对准窗口里的码，三分钟够用。
+#: 比它更长的等待只会让"窗口开着、人在干别的"变成一个占着 profile 的僵尸进程 ——
+#: 而同一个账号的 profile **同时只能开一个浏览器**（§06.2.4 登录态隔离）。
+LOGIN_TIMEOUT_SEC: Final[float] = 180.0
 
 
 class PublishStatus(StrEnum):
@@ -86,6 +92,16 @@ class PublisherContext:
     #: **真实平台实现一律忽略它** —— 它存在的理由是：靶页的"制造故障"开关要走 URL，
     #: 而给 ``Publisher`` 的工厂签名再加一个参数，就得让每个平台子类都多接一个用不上的 kwarg。
     probe: str = ""
+    #: ★ **有人坐在这个浏览器窗口前面**（T6.4 的「人工过验证」）。
+    #:
+    #: 与 ``headless`` 是**两件事**：``headless=False`` 只说"窗口可见"，这一条说
+    #: "人看着它、并且愿意在需要时动手"。排障时开着的可见窗口后面未必有人 ——
+    #: 把流程停在验证框上等十分钟，只会让一次演练看起来像卡死。所以**默认 False**
+    #: （没人 = 见到验证框就如实报"这一步要人做"，见 §06.5.3 第 ⑦ 步）。
+    #:
+    #: 打开之后第 ⑦ 步多一条语义：``verify_marker`` 命中时**不**立刻收场，而是等人
+    #: 在窗口里把验证过掉（``PlaywrightPublisher._step_result``）。
+    await_manual_verify: bool = False
 
     @property
     def account_id(self) -> str:
@@ -285,6 +301,32 @@ class Publisher(ABC):
     @abstractmethod
     async def fetch_metrics(self, platform_post_id: str) -> PublishMetrics:
         """取一条作品的数据（T5.4 用；一期实现可以抛未实现）。"""
+
+    async def login(self, *, timeout_sec: float = LOGIN_TIMEOUT_SEC) -> PublishHealth:
+        """打开一个**可见**的浏览器窗口等人扫码，扫完返回探测结论（T6.4）。
+
+        为什么它是**具体方法**而不是第四个抽象方法
+        ----------------------------------------
+        §4.6.1 定的是三个抽象方法，而"从面板点一下就能登录"是工程追加（§06.12
+        的「账号」那一行）。加成抽象方法会让**每一个**实现（含靶页的桩、
+        测试里的假件）都必须写一遍 —— 而它们真正该给的是一个明确的"我不支持"。
+        所以默认实现就是那个"不支持"，只有真会开浏览器的实现覆盖它。
+
+        为什么"不支持"要**抛**而不是回一个 ``ready=False``
+        ------------------------------------------------
+        ``ready=False`` 的语义是"探测了，没登录" —— 用户看到它只会去点第二次。
+        抛 ``PUBLISH_NOT_IMPLEMENTED`` 才能让面板说出"这个平台一期没做"，
+        而这两句话的下一步动作完全不同（一个去扫码，一个别等了）。
+
+        调用方**必须**用一个 ``headless=False`` 的上下文来造这个实例：
+        无头窗口里没有人能扫码。
+        """
+        raise PublishError(
+            f"平台 {self.platform} 不支持从面板扫码登录",
+            code=ErrorCode.PUBLISH_NOT_IMPLEMENTED,
+            context={"platform": self.platform},
+            remediation=("这个平台的发布实现还没落地（§06.2.1 · Q9）—— 换个一线平台，或者等它的适配器做出来"),
+        )
 
 
 #: 装配工厂：``(ctx) -> Publisher``。注册表只存**类**，实例化由服务层按账号做 ——

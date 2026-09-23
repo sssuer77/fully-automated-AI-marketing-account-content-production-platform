@@ -209,7 +209,7 @@ async def _fetch_comments(
 
     ``getattr`` 而不是往 §4.6.1 的 ABC 上加第四个抽象方法：那个 ABC 的
     ``__abstractmethods__`` 被契约测试**逐字**钉着（``health``/``publish``/``fetch_metrics``），
-    加一个抽象方法会让所有实现（含二线平台的接口桩）立刻不可实例化。
+    加一个抽象方法会让所有实现（含靶页的桩）立刻不可实例化。
     """
     target = publisher or _build_publisher(row, paths=paths, config=config)
     fetch = getattr(target, "fetch_comments", None)

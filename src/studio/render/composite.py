@@ -7,8 +7,9 @@
       │
       ├─ scale=W:H:force_original_aspect_ratio=increase → crop=W:H   缩放铺满
       ├─ fps=<profile.fps> → setsar=1                                恒定帧率 + 方形像素
+      ├─ overlay=x:y   × N                  （**有贴图才加这几层**）  人物贴图（在字幕**下**面）
       ├─ ass=<subtitle.ass>:fontsdir=…      （**有字幕才加这一层**）  烧字幕
-      ├─ overlay=x:y                        （**水印存在才加这一层**）可选装饰
+      ├─ overlay=x:y                        （**水印存在才加这一层**）水印（在最上面）
       │
 配音 ─┤ 见 render/mixdown.py：侧链避让 → amix(normalize=0) → 两遍 loudnorm → alimiter
       │
@@ -36,7 +37,7 @@ ffmpeg。
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final
@@ -45,6 +46,8 @@ from studio.core.errors import ErrorCode, RenderError
 from studio.core.media import ffmpeg_binary, run_command
 from studio.render.mixdown import LoudnessMeasurement, MixSettings, build_audio_chain, measure_mix
 from studio.render.profiles import CompositeProfile
+from studio.render.speech import Interval
+from studio.render.sticker import StickerPlan
 from studio.render.watermark import WatermarkPlan
 
 __all__ = [
@@ -61,6 +64,7 @@ __all__ = [
     "build_composite_argv",
     "build_filter_graph",
     "duration_ms_for",
+    "enable_expr",
     "filter_path_arg",
     "parse_out_time_us",
     "progress_percent",
@@ -100,6 +104,9 @@ class CompositeRequest:
     output: Path
     duration_ms: int
     watermark: WatermarkPlan | None = None
+    #: 人物贴图（T6.5）。**声明顺序 = 叠放顺序**（先声明的在下面）。
+    #: 空元组 ⇒ 一层都不贴，滤镜图里连一个节点都不多 —— 与水印的"没有就不加"同一条。
+    stickers: tuple[StickerPlan, ...] = ()
     bgm: Path | None = None
     subtitle: Path | None = None
     subtitle_font_dir: Path | None = None
@@ -126,6 +133,16 @@ class CompositeResult:
     loudness: LoudnessMeasurement | None
     warnings: tuple[str, ...]
     argv: tuple[str, ...]
+    #: 这次真的贴上去的贴图**槽位名**（按叠放顺序）。空元组 ⇒ 一层都没贴。
+    #:
+    #: 带默认值、且排在最后：这个字段是**后加的**（T4.14），而 ``CompositeResult`` 被
+    #: 测试与降级链按关键字构造了很多次 —— 不给默认值等于让"加一层贴图"变成一次
+    #: 全仓库的构造点改写。生产路径只有 ``run_composite`` 一个构造点，它显式传值。
+    stickers_applied: tuple[str, ...] = ()
+    #: 这次**真的在换图**的贴图槽位名（讲话图可用 + 有讲话区间）。它是
+    #: ``stickers_applied`` 的子集 —— 一层贴上了但没换图，两处报的必须不一样，
+    #: 否则"开了换图、成片里嘴一直不动"这种事没人能查。
+    stickers_speaking: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -133,6 +150,8 @@ class CompositeResult:
             "duration_ms": self.duration_ms,
             "size_bytes": self.size_bytes,
             "watermark_applied": self.watermark_applied,
+            "stickers_applied": list(self.stickers_applied),
+            "stickers_speaking": list(self.stickers_speaking),
             "bgm_applied": self.bgm_applied,
             "subtitle_applied": self.subtitle_applied,
             "bg_fill": self.bg_fill,
@@ -220,7 +239,58 @@ def _inputs(req: CompositeRequest) -> tuple[list[str], dict[str, int]]:
     watermark = _watermark_of(req)
     if watermark is not None:
         indices["watermark"] = take(["-i", str(watermark)])
+    for slot, plan in enumerate(_stickers_of(req)):
+        # 每层贴图各占一路输入。键用**序号**而不是槽位名：序号与
+        # :func:`build_filter_graph` 里的 ``enumerate`` 是同一个枚举，
+        # 槽位名进不了 argv，进了反而要多维护一次"名字到序号"的映射。
+        indices[f"sticker_{slot}"] = take(["-i", str(plan.spec.image_path)])
+        speaking_image = _speaking_image_of(plan)
+        if speaking_image is not None:
+            # 讲话图**另占一路输入**（同一个键规则，只是多一个后缀）。不共用普通图那
+            # 一路：两路各是各的静帧，ffmpeg 的单帧输入靠 ``eof_action=repeat``
+            # 一直续着，合成一路会让两张图在时间轴上互相覆盖。
+            indices[f"sticker_speaking_{slot}"] = take(["-i", str(speaking_image)])
     return argv, indices
+
+
+def _stickers_of(req: CompositeRequest) -> tuple[StickerPlan, ...]:
+    """这次合成**真的贴上去**的那几层（``placement`` 有值才算），顺序 = 声明顺序。
+
+    跳过的层在这里就被滤掉了 —— 滤镜图与输入清单都只看这一份，于是"某一层因为缺图
+    被跳过"不会在滤镜图里留下一个指向不存在的输入的空节点（那种错 ffmpeg 报的是
+    ``Stream specifier ... matches no streams``，指不到真正的原因）。
+    """
+    return tuple(plan for plan in req.stickers if plan.applied)
+
+
+def _speaking_image_of(plan: StickerPlan) -> Path | None:
+    """这一层这次要换图吗；要 ⇒ 讲话图那份路径。
+
+    判据只有 :attr:`StickerPlan.swaps` 一处（图可用 + 有讲话区间），与
+    :func:`studio.render.hashing.input_digests` 用的是同一个属性 —— 两处各写一遍
+    "能不能换"，就会出现"哈希认为换了、滤镜图没换"这种对不上的账。
+    """
+    if not plan.swaps:
+        return None
+    return plan.spec.speaking_path
+
+
+def enable_expr(intervals: Sequence[Interval]) -> str:
+    """讲话区间（毫秒）⇒ ffmpeg ``enable=`` 的表达式。
+
+    ``enable`` 是**逐帧求值**的时间轴选项，所以这里给的就是"这一帧该不该画"：
+    ``between(t,a,b)+between(t,c,d)`` 里任何一个非零 ⇒ 画。加法当"或"用是 ffmpeg
+    表达式语言自己的规矩（它没有逻辑或运算符）。
+
+    两个细节：
+
+    - 毫秒转秒**保留三位小数**（1ms 分辨率），与 ``-t`` 的写法一致；
+    - 表达式外面由调用方套**单引号**（``enable='...'``）。不套的话，``between`` 里
+      那两个逗号会被滤镜图解析器当成"下一个滤镜"的分隔符 —— 报出来的是
+      ``No such filter: '5.000'`` 这种完全指不到原因的错误。表达式只由数字、括号
+      与运算符拼出来，所以里面**不可能**出现单引号，套一层就够。
+    """
+    return "+".join(f"between(t,{start / 1000:.3f},{end / 1000:.3f})" for start, end in intervals)
 
 
 def _watermark_of(req: CompositeRequest) -> Path | None:
@@ -247,6 +317,8 @@ def video_label(req: CompositeRequest) -> str:
         return "vout"
     if _subtitle_of(req) is not None:
         return "vsub"
+    if _stickers_of(req):
+        return "vstk"
     return "bg"
 
 
@@ -256,8 +328,21 @@ def build_filter_graph(req: CompositeRequest, *, warn: list[str] | None = None) 
     每一路都以**显式标签**收尾（``[bg]`` ``[aout]`` …），因为 ``-map`` 要按标签取；
     让 ffmpeg 自动选流会在"底片自带音轨"时把画面选成音频，那种错很难从报错里读出来。
 
-    视频那一段是**串起来**的：字幕先烧、水印后贴。反过来会让水印被字幕的描边盖住
-    （两者都在画面下方时最容易撞），而"水印压在字幕上"比"字幕压在水印上"更难看。
+    视频那一段是**串起来**的，顺序从下到上：**贴图 → 字幕 → 水印**。
+
+    这个顺序不是随手排的，三层的"谁该压住谁"各有理由：
+
+    - **字幕压在贴图之上**：字幕是内容，贴图是装饰。人物恰好站在画面下方时（那是最
+      常见的位置），字幕被人物盖住会直接影响"看不看得懂这条片子"，反过来只是人脸上
+      多了一行字。
+    - **水印压在最上面**：水印要始终可辨（它是"这条片子是谁的"那个标识），被别的层
+      盖住就失去意义了。
+    - **多层贴图之间**按**声明顺序**叠：YAML 里先写的在下面。这条规则一个人能看懂、
+      也能自己调整，比任何"自动分层"都好解释。
+
+    某一层配了**讲话图**时，那一层在图上变成两个节点（普通图 + 讲话图，各自带
+    ``enable=`` 窗口）。窗口来自 :mod:`studio.render.speech` 算出来的讲话区间 ——
+    谁在讲话是稿子的事，这里只负责把那几段毫秒翻成 ffmpeg 表达式。
     """
     profile = req.profile
     width, height = profile.canvas
@@ -268,6 +353,44 @@ def build_filter_graph(req: CompositeRequest, *, warn: list[str] | None = None) 
         f"crop={width}:{height},fps={profile.fps},setsar=1[bg]"
     ]
     current = "bg"
+
+    stickers = _stickers_of(req)
+    for slot, sticker_plan in enumerate(stickers):
+        index = indices[f"sticker_{slot}"]
+        placement = sticker_plan.placement
+        assert placement is not None  # _stickers_of 只挑 placement 有值的
+        # 中间标签带序号（``vstk0`` / ``vstk1`` …），**最后一个**才叫 ``vstk`` ——
+        # ``video_label()`` 要按固定名字取那一路，中间那几层叫什么不影响它。
+        label = "vstk" if slot == len(stickers) - 1 else f"vstk{slot}"
+        box = (
+            f"scale={placement.width_px}:{placement.height_px},"
+            f"format=rgba,colorchannelmixer=aa={sticker_plan.spec.opacity:g}"
+        )
+        parts.append(f"[{index}:v]{box}[stk{slot}]")
+
+        speaking_image = _speaking_image_of(sticker_plan)
+        if speaking_image is None:
+            parts.append(f"[{current}][stk{slot}]overlay={placement.x}:{placement.y}:format=auto[{label}]")
+            current = label
+            continue
+
+        # 讲话 ⇒ 换图。两张图**互斥**地画（而不是把讲话图叠在普通图上面）：
+        # 它们是两次导出的两张画，轮廓未必逐像素重合，叠着画会在边缘露出下面那一张
+        # 的半个身子。互斥还正好是用户说的那件事 ——"讲话时换成讲话图，讲完换回来"。
+        #
+        # 两张图共用**同一个** ``box`` 与同一个 ``x/y``：换图那一瞬间不能挪位置，
+        # 否则人物会跳一下（宽高比不一致时会被压扁，那条在 ``plan_stickers`` 里报）。
+        window = enable_expr(sticker_plan.speaking_intervals)
+        parts.append(f"[{indices[f'sticker_speaking_{slot}']}:v]{box}[stk{slot}s]")
+        parts.append(
+            f"[{current}][stk{slot}]overlay={placement.x}:{placement.y}:format=auto:"
+            f"enable='not({window})'[stk{slot}a]"
+        )
+        parts.append(
+            f"[stk{slot}a][stk{slot}s]overlay={placement.x}:{placement.y}:format=auto:"
+            f"enable='{window}'[{label}]"
+        )
+        current = label
 
     subtitle = _subtitle_of(req)
     if subtitle is not None:
@@ -280,12 +403,12 @@ def build_filter_graph(req: CompositeRequest, *, warn: list[str] | None = None) 
     plan = req.watermark
     if "watermark" in indices and plan is not None and plan.placement is not None:
         index = indices["watermark"]
-        placement = plan.placement
+        wm_placement = plan.placement
         parts.append(
-            f"[{index}:v]scale={placement.width_px}:{placement.height_px},"
+            f"[{index}:v]scale={wm_placement.width_px}:{wm_placement.height_px},"
             f"format=rgba,colorchannelmixer=aa={plan.spec.opacity:g}[wm]"
         )
-        parts.append(f"[{current}][wm]overlay={placement.x}:{placement.y}:format=auto[vout]")
+        parts.append(f"[{current}][wm]overlay={wm_placement.x}:{wm_placement.y}:format=auto[vout]")
         current = "vout"
 
     parts += build_audio_chain(
@@ -494,6 +617,10 @@ def run_composite(
         duration_ms=req.duration_ms,
         size_bytes=req.output.stat().st_size,
         watermark_applied=_watermark_of(req) is not None,
+        stickers_applied=tuple(plan.spec.name for plan in _stickers_of(req)),
+        stickers_speaking=tuple(
+            plan.spec.name for plan in _stickers_of(req) if _speaking_image_of(plan) is not None
+        ),
         bgm_applied=req.bgm is not None,
         subtitle_applied=_subtitle_of(req) is not None,
         bg_fill=bg_fill(req),

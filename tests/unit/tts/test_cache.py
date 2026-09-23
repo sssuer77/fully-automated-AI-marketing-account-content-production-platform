@@ -29,6 +29,7 @@ class KeyArgs(TypedDict):
     engine: str
     engine_revision: str
     voice_id: str
+    voice_fingerprint: str
     normalized_text: str
     speed: float
     emotion: str
@@ -41,6 +42,7 @@ BASE: KeyArgs = {
     "engine": "sapi",
     "engine_revision": "1",
     "voice_id": "Microsoft Huihui Desktop",
+    "voice_fingerprint": "",
     "normalized_text": "今天聊三件事",
     "speed": 1.0,
     "emotion": "neutral",
@@ -96,15 +98,26 @@ def test_every_field_changes_the_key() -> None:
         "engine": "cosyvoice",
         "engine_revision": "2",
         "voice_id": "Microsoft Yaoyao",
+        "voice_fingerprint": "ab12cd34ef56",
         "normalized_text": "今天聊四件事",
         "speed": 1.1,
         "emotion": "开心",
         "seed": 7,
         "sample_rate": 24_000,
     }
-    assert len(changes) == len(BASE) == 8, "键的字段少一个，这里就得少一条断言"
+    assert len(changes) == len(BASE) == 9, "键的字段少一个，这里就得少一条断言"
     for field, value in changes.items():
         assert _key(**{field: value}) != baseline, field
+
+
+def test_the_same_name_with_new_reference_audio_is_a_new_key() -> None:
+    """★ 同一个音色名、换了参考音 ⇒ 必须换键（2026-09-23 · 用户原话）。
+
+    用户换参考音的做法是「删掉重传 / 勾覆盖重传」，而**目录名不变** —— 只按名字
+    记结论的话，换了嗓子之后每一句都命中旧音频，而面板上一切正常（配音台写着
+    「换音色成功」）。指纹是唯一能把这两次分开的东西。
+    """
+    assert _key(voice_fingerprint="aaaa1111bbbb") != _key(voice_fingerprint="cccc2222dddd")
 
 
 def test_separator_cannot_be_forged_by_content() -> None:

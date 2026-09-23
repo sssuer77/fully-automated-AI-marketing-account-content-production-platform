@@ -470,7 +470,7 @@ ffmpeg -hide_banner -nostdin -loglevel error -progress pipe:1 -stats_period 0.5 
 | 快手 | `kuaishou` | 9:16 | 10 min | 60 | 可选 | ✅ | ≤3/天 |
 | 视频号 | `shipinhao` | 9:16 | 30 min | 短标题 | 可选 | 话题弱 | ≤3/天 |
 
-**二线平台（保留接口与 profile，一期可延后）**
+**二线平台（T5.14：实现已接线 · 选择器未校准 ⇒ 出厂 `enabled: false`）**
 
 | 平台 | 代号 | 差异要点 |
 | --- | --- | --- |
@@ -478,6 +478,10 @@ ffmpeg -hide_banner -nostdin -loglevel error -progress pipe:1 -stats_period 0.5 
 | B站 | `bilibili` | 支持横竖屏；标题 ≤80；需分区与标签；有审核期 |
 | 西瓜视频 | `xigua` | 9:16 或 16:9；时长宽松；标题 ≤30 |
 | 微博 | `weibo` | 9:16；强话题；可带正文 |
+
+> 二线这四个从 2026-09-23（T5.14）起走的是**与一线同一套** `PlaywrightPublisher` 流程，
+> 差异全在 `selectors/<code>.yaml` 里 —— 但那份 CSS **没在真机上校准过**，所以出厂仍是
+> `enabled: false`。能不能真发由 pack 里的 `calibrated` / `calibrated_at` 回答（面板上显示）。
 
 **输出 profile 差异化（`config/outputs.yaml`）**
 

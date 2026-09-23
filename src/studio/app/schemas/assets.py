@@ -44,13 +44,17 @@ __all__ = [
     "AssetLibraryModel",
     "AssetPageModel",
     "AssetPatchRequest",
+    "AssetPruneRequest",
     "AssetStatsModel",
     "AssetStatsResponse",
     "BgmItemModel",
     "BrollItemModel",
+    "KeptOrphanModel",
     "MediaInfoModel",
     "PendingAssetModel",
     "ProblemModel",
+    "PruneReportModel",
+    "PrunedOrphanModel",
     "ScanCountsModel",
     "ScanReportModel",
     "ScanSectionModel",
@@ -59,6 +63,9 @@ __all__ = [
     "UploadResultModel",
     "UploadedFileModel",
     "VoiceItemModel",
+    "VoiceSegmentModel",
+    "VoiceSegmentRemovalModel",
+    "VoiceSegmentsModel",
 ]
 
 
@@ -452,8 +459,12 @@ class UploadResultModel(_Response):
     """一次上传的回执：逐文件结局 + 这一趟的入库报告。
 
     ``report`` 可以缺席（``None``）：一个字节都没落盘时没有什么可入库的，此时回一份
-    空的 ``ScanReportModel`` 会假装"扫过了"（而它的 ``missing`` 字段还会把整个库
-    列成"不见了"）。
+    空的 ``ScanReportModel`` 会假装「扫过了」（而它的 ``missing`` 字段还会把整个库
+    列成「不见了」）。
+
+    ``removed`` / ``notes`` 是**覆盖语义**的账（裁定 381）：勾了「覆盖同名」之后，
+    盘上没被这次写到的东西会被清掉 —— 清掉了什么（``removed``）与「什么没动但你
+    应该知道」（``notes``）都要报出来，否则用户看到的是「我覆盖了，可它还是 3 段」。
     """
 
     kind: str
@@ -463,7 +474,64 @@ class UploadResultModel(_Response):
     stored: int
     replaced: int
     skipped: int
+    #: 覆盖上传时**顺带清掉**的旧段（裁定 381）。它们不在 ``files`` 里 —— 那不是这次
+    #: 传上来的东西，混进去会让人以为「我传了它」。
+    removed: list[str]
+    #: 这次没写、但用户**必须知道**的事（比如「ref.txt 没动，还是上一次那份」）。
+    notes: list[str]
     report: ScanReportModel | None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 读 / 写：音色的逐段管理（裁定 381）
+# ══════════════════════════════════════════════════════════════════════
+
+
+class VoiceSegmentModel(_Response):
+    """一个音色里的一段参考音（逐段管理那一屏的一行）。
+
+    ``text`` 是 ``ref.txt`` 里**同一位置**那一行 —— 位置即对应（第 N 行 ↔ 第 N 段）。
+    它是 ``None`` 就说明这一段没有对应文本，克隆质量会打折。
+    """
+
+    index: int
+    name: str
+    duration_ms: int | None
+    sample_rate: int | None
+    peak_db: float | None
+    text: str | None
+    usable: bool
+    problems: list[ProblemModel]
+
+
+class VoiceSegmentsModel(_Response):
+    """一个音色目录的逐段现状。
+
+    ``ref_count`` 与 ``text_lines`` 分开报：两者不等就是「文本与参考音对不上」，
+    面板要能一眼指出是哪一段对不上（而不是只显示一句「有 warning」）。
+    """
+
+    voice_id: str
+    root: str
+    ref_count: int
+    text_lines: int
+    segments: list[VoiceSegmentModel]
+    problems: list[ProblemModel]
+    warnings: list[ProblemModel]
+    enabled: bool | None
+    in_library: bool
+
+
+class VoiceSegmentRemovalModel(_Response):
+    """删掉一段参考音的结局（**重编号是这件事的一部分**，所以必须报出来）。"""
+
+    voice_id: str
+    removed: str
+    removed_text: str | None
+    renamed: list[dict[str, str]]
+    text_rewritten: bool
+    notes: list[str]
+    segments: VoiceSegmentsModel
 
 
 class AssetDeleteModel(_Response):
@@ -578,3 +646,56 @@ class AssetPatchRequest(_Body):
         return {
             key: value for key, value in payload.items() if value is not None or key in NULLABLE_PATCH_FIELDS
         }
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 写：孤儿清理（裁定 384）
+# ══════════════════════════════════════════════════════════════════════
+
+
+class PrunedOrphanModel(_Response):
+    """一个被清掉的孤儿（``problems`` 是它该被清的理由，人话）。"""
+
+    kind: str
+    id: str
+    path: str
+    problems: list[str]
+
+
+class KeptOrphanModel(_Response):
+    """一个**没被清**的孤儿，以及为什么留着。"""
+
+    kind: str
+    id: str
+    path: str
+    reason: str
+
+
+class PruneReportModel(_Response):
+    """一次孤儿清理的结论。
+
+    ``removed`` / ``kept`` / ``strays`` 分开报的理由见服务层
+    :class:`~studio.services.asset_service.PruneReport`：三种"盘上有、库里没有"
+    该做的动作完全不同，合成一个数字，面板就只能说"清掉 3 个" —— 而其中两个
+    可能是**该入库**的。
+    """
+
+    kind: str
+    dry_run: bool
+    removed: list[PrunedOrphanModel]
+    kept: list[KeptOrphanModel]
+    strays: list[str]
+
+
+class AssetPruneRequest(_Body):
+    """孤儿清理请求。
+
+    ``kind`` **必填**（与 :class:`AssetIngestRequest` 的"留空 = 三类都扫"刻意不同）：
+    这个动作会删盘上的东西，而"删哪一类"必须由人说出来。给一个留空的默认值，等于
+    让一次手滑的请求在三类目录里同时动手 —— 而扫盘留空的代价只是多读两个目录。
+
+    ``dry_run=true`` ⇒ 只报"会清掉哪些"，一个字节都不动（面板点第一下用它）。
+    """
+
+    kind: AssetKind
+    dry_run: bool = False

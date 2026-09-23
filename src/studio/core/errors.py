@@ -173,6 +173,10 @@ class ErrorCode(StrEnum):
     #: 与 FAILED 分开：FAILED 是"知道哪一步坏了"，UNKNOWN 是"异常从没预期的地方冒出来"——
     #: 排障时前者照着 ``evidence.stage`` 看，后者要去看 traceback。
     PUBLISH_UNKNOWN = "PUBLISH_UNKNOWN"
+    #: 面板上点了一个**配置里已经没有**的账号（多半是另一个人刚删掉了它）。
+    #: 与 ``CONFIG_INVALID`` 分开：那份配置本身没坏，坏的是"你手上这一屏已经过时了"
+    #: ⇒ 404 + "刷新面板"，与 ``SCHEDULE_NOT_FOUND`` / ``REPORT_NOT_FOUND`` 同一条。
+    PUBLISH_ACCOUNT_NOT_FOUND = "PUBLISH_ACCOUNT_NOT_FOUND"
     # T5.1 发布前二次校验（§06.4 / §06.10）：每一个都对应一道阻断门禁
     PRECHECK_WATERMARK = "PRECHECK_WATERMARK"
     PRECHECK_LOUDNESS = "PRECHECK_LOUDNESS"
@@ -204,6 +208,7 @@ class ErrorCode(StrEnum):
     TOPIC_BATCH_RUNNING = "TOPIC_BATCH_RUNNING"
     TOPIC_SELECT_INVALID = "TOPIC_SELECT_INVALID"
     HOT_TEXT_EMPTY = "HOT_TEXT_EMPTY"
+    NEWS_FETCH_FAILED = "NEWS_FETCH_FAILED"
 
     # ── 写稿（T1.10 · §04.1.4 / §04.1.5）────────────────────────
     #: 二级产物（视频标题 + 核心论点）不合法：空 / 超长（文案三级流水线的中间一级）

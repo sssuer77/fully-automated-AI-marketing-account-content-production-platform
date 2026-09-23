@@ -10,9 +10,12 @@ import type {
   AssetsStats,
   IngestBody,
   IngestReport,
+  PruneReport,
   ScannedAsset,
   UploadedFile,
   UploadResult,
+  VoiceSegmentRemoval,
+  VoiceSegments,
 } from "@/api/endpoints/assets";
 import { ApiError } from "@/api/http";
 import type { Envelope } from "@/ws/events";
@@ -146,8 +149,6 @@ function stats(overrides: Partial<AssetsStats> = {}): AssetsStats {
       broll_min_clips: 60,
       broll_min_duration_ms: 1_800_000,
       bgm_min_duration_ms: 15_000,
-      voice_min_segments: 2,
-      voice_max_segments: 3,
       voice_segment_min_ms: 10_000,
       voice_segment_max_ms: 30_000,
     },
@@ -284,6 +285,70 @@ function uploadResult(overrides: Partial<UploadResult> = {}): UploadResult {
     report: report(),
     ...overrides,
   } as UploadResult;
+}
+
+function voiceSegments(overrides: Partial<VoiceSegments> = {}): VoiceSegments {
+  return {
+    voice_id: "bear_da",
+    root: "D:/studio/data/voice_src/bear_da",
+    ref_count: 2,
+    text_lines: 2,
+    segments: [
+      {
+        index: 1,
+        name: "ref_01.wav",
+        duration_ms: 15_000,
+        sample_rate: 24_000,
+        peak_db: -3,
+        text: "第一句",
+        usable: true,
+        problems: [],
+      },
+      {
+        index: 2,
+        name: "ref_02.wav",
+        duration_ms: 15_000,
+        sample_rate: 24_000,
+        peak_db: -3,
+        text: "第二句",
+        usable: true,
+        problems: [],
+      },
+    ],
+    problems: [],
+    warnings: [],
+    enabled: true,
+    in_library: true,
+    ...overrides,
+  } as VoiceSegments;
+}
+
+function segmentRemoval(overrides: Partial<VoiceSegmentRemoval> = {}): VoiceSegmentRemoval {
+  return {
+    voice_id: "bear_da",
+    removed: "ref_02.wav",
+    removed_text: "第二句",
+    renamed: [],
+    text_rewritten: true,
+    notes: [],
+    segments: voiceSegments({
+      ref_count: 1,
+      text_lines: 1,
+      segments: [
+        {
+          index: 1,
+          name: "ref_01.wav",
+          duration_ms: 15_000,
+          sample_rate: 24_000,
+          peak_db: -3,
+          text: "第一句",
+          usable: true,
+          problems: [],
+        },
+      ],
+    }),
+    ...overrides,
+  } as VoiceSegmentRemoval;
 }
 
 function envelope(data: Record<string, unknown>): Envelope {
@@ -979,5 +1044,192 @@ describe("授权类型", () => {
     for (const value of ["self_recorded", "authorized", "cc0", "purchased"]) {
       expect(LICENSE_LABELS[value]).toBeTruthy();
     }
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// 音色的逐段管理（裁定 381）
+// ══════════════════════════════════════════════════════════════════════
+
+describe("音色的逐段管理", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    configureAssetsApi({
+      fetchAssetPage: vi.fn(async (params: { kind: AssetKind }) => pageOf(params.kind, [])),
+      fetchAssetStats: vi.fn(async () => stats()),
+    });
+  });
+
+  it("展开逐段表 ⇒ **每次都重新拉**（盘上的东西可能刚被改过）", async () => {
+    const fetchVoiceSegments = vi.fn(async () => voiceSegments());
+    configureAssetsApi({ fetchVoiceSegments });
+
+    const store = useAssetsStore();
+    const item = voice();
+
+    await store.toggleSegments(item);
+    expect(store.segmentsId).toBe(item.id);
+    expect(store.segmentsFor(item.id)?.ref_count).toBe(2);
+
+    // 再点一次是「收起」——收起不该又发一次请求
+    await store.toggleSegments(item);
+    expect(store.segmentsId).toBeNull();
+    expect(fetchVoiceSegments).toHaveBeenCalledTimes(1);
+
+    // 第三次点开 ⇒ 又拉一次（不靠缓存）
+    await store.toggleSegments(item);
+    expect(fetchVoiceSegments).toHaveBeenCalledTimes(2);
+  });
+
+  it("拉不到 ⇒ 如实报错，但**留着旧的那一份**（一次抖动不该让这一屏变空白）", async () => {
+    configureAssetsApi({ fetchVoiceSegments: vi.fn(async () => voiceSegments()) });
+    const store = useAssetsStore();
+    const item = voice();
+    await store.toggleSegments(item);
+
+    configureAssetsApi({
+      fetchVoiceSegments: vi.fn(async () => {
+        throw new ApiError("boom", 500, null);
+      }),
+    });
+    await store.loadSegments(item.id);
+
+    expect(store.error).toBeTruthy();
+    expect(store.segmentsFor(item.id)?.ref_count).toBe(2);
+  });
+
+  it("删一段 ⇒ 回执落位、逐段表**换成服务端回的那一份**、列表也重拉", async () => {
+    const removal = segmentRemoval({
+      renamed: [{ from: "ref_03.wav", to: "ref_02.wav" }],
+    });
+    const deleteVoiceSegment = vi.fn(async () => removal);
+    const fetchAssetPage = vi.fn(async () => pageOf("voice", [voice()]));
+    configureAssetsApi({ deleteVoiceSegment, fetchAssetPage });
+
+    const store = useAssetsStore();
+    const ok = await store.removeSegment("bear_da", "ref_02.wav");
+
+    expect(ok).toBe(true);
+    expect(deleteVoiceSegment).toHaveBeenCalledWith("bear_da", "ref_02.wav");
+    // 重编号那本账**要能画出来** —— 用户手上的文件名变了
+    expect(store.segmentResult?.renamed).toEqual([{ from: "ref_03.wav", to: "ref_02.wav" }]);
+    expect(store.segmentsFor("bear_da")?.ref_count).toBe(1);
+    // 列表那一栏的「N 段」也跟着变（它就是用户判断"生效没有"的那个数）
+    expect(fetchAssetPage).toHaveBeenCalledTimes(1);
+    expect(store.segmentPending).toBeNull();
+  });
+
+  it("删段失败 ⇒ 回执不动、错误说出来（不让面板显示一次没发生的删除）", async () => {
+    configureAssetsApi({
+      deleteVoiceSegment: vi.fn(async () => {
+        throw new ApiError("这是最后一段", 422, null);
+      }),
+    });
+
+    const store = useAssetsStore();
+    expect(await store.removeSegment("bear_da", "ref_01.wav")).toBe(false);
+
+    expect(store.segmentResult).toBeNull();
+    expect(store.error).toBeTruthy();
+    expect(store.segmentPending).toBeNull();
+  });
+
+  it("换菜单 ⇒ 逐段表与它的回执都收起（那是上一个菜单的中间态）", async () => {
+    configureAssetsApi({ fetchVoiceSegments: vi.fn(async () => voiceSegments()) });
+    const store = useAssetsStore();
+    store.open("voice");
+    await store.toggleSegments(voice());
+    expect(store.segmentsId).not.toBeNull();
+
+    store.open("broll");
+
+    expect(store.segmentsId).toBeNull();
+    expect(store.segmentResult).toBeNull();
+  });
+
+  // ── 孤儿清理（裁定 384）────────────────────────────────────────────
+
+  /** 一次孤儿清理的回执（默认：清掉一个、留一个该入库的）。 */
+  function pruneReportOf(overrides: Partial<PruneReport> = {}): PruneReport {
+    return {
+      kind: "voice",
+      dry_run: false,
+      removed: [
+        {
+          kind: "voice",
+          id: "bigbear",
+          path: "/d/voice_src/bigbear",
+          problems: ["目录里没有参考音（要 ref_01.wav 这种名字）"],
+        },
+      ],
+      kept: [
+        {
+          kind: "voice",
+          id: "xiongda",
+          path: "/d/voice_src/xiongda",
+          reason: "本身合格，只是还没入库 —— 该入库，不是该删",
+        },
+      ],
+      strays: [],
+      ...overrides,
+    };
+  }
+
+  it("清孤儿：`dryRun` 只报会清掉哪些，**不重拉**（盘与库都没动）", async () => {
+    const pruneOrphans = vi.fn(async () => pruneReportOf({ dry_run: true }));
+    const fetchAssetPage = vi.fn(async () => pageOf("voice", []));
+    configureAssetsApi({ pruneOrphans, fetchAssetPage });
+
+    const store = useAssetsStore();
+    store.open("voice");
+    await store.prune(true);
+
+    expect(pruneOrphans).toHaveBeenCalledWith("voice", true);
+    expect(store.pruneReport?.removed.map((item) => item.id)).toEqual(["bigbear"]);
+    // 预览不动盘 ⇒ 那一页没有任何变化，重拉是白跑
+    expect(fetchAssetPage).not.toHaveBeenCalled();
+    expect(store.pruneBusy).toBe(false);
+  });
+
+  it("清孤儿：真删之后**重拉一次**（未入库那一批跟着变了）", async () => {
+    const pruneOrphans = vi.fn(async () => pruneReportOf());
+    const fetchAssetPage = vi.fn(async () => pageOf("voice", []));
+    configureAssetsApi({ pruneOrphans, fetchAssetPage });
+
+    const store = useAssetsStore();
+    store.open("voice");
+    await store.prune(false);
+
+    expect(pruneOrphans).toHaveBeenCalledWith("voice", false);
+    expect(fetchAssetPage).toHaveBeenCalledTimes(1);
+    // 该入库的那条**要留在回执里** —— 面板靠它说"清了一遍怎么还剩着"
+    expect(store.pruneReport?.kept.map((item) => item.id)).toEqual(["xiongda"]);
+  });
+
+  it("清孤儿失败 ⇒ 回执不动、错误说出来（不让面板显示一次没发生的清理）", async () => {
+    configureAssetsApi({
+      pruneOrphans: vi.fn(async () => {
+        throw new ApiError("守卫拒绝", 500, null);
+      }),
+    });
+
+    const store = useAssetsStore();
+    expect(await store.prune(false)).toBeNull();
+
+    expect(store.pruneReport).toBeNull();
+    expect(store.error).toBeTruthy();
+    expect(store.pruneBusy).toBe(false);
+  });
+
+  it("换菜单 ⇒ 清孤儿的回执也收起（那是上一个菜单的中间态）", async () => {
+    configureAssetsApi({ pruneOrphans: vi.fn(async () => pruneReportOf()) });
+    const store = useAssetsStore();
+    store.open("voice");
+    await store.prune(false);
+    expect(store.pruneReport).not.toBeNull();
+
+    store.open("broll");
+
+    expect(store.pruneReport).toBeNull();
   });
 });

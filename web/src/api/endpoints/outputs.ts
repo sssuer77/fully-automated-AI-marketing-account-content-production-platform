@@ -32,6 +32,8 @@ type BodyJson<P extends keyof paths, M extends keyof paths[P]> = paths[P][M] ext
 export type OutputsResponse = OkJson<"/api/v1/outputs", "get">;
 export type OutputsProfile = OutputsResponse["profiles"][number];
 export type OutputsWatermark = NonNullable<OutputsResponse["watermark"]>;
+/** 一层人物贴图（T6.5）。`stickers` 是**数组**（顺序 = YAML 声明顺序 = 叠放顺序）。 */
+export type OutputsSticker = OutputsResponse["stickers"][number];
 export type OutputsSubtitle = NonNullable<OutputsResponse["subtitle"]>;
 export type OutputsLimits = OutputsResponse["limits"];
 /** 一个数值字段的上下限（`exclusive_min` ⇒ 边界本身不合法）。 */

@@ -45,10 +45,16 @@ __all__ = [
     "DIRECTION_COUNT_MAX",
     "DIRECTION_COUNT_MIN",
     "MIN_FIT_SCORE",
+    "NEWS_DIRECTION_TITLE_MAX",
+    "NEWS_EVIDENCE_KIND",
+    "NEWS_RATIONALE_MAX",
+    "NEWS_SUMMARY_MAX",
+    "NEWS_SUMMARY_UNKNOWN",
     "RISK_COMPLAINED_TOPIC",
     "RISK_LOW_GROUNDING",
     "SENTIMENT_TO_DB",
     "SYNONYMS",
+    "VISUAL_LEAK_WORDS",
     "ClassifiedItem",
     "DedupAction",
     "DedupMatch",
@@ -67,6 +73,10 @@ __all__ = [
     "HotItemSpec",
     "IdeatorInput",
     "IdeatorOutput",
+    "NewsBatch",
+    "NewsItemSpec",
+    "NewsScoutResult",
+    "NewsVerdict",
     "PlannerInput",
     "PlannerOutput",
     "RuleName",
@@ -82,6 +92,7 @@ __all__ = [
     "sentiment_to_kind",
     "similarity",
     "top_phrases",
+    "visual_leak_words",
 ]
 
 # ══════════════════════════════════════════════════════════════════════
@@ -639,6 +650,44 @@ def dedup_topic(
     )
 
 
+#: 画面 / 素材词汇 —— 选题里出现即视为「把画面写进了内容」（§04.1.3 落地口径 6）。
+#:
+#: 为什么这是一条**判据**而不是提示词里的一句劝告：画面是**通用底片**（渲染时从素材库随机
+#: 挑一条），跟选题没关系。选题里写"用跑酷台阶算给你看"，等于对观众承诺一个这条片子
+#: **未必**会有的画面 —— 与陷阱 #205「一行 = 一条任务」同族：两边都自洽、没有任何地方报错。
+#:
+#: 只收**高精度**的词：`地图` / `实况` 这类在民生选题里可能是正经词（"导航地图""直播实况"），
+#: 收进来只会让这条判据被误报淹掉，然后被无视。
+VISUAL_LEAK_WORDS: Final[tuple[str, ...]] = (
+    "跑酷",
+    "我的世界",
+    "Minecraft",
+    "血条",
+    "体力条",
+    "方块",
+    "关卡",
+    "第几关",
+    "底片",
+    "素材循环",
+)
+
+#: ASCII 的那几个单独一条规则：``MC`` 要**整词**匹配 —— 不然 ``MCU`` / ``H.264`` 里那两个
+#: 字母也会被算成一次串味（误报），而误报多了这条判据就会被无视。
+_VISUAL_ASCII: Final[re.Pattern[str]] = re.compile(r"(?<![A-Za-z0-9])MC(?![A-Za-z0-9])")
+
+
+def visual_leak_words(text: str) -> list[str]:
+    """扫出文本里的**画面词**（空列表 = 干净）。
+
+    纯函数、只做匹配：**不删、不改、不拦截** —— 调用方拿它发一条 warn（判据可见），
+    而不是悄悄把一条选题改掉或丢掉（那才是真的"静默"）。
+    """
+    found = [word for word in VISUAL_LEAK_WORDS if word in text]
+    if _VISUAL_ASCII.search(text):
+        found.append("MC")
+    return found
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 反馈分类契约（§04.1.7："情感 / 诉求分类由 Planner 阶段批量做一次"）
 # ══════════════════════════════════════════════════════════════════════
@@ -693,3 +742,100 @@ def sentiment_to_kind(item: ClassifiedItem) -> FeedbackKind:
     if item.complaints:
         return "complaint"
     return "trend"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 今日新闻契约（T5.12 · 「一键拉取今日社会新闻」）
+# ══════════════════════════════════════════════════════════════════════
+#
+# 与反馈分类同形（``NewsBatch`` → 模型 → ``NewsScoutResult``），差别只在**去路**：
+# 反馈分类回填 ``feedback_items``，这里回填 ``content_directions`` —— 值得写的那几条新闻
+# 变成"这一批要做什么"的方向，与手写方向、Planner 产的方向排在一起（裁定 130 的口径）。
+
+#: 建议方向标题 / 理由的上限（与 ``schemas/news_scout.schema.json`` 逐字对应：
+#: 提示词里就是这么约定的，两边任何一边改了都会在契约测试里红）
+NEWS_DIRECTION_TITLE_MAX: Final[int] = 20
+NEWS_RATIONALE_MAX: Final[int] = 60
+
+#: 事件总结的上限（同上，与 schema 逐字对应）。
+#: 200 这个数是"说清一件事"与"别把整篇新闻抄回来"之间的取舍：谁 / 何时 / 何地 / 数字 /
+#: 结果，四五句话足够；再长就不是总结，而是原文，而原文我们**没有**（见 ``NewsItemSpec.summary``）。
+NEWS_SUMMARY_MAX: Final[int] = 200
+
+#: 今日新闻那条依据在 ``grounded_on.kind`` 里的标记（**给程序看的**，不是给人看的）。
+#:
+#: 为什么要一个标记：Planner 产的 hot 依据也常把 ``ref_id`` 留空（提示词里就写着
+#: ``ref_id: null``），光凭"type=hot 且没有 ref_id"认不出这条是谁写的 —— 而写稿时
+#: "把哪几句当事实"必须认得出，认错的代价是把一段模型编的转述当事实喂进稿子。
+NEWS_EVIDENCE_KIND: Final[str] = "news"
+
+#: 模型"输入里看不出发生了什么"时该填的**字面量**（提示词里就是这么约定的）。
+#:
+#: 服务层认它 ⇒ 不落成依据：那不是事实，是一句"我不知道"。留着它，面板上会多一行
+#: 没有信息量的"事件"，写稿时还会被当成一条已知事实喂进去 —— 白占地方。
+NEWS_SUMMARY_UNKNOWN: Final[str] = "信息不足"
+
+
+class NewsItemSpec(BaseModel):
+    """一条抓来的今日新闻（**未经模型**：原文 + 来源 + 热度）。
+
+    ``ref`` 是回抄锚点（``n01`` / ``n02`` …，**由抓取侧生成**，不是新闻自带的 id）：
+    标题会重复、URL 会带查询串，拿它们当锚点等于让模型自己造一个对不上的编号。
+
+    ``summary`` 是**源站自己给的摘要**（中新网 RSS 的 ``description``，就是正文第一段），
+    不是我们算的、也不是模型写的。为什么要有它：只有标题时，模型只能照着标题猜"到底
+    发生了什么"，猜出来的东西一旦写进方向，后面写稿就会照着编 —— 那是幻觉的起点。
+    头条热榜**没有**这个字段（它只给标题 + 热度），所以这里是可空的：宁可空着，
+    也不许拿标题去"脑补"一段摘要（T5.12 增补）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ref: str
+    title: str
+    source: str
+    url: str = ""
+    heat: int | None = None
+    summary: str = ""
+
+
+class NewsBatch(BaseModel):
+    """一次评测的输入（**不直接喂给 LLM**：由 Agent 渲染成提示词）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[NewsItemSpec] = Field(default_factory=list)
+
+
+class NewsVerdict(BaseModel):
+    """一条新闻的判定（``ref`` 必须原样回抄，服务层据此对齐）。
+
+    ``keep=True`` 而 ``direction_title`` 为空时，服务层退回用**新闻标题**当方向标题 ——
+    用户点的是"这条新闻值得写"，那么方向的主体就是这条新闻本身。
+
+    ``event_summary`` 是**事件本身**（谁 / 何时 / 何地 / 数字 / 结果），与 ``rationale``
+    （"为什么值得写"）是两件事：前者是**事实**，后者是**判断**。为什么非要分开问一次：
+    写稿那几级（大纲 / 成稿）拿不到新闻原文，只有方向这一层的话，模型只能照着标题编
+    细节 —— 事件总结就是那条"事实从新闻走到稿子"的通道（见
+    ``topic_service._news_evidence`` 与 ``script_service`` 的 ``facts`` 注入）。
+
+    纪律与代价：模型**只许**依据提示词里给到的标题 + 摘要写，没给的一个字都不许补；
+    输入里看不出发生了什么就填"信息不足" —— 空着比编一条好，因为编出来的那条会一路
+    被下游当成事实用。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ref: str = Field(min_length=1)
+    keep: bool = False
+    direction_title: str = Field(default="", max_length=NEWS_DIRECTION_TITLE_MAX)
+    rationale: str = Field(default="", max_length=NEWS_RATIONALE_MAX)
+    event_summary: str = Field(default="", max_length=NEWS_SUMMARY_MAX)
+
+
+class NewsScoutResult(BaseModel):
+    """评测产出（条数与输入**不必相等**：模型可能漏条，服务层按 ``ref`` 对齐）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[NewsVerdict] = Field(default_factory=list)

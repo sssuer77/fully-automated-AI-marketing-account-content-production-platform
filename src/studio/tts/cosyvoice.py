@@ -405,14 +405,14 @@ class CosyVoiceBackend:
                 f"参考音不存在：{ref_wav}",
                 code=ErrorCode.TTS_VOICE_MISSING,
                 context={"ref_wav": str(ref_wav)},
-                remediation="按 §4.3.1 把 2–3 段 2–30 秒的原声放进 data/voice_src/<音色>/",
+                remediation="把至少 1 段 2–30 秒的原声放进 data/voice_src/<音色>/（多给几段音色更稳）",
             )
         if not ref_text.strip():
             raise StudioError(
                 f"参考文本为空：{ref_wav.parent}",
                 code=ErrorCode.TTS_VOICE_MISSING,
                 context={"ref_wav": str(ref_wav)},
-                remediation="在同目录的 ref.txt 里写上与第 1 段参考音**逐字**对应的那句话",
+                remediation="在同目录的 ref.txt 里写上与参考音**逐字**对应的文本（一行一段）",
             )
 
         self.load()

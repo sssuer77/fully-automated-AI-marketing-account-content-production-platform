@@ -563,7 +563,7 @@ def test_canceled_is_not_published_either(rig: Rig) -> None:
 
 
 def test_disabled_platform_is_a_non_retryable_error(rig: Rig) -> None:
-    """二线平台 ``enabled=false`` ⇒ ``PUBLISH_NOT_IMPLEMENTED``（重试多少次都一样）。"""
+    """未启用的平台（出厂时二线四个都是 `enabled=false`）⇒ `PUBLISH_NOT_IMPLEMENTED`。"""
     ctx, _ = _claimed(rig, platform="xiaohongshu")
 
     with pytest.raises(StudioError) as excinfo:
@@ -638,7 +638,7 @@ def test_handler_is_registered_under_the_declared_module() -> None:
     assert importlib.util.find_spec(HANDLER_MODULES["publish"]) is not None
 
 
-def test_build_handler_reads_the_config_once(rig: Rig) -> None:
+def test_build_handler_reads_the_config_at_startup(rig: Rig) -> None:
     """装配期读配置（缺平台表 / 缺账号 ⇒ 起不来，而不是发到一半才炸）。"""
     repo_root = Path(__file__).resolve().parents[3]
     rig.paths.config_dir.mkdir(parents=True, exist_ok=True)
@@ -653,6 +653,61 @@ def test_build_handler_reads_the_config_once(rig: Rig) -> None:
     handler = build_publish_handler(paths=rig.paths, log=None)
 
     assert handler.unit_types == PUBLISH_UNIT_TYPES
+
+
+def test_build_handler_follows_later_edits(rig: Rig) -> None:
+    """★ 真机坑（2026-09-23）：装配之后改了盘上那份配置，**跑着的 worker 要认**。
+
+    钉死启动快照的症状：面板上加了一个号、扫码也成功，点「投递」却什么都没发出去 ——
+    worker 报"平台 douyin 上没有启用的账号 acc_douyin"，而**发布面板上连一条记录都
+    不会出现**（守卫跑在建 ``publications`` 那一行之前）。用户只能靠猜。
+    """
+    repo_root = Path(__file__).resolve().parents[3]
+    rig.paths.config_dir.mkdir(parents=True, exist_ok=True)
+    for stem in CONFIG_FILE_NAMES:
+        name = f"{stem}.yaml"
+        source = repo_root / "config" / name
+        if source.is_file():
+            shutil.copyfile(source, rig.paths.config_dir / name)
+
+    publish_path = rig.paths.config_dir / "publish.yaml"
+    # 出厂那份是 `enabled: false`（R14）⇒ 装配期读到的是"关着"。
+    publish_path.write_text(
+        publish_path.read_text(encoding="utf-8").replace("enabled: false", "enabled: true", 1),
+        encoding="utf-8",
+    )
+    handler = build_publish_handler(paths=rig.paths, log=None)
+
+    handler._refresh_config()
+
+    assert handler._publish.enabled is True
+
+
+def test_units_reread_the_config_so_panel_changes_apply(rig: Rig) -> None:
+    """认领一条之前重读配置 ⇒ 面板改完**不用重启**，下一条就生效。"""
+    ctx, _ = _claimed(rig)
+    # 装配期那份"开关是关的"，盘上那份已经打开 —— 认领时必须以后者为准。
+    handler = _handler(
+        rig,
+        config=_config(enabled=False),
+        config_loader=lambda: _config(enabled=True),
+    )
+
+    result = handler.run(ctx)
+
+    assert result["status"] == PUBLISHED
+    assert len(CALLS) == 1
+
+
+def test_injected_config_is_pinned_without_a_loader(rig: Rig) -> None:
+    """没注入 loader ⇒ 钉在装配期那一份（单测与 CLI 演练要的正是"这一条用这份配置跑"）。"""
+    ctx, _ = _claimed(rig)
+
+    with pytest.raises(StudioError) as excinfo:
+        _handler(rig, config=_config(enabled=False)).run(ctx)
+
+    assert excinfo.value.code is ErrorCode.PUBLISH_DISABLED
+    assert CALLS == []
 
 
 def test_next_metric_at_uses_the_first_schedule_point(rig: Rig) -> None:

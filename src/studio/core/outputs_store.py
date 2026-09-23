@@ -50,17 +50,27 @@ __all__ = [
     "EDITABLE_SCALARS",
     "PROFILE_FIELDS",
     "SECTIONS",
+    "STICKER_FIELDS",
     "SUBTITLE_FIELDS",
+    "SUBTITLE_NESTED",
     "WATERMARK_FIELDS",
     "OutputsSnapshot",
     "OutputsStore",
+    "field_key",
     "quality_field_of",
+    "scalar_for_write",
 ]
 
 logger = get_logger("studio.outputs")
 
 #: 改动载荷允许出现的**段**（多一个就报错，不静默忽略）
-SECTIONS: Final[tuple[str, ...]] = ("default_profile", "profiles", "watermark", "subtitle")
+SECTIONS: Final[tuple[str, ...]] = (
+    "default_profile",
+    "profiles",
+    "watermark",
+    "stickers",
+    "subtitle",
+)
 
 #: 顶层可编辑标量
 EDITABLE_SCALARS: Final[tuple[str, ...]] = ("default_profile",)
@@ -75,8 +85,60 @@ PROFILE_FIELDS: Final[tuple[str, ...]] = ("width", "height", "fps", "quality")
 #: `watermark` 段可编辑字段（D5 必做项的参数面）
 WATERMARK_FIELDS: Final[tuple[str, ...]] = ("position", "margin_x", "margin_y", "width_ratio", "opacity")
 
-#: `subtitle` 段可编辑字段（Q11 开启）
-SUBTITLE_FIELDS: Final[tuple[str, ...]] = ("font_size", "outline", "max_chars_per_line")
+#: `subtitle` 段可编辑字段（Q11 开启）。
+#:
+#: ``margin_bottom``（面板「距底」）与 ``safe_area_bottom``（面板「底部安全区」）是
+#: T3.5 追加的（裁定 409）：字幕位置此前**只读**，而锁住它的唯一理由是"写了未必生效"
+#: （两个数取 max，小的那个被抬上去）。现在生效值（``margin_v``）跟着响应一起下发，
+#: 那个理由不成立了 —— 于是两个数都能改：往上挪调大「距底」，往下挪要把「底部安全区」
+#: 一起调小（面板会当场说明白"实际 N px"）。
+SUBTITLE_FIELDS: Final[tuple[str, ...]] = (
+    "font_size",
+    "outline",
+    "margin_bottom",
+    "safe_area_bottom",
+    "max_chars_per_line",
+)
+
+#: 面板的**扁平**字段名 ⇒ 文件里的**嵌套**路径。
+#:
+#: 面板上叫 ``safe_area_bottom``（一个数一个框），而在 ``config/outputs.yaml`` 里它是
+#: ``subtitle.safe_area.bottom``。这份对照表**只有一处**（预览与写盘都读它），于是
+#: "面板能改的字段"与"文件里被改的那一行"不可能漂开。
+SUBTITLE_NESTED: Final[dict[str, tuple[str, ...]]] = {"safe_area_bottom": ("safe_area", "bottom")}
+
+#: 校验错误的 ``loc`` 是**文件路径**（``subtitle.safe_area.bottom``），而面板上的输入框
+#: 叫**扁平字段名**（``subtitle.safe_area_bottom``）。两者不一致时，红字会落在"没有那个
+#: 框"的地方 —— 用户只看到"保存失败"，找不到哪一格错。对照表只此一处。
+_FIELD_ALIASES: Final[dict[str, str]] = {"subtitle.safe_area.bottom": "subtitle.safe_area_bottom"}
+
+
+def field_key(path: Sequence[object]) -> str:
+    """文件里的键路径 ⇒ 面板认得的字段名（对照表见 ``_FIELD_ALIASES``）。"""
+    joined = ".".join(str(part) for part in path) or "<root>"
+    return _FIELD_ALIASES.get(joined, joined)
+
+
+#: `stickers.<name>` 段可编辑字段（T6.5 人物贴图）。
+#:
+#: ``path`` **在这里、而水印的 path 不在** —— 这不是疏忽。水印是"账号的标识"，一张图
+#: 就够、换它要走一次刻意的人工动作；贴图是"这次要用哪张人物"，**本来就会来回换**，
+#: 每换一次都去手改 YAML 等于把面板的意义削掉一半。它是字符串字段（不是 ``Path``），
+#: 写盘时统一转正斜杠（见 ``_edits_locked``）。
+STICKER_FIELDS: Final[tuple[str, ...]] = (
+    "enabled",
+    "path",
+    # 换图那两件（T6.5 追加）：``speaker`` 说「这一层代表谁」，``speaking_path``
+    # 说「讲话时换哪张图」。都进可编辑字段 —— 换人物换到别人身上时，第一件事就是
+    # 改这两个。
+    "speaker",
+    "speaking_path",
+    "position",
+    "margin_x",
+    "margin_y",
+    "height_ratio",
+    "opacity",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +174,22 @@ def quality_field_of(vcodec: str) -> str:
     抄第二份就会出现"面板说 CQ、写进 crf"这种对不上的错。
     """
     return "crf" if vcodec == "libx264" else "cq"
+
+
+def scalar_for_write(value: object) -> object:
+    """模型上的值 ⇒ 写进 YAML 的字面量（**写盘口径的唯一一处**）。
+
+    目前只有一条规则：**路径转正斜杠**。``config/*.yaml`` 通篇写的是
+    ``templates/.../x.png``，而 ``str(Path)`` 在 Windows 上给的是反斜杠 —— 同一份配置
+    在两种机器上写出两种字节，diff 里看着像"改了路径"，其实只是换了个分隔符。
+
+    单独抽成函数而不是写在 ``_edits_locked`` 里：``test_yaml_lines`` 的"按原值写回去
+    ⇒ 逐字节不变"那条不变量要按**同一个口径**取值，抄一份进测试就等于把这条规则变成
+    两处维护 —— 而它一漂，面板保存一次就会把路径的分隔符改掉。
+    """
+    if isinstance(value, Path):
+        return value.as_posix()
+    return value
 
 
 def _invalid(field: str, error: str, remediation: str) -> ConfigError:
@@ -270,7 +348,30 @@ class OutputsStore:
                 else:
                     target[field] = value
         self._apply_section(payload, changes, "watermark", WATERMARK_FIELDS)
-        self._apply_section(payload, changes, "subtitle", SUBTITLE_FIELDS)
+        for name, patch in (changes.get("stickers") or {}).items():
+            # 槽位必须**已经在文件里**：贴图是命名块，加一个槽位等于往 YAML 里插一段
+            # （行级替换做不到，见 `core/yaml_lines.py` 的"能改什么、不能改什么"）。
+            # 这里如实报错并指出"该怎么加"，而不是静默忽略 —— 静默忽略会让人以为
+            # "第 5 层已经建好了"，而文件里根本没有那一块。
+            if name not in payload["stickers"]:
+                raise _invalid(
+                    f"stickers.{name}",
+                    f"没有这一层贴图：{name}",
+                    (
+                        f"现有的是：{'、'.join(payload['stickers'])}；"
+                        "要加一层就在 config/outputs.yaml 的 stickers: 段里复制一段槽位块"
+                    ),
+                )
+            target = payload["stickers"][name]
+            for field, value in patch.items():
+                if field not in STICKER_FIELDS:
+                    raise _invalid(
+                        f"stickers.{name}.{field}",
+                        f"不可编辑的字段：{field}",
+                        f"可编辑的是：{'、'.join(STICKER_FIELDS)}",
+                    )
+                target[field] = value
+        self._apply_section(payload, changes, "subtitle", SUBTITLE_FIELDS, SUBTITLE_NESTED)
         try:
             return OutputsConfig.model_validate(payload)
         except ValidationError as exc:
@@ -287,6 +388,7 @@ class OutputsStore:
         changes: Mapping[str, Any],
         section: str,
         allowed: Sequence[str],
+        nested: Mapping[str, tuple[str, ...]] | None = None,
     ) -> None:
         for field, value in (changes.get(section) or {}).items():
             if field not in allowed:
@@ -295,7 +397,14 @@ class OutputsStore:
                     f"不可编辑的字段：{field}",
                     f"可编辑的是：{'、'.join(allowed)}",
                 )
-            payload[section][field] = value
+            path = (nested or {}).get(field)
+            if path is None:
+                payload[section][field] = value
+                continue
+            target = payload[section]
+            for part in path[:-1]:
+                target = target[part]
+            target[path[-1]] = value
 
     def _edits_locked(
         self, config: OutputsConfig, changes: Mapping[str, Any]
@@ -319,8 +428,19 @@ class OutputsStore:
                     edits.append((("profiles", name, field), getattr(profile, field)))
         for field in changes.get("watermark") or {}:
             edits.append((("watermark", field), getattr(config.watermark, field)))
+        for name, patch in (changes.get("stickers") or {}).items():
+            sticker = config.stickers[name]
+            for field in patch:
+                value = scalar_for_write(getattr(sticker, field))
+                edits.append((("stickers", name, field), value))
         for field in changes.get("subtitle") or {}:
-            edits.append((("subtitle", field), getattr(config.subtitle, field)))
+            # 扁平名 ⇒ 文件路径（``safe_area_bottom`` ⇒ ``subtitle.safe_area.bottom``），
+            # 值从**已校验模型**上按同一条路径取出来（夹取/归一化之后的那一份）。
+            path = SUBTITLE_NESTED.get(field, (field,))
+            node: object = config.subtitle
+            for part in path:
+                node = getattr(node, part)
+            edits.append((("subtitle", *path), node))
         return edits
 
     def _write_locked(self, edits: Sequence[tuple[tuple[str, ...], object]]) -> tuple[tuple[str, ...], bool]:
@@ -340,7 +460,7 @@ class OutputsStore:
                     context={
                         "field_errors": [
                             {
-                                "field": ".".join(path),
+                                "field": field_key(path),
                                 "error": "文件里没有这个键（面板只改已存在的字段）",
                             }
                         ],
@@ -419,7 +539,7 @@ def _format_field_errors(exc: ValidationError) -> list[dict[str, str]]:
     """
     return [
         {
-            "field": ".".join(str(part) for part in item.get("loc", ())) or "<root>",
+            "field": field_key(item.get("loc", ())),
             "error": str(item.get("msg", "")),
         }
         for item in exc.errors(include_url=False)

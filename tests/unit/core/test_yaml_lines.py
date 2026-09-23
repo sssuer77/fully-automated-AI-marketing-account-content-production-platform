@@ -19,9 +19,12 @@ import yaml
 from studio.core.config import OutputsConfig, load_outputs_config
 from studio.core.outputs_store import (
     PROFILE_FIELDS,
+    STICKER_FIELDS,
     SUBTITLE_FIELDS,
+    SUBTITLE_NESTED,
     WATERMARK_FIELDS,
     quality_field_of,
+    scalar_for_write,
 )
 from studio.core.yaml_lines import (
     find_scalar,
@@ -42,7 +45,8 @@ def _editable_paths() -> list[tuple[str, ...]]:
     """`config/outputs.yaml` 上**全部**可编辑路径（面板能碰到的每一个标量）。
 
     从**已校验的模型**上现取（而不是在测试里再抄一份字段表）：面板能改的字段与这里
-    走的是同一份 `PROFILE_FIELDS` / `WATERMARK_FIELDS` / `SUBTITLE_FIELDS`。
+    走的是同一份 `PROFILE_FIELDS` / `WATERMARK_FIELDS` / `STICKER_FIELDS` /
+    `SUBTITLE_FIELDS`。
     """
     config = load_outputs_config(OUTPUTS_YAML)
     paths: list[tuple[str, ...]] = [("default_profile",)]
@@ -51,17 +55,31 @@ def _editable_paths() -> list[tuple[str, ...]]:
             key = quality_field_of(profile.vcodec) if field == "quality" else field
             paths.append(("profiles", name, key))
     paths.extend(("watermark", field) for field in WATERMARK_FIELDS)
-    paths.extend(("subtitle", field) for field in SUBTITLE_FIELDS)
+    for name in config.stickers:
+        paths.extend(("stickers", name, field) for field in STICKER_FIELDS)
+    # 字幕里有一个**嵌套**字段（`safe_area_bottom` 在文件里是
+    # `subtitle.safe_area.bottom`）：路径同样从那份对照表现取，测试里不抄第二份。
+    paths.extend(("subtitle", *SUBTITLE_NESTED.get(field, (field,))) for field in SUBTITLE_FIELDS)
     return paths
 
 
 def _value_at(config: OutputsConfig, path: tuple[str, ...]) -> object:
-    """按键路径从**模型**上取值（写回文件时用的就是它）。"""
+    """按键路径从**模型**上取值（写回文件时用的就是它）。
+
+    过一遍 :func:`scalar_for_write` —— 那正是 store 落盘前做的最后一步（路径转正斜杠）。
+    少了这一步，这里量的是"模型上的值"，而文件里存的是"换算之后的值"，两者对不上时
+    这条恒等断言会红在一个**根本不是 bug** 的地方。
+    """
     if path == ("default_profile",):
         return config.default_profile
     if path[0] == "profiles":
-        return getattr(config.profiles[path[1]], path[2])
-    return getattr(getattr(config, path[0]), path[1])
+        return scalar_for_write(getattr(config.profiles[path[1]], path[2]))
+    if path[0] == "stickers":
+        return scalar_for_write(getattr(config.stickers[path[1]], path[2]))
+    target: object = getattr(config, path[0])
+    for part in path[1:]:
+        target = getattr(target, part)
+    return scalar_for_write(target)
 
 
 # ══════════════════════════════════════════════════════════════════════

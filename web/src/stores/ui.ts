@@ -1,7 +1,7 @@
 // 控制台外壳状态（T4.1 / T4.14）：当前面板 + 面板清单 + 四屏之间的一次跳转。
 
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { computed, ref } from "vue";
 
 import type { AssetKind } from "@/api/endpoints/assets";
 
@@ -81,6 +81,129 @@ export const PANELS: readonly PanelDef[] = [
   { id: "prompts", label: "提示词", task: "T6.2", ready: true },
 ];
 
+/** 面板 id ⇒ 定义。拖动只改**展示顺序**，这张表（标签 / 任务号 / ready）一个字段都不动。 */
+const PANEL_BY_ID = new Map<PanelId, PanelDef>(PANELS.map((panel) => [panel.id, panel]));
+
+/** 出厂顺序 = `PANELS` 的书写顺序。 */
+export const DEFAULT_PANEL_ORDER: readonly PanelId[] = PANELS.map((panel) => panel.id);
+
+/**
+ * 侧边栏顺序在**这个浏览器**里的存档键。
+ *
+ * 为什么不落库：菜单顺序是**显示偏好**，不是业务数据 —— 它不属于任何一屏、不影响任何一条
+ * 任务，也不该进 `audit_ops`。为它加一张表 + 一个 REST + 一次迁移，换来的是"同一台机器上
+ * 换个浏览器打开，菜单是别人的样子"，而这份偏好本身没有跨端意义。
+ */
+export const PANEL_ORDER_STORAGE_KEY = "studio.rail.order";
+
+/** 拖动落点：插在目标项的**前面**还是**后面**（由指针落在那一行的上半 / 下半决定）。 */
+export type DropPlace = "before" | "after";
+
+/** 存储的最小形状（`localStorage` 天然满足）—— 便于用假件测"读坏了 / 存不下"这两条分支。 */
+export interface OrderStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+/**
+ * 把存档里那份顺序**对齐到当前的菜单清单**：认得的留下、不认得的丢掉、缺的补在最后。
+ *
+ * 为什么不能"存了什么就用什么"：菜单会变（`prompts` 就是 2026-09-20 才加的）。照着旧存档画，
+ * 新加的那一屏**永远不出现**，而屏幕上没有任何信号说明"它被藏起来了" —— 这是本仓库最不能
+ * 接受的那种失败（静默）。同理，删掉一屏之后存档里那个 id 必须自己消失，否则它会在下一次
+ * 拖动时被一起搬来搬去、占着一个看不见的坑位。
+ *
+ * 重复项只留第一次：存档被手改过 / 两个标签页同时拖动时都可能出现，留两份等于菜单里出现
+ * 两个一模一样的按钮（而且它们的高亮联动，看起来像渲染 bug）。
+ */
+export function normalizePanelOrder(stored: unknown, defaults: readonly PanelId[]): PanelId[] {
+  const known = new Set(defaults);
+  const seen = new Set<PanelId>();
+  const out: PanelId[] = [];
+  if (Array.isArray(stored)) {
+    for (const raw of stored) {
+      if (typeof raw !== "string") continue;
+      const id = raw as PanelId;
+      if (!known.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  for (const id of defaults) {
+    if (!seen.has(id)) out.push(id);
+  }
+  return out;
+}
+
+/**
+ * 一次拖动（纯函数）：把 `dragged` 挪到 `target` 的前 / 后。
+ *
+ * 落点写成**相对位置**而不是"第几行"：拖动过程中行号会变（被拖走的那一项让它后面的每一行
+ * 都上移一格），相对位置不会变 —— 而用户看到的那条插入线正是相对位置。
+ *
+ * 先把被拖项摘掉再找 `target` 的落点，所以"往下拖"与"往上拖"共用一套算法：
+ * `[A,B,C,D]` 把 A 拖到 C 之后 ⇒ `[B,C,A,D]`；把 C 拖到 A 之前 ⇒ `[C,A,B,D]`。
+ */
+export function movePanel(
+  order: readonly PanelId[],
+  dragged: PanelId,
+  target: PanelId,
+  place: DropPlace,
+): PanelId[] {
+  if (dragged === target) return [...order];
+  const rest = order.filter((id) => id !== dragged);
+  if (rest.length === order.length) return [...order];
+  const at = rest.indexOf(target);
+  if (at < 0) return [...order];
+  rest.splice(at + (place === "after" ? 1 : 0), 0, dragged);
+  return rest;
+}
+
+/**
+ * 读存档：读不到 / 读坏了 / 存储整个不可用 ⇒ 出厂顺序。
+ *
+ * **不抛**：顺序不对只是菜单换个样子，而抛出去会让外壳画不出来 —— 拿一个显示偏好去换
+ * 一整屏，比例完全不对。
+ */
+export function readPanelOrder(
+  storage: OrderStorage | null | undefined,
+  defaults: readonly PanelId[],
+): PanelId[] {
+  try {
+    const raw = storage?.getItem(PANEL_ORDER_STORAGE_KEY) ?? null;
+    if (raw === null) return [...defaults];
+    return normalizePanelOrder(JSON.parse(raw), defaults);
+  } catch {
+    return [...defaults];
+  }
+}
+
+/** 写存档：存不下（配额满 / 隐私模式）就只让这一次排序在内存里生效，不打扰用户。 */
+export function writePanelOrder(
+  storage: OrderStorage | null | undefined,
+  order: readonly PanelId[],
+): void {
+  try {
+    storage?.setItem(PANEL_ORDER_STORAGE_KEY, JSON.stringify(order));
+  } catch {
+    // 显示偏好存不下不是错误，只是下次打开回到出厂顺序。
+  }
+}
+
+/**
+ * 本浏览器的存储。
+ *
+ * **连读一下都会抛**的情况是存在的（禁用 Cookie / 隐私模式），所以取存储本身也要包起来 ——
+ * 那两种情况下的答案是"顺序只在内存里生效"，而不是"外壳打不开"。
+ */
+function orderStorage(): OrderStorage | null {
+  try {
+    return globalThis.localStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 端到端流程里能互相跳过去的几屏（T4.14：选题 → 稿件 → 配音 → 渲染）。
  *
@@ -125,6 +248,46 @@ export function claimHandoff(
 export const useUiStore = defineStore("ui", () => {
   const activePanel = ref<PanelId>("overview");
   const pendingHandoff = ref<FlowHandoff | null>(null);
+  /** 侧边栏顺序（可拖动）。出厂那份是 `PANELS` 的书写顺序，存档只在这个浏览器里。 */
+  const panelOrder = ref<PanelId[]>(readPanelOrder(orderStorage(), DEFAULT_PANEL_ORDER));
+
+  /**
+   * 侧边栏真正画的那一份（顺序 = `panelOrder`，内容 = `PANELS`）。
+   *
+   * 顺序与清单**分开存**：`PANELS` 是规格书那份清单（标签 / 任务号 / 是否已交付），
+   * 它不该因为"我把日志拖到上面去了"而变。画的时候按顺序取，两边各自只有一处真相。
+   */
+  const orderedPanels = computed<PanelDef[]>(() =>
+    panelOrder.value.flatMap((id) => {
+      const panel = PANEL_BY_ID.get(id);
+      return panel === undefined ? [] : [panel];
+    }),
+  );
+
+  /** 顺序还是出厂那份吗？是就不显示"恢复默认"——没有可恢复的东西。 */
+  const isDefaultOrder = computed(
+    () =>
+      panelOrder.value.length === DEFAULT_PANEL_ORDER.length &&
+      panelOrder.value.every((id, index) => id === DEFAULT_PANEL_ORDER[index]),
+  );
+
+  /**
+   * 拖完一次：把 `dragged` 挪到 `target` 的前 / 后，并落盘。
+   *
+   * 拖动**不切面板**：拖是"排位置"，不是"点进去"—— 拖到一半松手不该把人带走。
+   * 所以这里不碰 `activePanel`（也不碰 `pendingHandoff`：那一条是"面板把人送过去"的，
+   * 与"人自己重新排了一遍菜单"无关）。
+   */
+  function movePanelTo(dragged: PanelId, target: PanelId, place: DropPlace): void {
+    panelOrder.value = movePanel(panelOrder.value, dragged, target, place);
+    writePanelOrder(orderStorage(), panelOrder.value);
+  }
+
+  /** 恢复出厂顺序（只有顺序被改过时，外壳才露出那个按钮）。 */
+  function resetPanelOrder(): void {
+    panelOrder.value = [...DEFAULT_PANEL_ORDER];
+    writePanelOrder(orderStorage(), panelOrder.value);
+  }
 
   /**
    * 侧边栏点过去。
@@ -159,5 +322,16 @@ export const useUiStore = defineStore("ui", () => {
     return taskId;
   }
 
-  return { activePanel, selectPanel, pendingHandoff, goTo, takeHandoff };
+  return {
+    activePanel,
+    panelOrder,
+    orderedPanels,
+    isDefaultOrder,
+    movePanelTo,
+    resetPanelOrder,
+    selectPanel,
+    pendingHandoff,
+    goTo,
+    takeHandoff,
+  };
 });

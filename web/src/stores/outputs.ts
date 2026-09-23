@@ -42,6 +42,7 @@ import {
   type OutputsOutcome,
   type OutputsProfile,
   type OutputsResponse,
+  type OutputsSticker,
   type OutputsUpdateBody,
 } from "@/api/endpoints/outputs";
 import { ApiError } from "@/api/http";
@@ -54,9 +55,14 @@ import type { Envelope } from "@/ws/events";
 /** 服务端 `system_logs.source`（= `outputs_service.LOG_SOURCE`，由契约测试锁死）。 */
 export const OUTPUTS_LOG_SOURCE = "outputs";
 
+/** 说话人名字的长度上限（与 `core/config.py::StickerConfig.speaker` 的 `max_length` 同源）。 */
+export const SPEAKER_MAX_CHARS = 64;
+
 type ProfilesPatch = NonNullable<OutputsUpdateBody["profiles"]>;
 type ProfilePatch = ProfilesPatch[string];
 type WatermarkPatch = NonNullable<OutputsUpdateBody["watermark"]>;
+type StickersPatch = NonNullable<OutputsUpdateBody["stickers"]>;
+type StickerPatch = StickersPatch[string];
 type SubtitlePatch = NonNullable<OutputsUpdateBody["subtitle"]>;
 
 /** 面板这一侧发出的改动载荷（`source_sha256` / `reason` 由 `save` 现补）。 */
@@ -79,9 +85,27 @@ export interface OutputsWatermarkDraft {
   opacity: number;
 }
 
+export interface OutputsStickerDraft {
+  enabled: boolean;
+  path: string;
+  /** 这一层代表稿子里的哪个说话人（空 ⇒ 这一层不换图）。 */
+  speaker: string;
+  /** 讲话时换成的那张图（空 ⇒ 这一层不换图）。 */
+  speaking_path: string;
+  position: string;
+  margin_x: number;
+  margin_y: number;
+  height_ratio: number;
+  opacity: number;
+}
+
 export interface OutputsSubtitleDraft {
   font_size: number;
   outline: number;
+  /** 我想把字幕放在离底多少像素（与 `safe_area_bottom` 取大者才是实际值）。 */
+  margin_bottom: number;
+  /** 平台交互区有多高（抖音底部点赞/评论条 ~420px）—— 往下挪字幕要一起调小这个。 */
+  safe_area_bottom: number;
   max_chars_per_line: number;
 }
 
@@ -90,6 +114,8 @@ export interface OutputsDraft {
   default_profile: string;
   profiles: Record<string, OutputsProfileDraft>;
   watermark: OutputsWatermarkDraft | null;
+  /** 贴图**每一层**一份草稿，键 = 槽位名（与后端 `stickers.<name>` 同名）。 */
+  stickers: Record<string, OutputsStickerDraft>;
   subtitle: OutputsSubtitleDraft | null;
 }
 
@@ -130,11 +156,26 @@ export function draftFrom(response: OutputsResponse): OutputsDraft {
       quality_field: profile.quality_field,
     };
   }
+  const stickers: Record<string, OutputsStickerDraft> = {};
+  for (const sticker of response.stickers) {
+    stickers[sticker.name] = {
+      enabled: sticker.enabled,
+      path: sticker.path,
+      speaker: sticker.speaker,
+      speaking_path: sticker.speaking_path ?? "",
+      position: sticker.position,
+      margin_x: sticker.margin_x,
+      margin_y: sticker.margin_y,
+      height_ratio: sticker.height_ratio,
+      opacity: sticker.opacity,
+    };
+  }
   const watermark = response.watermark;
   const subtitle = response.subtitle;
   return {
     default_profile: response.default_profile,
     profiles,
+    stickers,
     watermark:
       watermark === null
         ? null
@@ -151,6 +192,8 @@ export function draftFrom(response: OutputsResponse): OutputsDraft {
         : {
             font_size: subtitle.font_size,
             outline: subtitle.outline,
+            margin_bottom: subtitle.margin_bottom,
+            safe_area_bottom: subtitle.safe_area_bottom,
             max_chars_per_line: subtitle.max_chars_per_line,
           },
   };
@@ -197,12 +240,43 @@ export function dirtyChanges(draft: OutputsDraft, response: OutputsResponse): Ou
     if (Object.keys(patch).length > 0) payload.watermark = patch;
   }
 
+  const stickers: StickersPatch = {};
+  for (const sticker of response.stickers) {
+    const edited = draft.stickers[sticker.name];
+    if (edited === undefined) continue;
+    const patch: StickerPatch = {};
+    if (edited.enabled !== sticker.enabled) patch.enabled = edited.enabled;
+    if (edited.path !== sticker.path) patch.path = edited.path;
+    if (edited.speaker !== sticker.speaker) patch.speaker = edited.speaker;
+    // 空串 ⇒ `null`（= 没配）。发空串的话，后端会把它当成一条**要写进文件的改动**，
+    // 而写进去的 `speaking_path: ""` 在回读时又是"没配" —— 面板会显示"已保存"，
+    // 文件里却多了一行空键。转成 `null` 之后，这条改动与"清空它"是同一件事。
+    if (edited.speaking_path !== (sticker.speaking_path ?? "")) {
+      patch.speaking_path = edited.speaking_path.trim() === "" ? null : edited.speaking_path;
+    }
+    if (edited.position !== sticker.position) patch.position = edited.position;
+    if (edited.margin_x !== sticker.margin_x) patch.margin_x = edited.margin_x;
+    if (edited.margin_y !== sticker.margin_y) patch.margin_y = edited.margin_y;
+    if (!sameNumber(edited.height_ratio, sticker.height_ratio)) {
+      patch.height_ratio = edited.height_ratio;
+    }
+    if (!sameNumber(edited.opacity, sticker.opacity)) patch.opacity = edited.opacity;
+    if (Object.keys(patch).length > 0) stickers[sticker.name] = patch;
+  }
+  if (Object.keys(stickers).length > 0) payload.stickers = stickers;
+
   const subtitle = draft.subtitle;
   const currentSubtitle = response.subtitle;
   if (subtitle !== null && currentSubtitle !== null) {
     const patch: SubtitlePatch = {};
     if (subtitle.font_size !== currentSubtitle.font_size) patch.font_size = subtitle.font_size;
     if (subtitle.outline !== currentSubtitle.outline) patch.outline = subtitle.outline;
+    if (subtitle.margin_bottom !== currentSubtitle.margin_bottom) {
+      patch.margin_bottom = subtitle.margin_bottom;
+    }
+    if (subtitle.safe_area_bottom !== currentSubtitle.safe_area_bottom) {
+      patch.safe_area_bottom = subtitle.safe_area_bottom;
+    }
     if (subtitle.max_chars_per_line !== currentSubtitle.max_chars_per_line) {
       patch.max_chars_per_line = subtitle.max_chars_per_line;
     }
@@ -300,12 +374,44 @@ export function localErrors(draft: OutputsDraft, limits: OutputsLimits): Record<
     if (opacity !== null) errors["watermark.opacity"] = opacity;
   }
 
+  for (const [name, sticker] of Object.entries(draft.stickers)) {
+    const at = (field: string): string => `stickers.${name}.${field}`;
+    if (!limits.sticker.positions.includes(sticker.position)) {
+      errors[at("position")] = `位置只能是：${limits.sticker.positions.join(" / ")}`;
+    }
+    if (sticker.path.trim() === "") errors[at("path")] = "图片路径不能为空";
+    // 说话人是稿子里的**角色名**（`script_sentences.speaker`），后端限长 64。
+    // 这里挡一道是为了"打了一半的名字"能在本地就红出来 —— 交给后端的话，报回来的是
+    // 一条 422，而人在输入框上看到的是一句与这格无关的提示。
+    if (sticker.speaker.length > SPEAKER_MAX_CHARS) {
+      errors[at("speaker")] = `说话人名字最长 ${SPEAKER_MAX_CHARS} 个字符`;
+    }
+    const marginX = checkBounds(sticker.margin_x, "水平边距", limits.sticker.margin_x) ??
+      checkEven(sticker.margin_x, "水平边距");
+    if (marginX !== null) errors[at("margin_x")] = marginX;
+    const marginY = checkBounds(sticker.margin_y, "垂直边距", limits.sticker.margin_y) ??
+      checkEven(sticker.margin_y, "垂直边距");
+    if (marginY !== null) errors[at("margin_y")] = marginY;
+    const ratio = checkBounds(sticker.height_ratio, "高度占比", limits.sticker.height_ratio);
+    if (ratio !== null) errors[at("height_ratio")] = ratio;
+    const opacity = checkBounds(sticker.opacity, "不透明度", limits.sticker.opacity);
+    if (opacity !== null) errors[at("opacity")] = opacity;
+  }
+
   const subtitle = draft.subtitle;
   if (subtitle !== null) {
     const size = checkBounds(subtitle.font_size, "字号", limits.subtitle.font_size);
     if (size !== null) errors["subtitle.font_size"] = size;
     const outline = checkBounds(subtitle.outline, "描边", limits.subtitle.outline);
     if (outline !== null) errors["subtitle.outline"] = outline;
+    const margin = checkBounds(subtitle.margin_bottom, "距底", limits.subtitle.margin_bottom);
+    if (margin !== null) errors["subtitle.margin_bottom"] = margin;
+    const safeBottom = checkBounds(
+      subtitle.safe_area_bottom,
+      "底部安全区",
+      limits.subtitle.safe_area_bottom,
+    );
+    if (safeBottom !== null) errors["subtitle.safe_area_bottom"] = safeBottom;
     const chars = checkBounds(
       subtitle.max_chars_per_line,
       "每行字数",
@@ -345,15 +451,63 @@ export function qualityLabel(profile: { quality_field: string }): string {
   return profile.quality_field === "cq" ? "CQ" : "CRF";
 }
 
-/** 水印那一行的灯：PNG 不在盘上 ⇒ 这次不贴水印（**不是**错误，只是缺一层装饰）。 */
-export function watermarkTone(exists: boolean): StatusTone {
-  return exists ? "ok" : "warn";
+/**
+ * 水印那一行的灯。判据是 ``usable``（渲染**真的会贴上**），不是 ``exists``。
+ *
+ * 水印没有 `enabled` 开关（有就贴），所以"贴不上"永远是黄灯而**不是**红灯：
+ * 它只是缺一层装饰，出片照常（与贴图那一行不同 —— 那边开着却贴不上是红灯，
+ * 因为人**明确表达了**"我要它"）。
+ */
+export function watermarkTone(usable: boolean): StatusTone {
+  return usable ? "ok" : "warn";
 }
 
 /** 水印那一行的人话（`width_ratio` 换算成像素宽比小数直观得多）。 */
 export function describeWatermark(profile: { width_ratio: number; width_px: number }): string {
   const percent = Math.round(profile.width_ratio * 1000) / 10;
   return `占画布宽 ${percent}%（约 ${profile.width_px} px）`;
+}
+
+/** 贴图那一行的人话（按**高度**算 —— 人物是竖长的，宽高比由素材决定）。 */
+export function describeSticker(sticker: { height_ratio: number; height_px: number }): string {
+  const percent = Math.round(sticker.height_ratio * 1000) / 10;
+  return `占画布高 ${percent}%（约 ${sticker.height_px} px 高，宽度按图的比例）`;
+}
+
+/**
+ * 贴图那一行的灯。判据是 ``usable``（渲染**真的会贴上**），不是 ``exists``（盘上有文件）。
+ *
+ * ★ 这一格曾经看 ``exists``，于是"扩展名叫 .png 的 WebP / 没 alpha 的 PNG"会点亮绿灯
+ * —— 而渲染路径看的是 ``probe_png().usable``，它会把那一层跳过。面板与渲染报的必须
+ * 是**同一件事**，否则那句"我开了它、为什么片子上没有"就永远没人回答。
+ *
+ * `idle` 与 `warn` 必须分开：关掉一层是**故意的**（默认就是关的），而"开着但贴不上"
+ * 是**待办**。两者都画成黄色的话，默认状态会显得像出了问题。
+ */
+export function stickerTone(enabled: boolean, usable: boolean): StatusTone {
+  if (!enabled) return "idle";
+  return usable ? "ok" : "error";
+}
+
+/**
+ * 「讲话时换图」那一行的灯（T6.5 追加）。
+ *
+ * 判据是后端的 `speaking_problem`：`null` = 配置齐了、讲话图也能用。
+ *
+ * ★ 这盏灯**只说明"配齐了"**，不说明"出片时一定会换"。谁在哪一句讲话要看稿子与
+ * 时间轴，而这一屏手上**没有**这两样 —— 所以它判不了"这个人这条片子里有没有讲话
+ * 区间"。在面板上编一个"应该有词吧"的结论，就会变成面板与成片各说各话。
+ * 真的换没换、按哪份时间换的，写在成片的 `manifest.json` 的
+ * `stickers[].speaking` 里（`swapped` / `source` / `note`）。
+ */
+export function stickerSpeakingTone(
+  enabled: boolean,
+  usable: boolean,
+  speakingProblem: string | null,
+): StatusTone {
+  if (!enabled) return "idle";
+  if (!usable) return "idle";
+  return speakingProblem === null ? "ok" : "warn";
 }
 
 /** 一次写动作的结论（`changed=false` 也要说清楚「本来就是这样」）。 */
@@ -397,6 +551,8 @@ export const useOutputsStore = defineStore("outputs", () => {
 
   const profiles = computed<OutputsProfile[]>(() => snapshot.value?.profiles ?? []);
   const watermark = computed(() => snapshot.value?.watermark ?? null);
+  /** 贴图**每一层**（顺序 = YAML 声明顺序 = 叠放顺序）。空数组 ⇒ 配置里没有 stickers 段。 */
+  const stickers = computed<OutputsSticker[]>(() => snapshot.value?.stickers ?? []);
   const subtitle = computed(() => snapshot.value?.subtitle ?? null);
   const limits = computed<OutputsLimits | null>(() => snapshot.value?.limits ?? null);
   const stale = computed<boolean>(() => snapshot.value?.stale ?? false);
@@ -407,8 +563,42 @@ export const useOutputsStore = defineStore("outputs", () => {
   const loadedAt = computed<string>(() => snapshot.value?.loaded_at ?? "");
   const defaultProfile = computed<string>(() => snapshot.value?.default_profile ?? "");
   /** 水印 PNG 不在盘上 ⇒ 这次出片不带水印（面板要说出来，免得人以为是 bug）。 */
-  const watermarkMissing = computed<boolean>(
-    () => watermark.value !== null && !watermark.value.exists,
+  /**
+   * **这次出片不贴水印**（文件不在 / 不是 PNG / 没有透明通道）。
+   *
+   * 判据是 `usable`（后端与渲染路径同一份 `probe_png` 结论），不是 `exists`：
+   * 一个扩展名叫 `.png` 的 WebP 在盘上"存在"，渲染照样跳过它。面板只报前者时，
+   * 人看到的是一句"在盘上"和一张没有水印的片子。
+   */
+  const watermarkBroken = computed<boolean>(
+    () => watermark.value !== null && !watermark.value.usable,
+  );
+
+  /**
+   * **开着、但渲染贴不上**的贴图层（每一层各自一条原因）。
+   *
+   * 与 `watermarkBroken` 分开报：水印只有一层，"贴不贴得上"就够；贴图是若干层，
+   * 人问的是"**哪一层**没贴上、为什么"。这一列是"点了开关没反应"的唯一答案来源 ——
+   * 以前它只比 `exists`，于是坏图（WebP 冒充 PNG / 没 alpha）在面板上是绿的、
+   * 在渲染里是跳过的，两边都不说话。
+   */
+  const stickersBroken = computed(() =>
+    stickers.value.filter((sticker) => sticker.enabled && !sticker.usable),
+  );
+
+  /**
+   * **开着、图也贴得上，但这一层的"换图"配不齐**（T6.5 追加）。
+   *
+   * 判据是后端的 `speaking_problem`（配置齐 + 讲话图可用 ⇒ `null`）。它与
+   * `stickersBroken` 是**两件事**：那些层根本贴不上，这些层贴得上、只是不会换图。
+   *
+   * ★ 这里**不含**"这个人这条片子里没有讲话区间"那一条 —— 面板判不了它（要读稿子与
+   * 时间轴）。所以这一列是"你配漏了什么"，不是"出片时一定会换"。
+   */
+  const stickersNotSwapping = computed(() =>
+    stickers.value.filter(
+      (sticker) => sticker.enabled && sticker.usable && sticker.speaking_problem !== null,
+    ),
   );
 
   const localFieldErrors = computed<Record<string, string>>(() => {
@@ -571,6 +761,25 @@ export const useOutputsStore = defineStore("outputs", () => {
     }
   }
 
+  /**
+   * 一个**开关**被拨动之后立刻写盘（贴图的 `enabled`）。
+   *
+   * 为什么开关不走「先改草稿、再往上找保存按钮」那一套：勾选框长得就是**开关** ——
+   * 人勾完就去渲染了，而盘上那份还是 `false`。下一次进面板（或刷新）草稿按盘上重建，
+   * 勾就"自己跳回去了"；渲染当然也不生效。这不是"保存没生效"，是**根本没保存**，
+   * 而面板当时只在另一张卡片里写了一行"有未保存的改动"。
+   *
+   * 三件事保证它不会比手点保存更危险：
+   * - 走的还是 `save()`（sha 守卫、审计、回读全都在），不新增写路径；
+   * - 提交的是 `dirtyChanges`（**全部**改动，不只这一格）⇒ 顺手改的占比不会被丢掉；
+   * - 本地校验有意见（比如路径空着）时**不提交**，改动留在草稿里、那行红字照旧 ——
+   *   面板不该拿一个它自己都判不过的表单去撞后端。
+   */
+  async function saveToggle(reason: string): Promise<boolean> {
+    if (Object.keys(localFieldErrors.value).length > 0) return false;
+    return save(reason);
+  }
+
   // ── 生命周期 ────────────────────────────────────────────────────────
 
   /** 幂等：重复调用只会有一次订阅、一份合并窗口。 */
@@ -592,6 +801,7 @@ export const useOutputsStore = defineStore("outputs", () => {
     snapshot,
     profiles,
     watermark,
+    stickers,
     subtitle,
     limits,
     stale,
@@ -601,7 +811,9 @@ export const useOutputsStore = defineStore("outputs", () => {
     sha256,
     loadedAt,
     defaultProfile,
-    watermarkMissing,
+    watermarkBroken,
+    stickersBroken,
+    stickersNotSwapping,
     loading,
     loadError,
     // 表单
@@ -618,6 +830,7 @@ export const useOutputsStore = defineStore("outputs", () => {
     error,
     notice,
     save,
+    saveToggle,
     // 通道
     wsStatus,
     wsCursor,

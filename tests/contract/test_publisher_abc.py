@@ -232,15 +232,18 @@ class TestRegistry:
         for code, cls in PUBLISHERS.items():
             assert cls.platform == code, f"{cls.__name__} 声明的是 {cls.platform}"
 
-    def test_first_tier_has_real_implementations(self) -> None:
-        """一线三个必须是**真实现**（不是二线那个空壳）。"""
-        for code in ("douyin", "kuaishou", "shipinhao"):
-            assert issubclass(PUBLISHERS[code], PlaywrightPublisher), code
+    def test_every_spec_platform_has_a_real_implementation(self) -> None:
+        """§06.2.1 的七行**全部**是真实现。
 
-    def test_second_tier_is_declared_but_empty(self) -> None:
-        """二线四个：接口在、实现空（§06.2.1 · Q9）。"""
-        for code in ("xiaohongshu", "bilibili", "xigua", "weibo"):
-            assert not issubclass(PUBLISHERS[code], PlaywrightPublisher), code
+        原本二线四个是空壳（Q9：一期只做一线）。改成真实现是因为空壳把两件事混成了
+        一件 —— "没做"与"做了但没在真机上校准"看起来一样（都是一行灰字）。现在后者
+        是**真实现 + ``calibrated: false``**，而"还差什么"写在 pack 的 ``known_gaps`` 里。
+
+        ⚠️ 这条**不**代表七个平台都能发：只有抖音那份 pack 校准过（见
+        ``tests/unit/publish/test_selectors.py::TestCalibrationStatus``）。
+        """
+        for code in SPEC_PLATFORMS:
+            assert issubclass(PUBLISHERS[code], PlaywrightPublisher), code
 
     def test_fixture_is_not_a_real_platform(self) -> None:
         assert "fixture" in PUBLISHERS
@@ -273,10 +276,10 @@ class TestRegistry:
 
 
 class TestSelectorCoverage:
-    """选择器只对**有实现的**平台是必需的（二线没有 yaml 是对的）。"""
+    """每个**真平台**都要有一份选择器 pack（少一份 ⇒ 那个平台装不起来）。"""
 
-    def test_first_tier_has_selector_files(self) -> None:
-        for code in ("douyin", "kuaishou", "shipinhao"):
+    def test_every_spec_platform_has_a_selector_file(self) -> None:
+        for code in SPEC_PLATFORMS:
             assert (selector_root() / f"{code}.yaml").is_file(), code
 
     def test_every_playwright_publisher_has_a_selector_pack(self) -> None:

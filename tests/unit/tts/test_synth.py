@@ -42,6 +42,14 @@ def _write_wav(path: Path, duration_ms: int) -> None:
         handle.writeframes(tone_frames(frames, sample_rate=SAMPLE_RATE))
 
 
+def _seed_voice(paths: StudioPaths, voice_id: str, *, duration_ms: int) -> None:
+    """往 ``data/voice_src/<id>/`` 放一段参考音 + 一行文本（指纹就是照它算的）。"""
+    root = paths.voice_src_dir / voice_id
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "ref.txt").write_text("这一句是参考音的逐字文本。\n", encoding="utf-8")
+    _write_wav(root / "ref_01.wav", duration_ms)
+
+
 class FakeEngine:
     """数得清「念了哪几句、用的是谁的声音」的假引擎。"""
 
@@ -179,20 +187,59 @@ def test_only_text_given_still_falls_back_to_the_splitter(
     assert len(result.sentences) > 1
 
 
-def test_sentences_already_on_disk_are_not_synthesized_again(
+def test_a_second_run_over_unchanged_audio_never_touches_the_engine(
     tmp_paths: StudioPaths, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """断点续传：盘上已有非空产物 ⇒ **一次引擎调用都不发生**。"""
+    """续跑：这一句**没变**的话，一次引擎调用都不发生（走缓存复制）。
+
+    判据从「盘上有文件」改成了「缓存里有这一版」（2026-09-23）。文件名只说明
+    「有个东西在那儿」，而缓存键里含引擎、音色、**参考音指纹**与文本 —— 换了
+    参考音再重跑，它就会如实重念（下一条用例钉的就是这个）。
+    """
     engine = FakeEngine()
     _patch_picker(monkeypatch, FakePicker(engine, "bigbear", ("bigbear",)))
-    _write_wav(tmp_paths.sentence_wav("t6", 1), 700)
 
-    result = synth_module.synthesize_script(
+    first = synth_module.synthesize_script(
+        sentences=("第一句。", "第二句。"), paths=tmp_paths, task_id="t6", voice="bigbear"
+    )
+    assert first.reused == 0
+    assert len(engine.calls) == 2
+
+    second = synth_module.synthesize_script(
         sentences=("第一句。", "第二句。"), paths=tmp_paths, task_id="t6", voice="bigbear"
     )
 
-    assert result.reused == 1
-    assert [text for text, _voice in engine.calls] == ["第二句。"]
+    assert second.reused == 2
+    assert len(engine.calls) == 2, "缓存命中还去调引擎，等于续跑这条捷径白写"
+
+
+def test_new_reference_audio_under_the_same_name_is_re_synthesized(
+    tmp_paths: StudioPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """★ 同名换参考音 ⇒ **必须重念**（2026-09-23 · 用户报的那条）。
+
+    用户的换法是「删掉重传 / 勾覆盖重传」，目录名不变。改前这条路的判据是
+    「盘上有非空产物就跳过」，于是**换了嗓子也照旧复用**，而每一步日志都写着成功 ——
+    成片还是旧嗓子，人只能靠耳朵发现。
+    """
+    engine = FakeEngine()
+    _patch_picker(monkeypatch, FakePicker(engine, "bigbear", ("bigbear",)))
+    _seed_voice(tmp_paths, "bigbear", duration_ms=2_000)
+
+    first = synth_module.synthesize_script(
+        sentences=("第一句。",), paths=tmp_paths, task_id="t7", voice="bigbear"
+    )
+    assert first.reused == 0
+    assert len(engine.calls) == 1
+
+    # 用户重传了另一段原声（同名、不同内容）⇒ 指纹变 ⇒ 缓存键变 ⇒ 重念。
+    _seed_voice(tmp_paths, "bigbear", duration_ms=3_000)
+    second = synth_module.synthesize_script(
+        sentences=("第一句。",), paths=tmp_paths, task_id="t7", voice="bigbear"
+    )
+
+    assert second.reused == 0, "换了参考音还报「复用」，就是这条 bug 又回来了"
+    assert len(engine.calls) == 2
 
 
 def test_an_empty_script_is_refused(tmp_paths: StudioPaths, monkeypatch: pytest.MonkeyPatch) -> None:

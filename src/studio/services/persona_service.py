@@ -245,6 +245,7 @@ def persona_limits() -> dict[str, Any]:
         "audience": _bounds(fields["audience"]),
         "catchphrases": _bounds(fields["catchphrases"]),
         "forbidden": _bounds(fields["forbidden"]),
+        "speaker_names": _bounds(fields["speaker_names"]),
         "target_chars_min": _bounds(fields["target_chars_min"]),
         "target_chars_max": _bounds(fields["target_chars_max"]),
         "max_duration_ms": _bounds(fields["max_duration_ms"]),

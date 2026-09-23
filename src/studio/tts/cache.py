@@ -85,13 +85,20 @@ def tts_cache_key(
     engine: str,
     engine_revision: str,
     voice_id: str,
+    voice_fingerprint: str,
     normalized_text: str,
     speed: float,
     emotion: str,
     seed: int | None,
     sample_rate: int,
 ) -> str:
-    """``sha256(engine|engine_revision|voice_id|text|speed|emotion|seed|sr) → 32hex``。
+    """``sha256(engine|engine_revision|voice_id|参考音指纹|text|speed|emotion|seed|sr)``。
+
+    ``voice_fingerprint`` 是**参考音的内容指纹**（``tts/refprint.py``）。它必须进键，
+    因为 ``voice_id`` **只是一个名字**：用户换参考音的做法是「删掉重传 / 勾覆盖重传」，
+    目录名照旧 —— 只按名字记结论的话，换了嗓子之后每一句都命中旧音频，而面板上
+    一切正常（用户原话：「同名就复用以前的试听样本，配音也是复用的以前的」）。
+    系统音色（SAPI）没有参考音 ⇒ 空串，与改前逐字节同键。
 
     ``speed`` 用 ``%g`` 格式化：``1.0`` 与 ``1`` 必须是同一个键，否则调用方传
     ``1`` 还是 ``1.0`` 会决定缓存命不命中 —— 这种"看心情"的失效最难查。
@@ -102,6 +109,7 @@ def tts_cache_key(
         engine,
         engine_revision,
         voice_id,
+        voice_fingerprint,
         normalized_text,
         f"{speed:g}",
         emotion,

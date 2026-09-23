@@ -189,13 +189,45 @@ class TopicRepo:
         """硬删一行（``True`` = 真的少了一行）。
 
         库里没有别的表引用 ``topic_candidates``（``task_id`` 是**它指向**任务，不是任务
-        指向它），所以删除不会留下悬挂引用 —— 级联这件事在这里不存在，服务层只需要
-        拦住「已经派生过任务的那一条」。
+        指向它），所以删除不会留下悬挂引用 —— 级联这件事在这里不存在，派生过任务的那一条
+        也照删：任务自己带着要说什么（见 ``ScriptService.draft``）。
         """
         with transaction(self._connection, immediate=True):
             before = self._connection.total_changes
             self._connection.execute("DELETE FROM topic_candidates WHERE id = ?", (topic_id,))
             return self._connection.total_changes > before
+
+    def count(self) -> int:
+        """全部条数（**不按状态过滤**）。
+
+        与 :meth:`count_by_status` 的区别就在这里：那一个回答"瀑布流上还剩几条待挑的"，
+        这一个回答"这张表里一共有几行" —— 清空面板时要用的是后一个。
+        """
+        row = self._connection.execute("SELECT COUNT(*) FROM topic_candidates").fetchone()
+        return int(row[0]) if row else 0
+
+    def count_detached(self) -> int:
+        """已经派生过任务的条数（``task_id`` 非空）。
+
+        清空前要报给面板的那一个数：这些选题上的任务**不跟着走**（见
+        :meth:`TopicService.clear_all`），不说的话用户会以为那些活也没了。
+        """
+        row = self._connection.execute(
+            "SELECT COUNT(*) FROM topic_candidates WHERE task_id IS NOT NULL"
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def clear(self) -> int:
+        """清空整张表（**所有状态**）⇒ 返回删掉的条数。
+
+        与 :meth:`delete` 的判据一条都不变（派生过任务的那一条也照删），区别只在
+        "删多少"：所以这里**不按 status 过滤** —— 只清 ``candidate`` 会把"已选 /
+        已入队 / 已淘汰"的那些留下来，而用户点的是"清除所有选题"。
+        """
+        with transaction(self._connection, immediate=True):
+            before = self._connection.total_changes
+            self._connection.execute("DELETE FROM topic_candidates")
+            return self._connection.total_changes - before
 
     def demote_candidates(self, *, direction_id: str, factor: float) -> int:
         """把一个方向下**待选**的选题降权（T5.4 · §06.8 ②）。

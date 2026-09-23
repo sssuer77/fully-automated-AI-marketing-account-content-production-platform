@@ -45,6 +45,7 @@ from studio.ws.hub import HubSettings
 ASSETS_URL = "/api/v1/assets"
 INGEST_URL = "/api/v1/assets/ingest"
 STATS_URL = "/api/v1/assets/stats"
+PRUNE_URL = "/api/v1/assets/prune"
 
 BROLL = "parkour_001"
 BGM = "bgm_001"
@@ -290,8 +291,10 @@ def test_stats_endpoint_carries_thresholds(client: TestClient) -> None:
     assert body["thresholds"]["broll_min_clips"] == 60
     assert body["thresholds"]["broll_min_duration_ms"] == 30 * 60 * 1000
     assert body["thresholds"]["bgm_min_duration_ms"] == 15_000
-    assert body["thresholds"]["voice_min_segments"] == 2
-    assert body["thresholds"]["voice_max_segments"] == 3
+    # 段数**故意不在** thresholds 里（裁定 377）：它不是判据 —— 一段能用，很多段也能用。
+    assert "voice_min_segments" not in body["thresholds"]
+    assert "voice_max_segments" not in body["thresholds"]
+    assert body["thresholds"]["voice_segment_min_ms"] == 2_000
     # 授权枚举也现取（面板的下拉不抄第二份）
     assert body["licenses"] == ["authorized", "cc0", "purchased", "self_recorded"]
     assert body["degraded"] is True
@@ -1069,6 +1072,264 @@ def test_voice_upload_keeps_the_line_numbers_aligned_when_a_file_is_skipped(
 
 
 # ══════════════════════════════════════════════════════════════════════
+# ③′ 写 · 音色的逐段管理（裁定 381）
+# ══════════════════════════════════════════════════════════════════════
+
+VOICE_SEGMENTS_URL = "/api/v1/assets/voice/{voice_id}/segments"
+
+
+def _voice_upload(
+    client: TestClient,
+    tools: _Tools,
+    *,
+    voice_id: str = VOICE,
+    parts: list[tuple[str, bytes]],
+    ref_text: str | None = None,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """传一批参考音（顺带把它们登记进假探针，免得入库时报「解不开」）。
+
+    探针是按**盘上那个名字**去查的（``ref_01.wav``），不是用户选的那个原文件名 ——
+    上传做的第一件事就是改名，这里要按改名后的名字登记。
+    """
+    files: list[tuple[str, tuple[str, bytes, str]]] = []
+    for index, (name, blob) in enumerate(parts, start=1):
+        target = f"ref_{index:02d}{Path(name).suffix}"
+        tools.info[target] = _audio(target, duration_ms=15_000, sample_rate=24_000)
+        files.append(_part(name, blob))
+    data: dict[str, str] = {"voice_id": voice_id, "license": "self_recorded"}
+    if ref_text is not None:
+        data["ref_text"] = ref_text
+    if overwrite:
+        data["overwrite"] = "true"
+    resp = client.post(VOICE_UPLOAD_URL, data=data, files=files)
+    assert resp.status_code == 200, resp.text
+    body: dict[str, Any] = resp.json()
+    return body
+
+
+def test_voice_overwrite_mirrors_the_directory(
+    client: TestClient, connection: sqlite3.Connection, paths: StudioPaths, tools: _Tools
+) -> None:
+    """勾了「覆盖同名」⇒ **镜像**：这次没传到的旧段清掉，并逐条报出来。
+
+    只管同名的那几个，会留下一份"两边都不是"的目录：新传 2 段、旧的 ``ref_03.wav``
+    还在 ⇒ 库里报 3 段、引擎把三段拼起来当 prompt，而用户以为自己只留了 2 段。
+    用户看到的正是"覆盖没生效"。
+    """
+    _voice_upload(
+        client,
+        tools,
+        parts=[("a.wav", b"A"), ("b.wav", b"B"), ("c.wav", b"C")],
+        ref_text="一\n二\n三",
+    )
+    root = paths.voice_src_dir / VOICE
+    assert sorted(item.name for item in root.iterdir()) == [
+        "ref.txt",
+        "ref_01.wav",
+        "ref_02.wav",
+        "ref_03.wav",
+    ]
+
+    body = _voice_upload(
+        client,
+        tools,
+        parts=[("a.wav", b"A2"), ("b.wav", b"B2")],
+        ref_text="一\n二",
+        overwrite=True,
+    )
+
+    assert body["removed"] == ["ref_03.wav"], body
+    assert (root / "ref_01.wav").read_bytes() == b"A2"
+    assert (root / "ref_02.wav").read_bytes() == b"B2"
+    assert not (root / "ref_03.wav").exists()
+    assert (root / "ref.txt").read_text(encoding="utf-8") == "一\n二\n"
+    # 库里那行也跟着变成 2 段（否则面板还是显示 3 段 —— 那正是"没生效"的观感）
+    row = connection.execute("SELECT ref_count FROM voice_profiles WHERE id = ?", (VOICE,)).fetchone()
+    assert row["ref_count"] == 2
+
+
+def test_voice_upload_never_prunes_without_overwrite(
+    client: TestClient, paths: StudioPaths, tools: _Tools
+) -> None:
+    """没勾覆盖 ⇒ 一个字节都不删（撞名的逐条 skipped，其余段原地不动）。"""
+    _voice_upload(
+        client,
+        tools,
+        parts=[("a.wav", b"A"), ("b.wav", b"B"), ("c.wav", b"C")],
+        ref_text="一\n二\n三",
+    )
+    body = _voice_upload(client, tools, parts=[("a.wav", b"A2")], ref_text="一")
+
+    assert body["removed"] == []
+    assert body["skipped"] >= 1
+    root = paths.voice_src_dir / VOICE
+    assert sorted(item.name for item in root.iterdir()) == [
+        "ref.txt",
+        "ref_01.wav",
+        "ref_02.wav",
+        "ref_03.wav",
+    ]
+    assert (root / "ref_01.wav").read_bytes() == b"A"
+
+
+def test_voice_upload_without_text_says_the_text_did_not_move(
+    client: TestClient, paths: StudioPaths, tools: _Tools
+) -> None:
+    """换了参考音却没填文字稿 ⇒ ``ref.txt`` 还是上一次那份，**必须当场说**。
+
+    文本与音频对不上是克隆质量最直接的来源，而它的症状要等到听了成片才出现 ——
+    到那时没人会回头怀疑"第二次上传时没填文字稿"。
+    """
+    _voice_upload(client, tools, parts=[("a.wav", b"A"), ("b.wav", b"B")], ref_text="一\n二")
+    body = _voice_upload(
+        client,
+        tools,
+        parts=[("a.wav", b"A2"), ("b.wav", b"B2"), ("c.wav", b"C2")],
+        overwrite=True,
+    )
+
+    assert body["notes"], body
+    assert "ref.txt 没动" in body["notes"][0]
+    assert "2 行" in body["notes"][0] and "3 段" in body["notes"][0]
+    assert (paths.voice_src_dir / VOICE / "ref.txt").read_text(encoding="utf-8") == "一\n二\n"
+
+
+def test_voice_segments_lists_each_segment_with_its_own_text(
+    client: TestClient, paths: StudioPaths, tools: _Tools
+) -> None:
+    """逐段现状：段号 / 文件名 / 时长 / **同一位置的那行文本**（位置即对应）。"""
+    _voice_upload(client, tools, parts=[("a.wav", b"A"), ("b.wav", b"B")], ref_text="一\n二")
+
+    resp = client.get(VOICE_SEGMENTS_URL.format(voice_id=VOICE))
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["voice_id"], body["ref_count"], body["text_lines"]) == (VOICE, 2, 2)
+    assert [item["name"] for item in body["segments"]] == ["ref_01.wav", "ref_02.wav"]
+    assert [item["text"] for item in body["segments"]] == ["一", "二"]
+    assert all(item["usable"] for item in body["segments"]), body
+    assert body["segments"][0]["duration_ms"] == 15_000
+    assert body["enabled"] is True and body["in_library"] is True
+
+
+def test_voice_segments_marks_the_segment_that_is_bad(
+    client: TestClient, paths: StudioPaths, tools: _Tools
+) -> None:
+    """不合格的那一段，结论要落在**它那一行**上（面板据此告诉用户删哪一段）。"""
+    _voice_upload(client, tools, parts=[("a.wav", b"A"), ("b.wav", b"B")], ref_text="一\n二")
+    tools.info["ref_02.wav"] = _audio("ref_02.wav", duration_ms=500, sample_rate=24_000)
+
+    body = client.get(VOICE_SEGMENTS_URL.format(voice_id=VOICE)).json()
+
+    first, second = body["segments"]
+    assert first["usable"] and first["problems"] == []
+    assert not second["usable"]
+    assert [item["code"] for item in second["problems"]] == ["ref_02_too_short"]
+
+
+def test_voice_segments_unknown_voice_is_404(client: TestClient) -> None:
+    """盘上没这个目录 ⇒ 404（不是一份空表 —— 空表会被读成"这个音色是空的"）。"""
+    resp = client.get(VOICE_SEGMENTS_URL.format(voice_id="nothing_here"))
+    assert resp.status_code == 404
+    assert _error(resp.json()) == ErrorCode.ASSET_NOT_FOUND.value
+
+
+def test_voice_segment_delete_renumbers_and_rewrites_the_text(
+    client: TestClient, connection: sqlite3.Connection, paths: StudioPaths, tools: _Tools
+) -> None:
+    """删中间那一段 ⇒ 后面的段**重编号**，``ref.txt`` 那一行同步丢掉。
+
+    不重编号的话，``ref_03.wav`` 会顶上第 2 位，而第 2 行文本说的是**被删掉那一段**
+    的话 —— 克隆拿到的 prompt 就成了"这段音频 + 另一段音频的文本"，而且不报错。
+    """
+    _voice_upload(
+        client,
+        tools,
+        parts=[("a.wav", b"A"), ("b.wav", b"B"), ("c.wav", b"C")],
+        ref_text="一\n二\n三",
+    )
+    root = paths.voice_src_dir / VOICE
+
+    resp = client.delete(f"{VOICE_SEGMENTS_URL.format(voice_id=VOICE)}/ref_02.wav")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["removed"] == "ref_02.wav"
+    assert body["removed_text"] == "二"
+    assert body["renamed"] == [{"from": "ref_03.wav", "to": "ref_02.wav"}]
+    assert body["text_rewritten"] is True
+    assert sorted(item.name for item in root.iterdir()) == ["ref.txt", "ref_01.wav", "ref_02.wav"]
+    assert (root / "ref_01.wav").read_bytes() == b"A"
+    assert (root / "ref_02.wav").read_bytes() == b"C"
+    assert (root / "ref.txt").read_text(encoding="utf-8") == "一\n三\n"
+    assert [item["name"] for item in body["segments"]["segments"]] == ["ref_01.wav", "ref_02.wav"]
+    assert [item["text"] for item in body["segments"]["segments"]] == ["一", "三"]
+    row = connection.execute("SELECT ref_count FROM voice_profiles WHERE id = ?", (VOICE,)).fetchone()
+    assert row["ref_count"] == 2
+    ops = _audit(connection, "asset.voice_segment_remove")
+    assert len(ops) == 1
+    assert ops[0]["target_id"] == VOICE
+
+
+def test_voice_segment_delete_leaves_a_mismatched_text_alone(
+    client: TestClient, paths: StudioPaths, tools: _Tools
+) -> None:
+    """``ref.txt`` 本来就与段数对不上 ⇒ **不动它**，如实说（猜一行删掉比留着更坏）。"""
+    root = _voice_dir(paths, tools, segments=3)
+    (root / "ref.txt").write_text("只有一行\n", encoding="utf-8")
+    client.post(INGEST_URL, json={"license": "self_recorded"})
+
+    resp = client.delete(f"{VOICE_SEGMENTS_URL.format(voice_id=VOICE)}/ref_02.mp3")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["text_rewritten"] is False
+    assert body["notes"] and "没动它" in body["notes"][0]
+    assert (root / "ref.txt").read_text(encoding="utf-8") == "只有一行\n"
+
+
+def test_voice_segment_delete_refuses_the_last_one(
+    client: TestClient, paths: StudioPaths, tools: _Tools
+) -> None:
+    """最后一段不能删 —— 删了音色就念不出来了，而库里那一行还在、面板还是绿的。"""
+    _voice_upload(client, tools, parts=[("a.wav", b"A")], ref_text="一")
+
+    resp = client.delete(f"{VOICE_SEGMENTS_URL.format(voice_id=VOICE)}/ref_01.wav")
+
+    assert resp.status_code == 422
+    assert _error(resp.json()) == ErrorCode.ASSET_INVALID.value
+    assert (paths.voice_src_dir / VOICE / "ref_01.wav").is_file()
+
+
+def test_voice_segment_delete_unknown_name_is_404(
+    client: TestClient, paths: StudioPaths, tools: _Tools
+) -> None:
+    """名字不在这个音色里 ⇒ 404，并**把盘上真有的那几个列出来**（下一步该点哪个）。"""
+    _voice_upload(client, tools, parts=[("a.wav", b"A"), ("b.wav", b"B")], ref_text="一\n二")
+
+    resp = client.delete(f"{VOICE_SEGMENTS_URL.format(voice_id=VOICE)}/ref_09.wav")
+
+    assert resp.status_code == 404
+    body = resp.json()
+    assert _error(body) == ErrorCode.ASSET_NOT_FOUND.value
+    assert body["context"]["refs"] == ["ref_01.wav", "ref_02.wav"]
+
+
+def test_voice_segment_delete_rejects_a_name_that_is_not_a_ref(
+    client: TestClient, paths: StudioPaths, tools: _Tools
+) -> None:
+    """``ref.txt`` / ``profile.json`` 不是参考音 ⇒ 422（逐段管理只能删段）。"""
+    _voice_upload(client, tools, parts=[("a.wav", b"A"), ("b.wav", b"B")], ref_text="一\n二")
+
+    resp = client.delete(f"{VOICE_SEGMENTS_URL.format(voice_id=VOICE)}/ref.txt")
+
+    assert resp.status_code == 422
+    assert _error(resp.json()) == ErrorCode.ASSET_INVALID.value
+    assert (paths.voice_src_dir / VOICE / "ref.txt").is_file()
+
+
+# ══════════════════════════════════════════════════════════════════════
 # ④ 写 · 删除（裁定 369：删行 / 删文件是**两个**开关）
 # ══════════════════════════════════════════════════════════════════════
 
@@ -1144,3 +1405,96 @@ def test_purge_refuses_a_path_outside_the_root(
     assert resp.json()["purged"] == []
     assert outside.is_file()
     assert _rows(connection, "broll_clips") == []
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ⑦ 写 · 孤儿清理（裁定 384：盘上有、库里没有的东西**以前删不掉**）
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_prune_removes_an_unusable_orphan(client: TestClient, paths: StudioPaths) -> None:
+    """盘上认得出、库里没有、**本身不合格**（空目录）⇒ 清掉。"""
+    orphan = paths.voice_src_dir / "bigbear"
+    orphan.mkdir(parents=True)
+
+    resp = client.post(PRUNE_URL, json={"kind": "voice"})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert [item["id"] for item in body["removed"]] == ["bigbear"]
+    assert body["removed"][0]["problems"]
+    assert body["kept"] == []
+    assert not orphan.exists()
+
+
+def test_prune_keeps_a_usable_orphan_and_says_why(
+    client: TestClient, paths: StudioPaths, tools: _Tools
+) -> None:
+    """★ 合格、只是还没入库的底片**一个字节都不动**，并说明它该入库。
+
+    这条是这个动作最容易做错的地方：跑酷 / BGM 的未入库文件**出片照样挑得到**
+    （``render/assets.py`` 只列目录），删了等于凭空少一条底片。而 ``check_broll``
+    会把「授权没填」算进 ``problems`` —— 孤儿恰恰还没有库里那一行，而授权就存在
+    那一行里。照着 ``check.ok`` 删，这条用例就会红。
+    """
+    target = _clip(paths, tools)
+
+    resp = client.post(PRUNE_URL, json={"kind": "broll"})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["removed"] == []
+    assert [item["id"] for item in body["kept"]] == [BROLL]
+    assert "该入库" in body["kept"][0]["reason"]
+    assert target.is_file()
+
+
+def test_prune_dry_run_writes_nothing(
+    client: TestClient, connection: sqlite3.Connection, paths: StudioPaths
+) -> None:
+    """``dry_run=true`` ⇒ 只报会清掉哪些，**盘与库都不动**。"""
+    orphan = paths.voice_src_dir / "bigbear"
+    orphan.mkdir(parents=True)
+
+    resp = client.post(PRUNE_URL, json={"kind": "voice", "dry_run": True})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["dry_run"] is True
+    assert [item["id"] for item in body["removed"]] == ["bigbear"]
+    assert orphan.exists()
+    assert _audit(connection, "asset.prune") == []
+
+
+def test_prune_writes_one_audit_row_for_the_batch(
+    client: TestClient, connection: sqlite3.Connection, paths: StudioPaths
+) -> None:
+    """一次清理**一行**留痕：``target_id`` 是类别，逐条明细在 ``after`` 里。"""
+    (paths.voice_src_dir / "bigbear").mkdir(parents=True)
+    (paths.voice_src_dir / "littlebear").mkdir(parents=True)
+
+    resp = client.post(PRUNE_URL, json={"kind": "voice"})
+
+    assert resp.status_code == 200, resp.text
+    ops = _audit(connection, "asset.prune")
+    assert len(ops) == 1
+    assert ops[0]["target_id"] == "voice"
+    assert json.loads(ops[0]["after_json"])["removed"] == ["bigbear", "littlebear"]
+
+
+def test_prune_reports_strays_without_touching_them(client: TestClient, paths: StudioPaths) -> None:
+    """名字不合规的可能是用户自己的原始素材 —— 如实报出来，一个都不动。"""
+    stray = paths.voice_src_dir / "跑酷素材.wav"
+    stray.write_bytes(b"raw")
+
+    resp = client.post(PRUNE_URL, json={"kind": "voice"})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["removed"] == []
+    assert resp.json()["strays"] == [str(stray)]
+    assert stray.is_file()
+
+
+def test_prune_requires_a_kind(client: TestClient) -> None:
+    """``kind`` 必填：这个动作会删盘上的东西，"删哪一类"必须由人说出来。"""
+    assert client.post(PRUNE_URL, json={}).status_code == 422

@@ -7,6 +7,7 @@ import type {
   OutputsOutcome,
   OutputsProfile,
   OutputsResponse,
+  OutputsSticker,
   OutputsSubtitle,
   OutputsUpdateBody,
   OutputsWatermark,
@@ -25,6 +26,7 @@ import {
   isStaleConflict,
   localErrors,
   qualityLabel,
+  stickerTone,
   useOutputsStore,
   watermarkTone,
 } from "./outputs";
@@ -58,6 +60,31 @@ function watermark(overrides: Partial<OutputsWatermark> = {}): OutputsWatermark 
     width_px: 238,
     opacity: 0.85,
     exists: true,
+    usable: true,
+    problem: null,
+    ...overrides,
+  };
+}
+
+function sticker(overrides: Partial<OutputsSticker> = {}): OutputsSticker {
+  return {
+    name: "hero",
+    enabled: false,
+    path: "templates/douyin_9x16_default/assets/images/stickers/hero.png",
+    speaker: "",
+    speaking_path: null,
+    position: "bottom_right",
+    margin_x: 48,
+    margin_y: 420,
+    height_ratio: 0.45,
+    height_px: 864,
+    opacity: 1.0,
+    exists: false,
+    usable: false,
+    problem: "文件不存在",
+    speaking_usable: false,
+    speaking_problem: null,
+    speaking_warnings: [],
     ...overrides,
   };
 }
@@ -70,6 +97,8 @@ function subtitle(overrides: Partial<OutputsSubtitle> = {}): OutputsSubtitle {
     outline: 4,
     shadow: 2,
     margin_bottom: 260,
+    safe_area_bottom: 420,
+    margin_v: 420,
     max_chars_per_line: 16,
     max_lines: 2,
     ...overrides,
@@ -90,7 +119,22 @@ function limits(overrides: Partial<OutputsLimits> = {}): OutputsLimits {
     scalar_fields: ["default_profile"],
     profile_fields: ["width", "height", "fps", "quality"],
     watermark_fields: ["position", "margin_x", "margin_y", "width_ratio", "opacity"],
-    subtitle_fields: ["font_size", "outline", "max_chars_per_line"],
+    sticker_fields: [
+      "enabled",
+      "path",
+      "position",
+      "margin_x",
+      "margin_y",
+      "height_ratio",
+      "opacity",
+    ],
+    subtitle_fields: [
+      "font_size",
+      "outline",
+      "margin_bottom",
+      "safe_area_bottom",
+      "max_chars_per_line",
+    ],
     default_profile: bounds(null, null),
     profile: {
       width: bounds(64, 7680),
@@ -106,9 +150,18 @@ function limits(overrides: Partial<OutputsLimits> = {}): OutputsLimits {
       width_ratio: bounds(0, 0.25, true, false),
       opacity: bounds(0, 1),
     },
+    sticker: {
+      positions: ["top_left", "top_right", "bottom_left", "bottom_right", "center"],
+      margin_x: bounds(0, 2000),
+      margin_y: bounds(0, 2000),
+      height_ratio: bounds(0, 1, true, false),
+      opacity: bounds(0, 1),
+    },
     subtitle: {
       font_size: bounds(16, 200),
       outline: bounds(0, 20),
+      margin_bottom: bounds(0, 2000),
+      safe_area_bottom: bounds(0, 2000),
       max_chars_per_line: bounds(4, 60),
     },
     ...overrides,
@@ -139,6 +192,7 @@ function response(overrides: Partial<OutputsResponse> = {}): OutputsResponse {
       }),
     ],
     watermark: watermark(),
+    stickers: [sticker()],
     subtitle: subtitle(),
     limits: limits(),
     ...overrides,
@@ -225,6 +279,20 @@ describe("纯函数", () => {
     expect(isDirty(draft, source)).toBe(true);
   });
 
+  it("dirtyChanges：字幕位置两个数各自成一条改动（互不牵连）", () => {
+    const source = response();
+    const draft = draftFrom(source);
+    expect(dirtyChanges(draft, source)).toEqual({});
+
+    draft.subtitle!.margin_bottom = 560;
+    expect(dirtyChanges(draft, source)).toEqual({ subtitle: { margin_bottom: 560 } });
+
+    draft.subtitle!.safe_area_bottom = 300;
+    expect(dirtyChanges(draft, source)).toEqual({
+      subtitle: { margin_bottom: 560, safe_area_bottom: 300 },
+    });
+  });
+
   it("dirtyChanges：小数按**值**比（0.22 与 0.2200000001 是同一个数）", () => {
     const source = response();
     const draft = draftFrom(source);
@@ -277,6 +345,12 @@ describe("纯函数", () => {
     const errors = localErrors(draft, source.limits);
     expect(errors["subtitle.font_size"]).toBe("字号必须不大于 200");
     expect(errors["profiles.douyin_1080x1920_30fps_v1.fps"]).toBe("帧率必须不大于 120");
+    // 字幕位置两个数也走同一份上下限（服务端现取，前端不抄）。
+    draft.subtitle!.margin_bottom = 5000;
+    draft.subtitle!.safe_area_bottom = -1;
+    const position = localErrors(draft, source.limits);
+    expect(position["subtitle.margin_bottom"]).toBe("距底必须不大于 2000");
+    expect(position["subtitle.safe_area_bottom"]).toBe("底部安全区必须不小于 0");
   });
 
   it("localErrors：`width_ratio` 的 0 是**排他**下界（0 一定 422）", () => {
@@ -337,6 +411,16 @@ describe("纯函数", () => {
   it("watermarkTone：PNG 不在盘上是**黄灯**不是红灯（不贴水印也照样出片）", () => {
     expect(watermarkTone(true)).toBe("ok");
     expect(watermarkTone(false)).toBe("warn");
+  });
+
+  it("★ stickerTone：判据是 `usable`（渲染真的会贴上），不是 `exists`（盘上有文件）", () => {
+    // 扩展名叫 .png 的 WebP / 没 alpha 的 PNG：盘上有，渲染跳过。
+    // 画成绿灯就是面板替渲染撒谎 —— 用户会去查 ffmpeg、查字体，唯独不会想到是面板骗了他。
+    expect(stickerTone(true, true)).toBe("ok");
+    expect(stickerTone(true, false)).toBe("error");
+    // 关掉一层是**故意的**（默认就是关的），不能画成待办。
+    expect(stickerTone(false, false)).toBe("idle");
+    expect(stickerTone(false, true)).toBe("idle");
   });
 
   it("只有 source === outputs 的日志才触发重拉（这条通道还有全站日志）", () => {
@@ -513,12 +597,85 @@ describe("useOutputsStore", () => {
     expect(store.visibleFieldErrors["subtitle.font_size"]).toBeUndefined();
   });
 
-  it("watermarkMissing：PNG 不在盘上 ⇒ 面板要说出来（免得人以为是 bug）", async () => {
+  it("watermarkBroken：这张图贴不上 ⇒ 面板要说出来（免得人以为是 bug）", async () => {
     configureOutputsApi({
-      fetchOutputs: vi.fn(async () => response({ watermark: watermark({ exists: false }) })),
+      fetchOutputs: vi.fn(async () => response({ watermark: watermark({ usable: false }) })),
     });
     const store = useOutputsStore();
     await store.refresh();
-    expect(store.watermarkMissing).toBe(true);
+    expect(store.watermarkBroken).toBe(true);
+  });
+
+  it("★ watermarkBroken：文件在盘上但渲染贴不上 ⇒ **照样要报**（只看 exists 会漏掉它）", async () => {
+    configureOutputsApi({
+      fetchOutputs: vi.fn(async () =>
+        response({
+          watermark: watermark({
+            exists: true,
+            usable: false,
+            problem: "不是 PNG（文件头签名不匹配）",
+          }),
+        }),
+      ),
+    });
+    const store = useOutputsStore();
+    await store.refresh();
+    expect(store.watermarkBroken).toBe(true);
+  });
+
+  it("stickersBroken：只报**开着且贴不上**的层（关着的不算待办）", async () => {
+    configureOutputsApi({
+      fetchOutputs: vi.fn(async () =>
+        response({
+          stickers: [
+            sticker({ name: "hero", enabled: true, usable: false, problem: "文件不存在" }),
+            sticker({ name: "guest", enabled: false, usable: false, problem: "文件不存在" }),
+            sticker({ name: "third", enabled: true, usable: true, problem: null }),
+          ],
+        }),
+      ),
+    });
+    const store = useOutputsStore();
+    await store.refresh();
+    expect(store.stickersBroken.map((item) => item.name)).toEqual(["hero"]);
+    expect(store.stickersBroken[0].problem).toBe("文件不存在");
+  });
+
+  it("★ saveToggle：开关拨动 ⇒ **立刻写盘**（勾完就该是那个状态，不用再找保存按钮）", async () => {
+    const update = vi.fn(async (_body: OutputsUpdateBody) => outcome());
+    configureOutputsApi({ updateOutputs: update });
+    const store = useOutputsStore();
+    await store.refresh();
+
+    const layer = store.draft?.stickers.hero;
+    expect(layer).toBeDefined();
+    if (layer === undefined) return;
+    layer.enabled = true;
+    const ok = await store.saveToggle("面板上打开了人物贴图 hero");
+
+    expect(ok).toBe(true);
+    expect(update).toHaveBeenCalledTimes(1);
+    const body = update.mock.calls[0][0];
+    expect(body.stickers).toEqual({ hero: { enabled: true } });
+    expect(body.source_sha256).toBe("a".repeat(64));
+    expect(body.reason).toBe("面板上打开了人物贴图 hero");
+  });
+
+  it("★ saveToggle：本地就判不过的表单**不提交**（不拿一个自己都判不过的表单去撞后端）", async () => {
+    const update = vi.fn(async (_body: OutputsUpdateBody) => outcome());
+    configureOutputsApi({ updateOutputs: update });
+    const store = useOutputsStore();
+    await store.refresh();
+
+    // 位置不在枚举里 ⇒ 本地就有意见（`localFieldErrors` 非空）。
+    const layer = store.draft?.stickers.hero;
+    if (layer === undefined) return;
+    layer.position = "middle_of_nowhere";
+    layer.enabled = true;
+    const ok = await store.saveToggle("面板上打开了人物贴图 hero");
+
+    expect(ok).toBe(false);
+    expect(update).not.toHaveBeenCalled();
+    expect(store.visibleFieldErrors["stickers.hero.position"]).toBeDefined();
   });
 });

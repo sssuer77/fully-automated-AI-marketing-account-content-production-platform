@@ -31,11 +31,20 @@ import json
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Final, cast
 
 from studio.agents.base import AgentContext
-from studio.core.config import AccountConfig, PlatformCode, PlatformConfig, PublishConfig
+from studio.core.clock import format_iso, utc_now
+from studio.core.config import (
+    AccountConfig,
+    OutputsConfig,
+    PlatformCode,
+    PlatformConfig,
+    PublishConfig,
+    StickerConfig,
+)
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.ids import new_ulid
 from studio.core.logging import get_logger
@@ -48,7 +57,7 @@ from studio.db.repositories.publication_repo import (
     PublicationRepo,
     PublicationRow,
 )
-from studio.domain.cover import CoverInput, CoverOutput, rule_cover_output
+from studio.domain.cover import COVER_HEIGHT, COVER_WIDTH, CoverInput, CoverOutput, rule_cover_output
 from studio.domain.enums import UnitType
 from studio.domain.publish import (
     build_caption,
@@ -61,30 +70,43 @@ from studio.domain.script import find_forbidden
 from studio.domain.task_service import TaskService
 from studio.publish.base import (
     REHEARSAL_PUBLISHER,
+    Publisher,
     PublisherContext,
     PublishHealth,
     PublishRequest,
     PublishResult,
     get_publisher,
 )
-from studio.publish.cover import build_cover, resolve_frame_at_ms, write_cover_atomically
+from studio.publish.cover import (
+    CoverSticker,
+    build_cover,
+    resolve_frame_at_ms,
+    write_cover_atomically,
+)
 from studio.publish.precheck import (
     PrecheckReport,
     PublishContent,
     load_banned_words,
     run_precheck,
 )
+from studio.publish.selectors import load_selector_pack
+from studio.render.png_probe import probe_png
+from studio.render.sticker import place_sticker, resolve_sticker
 from studio.services.script_service import read_active_script
 
 __all__ = [
     "AUDIT_CANCEL",
     "AUDIT_MANUAL_DONE",
     "AUDIT_RETRY",
+    "CALIBRATED",
+    "CALIBRATION_BROKEN",
+    "CALIBRATION_NA",
     "COVER_KIND",
     "FIXTURE_ACCOUNT_ID",
     "PUBLISH_POOL",
     "TARGETS",
     "TTL_COVER",
+    "UNCALIBRATED",
     "CoverReport",
     "CoverRequest",
     "DryRunReport",
@@ -98,8 +120,10 @@ __all__ = [
     "default_platforms",
     "default_targets",
     "enqueue_publications",
+    "health_payload",
     "mark_manual_done",
     "platform_options",
+    "publisher_for",
     "read_json",
     "resolve_account",
     "resolve_accounts",
@@ -236,13 +260,7 @@ class DryRunReport:
             "tags": list(self.tags),
             "video_path": None if self.video_path is None else self.video_path.as_posix(),
             "cover_path": None if self.cover_path is None else self.cover_path.as_posix(),
-            "health": {
-                "ready": self.health.ready,
-                "logged_in": self.health.logged_in,
-                "account_name": self.health.account_name,
-                "hint": self.health.hint,
-                "last_check_at": self.health.last_check_at,
-            },
+            "health": health_payload(self.health),
             "result": None
             if self.result is None
             else {
@@ -305,6 +323,22 @@ def read_json(path: Path) -> Any:
         return None
 
 
+def health_payload(health: PublishHealth) -> dict[str, Any]:
+    """登录态探测结果 ⇒ 过 JSON 边界的那一份（T6.4 起**两处**共用）。
+
+    演练报告（``DryRunReport.to_dict``）与账号面板的「检测登录态 / 扫码登录」说的是
+    同一个东西。各拼一份的代价是"面板上多一个字段、CLI 的 ``--json`` 里少一个" ——
+    而两边单看都没错。
+    """
+    return {
+        "ready": health.ready,
+        "logged_in": health.logged_in,
+        "account_name": health.account_name,
+        "hint": health.hint,
+        "last_check_at": health.last_check_at,
+    }
+
+
 def _first_start_ms(timeline: Any) -> int:
     """时间轴第一句的 ``start_ms``（算不出来 ⇒ 0）。"""
     if not isinstance(timeline, dict):
@@ -317,6 +351,98 @@ def _first_start_ms(timeline: Any) -> int:
         return 0
     value = first.get("start_ms")
     return value if isinstance(value, int) else 0
+
+
+def cover_sticker_for(
+    outputs: OutputsConfig | None,
+    *,
+    home: Path,
+) -> tuple[CoverSticker | None, str | None]:
+    """从合成配置里挑出封面的**主体贴图**，并算好它摆在哪儿。
+
+    返回 ``(贴图, 为什么没有)``：两者**互斥**（有贴图就没有原因，反之亦然）。
+    "没有"照样是一句话 —— 与渲染路径同一条口径：配了却没出现，必须有人能说出原因，
+    否则用户看到的就是"我明明开了贴图，封面上怎么没有"。
+
+    挑哪一层
+    --------
+    ``cover.sticker`` 点名了就**只认那一层**（点名而它关着 / 图坏了 ⇒ 如实报，不偷偷
+    换一层 —— 偷偷换的结果是"我明明关掉了它，封面还是它"）；没点名 ⇒ 第一个
+    "开着"的层。
+
+    为什么摆放与成片不同
+    --------------------
+    成片里人物缩在右下角是给字幕让位；封面上没有字幕，人物是**主体**，所以居中。
+    高度占比仍取这一层自己的 ``height_ratio`` —— 素材与大小是同一份配置，只有位置不同。
+    """
+    name, spec, problem = _pick_cover_layer(outputs)
+    sticker: CoverSticker | None = None
+    if problem is None and name is not None and spec is not None:
+        sticker, problem = _place_cover_sticker(name, spec, home=home)
+    return sticker, problem
+
+
+def _pick_cover_layer(
+    outputs: OutputsConfig | None,
+) -> tuple[str | None, StickerConfig | None, str | None]:
+    """挑出封面要用的那一层贴图 ⇒ ``(名字, 配置, 为什么挑不出来)``。
+
+    两个问题分开答（"用哪一层"与"这一层摆得下吗"），是因为它们各自会失败：
+    配置里没这一层、这一层关着、图坏了、放不进画布 —— 四句话分别对应四种修法。
+    """
+    if outputs is None:
+        return None, None, "没有读到合成配置（config/outputs.yaml）"
+    if not outputs.stickers:
+        return None, None, "合成配置里没有 stickers 段"
+
+    wanted = outputs.cover.sticker
+    if wanted:
+        spec = outputs.stickers.get(wanted)
+        if spec is None:
+            known = "、".join(outputs.stickers)
+            return None, None, f"cover.sticker 点名的「{wanted}」不在 stickers 里（现有：{known}）"
+    else:
+        picked = next(((key, item) for key, item in outputs.stickers.items() if item.enabled), None)
+        if picked is None:
+            return None, None, "stickers 里没有一层是开着的"
+        wanted, spec = picked
+
+    if not spec.enabled:
+        return None, None, f"「{wanted}」在 stickers 里是关着的"
+    return wanted, spec, None
+
+
+def _place_cover_sticker(
+    name: str,
+    spec: StickerConfig,
+    *,
+    home: Path,
+) -> tuple[CoverSticker | None, str | None]:
+    """把一层贴图摆到封面上 ⇒ ``(贴图, 为什么摆不上)``。"""
+    resolved = resolve_sticker(spec, name=name, canvas_height=COVER_HEIGHT, home=home)
+    # 位置换成 ``center``：见 :func:`cover_sticker_for` 的"为什么摆放与成片不同"。
+    # 其余参数（高度 / 透明度 / 素材）一个不动 —— 换位置是**封面这一件事**，
+    # 不该顺手把别的也改了。
+    placed = resolved.spec.model_copy(update={"position": "center"})
+    asset = probe_png(placed.image_path)
+    if not asset.usable:
+        return None, f"「{name}」的图不能用：{asset.problem or '没有透明通道'}"
+
+    box = place_sticker(placed, asset, canvas_width=COVER_WIDTH, canvas_height=COVER_HEIGHT)
+    if box is None:
+        return None, f"「{name}」放不进封面画布（{COVER_WIDTH}×{COVER_HEIGHT}）"
+    return (
+        CoverSticker(
+            name=name,
+            path=placed.image_path,
+            x=box.x,
+            y=box.y,
+            width_px=box.width_px,
+            height_px=box.height_px,
+            opacity=placed.opacity,
+        ),
+        None,
+    )
 
 
 def _clamp_frame(frame_at_ms: int, *, duration_ms: int) -> int:
@@ -334,8 +460,12 @@ def _clamp_frame(frame_at_ms: int, *, duration_ms: int) -> int:
 class PublishService:
     """发布前准备（封面 + 二次校验）。
 
-    ``publish`` / ``persona`` 由**入口**注入（与 `ScriptService` 同一手法）：
+    ``publish`` / ``persona`` / ``outputs`` 由**入口**注入（与 `ScriptService` 同一手法）：
     服务只认数据，不去读配置文件 —— 那会让每个测试都得先铺一份 config。
+
+    ``outputs``（合成配置）只被封面那一条路用到：封面的**主体贴图**是
+    ``config/outputs.yaml`` 的 ``stickers`` 里的一层（"合成配置里的贴图"），
+    样式也来自它的 ``cover`` 一节。不给 ⇒ 封面照出，只是不贴人物。
     """
 
     def __init__(
@@ -345,6 +475,7 @@ class PublishService:
         paths: StudioPaths,
         publish: PublishConfig | None = None,
         persona: Any = None,
+        outputs: OutputsConfig | None = None,
         cover_agent: Any = None,
         build: Callable[..., Any] | None = None,
     ) -> None:
@@ -352,6 +483,7 @@ class PublishService:
         self._paths = paths
         self._publish = publish
         self._persona = persona
+        self._outputs = outputs
         self._cover_agent = cover_agent
         self._build = build or build_cover
         self._tasks = TaskService(connection)
@@ -387,6 +519,10 @@ class PublishService:
             update={"frame_at_ms": _clamp_frame(output.frame_at_ms, duration_ms=duration_ms)}
         )
 
+        # 封面主体：合成配置里的一层贴图（T5.1 追加）。挑不出来也照出封面 ——
+        # 与水印 / 贴图在成片里同一条"装饰不阻塞"的口径。
+        sticker, sticker_note = cover_sticker_for(self._outputs, home=self._paths.home)
+
         target = self._paths.cover_image(request.task_id, stamp=request.stamp)
         # ``.partial`` 插在扩展名**之前**：``ffmpeg`` 按扩展名挑封装器，
         # ``xxx.jpg.partial`` 它会当成一种没见过的格式直接失败（成片那条用的是
@@ -397,8 +533,12 @@ class PublishService:
             target=partial,
             paths=self._paths,
             source=resolve_final_video(request.task_id, self._paths),
+            sticker=sticker,
+            style=None if self._outputs is None else self._outputs.cover,
         )
         warnings = [*result.warnings]
+        if sticker_note is not None:
+            warnings.append(f"封面没有人物贴图：{sticker_note}")
         if agent_error:
             warnings.append(f"封面文案走了规则兜底：{agent_error}")
 
@@ -408,6 +548,7 @@ class PublishService:
 
         plan = dict(result.plan)
         plan["source"] = source
+        plan["sticker_note"] = sticker_note
         plan["target"] = target.as_posix()
         plan["final_frame_at_ms"] = output.frame_at_ms
         plan["fallback_background"] = result.fallback_background
@@ -759,6 +900,57 @@ def resolve_platform(config: PublishConfig, platform: str) -> PlatformConfig:
     return cfg
 
 
+def next_metric_at(config: PublishConfig) -> str | None:
+    """数据回收的**第一个**时点（``metrics_schedule_hours`` 里最小的那个）。
+
+    发布成功那一刻写进 ``publications.next_metric_at``；到点由回收泵去读一次。
+    配成空 / 全是 0 ⇒ ``None``（"这条不回收数据"，而不是"立刻就回收"）。
+
+    为什么是**共用**的一份（T5.3 原本写在 ``publish_worker`` 里）
+    --------------------------------------------------------------
+    "发出去之后什么时候去看它一眼"这件事，自动发布（worker）与人工过验证
+    （``publish_assist_service``）回答的必须是同一个数 —— 两处各算一遍的代价是
+    某一天其中一处忘了跟着配置改，而症状是"面板发的那些永远不回收数据"。
+    """
+    hours = [int(hour) for hour in config.metrics_schedule_hours if int(hour) > 0]
+    if not hours:
+        return None
+    return format_iso(utc_now() + timedelta(hours=min(hours)))
+
+
+def publisher_for(
+    paths: StudioPaths,
+    config: PublishConfig,
+    account: AccountConfig,
+    *,
+    headless: bool = True,
+    await_manual_verify: bool = False,
+) -> Publisher:
+    """按**一个账号**装配一个 Publisher（T6.4：面板上的「检测登录态 / 扫码登录」用）。
+
+    一个账号一个实例：``PublisherContext.profile_dir`` 是
+    ``data/browser_profile/<account_id>``，两个账号共用一个实例等于共用一份登录态
+    （§06.2.4「登录态隔离」）。
+
+    ``headless``：探测用无头（看不见、跑得快），扫码登录必须可见 —— 无头窗口里
+    没有人能扫那个码。
+
+    ``await_manual_verify``：**有人在场**（T6.4 的「人工过验证」）。它默认 False，
+    因为"窗口可见"与"窗口前面有人"是两件事（见 ``PublisherContext`` 那段）。
+    这两个参数**互相独立**：一个可见窗口配 ``await_manual_verify=False`` 是完全
+    合法的组合（排障时人走开了）。
+    """
+    platform_cfg = resolve_platform(config, account.platform)
+    context = PublisherContext(
+        paths=paths,
+        account=account,
+        platform=platform_cfg,
+        headless=headless,
+        await_manual_verify=await_manual_verify,
+    )
+    return get_publisher(platform_cfg.publisher)(context)
+
+
 def resolve_accounts(
     config: PublishConfig,
     *,
@@ -969,6 +1161,18 @@ def enqueue_publications(
 
 # ── 投递面板的选项清单（T5.10）─────────────────────────────────────────
 
+#: 面板上"校准"那一列的四个状态（T5.14）。**服务端算**，面板只负责画 ——
+#: 与 ``selectable`` / ``note`` 同一条理由：面板自己判一遍，就有第二种真相。
+#:
+#: ``calibrated``  这个平台的 pack 在真机上逐条验过（``selectors/<x>.yaml`` 的 ``calibrated``）
+#: ``uncalibrated`` 是真实现，但那些 CSS **没在真机上验过**（七份里六份都是这一档）
+#: ``broken``       选择器包**装不起来**（少了文件 / yaml 写坏了）—— 这个平台现在一定发不出去
+#: ``n/a``          不是平台（本地演练台）："真机校准"对它没有意义
+CALIBRATED: Final[str] = "calibrated"
+UNCALIBRATED: Final[str] = "uncalibrated"
+CALIBRATION_BROKEN: Final[str] = "broken"
+CALIBRATION_NA: Final[str] = "n/a"
+
 
 @dataclass(frozen=True, slots=True)
 class PlatformOption:
@@ -983,6 +1187,15 @@ class PlatformOption:
     selectable: bool
     #: 一句人话：点了会怎样 / 为什么点不动。
     note: str
+    #: 见上面四个常量。
+    calibration: str
+    #: "校准"那一列的人话（服务端算，面板不拼句子）。
+    calibration_note: str
+    #: 这份 pack **已经确认没做**的部分（比如 B 站的必选分区）。
+    #:
+    #: 与 ``calibration`` 是**两件事**：校准回答"这些选择器对不对"，这一条回答
+    #: "还有没有一段流程压根没写"。只显示前者会让人以为"校准完就能发了"。
+    known_gaps: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -993,7 +1206,33 @@ class PlatformOption:
             "accounts": list(self.accounts),
             "selectable": self.selectable,
             "note": self.note,
+            "calibration": self.calibration,
+            "calibration_note": self.calibration_note,
+            "known_gaps": list(self.known_gaps),
         }
+
+
+def _calibration(code: str, *, rehearsal: bool) -> tuple[str, str, tuple[str, ...]]:
+    """这个平台的选择器**验过没有** ⇒ ``(状态, 一句人话, 已知缺口)``。
+
+    为什么读不到 pack 要报 ``broken`` 而不是抛：这一列画在**投递面板**上，而"某个
+    平台的选择器包装不起来"恰恰是最该让人看见的一件事 —— 为它把整个面板打成 500，
+    等于把一个平台的问题变成"面板坏了"（其余六个平台也跟着看不见）。
+    """
+    if rehearsal:
+        return CALIBRATION_NA, "本地靶页：没有「真机校准」这回事", ()
+    try:
+        pack = load_selector_pack(code)
+    except StudioError as exc:
+        return CALIBRATION_BROKEN, f"选择器包装不起来：{exc.message}", ()
+    if pack.calibrated:
+        return CALIBRATED, f"已真机校准（{pack.calibrated_at}）", pack.known_gaps
+    return (
+        UNCALIBRATED,
+        "选择器**没在真机上验过**（CSS 是照着抖音那份的形状猜的）"
+        f" —— 先跑 `studio publish calibrate --platform {code}`",
+        pack.known_gaps,
+    )
 
 
 def platform_options(config: PublishConfig) -> tuple[PlatformOption, ...]:
@@ -1016,8 +1255,9 @@ def platform_options(config: PublishConfig) -> tuple[PlatformOption, ...]:
     for code, platform_cfg in config.platforms.items():
         accounts = tuple(by_platform.get(code, ()))
         rehearsal = platform_cfg.publisher == REHEARSAL_PUBLISHER
+        calibration, calibration_note, known_gaps = _calibration(str(code), rehearsal=rehearsal)
         if not platform_cfg.enabled:
-            note = "平台未启用（§06.2.1 · Q9）⇒ 投了会被跳过"
+            note = f"平台未启用（config/publish.yaml → platforms.{code}.enabled: false）⇒ 投了会被跳过"
         elif not accounts:
             note = "这个平台没有启用的账号 ⇒ 投了会被跳过"
         elif rehearsal:
@@ -1031,6 +1271,11 @@ def platform_options(config: PublishConfig) -> tuple[PlatformOption, ...]:
                 "真平台：发布开关是关的（config/publish.yaml → enabled: false）"
                 "⇒ 投了会直接死信（在「四池调度」的死信里能看到），发布面板上不会出现记录"
             )
+        elif calibration in (UNCALIBRATED, CALIBRATION_BROKEN):
+            # 这一档是 T5.14 新加的：**平台能投、开关开着、账号也有，但选择器没验过**。
+            # 不提示的话，操作员看到的就是一行和抖音长得一模一样的平台 —— 而它投出去
+            # 大概率发不出去（或者更糟：发出去一半，结果判不出来，见陷阱 #228）。
+            note = f"真平台：要登录态，发出去不可撤销。⚠️ {calibration_note}"
         else:
             note = "真平台：要登录态，发出去不可撤销"
         out.append(
@@ -1042,6 +1287,9 @@ def platform_options(config: PublishConfig) -> tuple[PlatformOption, ...]:
                 accounts=accounts,
                 selectable=platform_cfg.enabled and bool(accounts),
                 note=note,
+                calibration=calibration,
+                calibration_note=calibration_note,
+                known_gaps=known_gaps,
             )
         )
     return tuple(out)

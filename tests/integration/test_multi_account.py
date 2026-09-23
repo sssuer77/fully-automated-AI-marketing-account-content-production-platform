@@ -41,6 +41,7 @@ from typing import Any, ClassVar
 import pytest
 import yaml
 from fastapi.testclient import TestClient
+from tests.support import restore_factory_accounts
 
 from studio.app.deps import AppState, build_state
 from studio.app.main import create_app
@@ -203,6 +204,9 @@ def paths(tmp_path: Path) -> StudioPaths:
         shutil.copyfile(source, value.config_dir / source.name)
 
     publish = value.config_dir / "publish.yaml"
+    # 账号段摆回出厂（"出厂有一个 douyin 号 acc_main + 一个演练台"）：盘上那份是
+    # 操作员的运行期状态，而这一层验的是**多账号结构**本身（见 tests/support.py）。
+    restore_factory_accounts(publish)
     text = publish.read_text(encoding="utf-8")
     # 只换**顶格**那一行与那两个参数：``handoff`` 与二线平台的 ``enabled`` 都是缩进的。
     text = text.replace("\nenabled: false", "\nenabled: true")

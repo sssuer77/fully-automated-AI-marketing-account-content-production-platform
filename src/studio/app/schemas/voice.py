@@ -101,9 +101,14 @@ class SentenceProgressModel(BaseModel):
 class VoicePreview(BaseModel):
     """一个音色的试听样本现在什么样（T2.4）。
 
-    ``status`` 四态：``missing``（还没生成，点一下就生成）· ``running``（正在生成，
+    ``status`` **五态**：``missing``（还没生成，点一下就生成）· ``running``（正在生成，
     真机上一次十几秒）· ``ready``（盘上有，可以播）· ``failed``（生成失败了，
-    ``error`` 里是引擎原话）。
+    ``error`` 里是引擎原话）· ``stale``（盘上有，但那是**上一版参考音**念的 ——
+    同名重传参考音之后就会出现，见 ``services/voice_preview.py``）。
+
+    ``stale`` 必须与 ``ready`` 分开：两者都「盘上有文件、能播」，但前者播出来是
+    旧嗓子。合成一个状态，用户听到不像时的第一反应会是去查引擎、查模型，
+    而真正的原因（参考音换过、样本没重生成）面板上一个字都没提。
 
     ``missing`` 与 ``failed`` **必须分开**：前者点一下就行，后者再点一下大概率还是
     失败 —— 得先看那句话。合成一个"没有"会让用户反复点一个注定失败的按钮。
@@ -139,8 +144,9 @@ class VoiceOption(BaseModel):
     id: str
     source: str
     speakable: bool
-    #: 试听样本的四态（见 :class:`VoicePreview`）。下拉框旁边那颗「试听」按钮按它画：
-    #: ``missing`` 显示「生成试听」、``running`` 转圈、``ready`` 可直接播。
+    #: 试听样本的五态（见 :class:`VoicePreview`）。下拉框旁边那颗「试听」按钮按它画：
+    #: ``missing`` 显示「生成试听」、``running`` 转圈、``ready`` 可直接播、
+    #: ``stale`` 显示「重新生成」（盘上那份是上一版参考音念的）。
     preview_state: str = "missing"
     #: 样本的 url（``ready`` 时才有）。**由后端给** —— 面板自己拼路径的话，
     #: 后端一改目录就变成"点了播放没反应"，且不报错。

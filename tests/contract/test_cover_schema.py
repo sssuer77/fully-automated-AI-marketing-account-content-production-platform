@@ -144,6 +144,7 @@ class TestPromptRegistry:
             audience="学生",
             catchphrases="这不科学、俺寻思",
             forbidden="脏话",
+            speaker_names="熊大、熊二",
             style_hint="（无）",
             duration_ms="17482",
             default_frame_ms="500",

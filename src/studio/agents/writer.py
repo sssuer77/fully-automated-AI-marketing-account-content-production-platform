@@ -11,11 +11,16 @@
 ⑥ 仍不合格 ⇒ 取**最接近合格**的那一版返回 + warnings（不静默、不整批失败）
 ```
 
-为什么"最接近"按字数距离挑
---------------------------
+为什么"最接近"先按"还剩几项不合格"挑、再按字数距离挑
+--------------------------------------------------
 字数越界只有两种修法：重写或人工删改。既然重写额度用完了，就得挑一版**最省
-人工**的：差 30 字比差 200 字好改。若几版距离相同，保留**先出现**的那一版 ——
-"最后一次尝试"并不比第一次更可信（模型不是越改越好）。
+人工**的：差 30 字比差 200 字好改。
+
+**为什么不能只比字数**（真机 2026-09-23 暴露）：重写轮次里，模型常常把**别的**问题
+修好、字数却没动 —— 两版的字数距离**相同**，而旧的"距离相同保留先出现"会把
+**已经修好的那一版丢掉、留下旧的那一版**（"结尾不得提问"正好是这类问题：
+改与不改都不动字数）。所以排序先看还剩几项不合格，字数差只在**同一档**里比。
+同档同距才保留先出现的 —— "最后一次尝试"并不比第一次更可信。
 
 为什么 block 不走重写
 --------------------
@@ -31,6 +36,7 @@ from typing import ClassVar
 from studio.agents.base import AgentContext, AgentResult, BaseAgent, bullet_block
 from studio.core.errors import ErrorCode
 from studio.domain.script import (
+    FACTS_UNSET,
     OUTLINE_UNSET,
     REWRITE_LIMIT,
     DirectorOutput,
@@ -79,6 +85,7 @@ class WriterAgent(BaseAgent[WriterInput, WriterOutput]):
                 outline_cta=payload.outline.cta,
                 outline_title=payload.outline_title or OUTLINE_UNSET,
                 core_argument=payload.core_argument or OUTLINE_UNSET,
+                facts=payload.facts or FACTS_UNSET,
                 word_count_min=str(rules.word_count_min),
                 word_count_max=str(rules.word_count_max),
                 catchphrase_min_hits=str(rules.catchphrase_min_hits),
@@ -129,16 +136,22 @@ class _Candidate:
     result: AgentResult[WriterOutput]
     output: WriterOutput
     report: ScriptReport
-    distance: int
+    distance: tuple[int, int]
 
 
-def _distance(report: ScriptReport, rules: ScriptRules) -> int:
-    """离合格字数区间有多远（合格 ⇒ 0；越界 ⇒ 到最近边界的字数差）。"""
+def _distance(report: ScriptReport, rules: ScriptRules) -> tuple[int, int]:
+    """离合格有多远：``(还剩几项不合格, 字数差)`` —— **元组按字典序比**。
+
+    先比"还剩几项"是必须的：只比字数时，"把别的问题修好了、字数没动"的那一版
+    与旧版距离相同 ⇒ 会被"保留先出现的"丢掉（见模块 docstring）。
+    """
     if report.word_count < rules.word_count_min:
-        return rules.word_count_min - report.word_count
-    if report.word_count > rules.word_count_max:
-        return report.word_count - rules.word_count_max
-    return 0
+        gap = rules.word_count_min - report.word_count
+    elif report.word_count > rules.word_count_max:
+        gap = report.word_count - rules.word_count_max
+    else:
+        gap = 0
+    return (len(report.problems), gap)
 
 
 def _blocked(result: AgentResult[WriterOutput], report: ScriptReport) -> AgentResult[WriterOutput]:

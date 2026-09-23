@@ -30,7 +30,7 @@ from studio.core.config import (
     PrecheckConfig,
     PublishConfig,
 )
-from studio.core.errors import ErrorCode, StudioError
+from studio.core.errors import ErrorCode, PublishError, StudioError
 from studio.core.paths import StudioPaths
 from studio.db import connect, migrate
 from studio.db.repositories.artifact_repo import ArtifactRepo
@@ -38,13 +38,23 @@ from studio.domain.cover import CoverInput, CoverOutput
 from studio.domain.enums import TaskKind, TaskStatus
 from studio.domain.models import QualityReport
 from studio.domain.task_service import TaskService
+from studio.publish.base import PublishHealth
 from studio.publish.cover import CoverResult
+from studio.publish.platforms.douyin import DouyinPublisher
+from studio.publish.selectors import SelectorPack
+from studio.services import publish_service
 from studio.services.publish_service import (
+    CALIBRATED,
+    CALIBRATION_BROKEN,
+    CALIBRATION_NA,
     COVER_KIND,
+    UNCALIBRATED,
     CoverRequest,
     PublishService,
     default_platforms,
+    health_payload,
     platform_options,
+    publisher_for,
     resolve_final_video,
 )
 
@@ -701,3 +711,132 @@ class TestPlatformOptions:
             caption_max=1000,
         )
         assert default_platforms(config) == ("douyin", "kuaishou")
+
+    # ── 校准那一列（T5.14）─────────────────────────────────────────────
+
+    def test_calibration_state_is_reported_for_every_platform(self) -> None:
+        """★ "这个平台的选择器验过没有"要能从面板那一行读出来。
+
+        抖音是七份 pack 里**唯一**验过的；演练台不是平台（"真机校准"对它没有意义）。
+        """
+        by_code = {option.code: option for option in platform_options(self._config())}
+        assert by_code["douyin"].calibration == CALIBRATED
+        assert "已真机校准" in by_code["douyin"].calibration_note
+        assert by_code["xiaohongshu"].calibration == UNCALIBRATED
+        assert "calibrate" in by_code["xiaohongshu"].calibration_note
+        assert by_code["other"].calibration == CALIBRATION_NA
+
+    def test_douyin_reports_the_gaps_calibration_cannot_fix(self) -> None:
+        """校准回答"这些选择器对不对"；``known_gaps`` 回答"还有没有一段流程压根没写"。
+
+        只显示前者会让人以为"校准完就能发了" —— 抖音的数据回收那一组就还没验过。
+        """
+        by_code = {option.code: option for option in platform_options(self._config())}
+        assert any("数据回收" in gap for gap in by_code["douyin"].known_gaps)
+        assert by_code["douyin"].to_dict()["known_gaps"] == list(by_code["douyin"].known_gaps)
+
+    def test_a_selectable_but_uncalibrated_platform_warns(self) -> None:
+        """★ 平台能投、开关开着、账号也有，但选择器**没验过** ⇒ 那一行必须带警告。
+
+        不加这一句，操作员看到的就是一行和抖音长得一模一样的平台 —— 而它投出去大概率
+        发不出去（或者更糟：发出去一半、结果判不出来，见陷阱 #228）。
+        """
+        config = self._config()
+        config.platforms["kuaishou"] = PlatformConfig(
+            publisher="kuaishou",
+            profile="douyin_1080x1920_30fps_v1",
+            enabled=True,
+            title_max=60,
+            caption_max=1000,
+        )
+        config.accounts.append(
+            AccountConfig(
+                account_id="acc_kuaishou",
+                platform="kuaishou",
+                profile_dir=Path("data/browser_profile/acc_kuaishou"),
+            )
+        )
+        option = {item.code: item for item in platform_options(config)}["kuaishou"]
+        assert option.selectable is True
+        assert option.calibration == UNCALIBRATED
+        assert "⚠️" in option.note
+        assert "calibrate" in option.note
+
+    def test_a_pack_that_cannot_be_loaded_is_reported_not_raised(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """★ 读不到 pack ⇒ 报 ``broken``，**不抛**。
+
+        这一列画在**投递面板**上：为"某个平台的选择器包装不起来"把整个面板打成 500，
+        等于把一个平台的问题变成"面板坏了"（其余六个平台也跟着看不见）。
+        """
+
+        def boom(code: str) -> SelectorPack:
+            raise PublishError("选择器文件不合法", code=ErrorCode.PUBLISH_SELECTOR_MISS)
+
+        monkeypatch.setattr(publish_service, "load_selector_pack", boom)
+        by_code = {option.code: option for option in platform_options(self._config())}
+        assert by_code["douyin"].calibration == CALIBRATION_BROKEN
+        assert "装不起来" in by_code["douyin"].calibration_note
+        # 演练台不走读盘那一条 ⇒ 读不到 pack 这件事与它无关
+        assert by_code["other"].calibration == CALIBRATION_NA
+
+
+class TestPublisherFor:
+    """按账号装配发布器（T6.4）：面板上的「检测登录态 / 扫码登录」走的就是这一条。"""
+
+    def test_builds_one_publisher_per_account(self, paths: StudioPaths) -> None:
+        config = PublishConfig(
+            accounts=[
+                AccountConfig(
+                    account_id="acc_main",
+                    platform="douyin",
+                    profile_dir=Path("data/browser_profile/acc_main"),
+                )
+            ],
+            platforms={
+                "douyin": PlatformConfig(
+                    publisher="douyin",
+                    profile="douyin_1080x1920_30fps_v1",
+                    enabled=True,
+                    title_max=55,
+                    caption_max=1000,
+                )
+            },
+        )
+
+        publisher = publisher_for(paths, config, config.accounts[0], headless=False)
+
+        assert isinstance(publisher, DouyinPublisher)
+        # 一个账号一份登录态：profile 目录从**账号**推出来，不从配置那一列读
+        assert publisher.context.profile_dir == paths.browser_profile_dir / "acc_main"
+        # 扫码登录必须可见 —— 无头窗口里没有人能扫那个码
+        assert publisher.context.headless is False
+
+    def test_unknown_platform_is_refused(self, paths: StudioPaths) -> None:
+        """平台代号在 ``platforms`` 里没有 ⇒ 抛（**不猜**），与投递期同一条判据。
+
+        ``model_construct`` 是**故意**的：``PublishConfig`` 的校验器本来就拦住了
+        "账号挂在一个没定义的平台上"，所以这一格正常配不出来。这里绕开它，验的是
+        **函数自己**的契约 —— 哪天有人给配置加一条绕过校验的构造路径，
+        这一层仍然要拒绝，而不是拿一个空配置去猜。
+        """
+        account = AccountConfig(
+            account_id="acc_x",
+            platform="douyin",
+            profile_dir=Path("data/browser_profile/acc_x"),
+        )
+        broken = PublishConfig.model_construct(accounts=[account], platforms={})
+        with pytest.raises(StudioError) as info:
+            publisher_for(paths, broken, account)
+        assert info.value.code == ErrorCode.VALIDATION_FAILED
+
+
+class TestHealthPayload:
+    def test_carries_the_five_fields_the_panel_shows(self) -> None:
+        """面板与 CLI ``--json`` 说的是**同一份**形状（各拼一份迟早分叉）。"""
+        payload = health_payload(
+            PublishHealth(ready=False, logged_in=False, last_check_at="now", hint="需人工扫码登录")
+        )
+        assert set(payload) == {"ready", "logged_in", "account_name", "hint", "last_check_at"}
+        assert payload["hint"] == "需人工扫码登录"

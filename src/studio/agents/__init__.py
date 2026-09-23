@@ -51,6 +51,7 @@ from studio.agents.llm_client import (
     estimate_tokens,
     is_retryable_status,
 )
+from studio.agents.news_scout import NewsScoutAgent
 from studio.agents.planner import PLANNER_RULE_RETRIES, PlannerAgent
 from studio.agents.prompts import (
     PromptEntry,
@@ -97,6 +98,7 @@ __all__ = [
     "LlmTransport",
     "LlmUsage",
     "LogSink",
+    "NewsScoutAgent",
     "PlannerAgent",
     "PromptEntry",
     "PromptLibrary",

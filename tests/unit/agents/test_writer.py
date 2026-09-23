@@ -289,6 +289,28 @@ class TestRewrite:
         assert result.ok and result.data is not None
         assert count_chars(result.data.body_md) == 500
 
+    async def test_a_rewrite_that_only_fixes_the_ending_wins(
+        self, paths: StudioPaths, connection: sqlite3.Connection
+    ) -> None:
+        """字数没动、只把结尾提问修好的那一版必须被选中（旧代码按"字数差"比 ⇒ 会丢）。
+
+        真机 2026-09-23：模型第二轮把"结尾提问"改掉了，字数却一点没动 —— 两版字数
+        距离相同，旧的"距离相同保留先出现的"于是留下**还带问号**的那一版。
+        """
+        question = "想看下回拆啥？点个关注别走丢。"
+        flat = "便宜的东西，代价都在别处。"
+        transport = ScriptedTransport(
+            replies=[
+                Reply(text=writer_json(word_count=500, cta=question)),
+                Reply(text=writer_json(word_count=500, cta=flat)),
+                Reply(text=writer_json(word_count=500, cta=flat)),
+            ]
+        )
+        agent = build(transport, paths, connection)
+        result = await run(agent)
+        assert result.ok and result.data is not None
+        assert result.data.cta == flat
+
     async def test_catchphrase_shortfall_triggers_rewrite(
         self, paths: StudioPaths, connection: sqlite3.Connection
     ) -> None:

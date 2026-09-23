@@ -12,7 +12,16 @@
 // ③ "够不够用、缺多少" —— 缺口那句话（后端算的判据线，前端不抄第二份）；
 // ④ "这条启用还是停用、要不要删掉" —— 开关 + 删除（删除要点两下：误删不可逆）；
 // ⑤ "素材长什么样、听着对不对" —— 缩略图 + 试听（URL 直接交给 img / audio）；
-// ⑥ "那几十个字段在哪改" —— 逐行编辑器（按 `EDIT_FIELDS[kind]` 画，不手写三份模板）。
+// ⑥ "那几十个字段在哪改" —— 逐行编辑器（按 `EDIT_FIELDS[kind]` 画，不手写三份模板）；
+// ⑦ "这个音色到底由哪几段拼出来的、哪一段不对" —— 音色的逐段表（裁定 381）。
+//
+// 为什么音色要额外有第 ⑦ 条
+// ----------------------------
+// 音色是三类里**唯一一个"一条素材 = 一组文件"**的：它的可用性不取决于库里那一行，
+// 而取决于目录里躺着哪几段、每段多长、`ref.txt` 有没有与它们一一对应。只看"3 段"
+// 这个数，用户既看不出哪一段是当年复制凑数的，也没法把不要的那一段去掉 —— 只能整条
+// 删掉重传，而重传要把所有段再选一遍。逐段表把这三件事摊开，并且让"删一段"成为
+// 一个可以说清、可以撤销思路（重传）的动作。
 //
 // 三态必须分开画（这是"清晰操作"的全部意思）
 // ------------------------------------------
@@ -86,6 +95,23 @@ const draft = ref<FieldDraft>({});
 
 /** 正在等二次确认删除的那一行（`null` = 没有）。删除不可逆，所以要点两下。 */
 const confirmId = ref<string | null>(null);
+
+/**
+ * 正在等二次确认的那一段参考音（`null` = 没有）。
+ *
+ * 删一段同样不可逆（音频不在盘上了），而且它**会牵动别的段**：服务端删完会重编号，
+ * 后面的 `ref_03.wav` 会变成 `ref_02.wav`。所以这里也要点两下，并且把"会连带动什么"
+ * 写在按钮旁边。
+ */
+const confirmSegment = ref<string | null>(null);
+
+/**
+ * 正在等二次确认的**孤儿清理**（`false` = 没有）。
+ *
+ * 与上面两个确认分开一个 ref：它们确认的对象完全不同（一行素材 / 一段参考音 /
+ * 一整批盘上的东西），共用一个 ref 会让"点了一行的删除、另一处的确认条跟着亮"。
+ */
+const confirmPrune = ref(false);
 
 /**
  * 这一次上传**落盘了、但没入库**的那些。
@@ -212,6 +238,62 @@ async function onScan(): Promise<void> {
 }
 
 /**
+ * 清掉这一类的孤儿（**点两下，第一下是预览**）。
+ *
+ * 与删除素材同一条规矩（不可逆的动作要点两下），但这里多给了一步预览 —— 因为这一下
+ * 可能一次动好几个目录，而"到底会清掉哪几个"在点之前没人知道。预览走 `dry_run`，
+ * 后端一个字节都不动。
+ */
+async function onPrune(): Promise<void> {
+  if (!confirmPrune.value) {
+    const preview = await assets.prune(true);
+    // 一个都不清就别进确认态：否则按钮会变成"确认清掉 0 个"，点下去什么也没发生。
+    if (preview !== null && preview.removed.length > 0) confirmPrune.value = true;
+    return;
+  }
+  if (await assets.prune(false)) confirmPrune.value = false;
+}
+
+function onCancelPrune(): void {
+  confirmPrune.value = false;
+}
+
+/** 清孤儿那颗按钮上的字（确认态说清"会清掉几个"）。 */
+function pruneLabel(): string {
+  if (assets.pruneBusy) return "清理中…";
+  if (confirmPrune.value) return `确认清掉 ${assets.pruneReport?.removed.length ?? 0} 个`;
+  return "清掉不合格的孤儿";
+}
+
+/**
+ * 清孤儿的回执（**三段分开说**，与后端 `PruneReport` 的三个字段一一对应）。
+ *
+ * 为什么不能合成一句"清掉 3 个"：三种"盘上有、库里没有"该做的动作完全不同 ——
+ * 清掉的（不合格）、**该入库的**（本身合格）、以及名字不合规、压根没被认出来的。
+ * 尤其第二种：用户看到"清了一遍"却还剩着，会以为功能坏了，而真相是**那几条该入库**。
+ */
+function pruneNote(): string {
+  const report = assets.pruneReport;
+  if (report === null) return "";
+  const parts: string[] = [];
+  if (report.removed.length > 0) {
+    const ids = report.removed.map((item) => item.id).join("、");
+    parts.push(`${report.dry_run ? "会清掉" : "已清掉"} ${report.removed.length} 个：${ids}`);
+  }
+  if (report.kept.length > 0) {
+    const ids = report.kept.map((item) => item.id).join("、");
+    parts.push(`留着 ${report.kept.length} 个（${ids}）—— 它们本身合格，该入库、不是该删`);
+  }
+  if (report.strays.length > 0) {
+    parts.push(`另有 ${report.strays.length} 个名字不合规的**没动**（它们不在这次清理的范围里）`);
+  }
+  if (parts.length === 0) {
+    return "这一类没有不合格的孤儿 —— 盘上那些要么已经入库，要么该入库。";
+  }
+  return `${parts.join("；")}。`;
+}
+
+/**
  * 选完文件**立刻**上传（没有第二个按钮）。
  *
  * 这一栏的语义就是"把文件放进素材库"：再让用户点一次「上传」，只是多一次
@@ -313,6 +395,55 @@ function onFieldCheck(key: string, event: Event): void {
 async function onSave(item: AssetItem): Promise<void> {
   const ok = await assets.saveFields(item, draft.value);
   if (ok) draft.value = {};
+}
+
+// ── 音色：逐段管理（裁定 381）──────────────────────────────────────────
+
+/** 展开 / 收起逐段表（同时收掉别的行：两行的段列表摊在一起会看串）。 */
+async function onSegments(item: AssetItem): Promise<void> {
+  confirmId.value = null;
+  confirmSegment.value = null;
+  await assets.toggleSegments(item);
+}
+
+async function onRemoveSegment(voiceId: string, name: string): Promise<void> {
+  // 失败时**不关**确认条：错误就在旁边，用户能看着它再点一次。
+  if (await assets.removeSegment(voiceId, name)) confirmSegment.value = null;
+}
+
+/**
+ * 这一栏那句提示：**三类各说各的**。
+ *
+ * 音色的「覆盖同名」比跑酷 / BGM 重一档：它是**镜像**（这次没传到的旧段会被清掉），
+ * 而跑酷 / BGM 只是"同名那个文件换掉"。两者用同一句话，用户会按轻的那一档去理解，
+ * 然后在音色上被清掉一段而毫无预期。
+ */
+function overwriteHint(): string {
+  if (assets.overwrite) {
+    return props.kind === "voice"
+      ? "同名会被替换，**这次没传到的旧段会被清掉**（镜像）"
+      : "同名会被替换";
+  }
+  return props.kind === "voice"
+    ? "撞名会跳过；要换掉旧段请勾上「覆盖同名」（那是镜像：传进去的就是全部）"
+    : "撞名会跳过，不会盖掉已有素材";
+}
+
+
+/** 逐段表顶上那句"N 段 / M 行文本"—— 两个数不等就是**文本与音频对不上**。 */
+function segmentsSummary(voiceId: string): string {
+  const view = assets.segmentsFor(voiceId);
+  if (view === null) return "读取中…";
+  return `${view.ref_count} 段 · ref.txt ${view.text_lines} 行`;
+}
+
+/** 逐段表顶上的灯：段数与文本行数对得上、且没有不合格的段 ⇒ 绿。 */
+function segmentsTone(voiceId: string): StatusTone {
+  const view = assets.segmentsFor(voiceId);
+  if (view === null) return "warn";
+  if (view.problems.length > 0) return "warn";
+  if (view.ref_count !== view.text_lines) return "warn";
+  return "ok";
 }
 
 // ── 空态 ────────────────────────────────────────────────────────────────
@@ -432,7 +563,7 @@ function emptyHint(): string {
             <span>{{ assets.uploadBusy ? "上传中…" : "选择文件上传" }}</span>
           </label>
           <span class="muted">
-            或把文件拖到这一节里（{{ assets.overwrite ? "同名会被替换" : "撞名会跳过，不会盖掉已有素材" }}）
+            或把文件拖到这一节里（{{ overwriteHint() }}）
           </span>
         </div>
 
@@ -481,6 +612,26 @@ function emptyHint(): string {
           </ul>
         </div>
 
+        <!-- 覆盖的账（裁定 381）：勾了「覆盖同名」之后，这次没传到的旧段会被清掉。
+             清掉了什么、以及"什么没动但你应该知道"，都要在这里说 —— 不说的话，
+             用户看到的是"我覆盖了，可它还是 3 段"。 -->
+        <div v-if="(assets.upload?.removed.length ?? 0) > 0" class="alert alert--warn">
+          <p>
+            覆盖同名 ⇒ 这次没传到的旧段已经清掉 {{ assets.upload?.removed.length }} 个：
+            <span class="mono">{{ assets.upload?.removed.join("、") }}</span>
+          </p>
+          <p class="muted">
+            「覆盖同名」的语义是<strong>镜像</strong>：这次传进去的就是全部。只管同名的那几个，
+            会留下一份"两边都不是"的目录 —— 新传 2 段、旧的第 3 段还在，库里照样报 3 段。
+          </p>
+        </div>
+
+        <div v-if="(assets.upload?.notes.length ?? 0) > 0" class="alert alert--info">
+          <ul class="blocked">
+            <li v-for="note in assets.upload?.notes ?? []" :key="note">{{ note }}</li>
+          </ul>
+        </div>
+
         <p v-if="assets.page?.root_missing" class="alert alert--warn">
           目录还没建 —— 点「扫描并入库」会把它建出来。
         </p>
@@ -491,10 +642,29 @@ function emptyHint(): string {
         <div v-if="(assets.page?.pending.length ?? 0) > 0" class="alert alert--info">
           <p>盘上有 {{ assets.page?.pending.length }} 条还没入库 —— {{ pendingNote(props.kind) }}。</p>
           <p class="mono pending">{{ pendingText(assets.page) }}</p>
-          <AppButton size="sm" :disabled="assets.busy" @click="onScan">
-            {{ assets.dryRun ? "扫一遍（不写库）" : "把这一类入库" }}
-          </AppButton>
+          <div class="row-actions">
+            <AppButton size="sm" :disabled="assets.busy" @click="onScan">
+              {{ assets.dryRun ? "扫一遍（不写库）" : "把这一类入库" }}
+            </AppButton>
+            <!-- 孤儿 = 盘上认得出、库里没有的那些。**它们以前删不掉**：`DELETE /assets/{id}`
+                 的对象是库里那一行，而孤儿没有行。所以这里给的是唯一一条出路 —— 而且
+                 只清**本身不合格**的（合格的该入库），判据在后端。 -->
+            <AppButton
+              size="sm"
+              :variant="confirmPrune ? 'danger' : 'ghost'"
+              :disabled="assets.pruneBusy"
+              @click="onPrune"
+            >
+              {{ pruneLabel() }}
+            </AppButton>
+            <AppButton v-if="confirmPrune" size="sm" :disabled="assets.pruneBusy" @click="onCancelPrune">
+              取消
+            </AppButton>
+          </div>
         </div>
+
+        <!-- 回执画在**外面**：清完 pending 就空了，那个块自己会消失，回执跟着一起没影。 -->
+        <p v-if="pruneNote()" class="alert alert--info">{{ pruneNote() }}</p>
 
         <p v-if="(assets.page?.strays.length ?? 0) > 0" class="alert alert--warn">
           目录里有 {{ assets.page?.strays.length }} 个文件没被认出来（命名不合规，<strong>没有</strong>入库）：
@@ -603,6 +773,16 @@ function emptyHint(): string {
                 </td>
                 <td>
                   <div class="row-actions">
+                  <!-- 「段落」只在音色上出现：跑酷 / BGM 是**一个文件**，没有"由哪几段拼的"
+                       这回事。给它画一个永远展开不出东西的按钮，比不画更糟。 -->
+                  <AppButton
+                    v-if="item.kind === 'voice'"
+                    size="sm"
+                    :disabled="assets.segmentsBusy && assets.segmentsId === item.id"
+                    @click="onSegments(item)"
+                  >
+                    {{ assets.segmentsId === item.id ? "收起" : "段落" }}
+                  </AppButton>
                   <AppButton size="sm" :disabled="assets.pendingId === item.id" @click="onEdit(item)">
                     {{ assets.editingId === item.id ? "收起" : "改" }}
                   </AppButton>
@@ -628,6 +808,148 @@ function emptyHint(): string {
                   >
                     删除
                   </AppButton>
+                  </div>
+                </td>
+              </tr>
+
+              <!-- 音色的逐段表（裁定 381）：段号 / 文件 / 时长 / 采样率 / 峰值 / **同一位置
+                   的那行文本** / 那一段自己的问题 / 删。位置即对应 —— 所以「第 2 行文本」配的就是
+                   「第 2 段音频」，删掉一段之后服务端会把后面的重编号，回执里的 renamed 会说。 -->
+              <tr
+                v-if="item.kind === 'voice' && assets.segmentsId === item.id"
+                class="segments-row"
+              >
+                <td :colspan="isBroll ? 8 : 7">
+                  <div class="segments">
+                    <div class="segments__head">
+                      <StatusDot :tone="segmentsTone(item.id)" :label="segmentsSummary(item.id)" />
+                      <span class="muted">
+                        合成时这几段会**按顺序拼成一段**一起喂给引擎 —— 越多越像，但每一段都要与
+                        下面那行文字逐字对得上。
+                      </span>
+                      <AppButton
+                        size="sm"
+                        :disabled="assets.segmentsBusy"
+                        @click="assets.loadSegments(item.id)"
+                      >
+                        重新读取
+                      </AppButton>
+                    </div>
+
+                    <p v-if="!assets.segmentsFor(item.id)" class="muted">读取中…</p>
+
+                    <template v-else>
+                      <p
+                        v-if="assets.segmentsFor(item.id)?.ref_count !== assets.segmentsFor(item.id)?.text_lines"
+                        class="alert alert--warn"
+                      >
+                        参考音 {{ assets.segmentsFor(item.id)?.ref_count }} 段，而 ref.txt 有
+                        {{ assets.segmentsFor(item.id)?.text_lines }} 行 ——
+                        <strong>两者对不上</strong>。文本与音频必须逐段一一对应（第 N 行 ↔ 第 N 段），
+                        对不上的那几段克隆质量会打折。
+                      </p>
+
+                      <p
+                        v-if="assets.segmentsFor(item.id)?.in_library === false"
+                        class="alert alert--info"
+                      >
+                        盘上有这个目录，但它<strong>还没入库</strong> —— 点上面的「把这一类入库」登记它。
+                      </p>
+
+                      <table class="table table--inner">
+                        <thead>
+                          <tr>
+                            <th>段</th>
+                            <th>文件</th>
+                            <th>时长</th>
+                            <th>采样率</th>
+                            <th>峰值</th>
+                            <th>对应文本（ref.txt 同一行）</th>
+                            <th />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="row in assets.segmentsFor(item.id)?.segments ?? []" :key="row.name">
+                            <td class="mono">第 {{ row.index }} 段</td>
+                            <td class="mono">{{ row.name }}</td>
+                            <td class="mono">{{ formatDuration(row.duration_ms) }}</td>
+                            <td class="mono muted">
+                              {{ row.sample_rate === null ? "—" : `${row.sample_rate} Hz` }}
+                            </td>
+                            <td class="mono muted">
+                              {{ row.peak_db === null ? "—" : `${row.peak_db.toFixed(1)} dBFS` }}
+                            </td>
+                            <td>
+                              <span v-if="row.text !== null">{{ row.text }}</span>
+                              <span v-else class="bad">没有对应文本（这一段克隆时会没有参考文本）</span>
+                              <span v-if="row.problems.length > 0" class="bad">
+                                {{ row.problems.map((p) => p.message).join("；") }}
+                              </span>
+                            </td>
+                            <td>
+                              <div class="row-actions">
+                                <template v-if="confirmSegment === row.name">
+                                  <AppButton
+                                    size="sm"
+                                    variant="danger"
+                                    :loading="assets.segmentPending === row.name"
+                                    @click="onRemoveSegment(item.id, row.name)"
+                                  >
+                                    确认删这一段
+                                  </AppButton>
+                                  <AppButton size="sm" @click="confirmSegment = null">取消</AppButton>
+                                  <span class="muted row-actions__note">
+                                    从盘上删掉 {{ row.name }}，后面的段会<strong>重编号</strong>
+                                    （ref.txt 同一行也会一起删）
+                                  </span>
+                                </template>
+                                <AppButton
+                                  v-else
+                                  size="sm"
+                                  :disabled="(assets.segmentsFor(item.id)?.segments.length ?? 0) <= 1"
+                                  :title="
+                                    (assets.segmentsFor(item.id)?.segments.length ?? 0) <= 1
+                                      ? '这是最后一段 —— 删了音色就念不出来了（整条不要请用「删除」）'
+                                      : '删掉这一段'
+                                  "
+                                  @click="confirmSegment = row.name"
+                                >
+                                  删
+                                </AppButton>
+                              </div>
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+
+                      <!-- 删段的回执：**重编号那本账要显示出来** —— 用户手上的文件名变了，
+                           而静默改名是这一屏最不能有的一种行为。 -->
+                      <div v-if="assets.segmentResult" class="alert alert--info">
+                        <p>
+                          已删掉 <span class="mono">{{ assets.segmentResult.removed }}</span>
+                          <span v-if="assets.segmentResult.removed_text">
+                            （它那一行文本是「{{ assets.segmentResult.removed_text }}」，也一起删了）
+                          </span>
+                          <span v-else>（它本来就没有对应文本）</span>
+                        </p>
+                        <p v-if="assets.segmentResult.renamed.length > 0" class="mono">
+                          重编号：
+                          {{
+                            assets.segmentResult.renamed
+                              .map((entry) => `${entry.from} ⇒ ${entry.to}`)
+                              .join("、")
+                          }}
+                        </p>
+                        <p v-if="!assets.segmentResult.text_rewritten" class="muted">
+                          ref.txt 这次**没动** —— 见下面那几句说明。
+                        </p>
+                        <ul v-if="assets.segmentResult.notes.length > 0" class="blocked">
+                          <li v-for="note in assets.segmentResult.notes" :key="note">
+                            {{ note }}
+                          </li>
+                        </ul>
+                      </div>
+                    </template>
                   </div>
                 </td>
               </tr>
@@ -973,6 +1295,34 @@ function emptyHint(): string {
   padding: var(--space-1) var(--space-2);
   font-family: inherit;
   resize: vertical;
+}
+
+/* 音色的逐段表（裁定 381）：与编辑器同一种"一行摊开"的结构，所以背景取同一个底色。 */
+.segments-row > td {
+  background: var(--bg-base);
+}
+
+.segments {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}
+
+.segments__head {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* 嵌在逐段表里的那张表：它比外层矮一档，别让两个表头看起来是同一个层级。 */
+.table--inner {
+  margin-top: var(--space-1);
+}
+
+.table--inner th {
+  font-size: var(--text-xs);
 }
 
 /* 编辑器：一行摊开这一类的全部可改字段（字段清单来自 store，不手写三份模板）。 */

@@ -86,6 +86,7 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Rig:
         *,
         fallback_profile: object = None,
         fallback_output: Path | None = None,
+        replan: object = None,
         on_progress: object = None,
     ) -> Delivery:
         rig.delivered.append(request)

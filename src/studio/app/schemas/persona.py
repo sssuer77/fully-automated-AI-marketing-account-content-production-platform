@@ -92,6 +92,7 @@ class PersonaConfigModel(_Response):
     audience: str
     catchphrases: list[str]
     forbidden: list[str]
+    speaker_names: list[str]
     style_hint: str
     target_chars_min: int
     target_chars_max: int
@@ -150,6 +151,7 @@ class PersonaLimitsModel(_Response):
     audience: BoundsModel
     catchphrases: BoundsModel
     forbidden: BoundsModel
+    speaker_names: BoundsModel
     target_chars_min: BoundsModel
     target_chars_max: BoundsModel
     max_duration_ms: BoundsModel
@@ -189,6 +191,7 @@ class PersonaUpdateRequest(_Body):
     audience: str | None = None
     catchphrases: list[str] | None = None
     forbidden: list[str] | None = None
+    speaker_names: list[str] | None = None
     style_hint: str | None = None
     target_chars_min: int | None = None
     target_chars_max: int | None = None

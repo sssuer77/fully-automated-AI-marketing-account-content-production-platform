@@ -9,9 +9,9 @@ M3 门禁里有一句「换稿不重剪」：**同素材 + 同水印，换稿件
 
 什么进哈希、什么不进
 --------------------
-**进**：编码参数、总时长、画面来源（底片路径或"纯黑"）、配音、BGM、水印及其位置、字幕
-ASS、混音参数，以及上述文件的 ``sha256``（路径没变而内容换了是常事 —— 重录一遍配音、
-换一条同名素材，光看路径是看不出来的）。
+**进**：编码参数、总时长、画面来源（底片路径或"纯黑"）、配音、BGM、水印及其位置、
+**人物贴图及其位置**、字幕 ASS、混音参数，以及上述文件的 ``sha256``（路径没变而内容换了
+是常事 —— 重录一遍配音、换一条同名素材，光看路径是看不出来的）。
 
 **不进**：输出路径与文件名（带时间戳，每次都不同）、``-threads``（只影响编码快慢，不影响
 画面）、以及任何时间戳。
@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from studio.render.composite import CompositeRequest, bg_fill
+from studio.render.sticker import StickerPlan
 
 __all__ = [
     "HASH_LENGTH",
@@ -78,7 +79,26 @@ def input_digests(req: CompositeRequest) -> dict[str, str]:
         digests["subtitle"] = file_digest(req.subtitle)
     if req.watermark is not None and req.watermark.placement is not None:
         digests["watermark"] = file_digest(req.watermark.spec.image_path)
+    for plan in _applied_stickers(req):
+        # 键带**槽位名**而不是序号：人拿两份 manifest 对不上时，看到
+        # ``sticker:hero`` 比 ``sticker_0`` 更容易明白是换哪一层图导致的重渲。
+        digests[f"sticker:{plan.spec.name}"] = file_digest(plan.spec.image_path)
+        # 讲话图也是**画面的一部分**（讲话那几秒画的就是它）⇒ 它的内容必须进指纹。
+        # 漏掉它的表现与陷阱 220/221 同族：换了讲话图、哈希没变、盘上那支旧片子
+        # 被原样复用，而每一步日志都写着成功。
+        if plan.swaps and plan.spec.speaking_path is not None:
+            digests[f"sticker_speaking:{plan.spec.name}"] = file_digest(plan.spec.speaking_path)
     return digests
+
+
+def _applied_stickers(req: CompositeRequest) -> tuple[StickerPlan, ...]:
+    """真的贴上去的那几层（与 ``composite._stickers_of`` 同一条判据）。
+
+    这里**再写一遍**那个 ``plan.applied`` 过滤，而不是从 ``composite`` 里 import 一个
+    私有函数：两边共用的是 ``StickerPlan.applied`` 这个**公开属性**，过滤本身只有一行。
+    引入跨模块的私有依赖，只会让"合成器改了内部结构"变成"指纹算错"这种极难查的故障。
+    """
+    return tuple(plan for plan in req.stickers if plan.applied)
 
 
 def canonical_plan(req: CompositeRequest) -> dict[str, Any]:
@@ -111,6 +131,28 @@ def canonical_plan(req: CompositeRequest) -> dict[str, Any]:
         }
     else:
         plan["watermark"] = None
+    # 贴图进哈希的是**整份计划**（槽位名 / 位置 / 尺寸 / 透明度）：多贴一层、挪一个
+    # 像素、换一张图，画面就变了。``asset`` 那部分元数据（如"这张图多大"）不进 ——
+    # 它变了但摆放没变时，像素其实没变，不该让缓存失效。
+    plan["stickers"] = [
+        {
+            "name": item.spec.name,
+            "image": item.spec.image_path.as_posix(),
+            "opacity": item.spec.opacity,
+            "placement": item.placement.to_dict() if item.placement is not None else None,
+            # 换图那一份也要进哈希：换了讲话图、或者讲话**区间**变了（重念了某几句
+            # ⇒ 时间轴变了），画面就跟着变。只哈希普通图会把这两种改动全放过去。
+            "speaking": (
+                None
+                if not item.swaps or item.spec.speaking_path is None
+                else {
+                    "image": item.spec.speaking_path.as_posix(),
+                    "intervals": [list(span) for span in item.speaking_intervals],
+                }
+            ),
+        }
+        for item in req.stickers
+    ]
     return plan
 
 

@@ -433,15 +433,21 @@ class TestBgmAndVoice:
         assert row.text_path == (root / "ref.txt").resolve().as_posix()
         assert row.proof_path == (root / "profile.json").resolve().as_posix()
 
-    def test_voice_with_one_segment_is_rejected(
+    def test_voice_with_one_segment_is_usable_with_a_warning(
         self, service: AssetService, paths: StudioPaths, tools: _Tools
     ) -> None:
+        """一段**能用**（裁定 377），只提醒"多给几段更稳"。
+
+        门槛拦下来的代价很具体：手边只有一句干净台词的人会**把同一个文件复制一份**
+        去凑数（真机库里那条 ``sunxiaochuan`` 的两段 sha256 完全相同，就是这么来的）。
+        """
         root = paths.voice_src_dir / "bigbear"
         _touch(root / "ref_01.wav")
         tools.info["ref_01.wav"] = _audio("ref_01.wav", duration_ms=12_000)
         item = service.ingest().section(AssetKind.VOICE).assets[0]
-        assert item.usable is False
-        assert "too_few_refs" in [problem.code for problem in item.check.problems]
+        assert item.usable is True
+        assert [problem.code for problem in item.check.problems] == []
+        assert "single_ref" in [problem.code for problem in item.check.warnings]
 
 
 class TestWritesAndAudit:
@@ -805,3 +811,101 @@ class TestDisabledAssets:
         assert "配音一条都用不了" in section.shortfall
         assert "配音无法开始" in section.shortfall
         assert "出片" not in section.shortfall
+
+
+class TestPruneOrphans:
+    """孤儿清理（裁定 384）：盘上认得出、库里没有、**而且本身就不合格**的那些。
+
+    这一组守的是**一条判据**：合格的孤儿不该删，该入库。所以正例（空目录被清）与
+    反例（完好但没入库的底片一个字节都不动）必须成对出现 —— 只写正例的话，一个
+    "把 pending 全删掉"的实现照样全绿，而它在真机上会无声无息地吃掉底片。
+    """
+
+    def test_unusable_voice_directory_is_removed(self, service: AssetService, paths: StudioPaths) -> None:
+        """空目录（没有 ``ref_01.wav``）⇒ 清掉，且**盘上真的没了**。"""
+        empty = paths.voice_src_dir / "bigbear"
+        empty.mkdir(parents=True)
+
+        report = service.prune_orphans(AssetKind.VOICE)
+
+        assert [item.id for item in report.removed] == ["bigbear"]
+        assert report.removed[0].problems
+        assert not empty.exists()
+
+    def test_usable_orphan_is_kept_because_it_should_be_ingested(
+        self, service: AssetService, paths: StudioPaths, tools: _Tools
+    ) -> None:
+        """★ 完好、只是还没入库的底片**一个字节都不动**。
+
+        ``check_broll`` 会把「授权没填」算进 ``problems``，而孤儿之所以是孤儿，正是
+        因为它还没有库里那一行 —— 那一行才是存授权的地方。拿 ``check.ok`` 当判据，
+        这条用例就会红，而真机上那条底片会**无声无息地消失**。
+        """
+        target = _clip(paths)
+        tools.info[target.name] = _video(target.name)
+
+        report = service.prune_orphans(AssetKind.BROLL)
+
+        assert report.removed == ()
+        assert [item.id for item in report.kept] == ["parkour_001"]
+        assert "该入库" in report.kept[0].reason
+        assert target.exists()
+
+    def test_dry_run_reports_without_touching_anything(
+        self, service: AssetService, paths: StudioPaths
+    ) -> None:
+        empty = paths.voice_src_dir / "bigbear"
+        empty.mkdir(parents=True)
+
+        report = service.prune_orphans(AssetKind.VOICE, dry_run=True)
+
+        assert report.dry_run is True
+        assert [item.id for item in report.removed] == ["bigbear"]
+        assert empty.exists()
+
+    def test_ingested_assets_are_not_orphans(
+        self, service: AssetService, paths: StudioPaths, tools: _Tools
+    ) -> None:
+        """库里有的不是孤儿：删它走 ``DELETE``，不归这里管。"""
+        target = _clip(paths)
+        tools.info[target.name] = _video(target.name)
+        service.ingest(license="cc0")
+
+        report = service.prune_orphans(AssetKind.BROLL)
+
+        assert report.removed == ()
+        assert report.kept == ()
+        assert target.exists()
+
+    def test_unreadable_clip_is_pruned(self, service: AssetService, paths: StudioPaths) -> None:
+        """探测不了（假探针抛 ``MEDIA_UNDECODABLE``）⇒ 不合格 ⇒ 清掉。"""
+        target = _clip(paths, "parkour_999.mp4")
+
+        report = service.prune_orphans(AssetKind.BROLL)
+
+        assert [item.id for item in report.removed] == ["parkour_999"]
+        assert not target.exists()
+
+    def test_strays_are_reported_and_never_touched(self, service: AssetService, paths: StudioPaths) -> None:
+        """名字不合规的可能是用户自己的原始素材 —— "认不出"不等于"没用"。"""
+        stray = _touch(paths.voice_src_dir / "跑酷素材.wav")
+
+        report = service.prune_orphans(AssetKind.VOICE)
+
+        assert report.removed == ()
+        assert report.strays == (str(stray),)
+        assert stray.exists()
+
+    def test_removal_is_recorded_but_a_no_op_is_not(
+        self, service: AssetService, paths: StudioPaths, connection: sqlite3.Connection
+    ) -> None:
+        """留痕只在真删了东西时写 —— 空跑留痕会把审计页淹掉。"""
+        audit = AuditRepo(connection)
+        (paths.voice_src_dir / "bigbear").mkdir(parents=True)
+
+        service.prune_orphans(AssetKind.VOICE)
+        assert any(row.action == "asset.prune" for row in audit.list_recent(limit=50))
+
+        service.prune_orphans(AssetKind.VOICE)
+        rows = [row for row in audit.list_recent(limit=50) if row.action == "asset.prune"]
+        assert len(rows) == 1

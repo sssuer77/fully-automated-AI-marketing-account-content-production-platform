@@ -40,6 +40,7 @@ from studio.agents.director import DirectorAgent
 from studio.agents.editor import EditorAgent
 from studio.agents.gateway import LlmGateway, LogSink
 from studio.agents.gateway_factory import build_gateway
+from studio.agents.outliner import OutlinerAgent
 from studio.agents.prompts import PromptLibrary
 from studio.agents.reviewer import ReviewerAgent
 from studio.agents.writer import WriterAgent
@@ -322,6 +323,10 @@ def build_draft_services(
     return DraftServices(
         scripts=ScriptService(
             connection,
+            # Outliner 也要接：不接的话「二级（视频标题 + 核心论点）」在这条**自动**
+            # 链路上永远跑不起来 —— 面板上那个 outliner 提示词就成了改不动的摆设
+            # （只有 API 那份装配接了它，而写稿走的是这条池子）。
+            outliner=OutlinerAgent(gateway, prompts),
             director=DirectorAgent(gateway, prompts),
             writer=WriterAgent(gateway, prompts),
             paths=paths,

@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from studio.core.config import OutputsConfig
+from studio.core.config import OutputsConfig, StickerConfig
 from studio.core.paths import StudioPaths
 from studio.render.composite import CompositeRequest
 from studio.render.hashing import (
@@ -24,6 +24,8 @@ from studio.render.hashing import (
 )
 from studio.render.mixdown import MixSettings
 from studio.render.profiles import resolve_profile
+from studio.render.speech import SpeakingPlan
+from studio.render.sticker import StickerPlan, plan_stickers
 from studio.render.watermark import plan_watermark
 
 from .conftest import write_png
@@ -178,3 +180,130 @@ def test_input_digests_skips_the_black_fill(outputs: OutputsConfig, tmp_path: Pa
     black = _request(outputs, tmp_path, clip=None)
     assert "clip" not in input_digests(black)
     assert "voice" in input_digests(black)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 人物贴图：换图（T6.5 追加 · 裁定 392）
+# ══════════════════════════════════════════════════════════════════════
+
+STICKER_REL = "templates/t/assets/images/stickers/hero.png"
+STICKER_SPEAKING_REL = "templates/t/assets/images/stickers/hero_speaking.png"
+
+
+def _sticker_plans(
+    outputs_home: StudioPaths,
+    speaking: SpeakingPlan | None,
+    *,
+    speaker: str = "bigbear",
+) -> tuple[StickerPlan, ...]:
+    """一层真的贴得上的贴图（``speaking`` 给了就再配一张讲话图）。"""
+    home = outputs_home.home
+    write_png(home / STICKER_REL, width=600, height=1200)
+    if speaking is not None:
+        write_png(home / STICKER_SPEAKING_REL, width=600, height=1200)
+    return plan_stickers(
+        {
+            "hero": StickerConfig(
+                enabled=True,
+                path=STICKER_REL,
+                speaker=speaker if speaking is not None else "",
+                speaking_path=STICKER_SPEAKING_REL if speaking is not None else None,
+                position="bottom_right",
+                margin_x=48,
+                margin_y=420,
+                height_ratio=0.45,
+                opacity=1.0,
+            )
+        },
+        canvas_width=1080,
+        canvas_height=1920,
+        home=home,
+        speaking=speaking,
+    )
+
+
+def _talking(spans: tuple[tuple[int, int], ...] = ((0, 1000),)) -> SpeakingPlan:
+    return SpeakingPlan(by_speaker={"bigbear": spans}, source="timeline")
+
+
+def _hash_from_disk(request: CompositeRequest) -> str:
+    """**真读盘**算一次哈希（`_DIGESTS` 那份固定指纹测不到"换了图"）。"""
+    return composite_hash(request, digests=input_digests(request))
+
+
+def test_the_speaking_image_goes_into_the_digests(
+    outputs: OutputsConfig, outputs_home: StudioPaths, tmp_path: Path
+) -> None:
+    """★ 讲话图是**画面的一部分**（讲话那几秒画的就是它）⇒ 它的内容必须进指纹。"""
+    plans = _sticker_plans(outputs_home, _talking())
+    digests = input_digests(_request(outputs, tmp_path, stickers=plans))
+    assert "sticker:hero" in digests
+    assert "sticker_speaking:hero" in digests
+
+
+def test_a_layer_that_does_not_swap_does_not_hash_the_speaking_image(
+    outputs: OutputsConfig, outputs_home: StudioPaths, tmp_path: Path
+) -> None:
+    """没换图 ⇒ 讲话图不进指纹。"""
+    plans = _sticker_plans(outputs_home, None)
+    digests = input_digests(_request(outputs, tmp_path, stickers=plans))
+    assert "sticker:hero" in digests
+    assert "sticker_speaking:hero" not in digests
+
+
+def test_a_changed_speaking_image_changes_the_hash(
+    outputs: OutputsConfig, outputs_home: StudioPaths, tmp_path: Path
+) -> None:
+    """★ 换了讲话图（内容变了）⇒ 哈希必须变。
+
+    漏掉这一条的表现与陷阱 220/221 同族：换了图、哈希没变、盘上那支**旧片子**被原样
+    复用，而每一步日志都写着成功。
+    """
+    plans = _sticker_plans(outputs_home, _talking())
+    before = _hash_from_disk(_request(outputs, tmp_path, stickers=plans))
+    write_png(outputs_home.home / STICKER_SPEAKING_REL, width=600, height=1100)
+    assert _hash_from_disk(_request(outputs, tmp_path, stickers=plans)) != before
+
+
+def test_different_speaking_intervals_change_the_hash(
+    outputs: OutputsConfig, outputs_home: StudioPaths, tmp_path: Path
+) -> None:
+    """★ 重念了某几句 ⇒ 时间轴变了 ⇒ 讲话区间变了 ⇒ 画面变了 ⇒ 哈希必须变。
+
+    图一个字节都没动，所以这一条只能靠 ``canonical_plan`` 里的区间兜住。
+    """
+    early = _sticker_plans(outputs_home, _talking(((0, 1000),)))
+    late = _sticker_plans(outputs_home, _talking(((5000, 6000),)))
+    assert _hash_from_disk(_request(outputs, tmp_path, stickers=early)) != _hash_from_disk(
+        _request(outputs, tmp_path, stickers=late)
+    )
+
+
+def test_the_same_window_gives_the_same_hash(
+    outputs: OutputsConfig, outputs_home: StudioPaths, tmp_path: Path
+) -> None:
+    """同一份输入算两次必须一样 —— 否则缓存永远不命中，而这件事**不会报错**。"""
+    plans = _sticker_plans(outputs_home, _talking(((0, 1000), (2000, 3000))))
+    assert _hash_from_disk(_request(outputs, tmp_path, stickers=plans)) == _hash_from_disk(
+        _request(outputs, tmp_path, stickers=plans)
+    )
+
+
+def test_the_plan_records_the_window_and_the_image(
+    outputs: OutputsConfig, outputs_home: StudioPaths, tmp_path: Path
+) -> None:
+    """区间与讲话图路径都要在**可读**的那份计划里（人拿两份 manifest 要对得出来）。"""
+    plans = _sticker_plans(outputs_home, _talking(((0, 1000), (2000, 3000))))
+    payload = canonical_plan(_request(outputs, tmp_path, stickers=plans))
+    assert payload["stickers"][0]["speaking"] == {
+        "image": (outputs_home.home / STICKER_SPEAKING_REL).as_posix(),
+        "intervals": [[0, 1000], [2000, 3000]],
+    }
+
+
+def test_a_layer_that_does_not_swap_has_no_window_in_the_plan(
+    outputs: OutputsConfig, outputs_home: StudioPaths, tmp_path: Path
+) -> None:
+    plans = _sticker_plans(outputs_home, None)
+    payload = canonical_plan(_request(outputs, tmp_path, stickers=plans))
+    assert payload["stickers"][0]["speaking"] is None

@@ -292,6 +292,33 @@ def dedup_topic(
 > `pending` 的作业 —— 比"没有作业"更难排查。`run_planner` / `run_ideator` 已是**批次键控**（`batch_id`），
 > 届时接线是纯增量。原"每批次建一条 `tasks` 行"作废。
 
+**落地口径 6：画面不参与选题**（2026-09-23 · 用户报障）
+
+> 「选题候选里一直冒『熊大用跑酷台阶算给你看』，而**跑酷只是对话背景**，与文稿无关。」
+
+画面是**通用底片**：渲染时由 `render.assets.pick_parkour_clip()` 从素材库随机挑一条，跟选题
+没关系，也**不会**因为标题里写了什么就换成对应的画面。所以一条写着"用跑酷台阶算给你看"的
+选题，等于对观众承诺一个这条片子**未必**会有的画面 —— 与陷阱 #205「一行 = 一条任务」同族：
+两边都自洽、**没有任何地方报错**。
+
+| 位置 | 规定 |
+| --- | --- |
+| `prompts/ideator/system.md` | `title` / `angle` / `reason` **不得出现任何画面或素材字眼**；`exec_feasible` 只讲"3 分钟内能不能讲完"，**不点名素材** |
+| `prompts/writer/user.jinja` | 大纲里每段的「画面」那一行**标着"给渲染看的"** —— 口播稿里一句画面词都不写 |
+| `prompts/cover/system.md` | 封面字讲事、不讲画面 |
+| `domain/topics.visual_leak_words()` | 判据落点：扫 `title + angle` 里的画面词，命中 ⇒ 发 `warn`（**不丢、不改**） |
+
+**为什么 warn 而不是 drop**：与"被吐槽的方向降权不删"（§04.1.2 规则 3）同一条 —— 画面词常常只是
+一个比喻用歪了，题材本身可能没问题；拦掉会连带丢掉一条能用的选题，而人只要看一眼日志就知道
+该改哪个词。**判据**：凡是"改一个词就能救回来"的问题，都不该用丢弃来处置。
+
+**为什么是判据而不是提示词里的一句劝告**：提示词能拦住绝大多数，但 LLM 是概率的 —— 真机第一批
+（方向是"张雪峰过劳猝死"，库里一条跑酷选题都没有）就产出了 5/5 带跑酷的标题，说明**根因在提示词**
+（那一版写着"跑酷素材循环"），而**它能复发**。所以两头都要有：提示词讲清、机器扫一遍。
+
+`tests/contract/test_visual_leak_prompts.py` 钉住三件事：① 画面词只准出现在**禁令**那一段；
+② `跑酷素材循环` 那句不许回来；③ 扫描器认得出串味、且**不误报**（`MCU` / `地图 App`）。
+
 ### 4.1.4 Director（内容导演）· 原文 §2.2③
 
 ```python
@@ -307,7 +334,7 @@ class ScriptSegment(BaseModel):
 class DirectorOutput(BaseModel):
     hook_3s: str = Field(max_length=80)  # 黄金 3 秒钩子
     segments: list[ScriptSegment] = Field(min_length=3, max_length=5)  # 正文 3–5 段
-    cta: str = Field(max_length=80)  # 结尾 CTA
+    cta: str = Field(max_length=80)  # 结尾收束（把观点钉死；**不得向观众提问**）
     est_duration_ms: int = Field(ge=60_000, le=180_000)  # 时长预估（≤3 分钟）
 ```
 
@@ -331,12 +358,17 @@ class DirectorInput(BaseModel):
     angle: str | None = Field(default=None, max_length=120)  # 非空则优先于 topic.angle
 ```
 
+**输入契约修正（T5.12 增补）**：Director / Writer 的输入各多两个字段 ——
+`outline_title` / `core_argument`（二级产物，T5.13 起）与 `facts`（今日新闻那条链路的
+**事件总结**，见 §4.5.18 口径 5；空 ⇒ 渲染成 `FACTS_UNSET` 而不是空行，否则模型会以为
+"上游给了空事实"）。Outliner 的输入（`OutlineInput`）同样带 `facts`。
+
 **规则闸与降级（T1.10 落地）**
 
 | 环节 | 实现 | 依据 |
 | --- | --- | --- |
 | 结构约束 | pydantic + `schemas/director_result.schema.json` | 段数 / 单段字数 / 时长区间的**唯一保证** |
-| 语义校验 | `domain.script.check_outline()` → `OutlineReport` | `seq` 从 1 连续、`Σ est_chars ∈ [600, 800]`、钩子与 CTA 非空 |
+| 语义校验 | `domain.script.check_outline()` → `OutlineReport` | `seq` 从 1 连续、`Σ est_chars ∈ [600, 800]`、钩子与 CTA 非空、**CTA 不得向观众提问**（`ending_asks_audience`，裁定 400） |
 | 不合规 | 带 `retry_hint` 重试 ≤2 轮（`OUTLINE_RETRIES = 2`） | 与 §4.1.2「丢弃并重试 ≤2」同口径 |
 | 仍不合规 | **降级返回**：有结构就用，问题写进 `warnings`（`outline:<problem>`） | 字数最终由 Writer 决定，这里只是**预分配**；一次字数差 30 字的大纲比"0 段 + 一条错误"有用（DoD 6：可降级、无静默失败） |
 
@@ -378,7 +410,9 @@ class WriterOutput(BaseModel):
 | 口语化、句子短、适合朗读 | 平均句长 ≤ 30 字；`sentences[].text ≤ 28 字` | 超长**强制切分**（不重写） |
 | 每 300 字一个段落 | 段落数 ≈ `ceil(字数/300)` | 重排段落 |
 | 绝不碰禁区 | `persona.forbidden` + `banned_words.yaml` 全量扫描 | 命中即 `block` 并重写 |
-| 双人设分工 | `speaker` 单人占比 ≤ 70% | `warn` + 建议重写 |
+| 双人设分工 | `speaker` 单人占比 ≤ 70%（按**口播字数**加权） | `warn` + 建议重写 |
+| **立一个观点**（熊大立论 / 熊二提出假设） | **没有机器判据** —— "有没有观点"不是规则能判的；靠提示词纪律 + `persona.role_desc` 的分工 | 交给审稿通道（`NO_ARGUMENT` / `FILLER_TALK`），见 §4.1.6 |
+| 结尾不得向观众提问 | `ending_asks_audience(cta) is None` | 计入 `problems`（`ENDING_QUESTION_PROBLEM`）⇒ 重写 |
 
 > **句子落库语义**：`sentences` 逐条写 `script_sentences`（`text_raw` 存 LLM 原文，`text` 存生效文本）。**同一事务内**写入并回填 `scripts.body_md`，避免"有稿无句"的半成品。
 
@@ -405,12 +439,13 @@ class ScriptRules(BaseModel):
 | 口癖 | 服务端复核命中 ≥ `catchphrase_min_hits`（**不信模型自报**） | 重写；自报但复核不到 ⇒ `catchphrase_self_report:<词>` 留痕 |
 | 句长 | `sentences[].text ≤ 28 字` | **强制切分**（不重写：切分比重写省 token） |
 | 单人占比 | 最高说话人 ≤ 70%（按**口播字数**加权，不是按句数） | `warn`（`speaker_ratio:<人>=0.xx` / `single_speaker:<人>`） |
+| 结尾提问 | `ending_asks_audience(cta) is None`（按 `split_sentences` 切句，句中出现 `？` / `?` 即命中） | **计入 `problems`** ⇒ 触发重写（与字数同档）。**它不动字数**，所以只能靠这条判据拦（裁定 400） |
 
 > **`SentenceSpec.text` 的 200 vs 28（裁定 78）**：契约层留 `max_length=200`（模型偶尔写长句是常态），**28 由服务端 `enforce_sentence_limit()` 强制**。若在 JSON Schema 里卡 28，"超长句"就变成网关的**修复重试**（另一套预算、另一种失败），而规格书要求的是"切分、不重写"——降级路径不能长在 schema 上。
 >
 > **`est_duration_ms` 落库值一律 `estimate_duration_ms(word_count)`（≈5 字/秒，裁定 84）**：模型自报值只留在 `WriterOutput` 里，不进 `scripts` 表 —— 否则"时长"会变成一个**没法复算**的数。
 >
-> **重写用尽后的取舍（裁定 86）**：按 `_distance`（到字数区间边界的距离）挑**最接近**的一版；距离并列时保留**先出现**的那一版 —— 并列规则必须可解释、可复盘。
+> **重写用尽后的取舍（裁定 86 · 2026-09-23 修正）**：`_distance` 返回 `(还剩几项不合格, 到字数区间边界的距离)`，**元组按字典序比**。先比"还剩几项"是必须的：只比字数时，"把别的问题修好了、字数没动"的那一版与旧版距离**相同** ⇒ 会被"并列保留先出现"丢掉（"结尾不得提问"正好是这类：改与不改都不动字数，陷阱 238）。同档同距才保留先出现的。
 ### 4.1.6 Reviewer（双通道评分）与 Editor（改稿）· 原文 §2.2⑤⑥
 
 ```python
@@ -425,7 +460,7 @@ class RuleChannelDetail(BaseModel):
     length: ChannelItem  # 稿件长度（600–800 字）
     banned_hits: list[BannedHit]  # 禁区词命中（命中即 0 分并 block）
     opening_ok: bool  # 开场完整性（钩子存在且 ≤80 字）
-    ending_ok: bool  # 结尾完整性（CTA 存在）
+    ending_ok: bool  # 结尾完整性（CTA 存在，且**不向观众提问**）
     paragraph_dup_ratio: float  # 段落重复度（>0.3 扣分）
     chars: int
     est_duration_ms: int
@@ -439,7 +474,7 @@ class LlmChannelDetail(BaseModel):
     positioning_fit: ChannelItem  # 定位契合
     oral_style: ChannelItem  # 口语化
     emotion_rhythm: ChannelItem  # 情绪节奏
-    ending_cta: ChannelItem  # 结尾引导
+    ending_cta: ChannelItem  # 结尾收束（把观点钉死；向观众提问 ⇒ 直接 0–3 分 + block）
     forbidden: ChannelItem  # 禁区
 
 
@@ -1085,10 +1120,32 @@ def render_hash(
 | 样式 | `Main`（正文）、`SpeakerA`/`SpeakerB`（按说话人换强调色，按**首次出现顺序**分配）、`Title`（标题卡，二期） |
 | 断行 | `max_chars_per_line`（默认 13 字）+ `max_lines`（2 行）；优先标点处断行（标点**留在上一行**）；**禁止断在数字/英文单词中间**。★ **容量会放宽**：无标点长句按 13 字排会超过 `max_lines` ⇒ 容量抬到 `ceil(总字数 / max_lines)`，宁可某行多几个字，也不丢台词、不让画面溢出 |
 | 卡拉OK | `\k` 按**字均分**落在句时长内（中文等宽）；`word_pop` 模式用 `\t` 做缩放动画（**二期**，一期不实现） |
-| 安全区 | `MarginV = max(subtitle.margin_bottom, safe_area.bottom)`；`MarginL/R = safe_area.left/right`（`safe_area` 在 `config/outputs.yaml → subtitle.safe_area`） |
+| 安全区 | `MarginV = config.subtitle.margin_v` = `max(margin_bottom, safe_area.bottom)`（**唯一口径**，T3.5 追加 · 裁定 409）；`MarginL/R = safe_area.left/right`（`safe_area` 在 `config/outputs.yaml → subtitle.safe_area`） |
 | 字体 | **优先** `templates/<模板>/assets/fonts/`，找不到则退到**系统字体目录**（`%WINDIR%\Fonts`）并记一条 `note` 如实说明"这次不算合规"。★ 两边都没有 ⇒ 抛 `FONT_MISSING`，由 `plan_subtitle` 转成**跳过字幕层** —— 与水印同一条口径：装饰品不该成为整条链路的单点阻塞。原方案是"缺失直接报错拒绝出片"，真机上一试就发现它把"没有字体"升级成了"没有片子" |
 | 编码 | UTF-8 **不带 BOM**（BOM 会让某些 libass 判定"这不是 ASS 文件"而静默不显示）；行尾 LF（统一便于 golden 比对） |
 | 落盘 | `data/work/<task_id>/final/subtitle.ass`（永久保留，可二次剪辑复用）。原方案写的是 `data/media/<date>/<task_id>/final/`，那是**二期**三层模板的目录；一期没有 `data/media/`，成片在 `data/output/videos/`、可复用资产在 `data/work/` |
+
+**字幕位置怎么改（T3.5 追加 · 裁定 409）**
+
+`config/outputs.yaml → subtitle` 里决定位置的是**两个**数，而它们管的是两件事：
+
+| 面板上的框 | 字段 | 含义 |
+| --- | --- | --- |
+| 距底 | `subtitle.margin_bottom` | 我想把字幕放在离底多少像素 |
+| 底部安全区 | `subtitle.safe_area.bottom` | 平台交互区有多高（抖音点赞/评论条 ~420px） |
+
+真正写进 ASS 的是两者的 **max**（`SubtitleConfig.margin_v`），而它**跟着响应一起下发**
+（`GET /api/v1/outputs → subtitle.margin_v`）—— 于是「面板说 300、成片渲 420」这件事不再可能
+悄悄发生：面板在两者不一致时明说「⚠️ 你填的 300 px 被底部安全区（420 px）抬上来了」。
+
+⚠️ 这两个数**此前是只读的**，理由正是「写了未必生效」。把「会踩的坑」换成「看得见的读数」之后，
+只读就不再是保护、只剩障碍 —— 而它挡住的真实需求（往上挪一点 / 往下挪一点）一直都在。
+**往上挪**：调大「距底」。**往下挪**：**两个一起调小**（否则安全区那个大数说了算）。
+
+**扁平名与嵌套路径**：面板上一个数一个框（`safe_area_bottom`），文件里是
+`subtitle.safe_area.bottom` —— 对照表只有一处（`core/outputs_store.SUBTITLE_NESTED`），预览与写盘
+都读它。422 的 `field_errors` 也必须落回**扁平名**（`outputs_store.field_key()`）：照抄文件路径
+会让红字落在「没有那个框」的地方，用户只看到「保存失败」（陷阱 247）。
 
 **为什么默认字体是「微软雅黑」而不是「Source Han Sans SC」**
 
@@ -1381,6 +1438,59 @@ manifest），所以「manifest 在」本身就意味着那一轮跑到底了 �
 `--seed` 的重跑通常挑到另一条底片、哈希不同、照常重渲（设计如此，不是缓存失效）；真正会命中的
 是带 `seed` 的重跑 / 复现，以及队列把同一条 `render/final` 重投。
 
+#### 4.2.8.8 人物贴图（T6.5 · 已落地）
+
+> 一句话：**一张透明 PNG 蒙在画面上，可以有好几层**。与水印是**同一种东西、不同的用途** ——
+> 水印是角标（≤ 画布 1/4 宽、标识账号），贴图是主体（人物竖长、可以顶满画面）。
+
+```python
+class StickerConfig(BaseModel):          # config/outputs.yaml 的 stickers.<name>
+    enabled: bool = False                # 默认关：加一段 stickers 不该改变现有成片
+    path: Path                           # 相对 STUDIO_HOME
+    position: WatermarkPosition = "bottom_right"    # 与水印**共用**同一份枚举
+    margin_x: int = 48                   # 偶数（overlay 色度对齐）
+    margin_y: int = 420                  # 别小于 subtitle.safe_area.bottom
+    height_ratio: float = 0.45           # ★ 占画布**高**的比例，上限 1.0（顶满画面）
+    opacity: float = 1.0
+
+    def height_px_for(self, canvas_height: int) -> int:   # 口径**只此一处**
+        height = min(round(self.height_ratio * canvas_height), canvas_height)
+        return max(height - height % 2, 2)
+```
+
+| 面 | 落点 |
+| --- | --- |
+| 参数模型 | `core/config.py` 的 `StickerConfig` / `OutputsConfig.stickers: dict[str, StickerConfig]` |
+| 资产实测 | `render/png_probe.py`（与水印共用：在不在 / 多大 / 带不带透明通道） |
+| 编译期摆放 | `render/sticker.py` 的 `plan_stickers`（**每层各自判断**） |
+| 叠放 | `render/composite.py`：贴图（最下）→ 字幕 → 水印（最上） |
+| 面板 | `GET` / `POST /api/v1/outputs` 的 `stickers`（`StickerModel` / `StickerPatch`） |
+| 留痕 | `manifest.json` 的 `stickers[]` + `composite_hash` 的 `sticker:<name>` |
+
+**五条落地口径**
+
+1. **按高度定尺寸，不按宽度**。人物是竖长的：按水印那条 `width_ratio ≤ 0.25` 算，1080 宽的画布上
+   只有 270px 宽 —— 做不了主体（真机验证过）。所以贴图**没有** `width_ratio` 这个字段，
+   `height_ratio` 的上限是 1.0。宽度由素材自己的宽高比推出来，两个方向都取偶。
+2. **命名块而不是列表**。`stickers` 是 `名字 -> 参数` 的块（与 `profiles` 同构）：面板保存只逐行
+   替换**冒号右边的标量**（`core/yaml_lines.py`），它按设计改不了"多一行少一行"。用命名块 ⇒
+   加一层 = 在 YAML 里复制一段块，之后面板能编辑它的每一个字段，而注释与缩进一个字节不毁。
+   **加 / 删层只能在文件里做**；请求里出现文件里没有的层名 ⇒ 422，并把"现有的是哪些 / 该怎么加"
+   写进 `remediation`（静默忽略会让人以为"第 3 层已经建好了"，而出片时那一层并不存在）。
+3. **每层各自判断**（与水印同一条"装饰不阻塞成片"的口径，只是粒度到层）：`enabled: false` /
+   图不在盘上 / 图没有透明通道 / 放不进画布 ⇒ **只跳过这一层**，其余层与字幕照常出片。
+   `plan_stickers` 返回**全部**层的结论（含被跳过的），原因在该层的 `skipped_reason` ——
+   "第 2 层为什么没贴上"必须能回答。
+4. **声明顺序 = 叠放顺序**（先声明的在下面）；三层的关系固定是「贴图 → 字幕 → 水印」——
+   字幕是内容、水印是标识，都不该被人物盖住。
+5. **换画布必须重算**（`degrade.deliver(..., replan=...)`）：摆放里存的是**像素字面量**
+   （走 `overlay` 的常量路径，测试能直接断言 x/y 是偶数），所以 1080×1920 的计划不能拿去
+   720×1280 的保底档用 —— `overlay` 对越界**不报错**，只会静默裁掉。
+
+**与水印刻意不对称的一处**：`STICKER_FIELDS` **含 `path`**（水印的那份不含）。水印是"账号的
+标识"，换它要走一次刻意的人工动作；贴图是"这次用哪张人物"，本来就会来回换 —— 每换一次都去
+手改 YAML，等于把面板的意义削掉一半。
+
 ---
 ## 4.3 CosyVoice 适配层契约（`tts/base.py`）
 
@@ -1391,7 +1501,7 @@ class VoiceProfileSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     voice_id: Literal["bigbear", "littlebear"] | str  # ★ 原文 §3.1：bigbear / littlebear
     display_name: str  # '熊大' / '熊二'（**仅展示**，与 ID 解耦 ⇒ R2 合规）
-    ref_wavs: list[Path] = Field(min_length=2, max_length=3)  # 原文：2–3 段
+    ref_wavs: list[Path] = Field(min_length=1)  # 原文 2–3 段；裁定 379 起**不设上限**
     ref_texts: list[str]  # 每段参考音频的逐字文本（必须完全一致）
     language: Literal["zh"] = "zh"
     notes: str | None = None
@@ -1419,7 +1529,6 @@ class RefQualityReport(BaseModel):
 
 | 校验项 | 阈值 | 不通过 |
 | --- | --- | --- |
-| 段数 | 2–3 段 | **拒绝入库** |
 | 单段时长 | 2–30 秒（**裁定 369**：下限从原文的 10 秒降到 2 秒） | **拒绝入库** |
 | 无削波 | 峰值 ≤ −1.0 dBFS | **拒绝入库** |
 | 采样率 | ≥ 16 kHz | **拒绝入库** |
@@ -1427,14 +1536,29 @@ class RefQualityReport(BaseModel):
 | 单发言人 | 说话人嵌入一致性（引擎提供时）或人工标记 | `warn` |
 | 有效语音占比 | ≥ 70%（非静音） | `warn` |
 
+> **段数不设上下限**（**裁定 379**）：这里原本还有一行「2–3 段，超出拒绝入库」，而
+> 那两条都是**我们自己加的** —— 上游只挡单段 >30s（`assert speech.shape[1] / 16000 <= 30`）。
+> 合成时会把各段**拼成一段 prompt** 一起喂给引擎（`tts/server.py::build_prompt`），
+> 所以段数是"越多越稳"的建议：只给一段 ⇒ 一条 warning（`single_ref`），**不是拒绝**。
+> 上限 3 曾经让人**把同一个文件复制一份**去凑数（真机库里 `sunxiaochuan` 的两段
+> sha256 完全相同，就是这么来的）。拼起来超过 29 秒的那些段不进 prompt，响应里的
+> `dropped_refs` 如实报出来。
+
 **目录约定（原文 §3.1）**
 
 ```
-data/voice_src/bigbear/{ref_01.wav, ref_02.wav, ref_03.wav, ref.txt, profile.json}
-data/voice_src/littlebear/{ref_01.wav, ref_02.wav, ref_03.wav, ref.txt, profile.json}
+data/voice_src/bigbear/{ref_01.wav, ref_02.wav, ref_03.wav, …, ref.txt, profile.json}
+data/voice_src/littlebear/{ref_01.wav, ref_02.wav, ref_03.wav, …, ref.txt, profile.json}
     ref.txt：与 wav 一一对应的逐字文本（每行一段，顺序与文件名一致）
+    段数不设上限（裁定 379）；只有「配得上文本的段」能用（一一对应是前提）
     profile.json：来源登记（URL/录制日期/授权说明）⇒ R2 合规留档
 ```
+
+> **覆盖 = 镜像**（**裁定 381**）：上传时勾「覆盖同名」⇒ 这份目录**只保留这次写进去的段**
+> （没写到的 `ref_NN.*` 清掉；`ref.txt` / `profile.json` / 用户自己的别的文件一个不动）；
+> 不勾 ⇒ 只增不删。**段号 = 位置**：删掉中间一段，后面的段会重编号并同步 `ref.txt` 同一行
+> （行数本来就对不上时不动它，只如实说）。最后一段不许删 —— 那两个动词是「整条删除」与
+> 「覆盖重传」。
 
 ### 4.3.2 零样本复刻调用（原文 §3.2）
 
@@ -1443,7 +1567,9 @@ data/voice_src/littlebear/{ref_01.wav, ref_02.wav, ref_03.wav, ref.txt, profile.
 #   inference_zero_shot(目标文本, 参考文本, 参考wav) → 用原声音色说任意新台词
 #
 # VoiceEngine.synthesize(TTSRequest) 的实现要点：
-#   - 参考音：从已注册 VoiceProfile 取 ref_wavs（多段时按 seed 随机选一段 ⇒ 可复现）
+#   - 参考音：从已注册 VoiceProfile 取 ref_wavs，**全部段拼成一段 prompt**（§4.3.1 ·
+#     裁定 380）。原写的「多段时按 seed 随机选一段」作废：每句挑一段会让音色逐句抖，
+#     而「像不像」恰恰是稳定感。
 #   - 目标文本：TTSRequest.text（已归一化，≤28 字）
 #   - 全程本地推理（P1），数据不出机器
 ```
@@ -1628,17 +1754,18 @@ def tts_cache_key(
     engine: str,
     engine_revision: str,
     voice_id: str,
+    voice_fingerprint: str,
     normalized_text: str,
     speed: float,
     emotion: str,
     seed: int | None,
     sample_rate: int,
 ) -> str:
-    """sha256(engine|engine_revision|voice_id|text|speed|emotion|seed|sr) → 32hex"""
+    """sha256(engine|engine_revision|voice_id|voice_fingerprint|text|speed|emotion|seed|sr) → 32hex"""
 ```
 
 - 命中路径：`data/cache/tts/<key>.wav`；命中即 `TTSResult(cache_hit=True)`，**不调用引擎**（P2 的性能前提）。
-- 失效：引擎版本、音色、文本、语速、情感、seed、采样率任一变化即 miss。
+- 失效：引擎版本、音色、**参考音内容（指纹）**、文本、语速、情感、seed、采样率任一变化即 miss。
 - LRU 上限 5 GB；`use_count ≥ 2` 的条目在淘汰时降权（营销号文案复用率高，缓存是主要提速手段）。
 
 **落地说明（T2.6 · 2026-09-16）**
@@ -1652,9 +1779,28 @@ def tts_cache_key(
 | 5 | 元数据（`use_count`） | **旁挂 `<key>.json`**，不进 DB | 缓存是**可丢弃**的东西（删掉只损失速度、不损失正确性），而 DB 里每一行都要有迁移 / 备份 / GC 的账。读坏写坏一律当"hits=0 的新条目" |
 | 6 | "命中即跳过" | 命中后**必须把音频拷回交付路径**（`data/output/voice/<task_id>/sNNN.wav`） | §03.7.5 会在任务完成后 24 小时删句子 WAV：命中只说明"缓存里有"，交付路径上那份得补回来，否则渲染拿到的是不存在的文件 |
 | 7 | `TTSResult(cache_hit=True)` | `jobs.result_json.cache_hit` + `tts.sentence_cache_hit` 日志 | 面板与报告读的是库里的那一份；"这一轮重念了几句"必须**有账可查**（验收硬断言"引擎调用为 0"） |
+| 8 | 缓存键里**没有参考音** | 新增 `voice_fingerprint`（`tts/refprint.py`）：逐段 `(文件名, 内容 sha256, 该段逐字文本)` ⇒ sha256 前 12 位；**只算配得上文本的那几段**（与 `VoiceRegistry.resolve` 同一条取舍）；系统音色（SAPI）没有参考音 ⇒ **空串**（与改前逐字节同键） | `voice_id` **只是一个名字**：用户换参考音的做法是「删掉重传 / 勾覆盖重传」，目录名照旧（**裁定 381**）—— 只按名字记结论 ⇒ 换了嗓子之后每一句都命中旧音频，而面板上一切正常（用户原话「同名就复用以前的试听样本，配音也是复用的以前的」） |
 
 - 0 字节的缓存文件**不算命中**（只可能来自"写到一半断电"，当成命中会让下游拿到 0 秒音频）。
 - 交付产物同理：`voice_worker._has_audio()` 判的是"非空"，不是"存在"。
+
+**试听样本的第五态 `stale`（2026-09-23 · 裁定 385）**
+
+音色试听样本（`data/output/voice_preview/<slug>.wav`）的判据**不是「盘上有没有这个文件」**：
+旁车（`<slug>.json`）里记着这份样本是照着**哪一版参考音**念的（`ref_fingerprint`），对不上 ⇒
+状态是 **`stale`**，而不是照旧报 `ready`。名字没变、内容变了的时候，「盘上有」是一句
+**两边都自洽、没有任何地方会报错**的谎话 —— 用户听出来不像，会去查引擎、查模型，
+而真正的原因面板上一个字都没提。
+
+| 状态 | 判据 | 面板 |
+| --- | --- | --- |
+| `missing` | 盘上没有样本 | 「生成试听」 |
+| `running` | 正在生成。**判在文件之前**：重新生成一份 `stale` 样本时旧文件还在，先判文件 ⇒ 面板看到「重新生成」就不再轮询 ⇒ 那一次点击白点 | 「生成中…」 |
+| `ready` | 样本在，且旁车指纹 == 现在的参考音指纹 | 「试听」 |
+| `stale` | 样本在，但旁车指纹 != 现在的参考音指纹（**旧版本写的旁车没有这个字段** ⇒ 同样按 `stale` 处理） | 「重新生成」+ 说清为什么 |
+| `failed` | 上一次生成失败（旁车里记着原因） | 「重新生成」（先看那句话） |
+
+**判据**：凡是「按名字记住一个结论」的地方，都要问一句**名字背后的东西换了，这里会知道吗**。
 
 ---
 
@@ -2031,14 +2177,14 @@ structlog 的第一个位置参数就叫 `event`，`logger.info(msg, **payload)`
 | GET | `/api/v1/topics/directions?batch_id=` | 方向卡片 + **全部**历史批次（新到旧，上限 20）+ 每方向 `topic_count` / `selected_count` |
 | POST | `/api/v1/topics/directions` | 人工写一个方向（**不经模型**）；缺省落**最近一批**（没有批次才落 `manual`） |
 | PATCH | `/api/v1/topics/directions/{direction_id}` | 改一个方向（**只改显式给过的字段**；`batch_id` / `seq` / `status` 不可改） |
-| DELETE | `/api/v1/topics/directions/{direction_id}` | 删一个方向 ⇒ **候选级联一起走**（响应带 `cascaded_topics`）；已有候选派生任务 ⇒ 422 |
+| DELETE | `/api/v1/topics/directions/{direction_id}` | 删一个方向 ⇒ **候选级联一起走**（响应带 `cascaded_topics` + `detached_task_count`）；候选上已派生的任务**不跟着走** |
 | POST | `/api/v1/topics/analyze` | 扫盘导入 ⇒ Planner ⇒ 5–8 个方向（**长任务**） |
 | POST | `/api/v1/topics/ideate` | 逐方向产出 3–5 条选题（**长任务**；一个方向失败不影响其他） |
 | POST | `/api/v1/topics/select` | 勾选入队：逐条建任务（幂等键 `topic:<id>`），`draft_now` 才顺手写稿 |
 | POST | `/api/v1/topics/manual` | 人工加选题（直接入库 + `audit_ops`） |
 | POST | `/api/v1/topics/{topic_id}/draft-review` | 选中一条候选 ⇒ 生成完整文案 ⇒ 推 `reviewing`（**长任务**；已有生效稿件 ⇒ `reused=true`，**不重跑**） |
 | PATCH | `/api/v1/topics/{topic_id}` | 改一条选题（**只改显式给过的字段**；改标题 ⇒ 重算去重指纹与相似清单） |
-| DELETE | `/api/v1/topics/{topic_id}` | 删一条选题（**已派生过任务的不给删** ⇒ 422 `TOPIC_SELECT_INVALID` + 任务号） |
+| DELETE | `/api/v1/topics/{topic_id}` | 删一条选题（**派生过任务也照删**；那条任务不跟着走，`detached_task_id` 如实报出来） |
 | GET | `/api/v1/topics/{topic_id}/outline` | 读二级产物（视频标题 + 核心论点）；没有 ⇒ `outline=null`，**不是 404** |
 | POST | `/api/v1/topics/{topic_id}/outline` | 让模型定标题与核心论点（**长任务**，与 `analyze`/`ideate` 共用单飞守卫） |
 | PUT | `/api/v1/topics/{topic_id}/outline` | 手工定稿二级产物（**一次 LLM 都不调**：没配 Key 也能用） |
@@ -2054,9 +2200,17 @@ structlog 的第一个位置参数就叫 `event`，`logger.info(msg, **payload)`
 | 二级 · 视频标题 + 核心论点 | `topic_outlines`（§3.3.22） | Outliner（`POST .../outline`）或人手写（`PUT .../outline`） | `PUT .../outline` / `DELETE .../outline` |
 | 三级 · 对话文案 | `scripts` + `script_sentences` | `select{draft_now}` / `POST .../draft-review` / draft 池认领 | 稿件面板（`/scripts/{task_id}`） |
 
-**二级是可选的一级**：没有它，三级照旧按选题自由发挥；有它，成稿标题**锁定**用它、
-正文围绕核心论点展开。这条取舍的理由：少一张表不能变成「写不出稿」，而「标题被模型
+**二级是可选的一级，但缺位时会被自动补一次**（T4.4 追加 · 裁定 407）：写稿这条路现在
+**按需生成**二级产物（`ScriptService._auto_outline`，best-effort —— 模型不给就退回下面那条兜底，
+绝不因此写不出稿）；有它，成稿标题**锁定**用它、正文围绕核心论点展开；没有它，
+标题**兜底一级选题标题**（`locked_title = saved.title or spec.title`，用户口径「原标题已经够好了」），
+正文按选题自由发挥。这条取舍的理由：少一张表不能变成「写不出稿」，而「标题被模型
 悄悄换掉」是最难发现的一类漂移（见 §3.3.22）。
+
+⚠️ 补这一步之前，「二级」是一个**只有面板上那颗手动按钮**才会发生的东西 —— 自动链路里它
+从不发生，于是 `topic_outlines` 长期空表、下游拿到的是 `OUTLINE_UNSET`（「未定 —— 你按选题
+自行发挥」），提示词里那句「围绕核心论点深挖」**没有论点可围绕**；改了 outliner 提示词当然
+看不到效果（这一级压根没跑 · 陷阱 245）。
 
 **五条落地口径**
 
@@ -2083,9 +2237,15 @@ structlog 的第一个位置参数就叫 `event`，`logger.info(msg, **payload)`
 6. **方向可手写、可改、可删（级联）**（T4.3 追加）：手写的方向落进**当前正在看的那个
    批次**，而不是另起一个「手工批次」—— 后者会在写完那一刻顶到"最近一批"上，把模型
    那批整个盖掉（再跑一次 `analyze` 又会反过来把人写的盖掉）。删除**级联带走候选**
-   （`ON DELETE CASCADE`），响应如实报 `cascaded_topics`；唯一的拦截是"那个方向下已经
-   有候选派生了任务"（422 `TOPIC_SELECT_INVALID` + `task_ids`）—— 那不是门禁，是
-   **断链**：候选没了，它那条任务就再也写不出稿。三个动作**一次 LLM 都不调**。
+   （`ON DELETE CASCADE`），响应如实报 `cascaded_topics`。
+   **删掉的是想法，不是活**（T5.13 · 裁定 376）：方向 / 候选**派生过任务也照删** ——
+   已派生的任务**照跑**，响应如实报 `detached_task_count` / `detached_task_id`（字段带
+   默认值，老客户端不炸）。断链之所以不成立：`ScriptService.draft` 在选题行不在时按
+   **任务自己带的**那份继续（`tasks.title` + `payload_json` 的 `angle` / `hook_type`）——
+   任务的 payload 从建任务那一刻起就是**自足**的，选题行只是"它从哪来"的线索。
+   **不级联删任务**（那才是真断链：产物 / 发布 / 报告都挂在任务上），也**不给"要不要连
+   任务一起删"的开关**（语义唯一：删想法、留活，并把"留下了什么"如实报出来）。
+   三个动作**一次 LLM 都不调**。
 7. **`draft-review` 与 `select{draft_now}` 不是一回事**：前者是**单条候选的下一步**
    （写完之后推 `reviewing`，写稿池接着跑评分 + 确认闸），后者是"批量勾选，顺手写稿"
    （跑完停在 `drafting`，交给写稿池）。`draft-review` 遇到"库里已经有生效稿件"⇒
@@ -2333,6 +2493,8 @@ structlog 的第一个位置参数就叫 `event`，`logger.info(msg, **payload)`
 3. **上下限与枚举跟着响应下发**（裁定 161）。`limits` 从 `EncodingProfileConfig` / `WatermarkConfig` /
    `SubtitleConfig` 的 `model_fields` **现取**（含 `exclusive_min` —— `width_ratio` 是 `gt=0.0`，画成
    「最小 0」会放行一个必然 422 的 0）；水印位置的**枚举**同样现取，前端不抄第二份。
+   嵌套字段同理：`subtitle.safe_area.bottom` 的上下限取自 `SafeAreaConfig`（面板上叫
+   `safe_area_bottom`，见 §4.2.6 末）。
 4. **配置坏了也返回 200**。`stale` / `error` 带原因、`profiles` 为空，但 `limits` **照常下发**
    （它来自模型，不是文件）—— 面板仍能画出表单骨架，用户才修得回来（与 §04.5.7 裁定 150 同一条）。
 5. **写盘走行级替换，不用 `yaml.safe_dump`**（裁定 166）。这份文件每一行都带理由
@@ -2570,8 +2732,11 @@ structlog 的第一个位置参数就叫 `event`，`logger.info(msg, **payload)`
 | DELETE | `/api/v1/assets/{id}?kind=&purge=` | 删一条；`purge=true` 才动盘上那份（**裁定 369**，默认只删库里的行） |
 | GET | `/api/v1/assets/{id}/thumb` | 缩略图（跑酷抽帧图；没有 ⇒ 404，**不临时现抽**） |
 | GET | `/api/v1/assets/{id}/media` | 原文件（BGM 试听 / 跑酷预览；音色 ⇒ 422） |
+| GET | `/api/v1/assets/voice/{voice_id}/segments` | **一个音色的逐段现状**：段号 / 文件名 / 时长 / 采样率 / 峰值 / **同一位置那行文本** / 该段自己的 problems（**裁定 381**） |
+| DELETE | `/api/v1/assets/voice/{voice_id}/segments/{name}` | 删一段 + **重编号** + 同步 `ref.txt` 同一行；最后一段 ⇒ 422（**裁定 381**） |
+| POST | `/api/v1/assets/prune` | **清掉孤儿**：盘上认得出、库里没有、且**本身就不合格**的条目；`dry_run=true` ⇒ 只报会清掉哪些（**裁定 384**） |
 
-**十条不变量**
+**十二条不变量**
 
 1. **文件 + 表两处一起才算数**。`broll_clips.path` 指向的文件被挪走 ⇒
    `GET /media` **404 说清路径**，而**库里那行照旧** —— 我们不会替你删记录。
@@ -2605,6 +2770,27 @@ structlog 的第一个位置参数就叫 `event`，`logger.info(msg, **payload)`
    改名成 `parkour_xxx.mp4`」，而不是「扫了 0 条」。
 10. **音色认不出 ⇒ 明确报错，绝不静默换默认音色**。`persona` 的 `tts_voice_id` 只做**格式**
     校验（存在性不查），真正解析不到时抛错并给出「这个 id 该在哪个目录、目录里该有什么」。
+11. **覆盖 = 镜像**（**裁定 381**）：勾了「覆盖同名」的上传，写完之后盘上**没被这次写到**的
+    `ref_NN.*` 会被清掉 —— 在用户嘴里，「覆盖」的意思是「这份目录现在就是我传的这堆」，
+    而不是「同名的那几个换掉了」。守卫两条：① 只有 `overwrite=true` 才清；② 只有这次
+    **确实写进去过**才清（整批失败的上传不该把用户的音色清空）。清掉的逐条进 `removed`，
+    没动却该说的进 `notes`（比如 `ref.txt` 与这次的段数对不上）。**段号 = 位置**：删掉中间
+    一段必须重编号（`ref_03.wav ⇒ ref_02.wav`）并同步 `ref.txt` 同一行 —— 不然 prompt 里
+    会出现一个洞，而 prompt 是按下标顺序拼的；`ref.txt` 的行数与段数本来就不等时**不动它**，
+    只如实说。
+12. **孤儿清理只清「本身不合格」的那些**（**裁定 384**）。「盘上有、库里没有」的东西
+    以前**删不掉**：`DELETE /assets/{id}` 的对象是**库里那一行**，而孤儿没有行 ⇒ 404，
+    于是面板上那句「盘上有 N 条还没入库」变成一条**永远动不了的警告**（用户只能去资源
+    管理器里手工删，而素材目录名是约定的一部分 —— 音色的目录名就是它的 id）。
+    `POST /assets/prune` 补上这条出路，判据三条：① 对象必须是**孤儿**（盘上认得出、
+    库里没有），库里有的走 `DELETE`；② 只清**本身不合格**的 —— 合格的孤儿**该入库，
+    不是该删**（跑酷 / BGM 的未入库文件出片照样挑得到，删了等于凭空少一条底片），
+    它们进 `kept` 并带上理由，面板必须把这一段显示出来；③ 判据**不能直接用
+    `check.ok`**：`check_broll` / `check_bgm` 会把「授权没填」算进 `problems`，而孤儿
+    之所以是孤儿，正是因为它还没有库里那一行 —— **那一行才是存授权的地方**。拿
+    `check.ok` 当判据，一条完好无损、只是还没登记的底片会被当成垃圾删掉，而且删完
+    **没有任何地方报错**。所以「登记状态」那几条（`_REGISTRATION_ONLY_CODES`）不进
+    阻塞项。`strays` 一个都不动（「认不出」不等于「没用」），但要如实列出来。
 
 **审计与日志**
 
@@ -2613,6 +2799,7 @@ structlog 的第一个位置参数就叫 `event`，`logger.info(msg, **payload)`
 | 启用 / 停用 | `asset.enable` / `asset.disable` | 素材 id | `{"kind": "broll", "enabled": true → false}` |
 | 改字段 | `asset.update` | 素材 id | **只放被改的字段**（`{"license": "cc0" → "purchased"}`） |
 | 删除 | `asset.delete` | 素材 id | `before={"enabled": …}`，`after={"purged": [真的删掉的路径]}` |
+| 清孤儿 | `asset.prune` | **类别**（`broll` / `voice` / `bgm`） | `before={"orphans": N}`，`after={"removed": [...], "kept": [...]}` |
 
 - `target_type="asset"`、`actor="user"`、`source="webui"`（脚本 / CLI 走 `actor="system"` + `source="cli"`）。
 - 留痕里带 `kind`：同一个 id 在不同类里出现时，审计页要能分清是哪一类。
@@ -2620,6 +2807,9 @@ structlog 的第一个位置参数就叫 `event`，`logger.info(msg, **payload)`
   一串「什么都没改」的记录刷满。
 - 日志走 `system_logs.source='assets'`（§04.5.2），payload 里**不带 `kind`**（带的话 Hub tail
   会再广播一遍）。入库与启停各记一行；`dry_run` 的预览**不记**（它什么都没干）。
+- **清孤儿一次只写一行**：`target_id` 用**类别**而不是某一个 id（这个动作一次动一批，而
+  `audit_ops` 一行只有一个 `target_id`），逐条明细在 `after` 里。**空跑不写**（一个都没
+  清掉时不记）—— 空跑留痕会把审计页淹掉。
 
 **前端三个取舍**
 
@@ -2805,6 +2995,141 @@ manifest 缺失或它指的那条不在盘上 ⇒ 退回目录里按名字找**�
 「还原」按**段**而不是按条目：一个条目最多两段（两份独立文件），一次误点不该把两处
 改动一起丢掉。
 
+### 4.5.17 侧边栏顺序契约（拖动排序 · 已落地）
+
+> 一句话：顺序是**这个浏览器的显示偏好**，不是业务数据 —— 不落库、不进 `audit_ops`、
+> 也不改 `PANELS` 那份清单。落点全在 `web/src/stores/ui.ts`。
+
+| 名字 | 是什么 |
+| --- | --- |
+| `panelOrder` | 当前顺序（`PanelId[]`），初值 = 存档 ∩ 清单 |
+| `orderedPanels` | 真正画的那一份：按顺序取 `PANELS` 里的定义 |
+| `movePanelTo(dragged, target, place)` | 拖完一次：挪位置 + 落盘 |
+| `resetPanelOrder()` | 恢复出厂顺序（`DEFAULT_PANEL_ORDER`） |
+| `isDefaultOrder` | 没改过 ⇒ 外壳不显示「恢复默认顺序」 |
+| `normalizePanelOrder` / `movePanel` / `readPanelOrder` / `writePanelOrder` | 四个纯函数（可单测，不碰 DOM） |
+| `studio.rail.order` | `localStorage` 的键 |
+
+**四条落地口径**
+
+1. **顺序与清单分开**（`PANELS` 仍是规格书那份清单：标签 / 施工任务号 / `ready`）。
+   拖一次不该把 `T4.9` 这种任务号改掉 —— 画序是画序，清单是清单。
+2. **存档必须对齐清单**（`normalizePanelOrder`）：认不得的丢掉、缺的补在最后、重复只留
+   第一次。照着旧存档直接画的话，新加的菜单（`prompts` 是 2026-09-20 才加的）在旧存档的
+   浏览器里**永远不出现**，而屏幕上没有任何信号 —— 静默失败，本仓库最不能接受的那种
+   （陷阱 206）。
+3. **拖动不切面板**：拖是"排位置"，不是"点进去"。所以 `movePanelTo` 既不碰 `activePanel`，
+   也不碰 `pendingHandoff`（§4.5.14 的 `selectPanel` 才是"人自己点走"那一件事）。
+   落点用**相对位置**（目标行的上 / 下半 ⇒ `before` / `after`）而不是行号：拖动过程中行号
+   会变，相对位置不会，而用户看到的那条插入线正是相对位置。
+4. **读 / 写都不抛**：读坏了（坏 JSON / 存储不可用）⇒ 回出厂顺序；存不下（配额满 /
+   隐私模式）⇒ 只在内存里生效。拿一个显示偏好去换一整屏，比例完全不对。
+
+**刻意不做的三件事**
+
+- **不落库**：为它加一张表 + 一个 REST + 一次迁移，换来的是"同一台机器上换个浏览器打开，
+  菜单是别人的样子"，而这份偏好本身没有跨端意义。
+- **不做每屏独立排序 / 分组折叠**：那是另一件事（菜单分组），现在没有需求。
+- **不写 URL**：与 §4.5.14 同一条理由 —— 一期是本地单页控制台，URL 与面板状态谁是权威
+  是个新问题，现在写进去只会多一个。
+
+---
+
+### 4.5.18 今日新闻拉取契约（T5.12 · 已落地）
+
+> 一句话：**一键拉今日新闻 ⇒ 模型逐条判"值不值得写" ⇒ 只有值得写的落成方向**。抓取
+> （`services/news_service.py`）与评测（`agents/news_scout.py`）是两段，失败也是两种。
+
+**五个源，合并而不是降级**（2026-09-23 扩源 · 用户原话「新闻拉取渠道再加上短视频平台热搜的
+社会问题,增加信息渠道的宽度」）
+
+| 源 | 代号 | 怎么拿 | 有正文首段吗 |
+| --- | --- | --- | --- |
+| 今日头条热榜 | `toutiao` | GET JSON | 无 |
+| 中新网滚动 | `chinanews` | GET RSS（`description` = 正文第一段） | **有** |
+| 抖音热搜 | `douyin` | GET JSON | 无 |
+| B站热搜 | `bilibili` | GET JSON | 无 |
+| 快手热榜 | `kuaishou` | **POST** graphql | 无 |
+
+- **全问一遍再合并**（不是"谁先答就用谁"）：那是**降级**语义 —— 第二家只在第一家挂掉时才被
+  问一次，扩源等于白扩。顺序 = 优先级（同一条标题在多处上榜时靠前的胜出）。
+- **轮转交错**：五家各取第 1 条、再各取第 2 条…… 于是 `NEWS_LIMIT=50` 落在五家头上大致是
+  每家的前 1/5。按源拼接再截断的话，截断结果就是"头条那 50 条"，后四家一条都进不来。
+- **跨源去重**：同一个事件在多处同时上榜是常态（真机实测：抖音与B站同日都上「今日秋分」；
+  抖音「U23国足小组第一出线」与 B站「亚运U23国足小组第一出线」相似度 0.92）。判据与选题
+  那套**同一份**（§04.1.3：归一化完全命中 / 相似度 ≥ 0.85）。命中时**留信息更多的那一条**
+  （有摘要的顶掉光标题的）—— 所以中新网那条会赢过抖音那条，事件总结能站在源站的正文上。
+  ⚠️ 刻意**不用** `hash_title`（它把数字折成 `#`，那是给"选题模板"去重的）：新闻标题里的
+  数字是事实，折掉会把两件不同的事并成一件。
+- **单源失败只是"少一家"**：另外几家照常合并，并逐条 `logger.warning` 留痕。面板上那一栏
+  `source` 由**实际答上来的源**按首次出现顺序拼成（`今日头条热榜、抖音热搜、…`）—— 挂掉的
+  源自然缺席，所以"今天少了两家"是看得见的，而不是被 `items[0].source` 掩盖过去。
+- **`NEWS_LIMIT` 是合并之后的总数**（不是每个源各拉这么多）。
+
+**真机读数（2026-09-23）**：五家全部答上来，`candidates=229` ⇒ 去重砍掉 5 条 ⇒ 合并成 50 条，
+来源分布 11 / 11 / 10 / 9 / 9。
+
+| 面 | 是什么 |
+| --- | --- |
+| `POST /api/v1/topics/news-pull` | 无请求体；挂 `_RUN_GUARD`（与 `analyze` / `ideate` 同一把长任务闸） |
+| `NewsPullResult` | `ok` / `source` / `fetched` / `evaluated` / `batch_id` / `kept_count` / `kept[]` / `skipped[]` / `warnings[]` / `error_code` / `error_message` |
+| `NewsSkipItem` | `{title, reason}` —— 一条没被留下的新闻，**以及为什么**没留下 |
+| `NEWS_FETCH_FAILED` | **五个源全挂** ⇒ **503**（`context.sources` 列源名、`context.problems` 列每一家的原因） |
+
+**六条口径**
+
+1. **`ok` 只说评测这一步**：`ok=True` + `kept=[]`（跑了、一条都没挑中）与 `ok=False` +
+   `error_code`（压根没跑起来）是两件事 —— 前者不需要用户做任何事，后者要他去配通道。两者都
+   返回 **200**，原因在体内。
+2. **抓取失败 ≠ 今天没有新闻**：源全挂抛 `NEWS_FETCH_FAILED`（503），**不返回空列表**（陷阱
+   207）。单源失败只是"换下一个"的理由，每一家的原因都带在 `problems` 里。
+3. **只有 `keep` 才写库**：评测失败 / 漏条 / `ref` 对不上 ⇒ 当没挑中，进 `skipped` 并说明原因。
+   写进去的方向**落进当前批次**（复用 `add_manual_direction` 的落点），`priority` 与模型产的
+   同一档（100，不插队），留痕 `actor="system"` + `actor_ref="news_scout"`。
+4. **不落盘**：不写 `data/hot/news-*.md` —— 写了会被下一次 Planner 当热点再消费一遍。
+5. **每条判定还带一句"事件总结"**（`NewsVerdict.event_summary`，≤200 字；`NewsItemSpec.summary`
+   把源站给的正文首段一起喂进去当依据，头条热榜没有这一段 ⇒ 空）。它**只许写输入里明写的事实**，
+   看不出发生了什么就填「信息不足」。落点是方向的 `grounded_on`（`type="hot"` +
+   `kind="news"`），**不是** `rationale`：后者是"为什么值得写"（判断），且上游契约只有 200 字
+   （`DirectionSpec.rationale`），两样挤一行，长标题一撞上限这个方向就再也生成不出选题。
+   写稿时由 `script_service` 按 `topic.direction_id` 把它读回来，当【已知事实】注入
+   Director / Writer 的提示词（`FACTS_MAX=400`；没有 ⇒ 渲染成 `FACTS_UNSET`）—— 这是"事实从
+   新闻走到稿子"的唯一通道，不指望哪一级模型自己抄。
+
+6. **"值不值得写"的判据是"能不能立论"，不是"够不够劲爆"**（2026-09-23 改）：`keep` 只有 true/false
+   两档，而私家纠纷 / 个人不幸（遗产怎么分、个人被骗、个人意外）在"劲爆"这一维上得分很高 ——
+   拿它当判据，挑出来的正是下游写不动的题（Outliner 要产一个**能被反驳的** `core_argument`，
+   Director 要照着展开）。判据因此换成"这条新闻背后有没有一个**很多普通人有切身利害、而且吵得
+   起来**的公共问题"，并在评测提示词里落成一条当场可答的追问：**当事人之外还有谁在局里**。
+   见 `prompts/news_scout/system.md`（`prompt_version` 随 `sha256` 变）。
+
+---
+
+### 4.5.19 发布账号面板 REST 面契约（T6.4 · 已落地）
+
+> 一句话：面板上直接**加号 / 改号 / 停用 / 删号**，写回 `config/publish.yaml` 的 `accounts:` 段 ——
+> 段外（`platforms` / `precheck` / 注释）**一个字节都不碰**。规格口径见 §06.2.4 / §06.12。
+
+| 端点 | 干什么 | 关键取舍 |
+| --- | --- | --- |
+| `GET /api/v1/publish/accounts` | 账号清单（**含停用的**）+ 平台清单 + 表单上下限 + 必须说的话 | 平台清单与 `/publish/platforms` **同一份**（"这个平台现在能不能投"的判据只有一处）；`limits` 从 `AccountConfig` 的字段约束**现取**，不手抄 |
+| `PUT /api/v1/publish/accounts/{account_id}` | 新增或改写一个账号（**幂等替换**） | `account_id` **只从路径来**（身份只有一个来源，否则"想改 A、结果新增了 B"迟早出现）；没变 ⇒ `changed: false`，**不写盘、不留痕**；回**整屏**而不是只回那一条 |
+| `DELETE /api/v1/publish/accounts/{account_id}?reason=` | 删掉一个账号 | **登录态目录不碰**（`data/browser_profile/<id>/` 是凭据，§02.5）；`reason` 走**查询串**（带 body 的 DELETE 在代理链路上会被静默丢掉） |
+| `POST /api/v1/publish/accounts/{account_id}/probe` | 无头探一眼登录态（几秒钟） | 它回答"**现在**能不能发" —— 面板那一行原本只会说"登录过（会话是否仍有效，要真发一次才知道）"，而那句话对"我现在就想知道"是不够的。**不写盘、不进审计** |
+| `POST /api/v1/publish/accounts/{account_id}/login?timeout_sec=` | 开**可见**窗口等人扫码 | 窗口开在**跑着 studio 服务的那台电脑**上（浏览器是它起的）。等不到人扫码 ⇒ **200** + `ready=false` + `note` 写明下一步（**不是错误**）；真出错（浏览器起不来 / 平台没适配器）才抛 |
+
+**四条落地口径**
+
+1. **两档判据，两种码**：表单本身不合法 ⇒ `VALIDATION_FAILED`（**422**）+ `context.errors`（面板把红字标到对应输入框上）；与其它账号冲突（重复 `profile_dir` / 平台没定义）⇒ `CONFIG_INVALID`（**400**）；要动的那个账号已经不在配置里 ⇒ `PUBLISH_ACCOUNT_NOT_FOUND`（**404**，`context.known` 带上现存的那几个 id）—— 请求本身没错，是"你要动的那一行不在了"。
+2. **先校验、后落盘 + 写完立刻回读**：整份配置（含"写完之后"的账号清单）先在内存里过一遍 `PublishConfig`，写完再 `load_publish_config` 回读一次 —— 写坏一份配置的代价是"下一次启动起不来"，那时代价已经付出了。
+3. **`profile_dir` 是声明，不是运行期目录**：运行期真正用的是 `data/browser_profile/<account_id>/`（`publish/base.py` 的 `PublisherContext.profile_dir`）。两者不一致 ⇒ `profile_dir_matches_runtime=false`，**面板必须显示出来**（否则用户改了那个值、发现毫无效果）；留空 ⇒ 服务层按运行期那个路径补上（与 `profile_dir_prefix` 同源）。
+4. **新号不自动登录**：R13 底线，扫码是人的活。每一行的 `note` 直接写"下一步做什么"；`created: true` ⇒ 面板提示"先人工扫码一次"。
+5. **扫码期间只轮询、不重新导航**：登录页上的码是**一次性**的，每重新导航一次就换一张 —— 用户扫的那张在他按下确认的那一刻已经作废，而症状是"我明明扫了，它说没扫到"。所以 `Publisher.login()` 只问"登录成功的标志出现没有"，把刷新交给页面自己。
+6. **超时之后再无头探一次**：人可能确实扫了、只是那个页面没跳转。以**随后那次探测**为准（判据始终是平台页面说的那句话，不是我们这一次窗口里看到的那一帧）—— 报超时会让用户对着一个其实已经好的账号再扫一遍。
+7. **前端的 fetch 超时必须比服务端那个等待长**（`timeout_sec + 30s`）：短于它的话，人还在扫、前端已经把请求 abort 了 —— 面板报"超时"而窗口还开着。谁先超时这件事只能由**服务端**说了算（它才知道窗口关没关）。
+
+**审计与日志**：`audit_ops` 的 `publish.account_created` / `publish.account_updated` / `publish.account_removed`（`target_id = publish.accounts.<account_id>`，`before` / `after` 与面板同形），日志 `source="publish_accounts"`。**审计失败不回滚文件** —— 配置已经写完了，这时回滚等于把用户刚加好的账号又删掉。
+
 ---
 
 ## 4.6 发布与数据回流契约（第六部分重建 · 原文 §1.1⑤ / §8 / §9.3）
@@ -2824,7 +3149,7 @@ class PublishRequest(BaseModel):
         "xiaohongshu",
         "bilibili",
         "xigua",
-        "weibo",  # 二线（一期仅接口）
+        "weibo",  # 二线（T5.14：实现已接线）
         "other",
     ]
     account_id: str
@@ -2902,12 +3227,17 @@ PUBLISHERS: dict[str, type[Publisher]] = {
     "douyin": DouyinPublisher,  # 一期
     "kuaishou": KuaishouPublisher,  # 一期
     "shipinhao": ShipinhaoPublisher,  # 一期
-    "xiaohongshu": XiaohongshuPublisher,  # 二期（接口已定，实现可空）
-    "bilibili": BilibiliPublisher,  # 二期
-    "xigua": XiguaPublisher,  # 二期
-    "weibo": WeiboPublisher,  # 二期
+    "xiaohongshu": XiaohongshuPublisher,  # 二线（T5.14：真实现，与一线同一套流程）
+    "bilibili": BilibiliPublisher,  # 二线
+    "xigua": XiguaPublisher,  # 二线
+    "weibo": WeiboPublisher,  # 二线
 }
 ```
+
+> ⚠️ **注册表回答的是"实现在不在"，不是"能不能发"**（T5.14）。二线四个从空实现换成了真实现，
+> 但它们那份 `selectors/<code>.yaml` 的 CSS **没在真机上校准过** ⇒ 出厂 `enabled: false`。
+> "能不能真发"由 pack 的 `calibrated` / `calibrated_at` 回答（面板上显示）。这两件事在空实现
+> 时代看起来一模一样，而它们该做的事正好相反。
 
 ### 4.6.2 发布流水线契约（原文 §8：快速封面 → 成片审核 → 自动发布 → 数据回收 → 记忆沉淀）
 
@@ -2927,8 +3257,12 @@ rendering → completed
    ├─ 限频检查（≤3 条/天/账号，间隔 ≥30min · R13）
    ├─ 登录态检查（失效 ⇒ manual_required，**不自动登录**）
    ├─ 上传 + 填标题/文案/话题 + 选封面 + 发布
-   └─ 成功 ⇒ publications(status='published', url=...)
+   ├─ 成功 ⇒ publications(status='published', url=...)
       失败 ⇒ 重试 ≤3（指数退避）⇒ 仍失败 ⇒ manual_required + 告警
+   └─ 人工过验证（**人在场**那条路 · T6.4 · 裁定 393）
+      同一个 Publisher、同一份选择器、同一条八步；差别只有 ctx 上两个开关
+      （headless=False + await_manual_verify=True）与"谁落库"：
+      worker 走作业，这条直接落 publications（**不碰作业队列**）
    ↓
 ④ 数据回收（publish/metrics.py，定时）
    T+1h / T+6h / T+24h / T+72h 采集 views/likes/comments/shares
@@ -2946,8 +3280,18 @@ rendering → completed
 async def publish_task(task_id: str, platforms: list[str], *, dry_run: bool) -> list[PublishResult]: ...
 async def collect_metrics(publication_id: str) -> PublishMetrics: ...
 async def sink_memory(publication_id: str) -> MemorySinkResult: ...
+```
 
+**「人工过验证」的 HTTP 契约**（T6.4 · 裁定 393）：
 
+```
+POST /api/v1/publish/{publication_id}/assist      body: {actor, reason?}
+  → 200 {publication: PublicationView, action: "assist", message, waited_sec}
+  422：这条不该走这条路 —— 已发布（R14 不可逆）/ 已取消 / 演练登记 / 成片不在 /
+       发布池正在发同一个账号（两个浏览器抢同一个登录态目录，最坏是同一条发两遍）
+```
+
+```python
 class MemorySinkResult(BaseModel):
     feedback_items_created: int
     topics_demoted: int
@@ -2997,7 +3341,8 @@ class HandoffAdapter(ABC):
 | 失败取证 | 截图 + DOM 快照落 `artifacts` | 人工可排查 |
 | 数据回收频率 | T+1h/6h/24h/72h | 平衡信息量与请求量 |
 | 发布失败不回退任务 | 任务停 `completed`，发布单独重试 | 成片依然可用 |
-| 二线平台 | 一期仅保留接口与 profile | R18 控制范围 |
+| 二线平台 | 实现已接线（同一套 `PlaywrightPublisher`）；**选择器未真机校准** ⇒ 出厂 `enabled: false` | R18 控制范围 + "没做"与"没校准"必须分得开（T5.14） |
+| 选择器校准状态 | `selectors/<code>.yaml` 的 `calibrated` / `calibrated_at` / `known_gaps`；面板那一列照着它显示 | "这个平台验过没有"是操作员决定"敢不敢真发一条"的唯一信息（R14 不可逆） |
 
 ---
 
@@ -3191,7 +3536,7 @@ class Report(BaseModel):
 | ② | 上传成片 | ``_step_upload``（``set_input_files`` + 等上传完成） |
 | ③ | 填标题 / 文案 / 话题 | ``_step_fill``（``domain/publish.py`` 的 ``fit_text`` / ``build_caption`` / ``render_tags``） |
 | ④ | 选封面 | ``_step_cover``（``cover_path`` 为空则整步跳过） |
-| ⑤ | **回读逐字比对** | ``_step_readback``（``compare_readback``；不一致重填 ≤2 次） |
+| ⑤ | **回读逐字比对** | ``_step_readback``（``compare_readback``；不一致重填 ≤2 次。**只差不可见字符**（零宽空格等）⇒ 判 ``invisible_only`` 并**放行** —— 见 §06.5.3 那段） |
 | ⑥ | **点发布** | ``_step_publish`` —— **``dry_run=True`` 时流程到此为止** |
 | ⑦ | 留证（截图 + DOM + 平台提示原文） | ``_step_result`` / ``PublishEvidence`` |
 | ⑧ | 落库 + 回填 | ``publish_worker._publish_row`` → ``PublicationRepo``（T5.3 已落地，见 §4.6.7） |
@@ -3221,6 +3566,15 @@ readback:
 - **装配期**（``load_selector_pack``）就校验：文件名与 ``platform`` 一致 / ``version`` 非空 /
   ``urls.upload`` 在 / 5 个必需选择器齐 / 2 个必需 marker 齐 / ``readback`` 取值合法。
   任何一条不满足 ⇒ 当场 ``PUBLISH_SELECTOR_MISS``，不推迟到真机（裁定 263）。
+- **装配期还拦"语法合法、但描述的是另一件事"的选择器**（裁定 391 · 真机 2026-09-23 的三道坎）：
+  ① 值里**有逗号 + 引擎前缀**（``text=`` / ``xpath=`` / ``css=`` / ``id=`` …）—— 引擎前缀只在
+  **单独**出现时合法，拼上第二个选择器整条就走 CSS 解析器，抛
+  ``Unexpected token "=" while parsing css selector``；② ``publish_button`` 用**包含**匹配
+  （``:has-text(`` / ``text=``）—— 导航项「作品发布」在文档序里排在真按钮前面；
+  ③ ``success_marker`` / ``reject_marker`` / ``verify_marker`` 用 ``:text(``（**子串**）——
+  页面上那句「视频发布成功后，价格将无法更改」里就有"发布成功"。
+  三条都表现为"**发布成功也判不出来、一路等到 600s 超时**"，所以一律前移到装配期拒
+  （陷阱 #226 / #227 / #229）。
 - ``selector_version`` 是**实例属性**（读 yaml），不是 ``ClassVar``：写成类属性之后，
   "改了 yaml 但忘了改类属性"会得到一个**永远不变的版本号**，而它存在的全部意义就是
   事后能回答"这条是哪个版本的选择器发的"。

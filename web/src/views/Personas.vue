@@ -53,7 +53,7 @@ const saveAsId = ref("");
 const saveAsOverwrite = ref(false);
 
 type TextKey = "name" | "role_desc" | "tone" | "audience" | "style_hint";
-type ListKey = "catchphrases" | "forbidden";
+type ListKey = "catchphrases" | "forbidden" | "speaker_names";
 type NumberKey = "target_chars_min" | "target_chars_max" | "max_duration_ms";
 
 const form = computed(() => personas.draft);
@@ -271,6 +271,22 @@ function onSaveAs(): void {
             @input="onLines('forbidden', $event)"
           />
           <span v-if="errors.forbidden" class="f__err">{{ errors.forbidden }}</span>
+        </label>
+
+        <label class="f f--full">
+          <span class="f__key">角色名（一行一个 · 留空则不查）</span>
+          <textarea
+            class="area"
+            rows="3"
+            :value="linesText(form.speaker_names)"
+            @input="onLines('speaker_names', $event)"
+          />
+          <span class="f__hint">
+            出场角色的名字（如「熊大」「熊二」）。**只用于配音选音色与贴图**：这个账号只是借
+            他们之口讲事，观众看到的字（标题 / 开场 / 结尾 / 字幕）里不许出现这些名字，
+            机器会照这份清单拦。留空 = 不查这一条。
+          </span>
+          <span v-if="errors.speaker_names" class="f__err">{{ errors.speaker_names }}</span>
         </label>
 
         <label class="f f--full">

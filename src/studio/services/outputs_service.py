@@ -34,18 +34,29 @@ from pathlib import Path
 from typing import Any, Final, get_args
 
 from studio.core.clock import now_iso
-from studio.core.config import EncodingProfileConfig, OutputsConfig, SubtitleConfig, WatermarkConfig
+from studio.core.config import (
+    EncodingProfileConfig,
+    OutputsConfig,
+    SafeAreaConfig,
+    StickerConfig,
+    SubtitleConfig,
+    WatermarkConfig,
+)
 from studio.core.errors import ConfigError, ErrorCode, StudioError
 from studio.core.logging import get_logger
 from studio.core.outputs_store import (
     PROFILE_FIELDS,
+    STICKER_FIELDS,
     SUBTITLE_FIELDS,
     WATERMARK_FIELDS,
     OutputsSnapshot,
     OutputsStore,
     quality_field_of,
+    scalar_for_write,
 )
 from studio.db.repositories import AuditRepo
+from studio.render.png_probe import PngAsset, probe_png
+from studio.render.sticker import aspect_warnings, speaking_problem
 from studio.services.log_service import LogSink
 
 __all__ = [
@@ -56,6 +67,7 @@ __all__ = [
     "OutputsOutcome",
     "OutputsProfileCard",
     "OutputsService",
+    "OutputsStickerCard",
     "OutputsSubtitleCard",
     "OutputsWatermarkCard",
     "outputs_limits",
@@ -115,6 +127,11 @@ class OutputsWatermarkCard:
     面板仍然要显著提示 —— 但理由变了：以前是"不修好就出不了片"，现在是
     "这次出来的片子上没有水印，你要是想要就补一张"。两者的措辞必须分开写，
     把后者说成前者会让人以为链路坏了。
+
+    ``exists``（盘上有这么个文件）与 ``usable``（渲染**真的会贴上**）是**两件事**，
+    两个字段都下发：扩展名叫 ``.png`` 的 WebP / JPEG 在盘上"存在"，渲染却会跳过它
+    （见 :func:`studio.render.png_probe.probe_png`）。只报前者的面板会让人对着一个
+    绿点找半天"为什么片子上没有水印"。
     """
 
     path: str
@@ -127,6 +144,10 @@ class OutputsWatermarkCard:
     opacity: float
     #: 水印 PNG 在不在（相对路径按 STUDIO_HOME 解析）
     exists: bool
+    #: 渲染**真的会贴上**吗（= 存在 + 是 PNG + 带透明通道 + 尺寸读得出来）
+    usable: bool
+    #: 用不了时的原因（原样来自 :func:`probe_png`；``usable=True`` ⇒ ``None``）
+    problem: str | None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -138,6 +159,78 @@ class OutputsWatermarkCard:
             "width_px": self.width_px,
             "opacity": self.opacity,
             "exists": self.exists,
+            "usable": self.usable,
+            "problem": self.problem,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class OutputsStickerCard:
+    """一层人物贴图（T6.5）。``usable=False`` ⇒ 这一层不贴，**其余层照常**。
+
+    与水印那张卡片的差别在**粒度**：水印是"有没有"，贴图是"**哪几层**有"。
+    所以这里是**每层一张**卡片，``skipped`` 由渲染路径算（面板只报"图在不在"），
+    而 ``height_px`` 是按**默认档**的画布高算出来的像素高 —— 面板上"多高"比
+    "0.45"直观得多（与水印卡片显示 ``width_px`` 同一条理由）。
+
+    ★ **"图在不在"不够**：这一层的判据与渲染路径**必须是同一条**
+    （:func:`studio.render.sticker.plan_stickers` 里的 ``probe_png(...).usable``）。
+    曾经这里只做 ``is_file()``，于是"人物贴图开着、面板显示在盘上（绿点）、渲染却
+    悄悄跳过"能同时成立 —— 用户看到的是"开了没反应"，而面板什么都不说。
+    ``problem`` 就是那句"为什么"，原样来自 :func:`probe_png`。
+    """
+
+    name: str
+    enabled: bool
+    path: str
+    #: 这一层代表稿子里的哪个说话人（空 ⇒ 不换图）
+    speaker: str
+    #: 讲话时换的那张图（``None`` ⇒ 这一层不换图）
+    speaking_path: str | None
+    position: str
+    margin_x: int
+    margin_y: int
+    height_ratio: float
+    #: 按默认 profile 的画布高算出来的**像素高**（宽高比决定实际宽度，面板不猜）
+    height_px: int
+    opacity: float
+    #: 这一层的 PNG 在不在（相对路径按 STUDIO_HOME 解析）
+    exists: bool
+    #: 渲染**真的会贴上**吗（= 存在 + 是 PNG + 带透明通道 + 尺寸读得出来）
+    usable: bool
+    #: 用不了时的原因（原样来自 :func:`probe_png`；``usable=True`` ⇒ ``None``）
+    problem: str | None
+    #: **讲话图**这一路：图在不在 / 能不能用（判据与普通图完全一样）
+    speaking_usable: bool
+    #: "换图换不成"的原因（**面板这一侧判得出来的那些**）。
+    #:
+    #: 面板**判不了**"这个人这条片子里有没有讲话区间" —— 那要看稿子与时间轴，
+    #: 只有渲染路径知道。所以这里不写那一句：在面板上编一个"应该有词吧"的结论，
+    #: 就是面板与成片各说各话的老毛病（陷阱 223）。
+    speaking_problem: str | None
+    #: "换得了图、但会难看"的条目（目前只有一条：两张图宽高比不一致 ⇒ 人物被压扁）。
+    #: 与 :attr:`speaking_problem` 分开：一个是"换不成"，一个是"换成了但画风不对"。
+    speaking_warnings: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "enabled": self.enabled,
+            "path": self.path,
+            "speaker": self.speaker,
+            "speaking_path": self.speaking_path,
+            "position": self.position,
+            "margin_x": self.margin_x,
+            "margin_y": self.margin_y,
+            "height_ratio": self.height_ratio,
+            "height_px": self.height_px,
+            "opacity": self.opacity,
+            "exists": self.exists,
+            "usable": self.usable,
+            "problem": self.problem,
+            "speaking_usable": self.speaking_usable,
+            "speaking_problem": self.speaking_problem,
+            "speaking_warnings": list(self.speaking_warnings),
         }
 
 
@@ -151,6 +244,10 @@ class OutputsSubtitleCard:
     outline: int
     shadow: int
     margin_bottom: int
+    safe_area_bottom: int
+    #: 真正生效的距底像素（= max(margin_bottom, safe_area_bottom)）—— 面板据此
+    #: 把"你填的数"与"实际渲的数"分开说，见 ``SubtitleConfig.margin_v``。
+    margin_v: int
     max_chars_per_line: int
     max_lines: int
 
@@ -162,6 +259,8 @@ class OutputsSubtitleCard:
             "outline": self.outline,
             "shadow": self.shadow,
             "margin_bottom": self.margin_bottom,
+            "safe_area_bottom": self.safe_area_bottom,
+            "margin_v": self.margin_v,
             "max_chars_per_line": self.max_chars_per_line,
             "max_lines": self.max_lines,
         }
@@ -186,6 +285,9 @@ class OutputsConsoleSnapshot:
     default_profile: str
     profiles: tuple[OutputsProfileCard, ...]
     watermark: OutputsWatermarkCard | None
+    #: 贴图**每一层**一张卡片（含关掉的 —— 面板要让人看见并打开它们）。
+    #: 配置里没有 ``stickers`` 段 ⇒ 空元组（不是 None：空列表本身就是"没有层"）。
+    stickers: tuple[OutputsStickerCard, ...]
     subtitle: OutputsSubtitleCard | None
     limits: dict[str, Any]
 
@@ -201,6 +303,7 @@ class OutputsConsoleSnapshot:
             "default_profile": self.default_profile,
             "profiles": [item.to_dict() for item in self.profiles],
             "watermark": None if self.watermark is None else self.watermark.to_dict(),
+            "stickers": [item.to_dict() for item in self.stickers],
             "subtitle": None if self.subtitle is None else self.subtitle.to_dict(),
             "limits": dict(self.limits),
         }
@@ -284,11 +387,14 @@ def outputs_limits() -> dict[str, Any]:
     """
     profile = EncodingProfileConfig.model_fields
     watermark = WatermarkConfig.model_fields
+    sticker = StickerConfig.model_fields
     subtitle = SubtitleConfig.model_fields
+    safe_area = SafeAreaConfig.model_fields
     return {
         "scalar_fields": ["default_profile"],
         "profile_fields": list(PROFILE_FIELDS),
         "watermark_fields": list(WATERMARK_FIELDS),
+        "sticker_fields": list(STICKER_FIELDS),
         "subtitle_fields": list(SUBTITLE_FIELDS),
         "default_profile": _bounds(OutputsConfig.model_fields["default_profile"]),
         "profile": {
@@ -305,9 +411,22 @@ def outputs_limits() -> dict[str, Any]:
             "width_ratio": _bounds(watermark["width_ratio"]),
             "opacity": _bounds(watermark["opacity"]),
         },
+        "sticker": {
+            # 位置枚举与水域**同一份**（都是 ``WatermarkPosition``）—— 从同一个注解现取，
+            # 于是"水印能放哪几个位置"与"贴图能放哪几个位置"不可能漂开。
+            "positions": list(get_args(sticker["position"].annotation)),
+            "margin_x": _bounds(sticker["margin_x"]),
+            "margin_y": _bounds(sticker["margin_y"]),
+            "height_ratio": _bounds(sticker["height_ratio"]),
+            "opacity": _bounds(sticker["opacity"]),
+        },
         "subtitle": {
             "font_size": _bounds(subtitle["font_size"]),
             "outline": _bounds(subtitle["outline"]),
+            "margin_bottom": _bounds(subtitle["margin_bottom"]),
+            # 嵌套字段（``subtitle.safe_area.bottom``）的上下限同样**现取**：
+            # 抄一份数字到前端，某天改了模型约束就会出现"前端拦着、后端放行"。
+            "safe_area_bottom": _bounds(safe_area["bottom"]),
             "max_chars_per_line": _bounds(subtitle["max_chars_per_line"]),
         },
     }
@@ -358,6 +477,7 @@ class OutputsService:
                 default_profile="",
                 profiles=(),
                 watermark=None,
+                stickers=(),
                 subtitle=None,
                 limits=outputs_limits(),
             )
@@ -373,6 +493,7 @@ class OutputsService:
             default_profile=config.default_profile,
             profiles=self._profile_cards(config),
             watermark=self._watermark_card(config),
+            stickers=self._sticker_cards(config),
             subtitle=self._subtitle_card(config),
             limits=outputs_limits(),
         )
@@ -400,6 +521,7 @@ class OutputsService:
     def _watermark_card(self, config: OutputsConfig) -> OutputsWatermarkCard:
         spec = config.watermark
         canvas_width = config.profiles[config.default_profile].width
+        asset = self._asset_probe(spec.path)
         return OutputsWatermarkCard(
             path=spec.path.as_posix(),
             position=spec.position,
@@ -408,21 +530,80 @@ class OutputsService:
             width_ratio=spec.width_ratio,
             width_px=spec.width_px_for(canvas_width),
             opacity=spec.opacity,
-            exists=self._watermark_exists(spec),
+            exists=asset.exists,
+            usable=asset.usable,
+            problem=asset.problem,
         )
 
-    def _watermark_exists(self, spec: WatermarkConfig) -> bool:
-        """水印文件在不在。
+    def _sticker_cards(self, config: OutputsConfig) -> tuple[OutputsStickerCard, ...]:
+        """贴图**每一层**一张卡片，顺序 = YAML 里的声明顺序（= 叠放顺序）。
+
+        ``usable`` / ``problem`` 逐层各测一次（**不是**看整段有没有图）：一层是坏图
+        不该连累另一层 —— 与渲染路径"每一层各自判断"同一条。
+        """
+        canvas_height = config.profiles[config.default_profile].height
+        cards: list[OutputsStickerCard] = []
+        for name, spec in config.stickers.items():
+            # 实测**只做一次**：`probe_png` 会读文件头 + 算 sha256，三层各测三遍
+            # 就是三倍磁盘 IO，而且三份结论还可能不一致（文件在两次之间被换掉）。
+            asset = self._asset_probe(spec.path)
+            speaking_asset = self._asset_probe(spec.speaking_path) if spec.speaking_path is not None else None
+            cards.append(
+                OutputsStickerCard(
+                    name=name,
+                    enabled=spec.enabled,
+                    path=spec.path.as_posix(),
+                    speaker=spec.speaker,
+                    speaking_path=None if spec.speaking_path is None else spec.speaking_path.as_posix(),
+                    position=spec.position,
+                    margin_x=spec.margin_x,
+                    margin_y=spec.margin_y,
+                    height_ratio=spec.height_ratio,
+                    height_px=spec.height_px_for(canvas_height),
+                    opacity=spec.opacity,
+                    exists=asset.exists,
+                    usable=asset.usable,
+                    problem=asset.problem,
+                    speaking_usable=speaking_asset is not None and speaking_asset.usable,
+                    speaking_problem=speaking_problem(
+                        speaking_path=spec.speaking_path,
+                        speaker=spec.speaker,
+                        asset=speaking_asset,
+                    ),
+                    speaking_warnings=(
+                        () if speaking_asset is None else aspect_warnings(asset, speaking_asset)
+                    ),
+                )
+            )
+        return tuple(cards)
+
+    def _asset_probe(self, path: Path) -> PngAsset:
+        """这一层的图**实测**成什么样（水印与贴图共用一份判据）。
 
         相对路径按 **STUDIO_HOME** 解析（`config/outputs.yaml` 的注释就是这么写的：
-        "路径相对 STUDIO_HOME"）。文件不在 ⇒ 渲染**跳过水印继续出片**，并把原因写进
-        `RenderJob.result.watermark_skipped_reason`（判断只在 `render.watermark.plan_watermark`
-        一处）—— 面板**提前**说出来，省得人出了片才发现没水印、又去查是不是坏了。
+        "路径相对 STUDIO_HOME"）。文件不在 / 不是 PNG / 没有透明通道 ⇒ 渲染**跳过这一层
+        继续出片**，并把原因写进 `RenderJob.result`（判断只在
+        `render.watermark.plan_watermark` / `render.sticker.plan_stickers` 一处）。
+
+        ★ 这里**必须**用 `probe_png` 而不是 `is_file()`：面板与渲染路径报的要是
+        **同一件事**。"盘上有这么个文件"与"渲染真的会贴上"之间的那段距离（扩展名叫
+        `.png` 的 WebP / JPEG / 没 alpha 的 PNG），恰好就是用户唯一会来面板上问的那句
+        "我开了它，为什么片子上没有"。只做 `is_file()` 时那个绿点会**替渲染撒谎**。
+
+        `home` 为 `None`（单测里不传）⇒ 判不了，如实说"判不了"而不是"没有"。
         """
         if self._home is None:
-            return False
-        candidate = spec.path if spec.path.is_absolute() else self._home / spec.path
-        return candidate.is_file()
+            return PngAsset(
+                path=path,
+                exists=False,
+                width_px=None,
+                height_px=None,
+                has_alpha=False,
+                sha256="",
+                problem="没有可用的 STUDIO_HOME，这张图判不了",
+            )
+        candidate = path if path.is_absolute() else self._home / path
+        return probe_png(candidate)
 
     @staticmethod
     def _subtitle_card(config: OutputsConfig) -> OutputsSubtitleCard:
@@ -434,6 +615,8 @@ class OutputsService:
             outline=spec.outline,
             shadow=spec.shadow,
             margin_bottom=spec.margin_bottom,
+            safe_area_bottom=spec.safe_area.bottom,
+            margin_v=spec.margin_v,
             max_chars_per_line=spec.max_chars_per_line,
             max_lines=spec.max_lines,
         )
@@ -546,8 +729,9 @@ def _describe(changes: Mapping[str, Any]) -> tuple[str, ...]:
     fields: list[str] = []
     if "default_profile" in changes:
         fields.append("default_profile")
-    for name, patch in (changes.get("profiles") or {}).items():
-        fields.extend(f"profiles.{name}.{field}" for field in patch)
+    for section in ("profiles", "stickers"):
+        for name, patch in (changes.get(section) or {}).items():
+            fields.extend(f"{section}.{name}.{field}" for field in patch)
     for section in ("watermark", "subtitle"):
         fields.extend(f"{section}.{field}" for field in (changes.get(section) or {}))
     return tuple(fields)
@@ -579,9 +763,23 @@ def _lookup(config: OutputsConfig, field: str) -> Any:
     if head == "profiles" and len(parts) == 3:
         profile = config.profiles.get(parts[1])
         return None if profile is None else _profile_value(profile, parts[2])
+    if head == "stickers" and len(parts) == 3:
+        sticker = config.stickers.get(parts[1])
+        return None if sticker is None else _literal(getattr(sticker, parts[2], None))
     if head in ("watermark", "subtitle") and len(parts) == 2:
         return getattr(getattr(config, head), parts[1], None)
     return None
+
+
+def _literal(value: Any) -> Any:
+    """留痕里记的**必须是字面量**（能进 JSON），不是模型对象。
+
+    贴图的 ``path`` 在模型上是 ``Path`` —— 直接塞进 ``before``/``after`` 会让审计写入
+    在 JSON 序列化那一步炸掉，而那时配置**已经落盘**了（"留痕失败 ⇒ 状态已经变了，
+    必须记 error 级日志"）。所以在这里就换算成与写进 YAML 完全一样的那个字面量
+    （正斜杠字符串），顺带让"审计里的值"与"文件里的值"逐字一致，方便比对。
+    """
+    return scalar_for_write(value)
 
 
 def _profile_value(profile: EncodingProfileConfig, name: str) -> Any:

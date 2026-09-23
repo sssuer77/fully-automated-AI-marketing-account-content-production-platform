@@ -39,6 +39,7 @@ from studio.domain.script import (
     DirectorOutput,
     ScriptRules,
     WriterOutput,
+    ending_asks_audience,
     find_forbidden,
 )
 from studio.domain.text import compact_ws, count_chars
@@ -191,7 +192,7 @@ class LlmChannelDetail(BaseModel):
 class ReviewIssue(BaseModel):
     """审稿指出的一个问题（★ 也是 Editor 的改动授权范围，§04.1.6）。
 
-    ``target`` 是**机器可读**的落点（``hook`` / ``segment:3`` / ``cta`` / ``global``）：
+    ``target`` 是**机器可读**的落点（``title`` / ``hook`` / ``segment:3`` / ``cta`` / ``global``）：
     Editor 的"只改被指出的问题"要能机检，靠的就是它 —— 自由文本没法机检。
     """
 
@@ -380,7 +381,10 @@ def evaluate_rule_channel(
         for term in find_forbidden(body_md, forbidden)
     ]
     opening_ok = bool(hook.strip()) and count_chars(hook) <= HOOK_MAX_CHARS
-    ending_ok = bool(cta.strip())
+    # 结尾的判据是**两件事**：写了，而且**没有向观众提问**（裁定 394 后半）。
+    # 以前只看“非空”，于是“评论区打俩字：牛肉还是五仁？”这种结尾照样满分 ——
+    # 而用户要的恰恰相反：结尾的职责是把观点钉死。
+    ending_ok = bool(cta.strip()) and ending_asks_audience(cta) is None
     return RuleChannelDetail(
         length=ChannelItem(
             score=length,
@@ -476,8 +480,11 @@ def check_edit(
     """ "只改被指出的问题"的机检（§04.1.6 约束 1）。
 
     判据是**句子级**的：``issues[].target`` 里的 ``segment:N`` 映射到第 N 段覆盖的
-    句子区间，``hook`` / ``cta`` / ``global`` 各自对应开场句、收尾句、全篇。没被指到
-    的句子逐字变了 ⇒ ``edited:out_of_scope:第N句``。
+    句子区间，``title`` / ``hook`` / ``cta`` / ``global`` 各自对应标题、开场句、
+    收尾句、全篇。没被指到的句子逐字变了 ⇒ ``edited:out_of_scope:第N句``。
+
+    标题与开场、结尾同样受这一条约束（2026-09-23 补）：标题原先**完全没被检**，
+    于是改稿 Agent 可以顺手换掉一个没被指到的标题，而面板上看不出发生过什么。
 
     为什么按句而不是 diff 行数：句长本来就 ≤28 字，diff 行数会被"多断一句"这种无关
     变化搅乱；按句比才能精确说清"第 7 句不该动"。
@@ -502,6 +509,8 @@ def check_edit(
         problems.append("edited:out_of_scope:hook")
     if original.cta != edited.cta and not _covers(issues, "cta", segments, len(original.sentences)):
         problems.append("edited:out_of_scope:cta")
+    if original.title != edited.title and not _covers(issues, "title", segments, len(original.sentences)):
+        problems.append("edited:out_of_scope:title")
 
     return EditReport(
         problems=problems,
@@ -537,7 +546,7 @@ def allowed_sentences(issues: list[ReviewIssue], *, total: int, segments: int = 
 
 
 def _covers(issues: list[ReviewIssue], target: str, segments: int, total: int) -> bool:
-    """``issues`` 是否授权改 ``target``（``hook`` / ``cta``；``global`` 通吃）。"""
+    """``issues`` 是否授权改 ``target``（``title`` / ``hook`` / ``cta``；``global`` 通吃）。"""
     if any(issue.target.strip() == "global" for issue in issues):
         return True
     return any(issue.target.strip() == target for issue in issues)

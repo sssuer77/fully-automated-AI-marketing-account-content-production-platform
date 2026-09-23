@@ -101,6 +101,8 @@ function platforms(overrides: Partial<PublishPlatformsView> = {}): PublishPlatfo
         accounts: ["acc_main"],
         selectable: true,
         note: "真平台：要登录态，发出去不可撤销",
+        calibration: "calibrated",
+        calibration_note: "已真机校准（2026-09-23）",
       },
       {
         code: "other",
@@ -110,6 +112,8 @@ function platforms(overrides: Partial<PublishPlatformsView> = {}): PublishPlatfo
         accounts: ["_rehearsal"],
         selectable: true,
         note: "本地演练台：发到本机靶页，不是真平台",
+        calibration: "n/a",
+        calibration_note: "",
       },
       {
         code: "kuaishou",
@@ -119,6 +123,8 @@ function platforms(overrides: Partial<PublishPlatformsView> = {}): PublishPlatfo
         accounts: [],
         selectable: false,
         note: "没有启用账号",
+        calibration: "uncalibrated",
+        calibration_note: "",
       },
     ],
     default_platforms: ["douyin"],

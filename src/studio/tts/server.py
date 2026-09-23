@@ -22,7 +22,7 @@
 2. **``out_path`` 不许逃出 ``data/``**：绝对路径与 ``..`` 一律拒（§04.3.5 路径穿越防护）。
 3. **不画假数据**：``POST``/``DELETE /voices`` 返回 **501** 并说清注册在哪
    （T2.4 的 ``scripts/ingest_voice_src.py`` 与素材库面板）。在这里再实现一遍入库，
-   等于把"四条硬拒 + R2 留痕"复制成两份 —— 两份判定迟早对不上（陷阱 #150 同族）。
+   等于把"三条硬拒 + R2 留痕"复制成两份 —— 两份判定迟早对不上（陷阱 #150 同族）。
 
 "就绪"与"已加载"是两件事
 ------------------------
@@ -36,7 +36,7 @@ import json
 import os
 import threading
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import asynccontextmanager
@@ -51,13 +51,17 @@ from pydantic import BaseModel, ConfigDict, Field
 from studio.core.config import TtsConfig, TtsServerConfig, load_tts_config
 from studio.core.errors import ErrorCode, StudioError
 from studio.core.logging import get_logger
+from studio.core.media import ffmpeg_binary, probe_media, run_command
 from studio.core.paths import StudioPaths
 from studio.tts.cosyvoice import CosyVoiceBackend, EngineState
 
 __all__ = [
     "ENGINE_NAME",
+    "PromptBuild",
     "TtsService",
+    "VoiceRef",
     "VoiceRegistry",
+    "build_prompt",
     "build_service",
     "create_app",
     "resolve_out_path",
@@ -68,6 +72,21 @@ logger = get_logger("studio.tts.server")
 
 #: 引擎名（进缓存键与 ``/health``；换引擎必须换这个名字，好让旧缓存整体失效）
 ENGINE_NAME: Final[str] = "cosyvoice2"
+
+#: 拼出来的 prompt 时长上限（毫秒）。
+#:
+#: 引擎对**每一段 prompt** 有 30 秒硬上限（``cosyvoice/cli/frontend.py``：
+#: ``assert speech.shape[1] / 16000 <= 30``，超了当场抛异常）。拼接是**我们自己做的**，
+#: 所以留 1 秒余量：重采样到 16 kHz 的取整不至于把 29 秒顶成"30 秒零几毫秒"。
+VOICE_PROMPT_MAX_MS: Final[int] = 29_000
+
+#: 段与段之间插的静音（毫秒）。两段首尾直接相接是一个波形跳变 —— 引擎照着这段 prompt
+#: 学"怎么说话"，接缝上的爆音会被一起学进去。300ms 是句与句之间的自然停顿。
+VOICE_PROMPT_GAP_MS: Final[int] = 300
+
+#: 拼接命令的超时（秒）。拼的是几段几秒的音频，真机 0.2 秒上下；给宽是因为
+#: 它可能与本机的渲染池抢 CPU。
+CONCAT_TIMEOUT_SEC: Final[int] = 60
 
 #: 音色 id 的字符集（与素材库入库同一条：目录名就是 id）
 VOICE_ID_PATTERN: Final[str] = r"^[A-Za-z0-9_]{1,64}$"
@@ -190,7 +209,11 @@ class SynthResponse(BaseModel):
     engine: str = ENGINE_NAME
     engine_revision: str
     voice_id: str
-    ref_wav: str
+    #: 这一次实际**拼进 prompt** 的是哪几段（顺序即拼接顺序）。
+    ref_wavs: list[str]
+    #: 因为总长超过 :data:`VOICE_PROMPT_MAX_MS` 而没进 prompt 的段。留着它，
+    #: "我给了 5 段、到底用上几段"这件事在响应里就有答案，不用去猜。
+    dropped_refs: list[str] = Field(default_factory=list)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -200,11 +223,16 @@ class SynthResponse(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class VoiceRef:
-    """一次克隆要的三样东西：参考音路径 + 与它**逐字**对应的文本 + 音色 id。"""
+    """一次克隆要的两样东西：参考音（**全部段**）+ 与它们**逐字**对应的文本。
+
+    为什么带着**全部**段而不是第一段：合成会把它们拼成一段 prompt
+    （见 :func:`build_prompt`) —— 引擎听到的原声越多，音色越像、越稳。
+    ``ref_wavs`` 与 ``ref_texts`` **一一对应**（第 N 段 ↔ 第 N 行）。
+    """
 
     voice_id: str
-    ref_wav: Path
-    ref_text: str
+    ref_wavs: tuple[Path, ...]
+    ref_texts: tuple[str, ...]
 
 
 class VoiceRegistry:
@@ -230,7 +258,8 @@ class VoiceRegistry:
 
     def _describe(self, root: Path) -> VoiceInfo:
         wavs = sorted(root.glob("ref_*.wav"))
-        text = _first_line(root / "ref.txt")
+        lines = _ref_lines(root / "ref.txt")
+        text = lines[0] if lines else None
         origin, note = _read_profile(root / "profile.json")
         if not wavs:
             detail = "目录里没有 ref_*.wav"
@@ -249,14 +278,17 @@ class VoiceRegistry:
         )
 
     def resolve(self, voice_id: str) -> VoiceRef:
-        """音色 id ⇒ 参考音与参考文本（缺什么就说什么，不猜）。
+        """音色 id ⇒ 参考音（**全部段**）与逐字文本（缺什么就说什么，不猜）。
+
+        **只带上"配得上文本的段"**：prompt 文本必须与 prompt 音频逐字对应，多出来的段
+        没有对应文本就没法用（入库时那条 warning 说的就是这件事）。
 
         :raises StudioError: ``TTS_VOICE_MISSING``（附 ``context.available``）
         """
         root = self.voice_src_dir / voice_id
         wavs = sorted(root.glob("ref_*.wav")) if root.is_dir() else []
-        text = _first_line(root / "ref.txt")
-        if not wavs or text is None:
+        lines = _ref_lines(root / "ref.txt")
+        if not wavs or not lines:
             available = [item.id for item in self.list() if item.usable]
             missing = "目录" if not root.is_dir() else ("参考音" if not wavs else "ref.txt")
             raise StudioError(
@@ -269,21 +301,152 @@ class VoiceRegistry:
                     "available": available,
                 },
                 remediation=(
-                    "按 §4.3.1 放进 2–3 段 2–30 秒原声 + ref.txt（逐字文本），"
+                    "放进至少 1 段 2–30 秒的原声 + ref.txt（逐字文本，一行对应一段），"
                     "再跑 scripts/ingest_voice_src.py；换音色不必改代码"
                 ),
             )
-        return VoiceRef(voice_id=voice_id, ref_wav=wavs[0], ref_text=text)
+        usable = min(len(wavs), len(lines))
+        return VoiceRef(
+            voice_id=voice_id,
+            ref_wavs=tuple(wavs[:usable]),
+            ref_texts=tuple(lines[:usable]),
+        )
 
 
-def _first_line(path: Path) -> str | None:
-    """``ref.txt`` 的第一行（第 1 段参考音对应的逐字文本）。"""
+def _ref_lines(path: Path) -> tuple[str, ...]:
+    """``ref.txt`` 的**全部非空行**（第 N 行 ↔ 第 N 段参考音）。"""
     if not path.is_file():
-        return None
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            return line.strip()
-    return None
+        return ()
+    text = path.read_text(encoding="utf-8")
+    return tuple(line.strip() for line in text.splitlines() if line.strip())
+
+
+@dataclass(frozen=True, slots=True)
+class PromptBuild:
+    """这一次合成实际用的 prompt：落盘的 wav + 与它**逐字对应**的文本 + 用了哪几段。"""
+
+    wav: Path
+    text: str
+    used: tuple[str, ...]
+    dropped: tuple[str, ...]
+
+
+def _join_ref_texts(texts: Sequence[str]) -> str:
+    """把各段的逐字文本拼成一段 prompt 文本（段间用句号断开）。
+
+    先削掉每段自己末尾的句读，免得拼出"第一句。。第二句" —— prompt 文本与 prompt 音频
+    是**逐字对应**的，多一个字符就是多一个字符。
+    """
+    return "。".join(text.strip().rstrip("。．.!！?？,，、;；") for text in texts)
+
+
+def _probe_duration_ms(path: Path) -> int:
+    """一段参考音多长（ffprobe）。读不出来 ⇒ ``TTS_VOICE_MISSING``。
+
+    为什么要量：拼接的总长必须压在引擎的 30 秒硬上限之下，而"哪一段放不下"只有量过
+    才知道。翻成 ``TTS_*`` 而不是让 ``MEDIA_*`` 漏出去 —— ``/synth`` 能抛哪些码是它的
+    契约（§04.3.3 的决策表照着它分派），多一种码会让那条链路的降级判据分叉。
+    """
+    try:
+        return probe_media(path).duration_ms
+    except StudioError as exc:
+        raise StudioError(
+            f"读不出参考音的时长：{path.name}（{exc.message}）",
+            code=ErrorCode.TTS_VOICE_MISSING,
+            context={"ref_wav": str(path)},
+            remediation="这一段可能坏了 ⇒ 换一份能播放的原声，重新入库",
+        ) from exc
+
+
+def _concat_wavs(sources: Sequence[Path], target: Path, *, runner: Any = None) -> None:
+    """把若干段参考音拼成一个 wav（ffmpeg；段间插 :data:`VOICE_PROMPT_GAP_MS` 静音）。
+
+    为什么用 ffmpeg 而不是 numpy：各段的采样率 / 声道数**不保证一致**（入库只要求
+    ≥ 16 kHz），而 ``aformat`` 会把它们统一到 24 kHz 单声道；另外主 venv 里**没有
+    numpy**（这个模块会被 API 进程与单测导入），ffmpeg 是两边都有的那件音频工具箱。
+
+    :raises StudioError: ``TTS_SENTENCE_FAILED``（附 ffmpeg 的尾巴）
+    """
+    call = runner or run_command
+    argv: list[str] = [ffmpeg_binary(), "-y", "-hide_banner", "-loglevel", "error"]
+    for path in sources:
+        argv += ["-i", str(path)]
+    normal = "aformat=sample_fmts=fltp:sample_rates=24000:channel_layouts=mono"
+    gap = VOICE_PROMPT_GAP_MS / 1000
+    # 最后一段不补静音：尾巴上多出来的一段空白对"这人怎么说话"没有贡献。
+    parts = [
+        f"[{index}:a]{normal}" + (f",apad=pad_dur={gap}" if index < len(sources) - 1 else "")
+        for index in range(len(sources))
+    ]
+    chain = ";".join(f"{part}[s{index}]" for index, part in enumerate(parts))
+    sinks = "".join(f"[s{index}]" for index in range(len(sources)))
+    argv += [
+        "-filter_complex",
+        f"{chain};{sinks}concat=n={len(sources)}:v=0:a=1[out]",
+        "-map",
+        "[out]",
+        "-c:a",
+        "pcm_s16le",
+        str(target),
+    ]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    result = call(argv, timeout=CONCAT_TIMEOUT_SEC)
+    if not result.ok:
+        raise StudioError(
+            f"参考音拼接失败（rc={result.returncode}）",
+            code=ErrorCode.TTS_SENTENCE_FAILED,
+            context={"sources": [path.name for path in sources], "stderr": result.tail()},
+            remediation="看这一段 ffmpeg 的输出；坏的那一段可以在素材库里删掉再入库",
+        )
+
+
+def build_prompt(
+    ref: VoiceRef,
+    target: Path,
+    *,
+    duration_ms: Callable[[Path], int] = _probe_duration_ms,
+    runner: Any = None,
+) -> PromptBuild:
+    """把音色的参考音拼成**一段** prompt（引擎一次只吃一段）。
+
+    单段 ⇒ **原样返回那个文件**，不复制、不过 ffmpeg：那是今天的行为，零开销。
+    多段 ⇒ 按 ``ref_01``… 的顺序拼起来，总长封在 :data:`VOICE_PROMPT_MAX_MS`。
+
+    为什么是"拼起来"而不是"每句随机挑一段"（§04.3.2 的原写法）：说话人嵌入是按
+    **整段** prompt 算出来的 ⇒ 拼起来时每一句都用同一份、更长的原声算嵌入，音色在整条
+    片子里是**稳定**的；每句挑一段会让音色逐句抖，而"像不像"恰恰是稳定感。
+    §04.3.2 那句"多段时按 seed 随机选一段"是**当时**的写法，作废。
+
+    第一段**总是**进（入库已经封了它 ≤30s，引擎也收）；后面每一段要"加进去不超上限"
+    才进，放不下的**整段丢掉**并记进 ``dropped`` —— 不截半句：prompt 文本必须与 prompt
+    音频逐字对应，截了音频就没法截文本。
+    """
+    if len(ref.ref_wavs) == 1:
+        return PromptBuild(
+            wav=ref.ref_wavs[0],
+            text=ref.ref_texts[0],
+            used=(ref.ref_wavs[0].name,),
+            dropped=(),
+        )
+
+    picked: list[int] = [0]
+    total_ms = duration_ms(ref.ref_wavs[0])
+    dropped: list[str] = []
+    for index in range(1, len(ref.ref_wavs)):
+        span_ms = VOICE_PROMPT_GAP_MS + duration_ms(ref.ref_wavs[index])
+        if total_ms + span_ms > VOICE_PROMPT_MAX_MS:
+            dropped.append(ref.ref_wavs[index].name)
+            continue
+        picked.append(index)
+        total_ms += span_ms
+
+    _concat_wavs([ref.ref_wavs[index] for index in picked], target, runner=runner)
+    return PromptBuild(
+        wav=target,
+        text=_join_ref_texts([ref.ref_texts[index] for index in picked]),
+        used=tuple(ref.ref_wavs[index].name for index in picked),
+        dropped=tuple(dropped),
+    )
 
 
 def _read_profile(path: Path) -> tuple[str | None, str | None]:
@@ -384,6 +547,8 @@ class TtsService:
         self._monotonic = monotonic
         self._pending = 0
         self._pending_lock = threading.Lock()
+        #: 拼 prompt 的那一小段临界区（见 :meth:`_build_prompt`）
+        self._prompt_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(
             max_workers=server.concurrency,
             thread_name_prefix="tts-synth",
@@ -423,11 +588,12 @@ class TtsService:
         if text:
             try:
                 ref = self._registry.resolve(self._pick_warmup_voice())
+                prompt = self._build_prompt(ref)
                 outcome = self._backend.synthesize(
                     text,
                     self._paths.tmp_dir / "tts_warmup.wav",
-                    ref_wav=ref.ref_wav,
-                    ref_text=ref.ref_text,
+                    ref_wav=prompt.wav,
+                    ref_text=prompt.text,
                 )
                 synth_ms = outcome.synth_ms
             except StudioError as exc:
@@ -497,6 +663,7 @@ class TtsService:
         """按句合成（**带背压**：排队超限 ⇒ 429 ``TTS_BUSY``）。"""
         out_path = resolve_out_path(request, self._paths)
         ref = self._registry.resolve(request.voice_id)
+        prompt = self._build_prompt(ref)
         queue_started = self._monotonic()
         self._enter_queue()
         try:
@@ -504,8 +671,8 @@ class TtsService:
                 self._backend.synthesize,
                 request.text,
                 out_path,
-                ref_wav=ref.ref_wav,
-                ref_text=ref.ref_text,
+                ref_wav=prompt.wav,
+                ref_text=prompt.text,
                 speed=request.speed,
             )
             wait_sec = self._server.request_timeout_sec
@@ -539,7 +706,8 @@ class TtsService:
             queue_wait_ms=max(0, int((self._monotonic() - queue_started) * 1000) - result.synth_ms),
             engine_revision=self._backend.revision,
             voice_id=ref.voice_id,
-            ref_wav=ref.ref_wav.name,
+            ref_wavs=list(prompt.used),
+            dropped_refs=list(prompt.dropped),
         )
 
     def _enter_queue(self) -> None:
@@ -593,6 +761,22 @@ class TtsService:
         return self.unload().freed_mb
 
     # ── 内部 ────────────────────────────────────────────────────────────
+
+    def _prompt_target(self, voice_id: str) -> Path:
+        """拼出来的 prompt 落在哪（``data/tmp/tts_prompt/<音色>.wav``）。
+
+        放 ``tmp`` 而不是缓存目录：它**每次合成都会重写** —— 参考音换了，下一句就跟着换，
+        没有"这份缓存什么时候失效"这个问题（缓存才需要回答那个问题）。
+        """
+        return self._paths.tmp_dir / "tts_prompt" / f"{voice_id}.wav"
+
+    def _build_prompt(self, ref: VoiceRef) -> PromptBuild:
+        """拼 prompt。**加锁**：多个请求会写到同一个目标文件。
+
+        锁只护住拼接（几十到几百毫秒），推理仍在 executor 里跑 —— 那才是要串行的那一段。
+        """
+        with self._prompt_lock:
+            return build_prompt(ref, self._prompt_target(ref.voice_id))
 
     def _pick_warmup_voice(self) -> str:
         """预热用哪个音色：**第一个能用的**。一个都没有 ⇒ 抛 TTS_VOICE_MISSING，

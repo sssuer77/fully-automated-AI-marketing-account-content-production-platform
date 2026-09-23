@@ -58,6 +58,7 @@ import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, Protocol, cast
+from urllib.parse import urlsplit
 
 from studio.agents.base import AgentContext, AgentResult
 from studio.core.config import PersonaConfig
@@ -72,6 +73,8 @@ from studio.domain.topics import (
     DB_TO_SENTIMENT,
     DIRECTION_COUNT_MAX,
     DIRECTION_COUNT_MIN,
+    NEWS_EVIDENCE_KIND,
+    NEWS_SUMMARY_UNKNOWN,
     SENTIMENT_TO_DB,
     ClassifiedItem,
     DedupAction,
@@ -82,10 +85,15 @@ from studio.domain.topics import (
     FeedbackBatchItem,
     FeedbackClassification,
     FeedbackItemSpec,
+    GroundingRef,
     HookType,
     HotItemSpec,
     IdeatorInput,
     IdeatorOutput,
+    NewsBatch,
+    NewsItemSpec,
+    NewsScoutResult,
+    NewsVerdict,
     PlannerInput,
     PlannerOutput,
     RuleReport,
@@ -94,22 +102,28 @@ from studio.domain.topics import (
     build_feedback_digest,
     dedup_topic,
     sentiment_to_kind,
+    visual_leak_words,
 )
 from studio.services.input_service import ImportReport, InputService
 from studio.services.log_service import LogSink
+from studio.services.news_service import NEWS_LIMIT, NewsFetcherLike, fetch_news
 
 __all__ = [
     "DEDUP_POOL_LIMIT",
     "DIGEST_TOP_N",
+    "DIRECTION_TITLE_MAX",
     "EXISTING_TITLE_LIMIT",
     "FEEDBACK_BATCH_SIZE",
     "FEEDBACK_LIMIT",
     "HOT_LIMIT",
     "MANUAL_BATCH_ID",
     "MANUAL_DIRECTION_TITLE",
+    "NEWS_DIRECTION_PRIORITY",
+    "NEWS_SCOUT_BATCH_SIZE",
     "TOPICS_PER_DIRECTION",
     "AnalyzeReport",
     "ClassifierLike",
+    "ClearTopicsOutcome",
     "DirectionDeleteOutcome",
     "DirectionEditOutcome",
     "DirectionOutcome",
@@ -117,12 +131,16 @@ __all__ = [
     "IdeatorLike",
     "ManualDirectionOutcome",
     "ManualTopicOutcome",
+    "NewsPullReport",
+    "NewsScoutLike",
+    "NewsSkip",
     "PlannerLike",
     "TopicDeleteOutcome",
     "TopicEditOutcome",
     "TopicService",
     "classify_by_keywords",
     "db_sentiment",
+    "direction_facts",
     "direction_spec_from_row",
     "topic_spec_from_row",
 ]
@@ -139,6 +157,18 @@ MANUAL_BATCH_ID: Final[str] = "manual"
 
 #: 人工加选题的方向标题（面板展示用）
 MANUAL_DIRECTION_TITLE: Final[str] = "人工加选题"
+
+#: 方向标题的上限（与 ``ManualDirectionBody.title`` / ``DirectionPatchBody.title`` 同源）
+DIRECTION_TITLE_MAX: Final[int] = 120
+
+#: 一次送多少条新闻去评测（分块 ⇒ 某一批失败不至于全灭，也压住单次提示词的长度）
+NEWS_SCOUT_BATCH_SIZE: Final[int] = 25
+
+#: 新闻挑出来的方向的优先级：与模型产的**同一档**（100）
+#:
+#: 不做「新闻优先」的插队：排序是用户看得见、改得动的那一列（方向卡片上有优先级），
+#: 偷偷给一个更小的数，等于让人以为"这批方向本来就是这么排的"。
+NEWS_DIRECTION_PRIORITY: Final[int] = 100
 
 #: structlog 的保留键：``_emit`` 的兜底分支要把 payload 展开成 kwargs，这些键会撞车
 _LOG_RESERVED: Final[frozenset[str]] = frozenset({"event", "level", "logger", "message", "timestamp"})
@@ -216,6 +246,12 @@ class ClassifierLike(Protocol):
     """反馈分类 Agent 的结构类型（``FeedbackClassifierAgent`` 满足它）。"""
 
     async def run(self, ctx: AgentContext, payload: FeedbackBatch) -> AgentResult[FeedbackClassification]: ...
+
+
+class NewsScoutLike(Protocol):
+    """新闻评测 Agent 的结构类型（``NewsScoutAgent`` 满足它）。"""
+
+    async def run(self, ctx: AgentContext, payload: NewsBatch) -> AgentResult[NewsScoutResult]: ...
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -396,14 +432,24 @@ class TopicEditOutcome:
 
 @dataclass(frozen=True, slots=True)
 class TopicDeleteOutcome:
-    """一次「删选题」的结果（``deleted=False`` = 服务层到这一行时它已经没了）。"""
+    """一次「删选题」的结果（``deleted=False`` = 服务层到这一行时它已经没了）。
+
+    ``detached_task_id`` = 这条选题派生过的那条任务号 —— **它不跟着走**。删掉的是想法，
+    不是活（见 :meth:`TopicService.delete_topic`）。
+    """
 
     topic_id: str
     title: str
     deleted: bool
+    detached_task_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"topic_id": self.topic_id, "title": self.title, "deleted": self.deleted}
+        return {
+            "topic_id": self.topic_id,
+            "title": self.title,
+            "deleted": self.deleted,
+            "detached_task_id": self.detached_task_id,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,6 +460,39 @@ class ManualDirectionOutcome:
 
     def to_dict(self) -> dict[str, Any]:
         return {"direction": _direction_snapshot(self.direction)}
+
+
+@dataclass(frozen=True, slots=True)
+class NewsSkip:
+    """一条没被留下的新闻（``reason`` 是给人看的一句话）。"""
+
+    title: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class NewsPullReport:
+    """一次「拉今日新闻 ⇒ 评测 ⇒ 留方向」的结果。
+
+    ``ok`` 说的是**评测这一步跑通没有**，不是"留下几条"：跑了但一条都没挑中（``ok=True``
+    + ``kept`` 为空）与压根没跑起来（``ok=False`` + ``error_code``）是两件事 —— 前者不需要
+    用户做任何事，后者要他去配通道。
+    """
+
+    ok: bool
+    source: str = ""
+    fetched: int = 0
+    evaluated: int = 0
+    batch_id: str | None = None
+    kept: list[DirectionRow] = field(default_factory=list)
+    skipped: list[NewsSkip] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    error_code: str | None = None
+    error_message: str | None = None
+
+    @property
+    def kept_count(self) -> int:
+        return len(self.kept)
 
 
 @dataclass(frozen=True, slots=True)
@@ -429,12 +508,17 @@ class DirectionEditOutcome:
 
 @dataclass(frozen=True, slots=True)
 class DirectionDeleteOutcome:
-    """一次「删方向」的结果（``cascaded_topics`` = 跟着走的候选条数）。"""
+    """一次「删方向」的结果。
+
+    ``cascaded_topics`` = 跟着走的候选条数；``detached_task_count`` = 那些候选里**已经派生过
+    任务**的条数 —— 那些任务不跟着走，照跑（见 :meth:`TopicService.delete_direction`）。
+    """
 
     direction_id: str
     title: str
     deleted: bool
     cascaded_topics: int = 0
+    detached_task_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -442,6 +526,29 @@ class DirectionDeleteOutcome:
             "title": self.title,
             "deleted": self.deleted,
             "cascaded_topics": self.cascaded_topics,
+            "detached_task_count": self.detached_task_count,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ClearTopicsOutcome:
+    """一次「清除所有选题」的结果（``dry_run=True`` ⇒ 只报数，一个字节都不动）。
+
+    ``detached_task_count`` = 被清掉的那些选题里**已经派生过任务**的条数 —— 那些任务
+    不跟着走，照跑（与 :meth:`TopicService.delete_topic` 同一条：删掉的是想法，不是活）。
+    """
+
+    dry_run: bool
+    directions: int = 0
+    topics: int = 0
+    detached_task_count: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "dry_run": self.dry_run,
+            "directions": self.directions,
+            "topics": self.topics,
+            "detached_task_count": self.detached_task_count,
         }
 
 
@@ -644,6 +751,8 @@ class TopicService:
         planner: PlannerLike,
         ideator: IdeatorLike,
         classifier: ClassifierLike | None = None,
+        scout: NewsScoutLike | None = None,
+        news_fetcher: NewsFetcherLike | None = None,
         paths: StudioPaths | None = None,
         log: LogSink | None = None,
         input_service: InputService | None = None,
@@ -652,6 +761,9 @@ class TopicService:
         self._planner = planner
         self._ideator = ideator
         self._classifier = classifier
+        self._scout = scout
+        #: 新闻抓取器（可注入假件；缺省走 ``news_service.fetch_news``）
+        self._fetch_news: NewsFetcherLike = news_fetcher or fetch_news
         self._paths = paths or StudioPaths.from_env()
         self._log = log
         self._input = input_service or InputService(connection, paths=self._paths, log=log)
@@ -968,6 +1080,7 @@ class TopicService:
         kept: list[TopicSpec] = []
         dropped = 0
         demoted = 0
+        leaked = 0
         for seq, topic in enumerate(result.data.topics, start=1):
             dedup = dedup_topic(topic.title, pool)
             if dedup.action is DedupAction.DROP:
@@ -980,6 +1093,16 @@ class TopicService:
                 continue
             if dedup.action is DedupAction.DEMOTE:
                 demoted += 1
+            # 画面词串味（§04.1.3 落地口径 6）：**发 warn，不拦** —— 拦掉会连带丢掉一条
+            # 题材可能没问题的选题，而人只要看一眼日志就知道该改哪个词。
+            words = visual_leak_words(f"{topic.title} {topic.angle}")
+            if words:
+                leaked += 1
+                self._emit(
+                    "warn",
+                    f"选题《{topic.title}》把画面词写进了内容：{'、'.join(words)}",
+                    payload={"direction_id": row.id, "words": words},
+                )
             payloads.append(_topic_payload(direction_id=row.id, topic=topic, seq=seq, dedup=dedup))
             kept.append(topic)
             pool.append(ExistingTopic(id=None, title=topic.title, dedup_hash=dedup.dedup_hash))
@@ -992,7 +1115,8 @@ class TopicService:
             # 某个方向失败时无法区分"这个方向没产出"与"整批还没跑完"。
             self._emit(
                 "info",
-                f"方向《{row.title}》产出 {len(ids)} 个选题",
+                f"方向《{row.title}》产出 {len(ids)} 个选题"
+                + (f"（其中 {leaked} 条把画面词写进了内容，见上面的 warn）" if leaked else ""),
                 payload={
                     "direction_id": row.id,
                     "topics": [
@@ -1262,12 +1386,15 @@ class TopicService:
         return TopicEditOutcome(topic=updated, changed=changed, warnings=warnings)
 
     def delete_topic(self, *, topic_id: str, actor: str = "user") -> TopicDeleteOutcome:
-        """硬删一条选题（**派生过任务的不给删**）。
+        """硬删一条选题（**派生过任务也照删**）。
 
-        为什么只拦「有任务」这一种：任务是通过 ``topic_id`` 反查选题的
-        （``ScriptService.draft`` 先 ``topics.get(topic_id)``），选题没了那条任务就
-        再也写不出稿 —— 这不是门禁，是**删掉之后会立刻断链**的那一种。
-        其余状态（``rejected`` / ``expired`` / 老的 ``candidate``）删掉不牵连任何东西。
+        为什么原来拦的那一条现在不成立了：那条拦下的理由是"选题没了，任务就再也写不出稿"
+        —— 因为 ``ScriptService.draft`` 先 ``topics.get(topic_id)``。现在 ``draft`` 在选题行
+        没了的时候按**任务自己带着的那份**继续（``tasks.title`` + ``payload_json`` 的 angle /
+        hook_type），所以删选题不会再让任何一条已经排队的活断链。留下的是一列删不掉的选题
+        （用户原话：「堆积太多内容会难以管理」），换来的只是一个早就不成立的理由。
+
+        **删掉的是想法，不是活**：任务照跑，``detached_task_id`` 把这件事如实说给面板。
         """
         row = self._topics.get(topic_id)
         if row is None:
@@ -1277,13 +1404,7 @@ class TopicService:
                 context={"topic_id": topic_id},
                 remediation="刷新选题池 —— 可能已经被别的标签页删掉了",
             )
-        if row.task_id:
-            raise StudioError(
-                f"《{row.title}》已经派生过任务，不能直接删",
-                code=ErrorCode.TOPIC_SELECT_INVALID,
-                context={"topic_id": topic_id, "task_id": row.task_id},
-                remediation=f"先处理任务 {row.task_id}（删掉它或让它跑完），再回来删这条选题",
-            )
+        detached = row.task_id
         deleted = self._topics.delete(topic_id)
         self._audit.record(
             actor=actor,
@@ -1291,15 +1412,22 @@ class TopicService:
             target_type="topic",
             target_id=topic_id,
             before=_edit_snapshot(row),
+            after={"detached_task_id": detached},
             reason="WebUI 删除选题",
             source="webui",
         )
         self._emit(
             "info",
-            f"选题《{row.title}》已删除",
-            payload={"topic_id": topic_id, "direction_id": row.direction_id},
+            f"选题《{row.title}》已删除" + (f"（任务 {detached} 不跟着走，照跑）" if detached else ""),
+            payload={
+                "topic_id": topic_id,
+                "direction_id": row.direction_id,
+                "detached_task_id": detached,
+            },
         )
-        return TopicDeleteOutcome(topic_id=topic_id, title=row.title, deleted=deleted)
+        return TopicDeleteOutcome(
+            topic_id=topic_id, title=row.title, deleted=deleted, detached_task_id=detached
+        )
 
     # ── 方向 · 人工写 / 改 / 删（T4.3 追加）──────────────────────────
     def add_manual_direction(
@@ -1319,6 +1447,160 @@ class TopicService:
         ``analyze`` 又会反过来把人写的盖掉。``batch_id`` 缺省取最近一批；一条批次
         都没有（全新库）时才落到 :data:`MANUAL_BATCH_ID`。
         """
+        row = self._insert_direction(
+            title=title,
+            rationale=rationale,
+            priority=priority,
+            batch_id=batch_id,
+            actor=actor,
+            reason="人工写方向",
+        )
+        return ManualDirectionOutcome(direction=row)
+
+    # ── ④ 今日新闻 → 方向（T5.12）───────────────────────────────────
+    async def pull_news_directions(
+        self,
+        *,
+        persona: PersonaConfig,
+        trace_id: str | None = None,
+        limit: int = NEWS_LIMIT,
+        batch_id: str | None = None,
+    ) -> NewsPullReport:
+        """抓今日新闻 ⇒ 模型逐条评测 ⇒ **值得写的**落成方向（写进当前批次）。
+
+        落点与 :meth:`add_manual_direction` 是**同一条路**（同一个 :meth:`_insert_direction`）：
+        方向这一列是"这一批要做什么"，新闻挑出来的与手写的、模型产的混在一起才看得见全貌。
+
+        **只有 ``keep`` 才写库**：评测失败 / 模型漏条 / ``ref`` 对不上 ⇒ 那一条当没挑中，在
+        ``skipped`` 里如实报一句。反过来（拿不准也写进去）会让"值不值得写"这道判断悄悄失效，
+        而用户看到的是一列看起来很正常的方向。
+        """
+        if self._scout is None:
+            raise StudioError(
+                "没有可用的模型通道，评测跑不了",
+                code=ErrorCode.LLM_ROUTE_MISSING,
+                remediation="到「设置」面板配一条云端通道与密钥，再点一次",
+            )
+
+        trace = trace_id or new_ulid()
+        items = await self._fetch_news(limit=limit)
+        warnings: list[str] = []
+        kept: list[DirectionRow] = []
+        skipped: list[NewsSkip] = []
+        ctx = AgentContext(persona=persona, trace_id=trace)
+        evaluated = 0
+        first_error: str | None = None
+
+        for start in range(0, len(items), NEWS_SCOUT_BATCH_SIZE):
+            chunk = items[start : start + NEWS_SCOUT_BATCH_SIZE]
+            result = await self._scout.run(ctx, NewsBatch(items=list(chunk)))
+            if not result.ok or result.data is None:
+                code = result.error_code or "unknown"
+                first_error = first_error or code
+                warnings.append(f"news_scout_failed:{code}")
+                skipped.extend(NewsSkip(title=item.title, reason="评测没跑出来") for item in chunk)
+                continue
+            warnings.extend(result.warnings)
+            by_ref = {verdict.ref: verdict for verdict in result.data.items}
+            for item in chunk:
+                verdict = by_ref.get(item.ref)
+                if verdict is None:
+                    # ``ref`` 对不上 ⇒ **丢弃而不是猜**（同反馈分类：猜错比少一条严重得多）
+                    warnings.append(f"news_ref_missing:{item.ref}")
+                    skipped.append(NewsSkip(title=item.title, reason="模型没给这一条的判定"))
+                    continue
+                evaluated += 1
+                if not verdict.keep:
+                    skipped.append(NewsSkip(title=item.title, reason=verdict.rationale or "模型判为不值得写"))
+                    continue
+                kept.append(
+                    self._insert_direction(
+                        title=_news_direction_title(verdict, item),
+                        rationale=_news_rationale(verdict, item),
+                        grounded_on=_news_evidence(verdict),
+                        priority=NEWS_DIRECTION_PRIORITY,
+                        batch_id=batch_id,
+                        actor="system",
+                        reason="今日新闻挑出来的方向",
+                        actor_ref="news_scout",
+                    )
+                )
+
+        source = _news_sources_label(items)
+        ok = evaluated > 0
+        label = source or "未知来源"
+        if kept:
+            self._emit(
+                "info",
+                f"今日新闻（{label}）：评测 {evaluated} 条 ⇒ 留下 {len(kept)} 个方向"
+                f"（跳过 {len(skipped)} 条）",
+                payload={
+                    "batch_id": kept[0].batch_id,
+                    "direction_count": len(kept),
+                    # §04.4.3 的载荷契约：面板要能**只凭这一条事件**把方向卡片画出来
+                    "directions": [
+                        {
+                            "id": row.id,
+                            "seq": row.seq,
+                            "title": row.title,
+                            "rationale": row.rationale,
+                            "priority": row.priority,
+                            "risk_flags": list(row.risk_flags),
+                        }
+                        for row in kept
+                    ],
+                    "source": source,
+                    "fetched": len(items),
+                    "skipped": [item.title for item in skipped],
+                    "warnings": warnings[:10],
+                },
+                event_kind=EventKind.DIRECTION_BATCH_READY,
+            )
+        else:
+            self._emit(
+                "info" if ok else "warn",
+                f"今日新闻（{label}）：评测 {evaluated} 条 ⇒ 一条都没留下",
+                payload={"source": source, "fetched": len(items), "warnings": warnings[:10]},
+            )
+
+        return NewsPullReport(
+            ok=ok,
+            source=source,
+            fetched=len(items),
+            evaluated=evaluated,
+            batch_id=kept[0].batch_id if kept else batch_id or self._directions.latest_batch_id(),
+            kept=kept,
+            skipped=skipped,
+            warnings=warnings,
+            error_code=None if ok else first_error,
+            error_message=None if ok else "评测没跑出来（逐条原因见「跳过」清单）",
+        )
+
+    def _insert_direction(
+        self,
+        *,
+        title: str,
+        rationale: str,
+        priority: int,
+        batch_id: str | None,
+        actor: str,
+        reason: str,
+        actor_ref: str | None = None,
+        grounded_on: Sequence[GroundingRef] = (),
+    ) -> DirectionRow:
+        """写一个方向：清洗 → 落库 → 留痕 → 播报。
+
+        人工写的与新闻挑出来的走**同一条路**（裁定 130 的落点口径）：``actor`` / ``reason`` /
+        ``actor_ref`` 是两者唯一的差别 —— 留痕要能回答"这个方向是谁放进来的"，而"放进来之后
+        长什么样"不该有两套规矩。
+
+        ``actor`` 只能是 ``user`` / ``system`` / ``auto`` / ``worker`` 四个之一（``audit_ops``
+        的 CHECK，§03.3.x）：新闻那条走 ``system`` + ``actor_ref="news_scout"`` —— **不新造一个
+        actor 名**，因为那要改 DDL，而"是谁干的"这件事 ``actor_ref`` 已经答得清清楚楚。
+
+        ``grounded_on`` 缺省为空（人工写的方向没有依据可说，就不替他说）：只有新闻挑出来的
+        那几条带着**事件总结**，见 :func:`_news_evidence`。
+        """
         cleaned_title = _clean_direction_title(title, direction_id=None)
         cleaned_rationale = _clean_direction_rationale(rationale)
         batch = batch_id or self._directions.latest_batch_id() or MANUAL_BATCH_ID
@@ -1327,22 +1609,24 @@ class TopicService:
             title=cleaned_title,
             rationale=cleaned_rationale,
             priority=_clean_priority(priority, direction_id=None),
+            grounded_on=[ref.model_dump(mode="json") for ref in grounded_on],
         )
         self._audit.record(
             actor=actor,
+            actor_ref=actor_ref,
             action="direction.created",
             target_type="direction",
             target_id=row.id,
             after=_direction_snapshot(row),
-            reason="人工写方向",
+            reason=reason,
             source="webui",
         )
         self._emit(
             "info",
-            f"人工方向《{row.title}》已入库（批次 {batch}）",
+            f"方向《{row.title}》已入库（批次 {batch}）",
             payload={"direction_id": row.id, "batch_id": batch},
         )
-        return ManualDirectionOutcome(direction=row)
+        return row
 
     def update_direction(
         self,
@@ -1409,10 +1693,11 @@ class TopicService:
     def delete_direction(self, *, direction_id: str, actor: str = "user") -> DirectionDeleteOutcome:
         """删一个方向，**它下面的候选一起走**（``ON DELETE CASCADE``）。
 
-        唯一拦下的情形与 :meth:`delete_topic` 同源：**已经有候选派生了任务**。
-        那种候选被级联删掉之后，它那条任务就再也写不出稿（``draft`` 要按 topic_id
-        反查选题）—— 这不是门禁，是"删掉之后立刻断链"。所以这里先把那几条点出来，
-        让人自己决定先处理哪一条。
+        与 :meth:`delete_topic` 同一条：**派生过任务也照删**。原先拦下的理由（"候选没了，
+        那条任务就再也写不出稿"）已经随 ``draft`` 的改造消失 —— 任务自己带着要说什么。
+
+        **删掉的是想法，不是活**：候选上已经派生的任务一条都不动，照跑；``detached_task_count``
+        把"这一下带走了几条已经有任务的候选"如实说给面板（不说的话，用户会以为那些活也没了）。
         """
         row = self._directions.get(direction_id)
         if row is None:
@@ -1422,18 +1707,8 @@ class TopicService:
                 context={"direction_id": direction_id},
                 remediation="刷新选题面板 —— 可能已经被别的标签页删掉了",
             )
-        attached = [item for item in self._topics.list_by_direction(direction_id) if item.task_id is not None]
-        if attached:
-            raise StudioError(
-                f"方向《{row.title}》下有 {len(attached)} 条候选已经派生了任务，不能级联删除",
-                code=ErrorCode.TOPIC_SELECT_INVALID,
-                context={
-                    "direction_id": direction_id,
-                    "topics": [{"topic_id": item.id, "title": item.title} for item in attached],
-                    "task_ids": [item.task_id for item in attached],
-                },
-                remediation="先处理这几条任务（删掉它或让它跑完），再回来删这个方向",
-            )
+        # 数在删之前：删完就再也数不到"其中几条已经派生过任务"了
+        attached = [item for item in self._topics.list_by_direction(direction_id) if item.task_id]
         cascaded = self._directions.delete(direction_id)
         self._audit.record(
             actor=actor,
@@ -1441,17 +1716,90 @@ class TopicService:
             target_type="direction",
             target_id=direction_id,
             before=_direction_snapshot(row),
-            after={"cascaded_topics": cascaded},
+            after={"cascaded_topics": cascaded, "detached_task_count": len(attached)},
             reason="WebUI 删除方向（候选一并删除）",
             source="webui",
         )
         self._emit(
             "info",
-            f"方向《{row.title}》已删除（一并删掉 {cascaded} 条候选）",
-            payload={"direction_id": direction_id, "cascaded_topics": cascaded},
+            f"方向《{row.title}》已删除（一并删掉 {cascaded} 条候选）"
+            + (f"，其中 {len(attached)} 条已有任务，照跑" if attached else ""),
+            payload={
+                "direction_id": direction_id,
+                "cascaded_topics": cascaded,
+                "detached_task_count": len(attached),
+            },
         )
         return DirectionDeleteOutcome(
-            direction_id=direction_id, title=row.title, deleted=True, cascaded_topics=cascaded
+            direction_id=direction_id,
+            title=row.title,
+            deleted=True,
+            cascaded_topics=cascaded,
+            detached_task_count=len(attached),
+        )
+
+    def clear_all(self, *, dry_run: bool = True, actor: str = "user") -> ClearTopicsOutcome:
+        """清空整个选题面板：**所有方向 + 所有选题**（``dry_run`` ⇒ 只报数）。
+
+        判据与 :meth:`delete_topic` / :meth:`delete_direction` 是同一条，只是批量做一遍：
+        **删掉的是想法，不是活** —— 派生过任务的选题照删，而它们上的任务一条都不动
+        （任务自己带着标题 / 角度 / 钩子）。``detached_task_count`` 把"这一下带走了几条
+        已经有任务的选题"如实说给面板。
+
+        ``dry_run`` 不是装饰：这一下动辄删掉几十行，而面板上那颗按钮是**点两下**的
+        （第一下预览、第二下真删）。预览走的是**同一个计数路径**，所以预览说"13 条"，
+        真删就不会是别的数。
+
+        清空**不动** ``hot_items`` / ``feedback_items`` / 任务 / 稿件：它们是输入与产出，
+        不是"选题面板上堆着的东西" —— 顺手清掉它们等于把用户没点名的东西一起删了。
+        """
+        directions = self._directions.count()
+        topics = self._topics.count()
+        detached = self._topics.count_detached()
+        if dry_run:
+            return ClearTopicsOutcome(
+                dry_run=True,
+                directions=directions,
+                topics=topics,
+                detached_task_count=detached,
+            )
+        if directions == 0 and topics == 0:
+            # 空面板上点"清除"不留痕：一条什么都没删的审计会把审计页淹掉，而"我点了
+            # 一下、它说没什么可清的"这件事没有留档价值（与 asset.prune 同一条）。
+            return ClearTopicsOutcome(dry_run=False)
+        cascaded = self._directions.clear()
+        # 兜底：``direction_id`` 是 NOT NULL + CASCADE，所以正常情况下一条都不剩；
+        # 真剩下了说明库里有一条无方向的选题，它同样属于"面板上堆着的东西"。
+        leftover = self._topics.clear()
+        self._audit.record(
+            actor=actor,
+            action="topics.cleared",
+            target_type="topic_pool",
+            target_id="all",
+            before={
+                "directions": directions,
+                "topics": topics,
+                "detached_task_count": detached,
+            },
+            after={"directions": 0, "topics": 0},
+            reason="WebUI 一键清除所有选题",
+            source="webui",
+        )
+        self._emit(
+            "info",
+            f"已清空选题面板：{directions} 个方向 / {topics} 条选题"
+            + (f"（其中 {detached} 条已派生任务，照跑）" if detached else ""),
+            payload={
+                "directions": directions,
+                "topics": topics,
+                "detached_task_count": detached,
+            },
+        )
+        return ClearTopicsOutcome(
+            dry_run=False,
+            directions=directions,
+            topics=cascaded + leftover,
+            detached_task_count=detached,
         )
 
     def _refresh_dedup(self, topic_id: str, title: str) -> tuple[str, list[dict[str, Any]]]:
@@ -1590,3 +1938,98 @@ def _import_warnings(*reports: ImportReport | None) -> list[str]:
         if report.bad:
             warnings.append(f"{report.kind}_bad_lines:{report.bad}")
     return warnings
+
+
+def _news_direction_title(verdict: NewsVerdict, item: NewsItemSpec) -> str:
+    """方向标题：模型给的就用模型的，没给就退回**新闻标题**。
+
+    用户点的是"这条新闻值得写" ⇒ 方向的主体就是这条新闻本身。截到
+    :data:`DIRECTION_TITLE_MAX`：新闻标题可以比方向标题长得多，而这一列在面板上是一行字。
+    """
+    title = verdict.direction_title.strip() or item.title.strip()
+    return title[:DIRECTION_TITLE_MAX]
+
+
+def _news_rationale(verdict: NewsVerdict, item: NewsItemSpec) -> str:
+    """方向的"为什么"：**先写清它来自哪条新闻**，再写模型那句话。
+
+    来源必须在最前面：方向卡片上只有这一行字能回答"这是今天哪条新闻挑出来的"，而模型给的
+    方向标题常常已经把新闻标题改写过了。
+    """
+    origin = f"今日新闻《{item.title}》" + (f"（{_news_origin_url(item.url)}）" if item.url else "")
+    reason = verdict.rationale.strip()
+    return f"{origin}：{reason}" if reason else origin
+
+
+def _news_sources_label(items: Sequence[NewsItemSpec]) -> str:
+    """这一批新闻**来自哪几家**（面板/日志上那一句的前缀）。
+
+    为什么不是 ``items[0].source``（原来的写法）：那是"首个成功即返回"时代的口径 ——
+    一批只有一个来源，取第一条就等于取那一家。扩成五源**合并**之后，第一条只说明"它排在最
+    前面"，而这一批其实是五家混着的：面板上写着「今日头条热榜：评测 50 条」，用户会以为
+    今天只从头条抓了 50 条，**另外四家到底有没有生效、有没有挂掉**就再也看不出来了。
+
+    按**首次出现**的顺序去重拼接（``今日头条热榜、中新网滚动、抖音热搜…``）：顺序即优先级，
+    与抓取侧那张表同一份口径；挂掉的源不在 ``items`` 里，所以它**自然缺席** —— 面板上少了
+    一家就是少了一家。
+    """
+    seen: list[str] = []
+    for item in items:
+        if item.source and item.source not in seen:
+            seen.append(item.source)
+    return "、".join(seen)
+
+
+def _news_evidence(verdict: NewsVerdict) -> list[GroundingRef]:
+    """方向里那条"这条新闻到底发生了什么"（模型说"信息不足" ⇒ 空列表）。
+
+    为什么进 ``grounded_on`` 而不是拼进 ``rationale``
+    ------------------------------------------------
+    1. **它们是两件事**：``rationale`` 是判断（为什么值得写），事件总结是事实。混在一行，
+       面板上分不出哪句是新闻说的、哪句是模型想的。
+    2. **``rationale`` 装不下**：``DirectionSpec.rationale`` 只有 200 字（Planner 的产出
+       契约），而这一行已经有"今日新闻《标题》（链接）"。再塞一段事件总结，长标题一撞上限，
+       这个方向就会在「生成选题」那一步被 pydantic 直接打回 —— 用户看到的是"这条方向点了
+       没反应"，而根因在两屏之外。
+    3. **``grounded_on`` 本来就是这条路**：它叫"依据"，新闻方向此前却空着这一栏 —— 而它的
+       依据正是那条新闻。填进去之后，面板、CLI、以及 Ideator 的输入块
+       （``planner.direction_grounding_text``）自动都看得见，不必为"把事实送到下游"再修
+       一条管子。
+
+    ``kind="news"`` 见 :data:`studio.domain.topics.NEWS_EVIDENCE_KIND`。模型说"信息不足"
+    （提示词里约定的字面量，见 :data:`NEWS_SUMMARY_UNKNOWN`）时同样返回空 —— 那不是事实，
+    是一条"我不知道"，落成依据只会在面板和提示词里白占一行。
+    """
+    summary = verdict.event_summary.strip().strip("「」“”\"'")
+    if not summary or summary == NEWS_SUMMARY_UNKNOWN:
+        return []
+    return [GroundingRef(type="hot", kind=NEWS_EVIDENCE_KIND, quote=summary)]
+
+
+def direction_facts(row: DirectionRow) -> str:
+    """方向里那些**能当事实用**的句子（目前只有今日新闻挑出来的方向会给）。
+
+    写稿时按这个把事实注入 Director / Writer 的提示词（``script_service``）：写稿那几级
+    看不到新闻原文，方向这一行是事实唯一的来路。多句之间换行 —— 它们是**并列**的事实，
+    不是一句话被切开。
+    """
+    return "\n".join(
+        str(ref.get("quote") or "").strip()
+        for ref in row.grounded_on
+        if ref.get("type") == "hot"
+        and ref.get("kind") == NEWS_EVIDENCE_KIND
+        and str(ref.get("quote") or "").strip()
+    )
+
+
+def _news_origin_url(url: str) -> str:
+    """新闻链接**只留 origin + path**。
+
+    头条的分享链接带着 400+ 字的埋点参数（``log_pb`` / ``style_id`` …），原样塞进方向卡片的
+    那一行，等于把"这个方向是从哪条新闻来的"这条唯一线索淹掉 —— 真机实测（2026-09-22）第一版
+    就是这么写的，卡片上一行全是一个 URL。
+    """
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.netloc:
+        return url
+    return f"{parts.scheme}://{parts.netloc}{parts.path}"

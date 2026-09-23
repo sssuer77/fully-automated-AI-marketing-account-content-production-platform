@@ -71,7 +71,13 @@ from studio.render.composite import (
 from studio.render.degrade import NO_BROLL, deliver
 from studio.render.hashing import composite_hash, input_digests
 from studio.render.mixdown import LoudnessMeasurement, MixSettings, measure_file
-from studio.render.profiles import FALLBACK_PROFILE_NAME, resolve_profile
+from studio.render.profiles import (
+    FALLBACK_PROFILE_NAME,
+    CompositeProfile,
+    resolve_profile,
+)
+from studio.render.speech import speaking_plan
+from studio.render.sticker import StickerPlan, plan_stickers
 from studio.render.subtitle import Cue, SubtitlePlan, build_cues, plan_subtitle
 from studio.render.watermark import plan_watermark
 from studio.services.asset_service import DisabledAssets
@@ -120,6 +126,14 @@ class ProduceRequest:
     #: 逐句音色（与 ``sentences`` 同序；渲染这条路按角色解析出来的，见
     #: ``voice_service.active_script_voices``）。空 ⇒ 整篇用 ``voice`` 那一个嗓子。
     sentence_voices: tuple[str | None, ...] = ()
+    #: 逐句**说话人**（与 ``sentences`` 同序，来自 ``script_sentences.speaker``）。
+    #: 空 ⇒ 不知道谁在讲 ⇒ 人物贴图不换图（并在 manifest 里如实说为什么）。
+    #:
+    #: 与 :attr:`sentence_voices` 分开：那个是"用哪个嗓子念"，这个是"稿子里演谁"。
+    #: 同一句上它们通常是同一个角色，但**换音色**改的是前者（T2.9 的任务级换音色），
+    #: 换完之后"这句是谁在讲"一个字都没变 —— 拿音色当说话人，换一次音色就会把
+    #: 人物的嘴换到另一个人身上。
+    sentence_speakers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +171,12 @@ class ProduceResult:
     #: 注意它与 ``composite.loudness`` 不是一回事：后者是 loudnorm **归一化之前**的输入读数。
     output_loudness: LoudnessMeasurement | None = None
     warnings: tuple[str, ...] = ()
+    #: 人物贴图每一层的结论（含被跳过的 —— "第 2 层为什么没贴上"必须答得出来）。
+    #: 真正贴上的是 ``composite.stickers_applied``，两者不是一回事。
+    #:
+    #: 带默认值、且排在最后：这个字段是**后加的**（T4.14），而 ``ProduceResult`` 被
+    #: 测试构造了很多次。生产路径只有 ``produce_video`` 一个构造点，它显式传值。
+    stickers: tuple[StickerPlan, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -170,6 +190,7 @@ class ProduceResult:
             "profile": self.profile_name,
             "watermark_enabled": self.watermark_enabled,
             "watermark_skipped_reason": self.watermark_skipped_reason,
+            "stickers": [item.to_dict() for item in self.stickers],
             "subtitle": self.subtitle.to_dict(),
             "voice": self.voice.to_dict() if self.voice else None,
             "manifest": self.manifest.as_posix(),
@@ -236,7 +257,27 @@ def resolve_cues(
 
     三条都拿不到 ⇒ 返回空元组 ⇒ 字幕被跳过（而不是"按字数估一个时长"）。估出来的
     时长会让字幕与声音错位，而错位比没有字幕更糟 —— 观众会以为配音配错了。
+
+    出来之后统一补一次"这一句是谁说的"（:func:`_attach_speakers`）—— 人物贴图的
+    换图要它。补在这一处而不是三条分支里各补一次：三条路各写一遍，迟早有一条忘了。
     """
+    cues = _raw_cues(
+        request,
+        paths=paths,
+        voice=voice,
+        timeline_sentences=timeline_sentences,
+    )
+    return _attach_speakers(cues, request.sentence_speakers)
+
+
+def _raw_cues(
+    request: ProduceRequest,
+    *,
+    paths: StudioPaths,
+    voice: VoiceResult | None,
+    timeline_sentences: Sequence[Mapping[str, Any]] | None,
+) -> tuple[Cue, ...]:
+    """三条时长来源挑一条（见 :func:`resolve_cues` 的说明）；**不碰说话人**。"""
     if voice is not None:
         return build_cues(voice.sentences, voice.sentence_durations_ms)
 
@@ -258,6 +299,22 @@ def resolve_cues(
     if any(duration <= 0 for duration in durations):
         return ()
     return build_cues(sentences, durations)
+
+
+def _attach_speakers(cues: tuple[Cue, ...], speakers: Sequence[str]) -> tuple[Cue, ...]:
+    """给字幕事件补上"这一句是谁说的"（**不动字幕样式**）。
+
+    为什么不直接用 ``build_cues(speakers=...)``：那个参数会顺手把字幕**样式**按
+    说话人分成 SpeakerA / SpeakerB（``assign_speaker_styles``）—— 那是"字幕长什么
+    样"，与本函数要的"谁在讲"是两件事。为了拿一个名字而改掉成片里字幕的颜色，
+    是在没人要求的地方改了画面。
+
+    条数对不上（换过稿子 / 复用了一份旧时间轴）⇒ **原样返回**：错位的说话人会让
+    嘴按另一个人的节奏开合，比"不知道是谁"更糟。
+    """
+    if not speakers or len(speakers) != len(cues):
+        return cues
+    return tuple(replace(cue, speaker=who) for cue, who in zip(cues, speakers, strict=True))
 
 
 def _probe_ms(path: Path) -> int:
@@ -363,7 +420,11 @@ def produce_video(
     config = outputs if outputs is not None else load_outputs_config(source)
     rng = random.Random(request.seed) if request.seed is not None else None
 
-    reused_timeline = _read_timeline(paths, request.task_id) if request.reuse_voice else None
+    # 盘上那一份时间轴读**一次**，两个用途：① 复用母带时当字幕的时长来源
+    # （`reuse_voice` 才用）；② 人物贴图换图时的讲话区间（**总是**用它 ——
+    # 那一份带句间停顿，而这次新合成的 cue 是首尾相接的，拿后者算换图会越走越偏）。
+    on_disk_timeline = _read_timeline(paths, request.task_id)
+    reused_timeline = on_disk_timeline if request.reuse_voice else None
     voice = reuse_or_synthesize_voice(request, paths=paths, on_progress=on_progress)
     voice_master = paths.voice_master(request.task_id)
     if not voice_master.is_file() or voice_master.stat().st_size == 0:
@@ -397,14 +458,45 @@ def produce_video(
     )
 
     profile = resolve_profile(config, request.profile_name)
-    watermark = plan_watermark(
-        config.watermark,
-        canvas_width=profile.width,
-        canvas_height=profile.height,
-        home=paths.home,
+
+    def layers_for(canvas: CompositeProfile) -> dict[str, Any]:
+        """这块画布下的两层装饰（水印 + 人物贴图）各自的摆放。
+
+        **必须是"按画布现算"的一个函数，而不是算一次存下来**：``WatermarkPlacement``
+        与 ``StickerPlacement`` 里存的是"这一块画布下的具体像素"（见两个模块的
+        docstring）。1080×1920 下算好的 ``x=762`` 拿到 720×1280 的保底档上就是另一个
+        位置，甚至整个贴到画布外 —— 而 ``overlay`` 对越界**不报错**，它只是把图裁掉，
+        于是"保底档的片子上没有人物"这种事会静默发生。
+        """
+        return {
+            "watermark": plan_watermark(
+                config.watermark,
+                canvas_width=canvas.width,
+                canvas_height=canvas.height,
+                home=paths.home,
+            ),
+            "stickers": plan_stickers(
+                config.stickers,
+                canvas_width=canvas.width,
+                canvas_height=canvas.height,
+                home=paths.home,
+                speaking=speaking,
+            ),
+        }
+
+    # 字幕与"谁在讲"在这里**一次算完**：换图要的讲话区间与字幕同源（同一份 cue），
+    # 两处各算一遍就会出现"字幕写着第 7 句、贴图按第 8 句张嘴"这种对不上的账。
+    cues = resolve_cues(request, paths=paths, voice=voice, timeline_sentences=reused_timeline)
+    speaking = speaking_plan(
+        speakers=request.sentence_speakers,
+        timeline_rows=on_disk_timeline,
+        cues=cues,
     )
 
-    cues = resolve_cues(request, paths=paths, voice=voice, timeline_sentences=reused_timeline)
+    layers = layers_for(profile)
+    watermark = layers["watermark"]
+    stickers = layers["stickers"]
+
     timeline = paths.timeline_json(request.task_id)
     if cues and not timeline.is_file():
         # 还没有时间轴才补一份（配音阶段已经写过的话，那一份更准 —— 它有句间停顿
@@ -436,20 +528,30 @@ def produce_video(
             detail += f" · 字幕 {len(cues)} 句"
         on_progress("render", 0, PROGRESS_TOTAL, detail)
 
-    composite_request = CompositeRequest(
-        profile=profile,
-        clip=clip,
-        voice=voice_master,
-        output=paths.final_video(request.task_id),
-        duration_ms=duration_ms,
-        watermark=watermark,
-        bgm=bgm,
-        subtitle=subtitle.ass_path,
-        subtitle_font_dir=subtitle.font_dir,
-        mix=MixSettings.from_config(config.audio),
-        threads=request.threads,
-        graph_path=paths.graphs_dir_for(request.task_id) / "composite.txt",
-    )
+    def request_for(canvas: CompositeProfile) -> CompositeRequest:
+        """换一块画布就重来一份请求（装饰层的像素坐标跟着重算，见 ``layers_for``）。
+
+        同一个函数既造正常档的请求、也造保底档的请求，是为了让"降级时重算"这件事
+        **不可能被漏掉**：``degrade.deliver`` 拿到的是这个函数本身，而不是一份算好的
+        ``CompositeRequest``。漏掉的表现是"保底档上水印/人物位置错乱"，而那种错只有
+        真跑到 720P 回退时才会出现 —— 靠人记得去改，迟早会漏。
+        """
+        return CompositeRequest(
+            profile=canvas,
+            clip=clip,
+            voice=voice_master,
+            output=paths.final_video(request.task_id),
+            duration_ms=duration_ms,
+            bgm=bgm,
+            subtitle=subtitle.ass_path,
+            subtitle_font_dir=subtitle.font_dir,
+            mix=MixSettings.from_config(config.audio),
+            threads=request.threads,
+            graph_path=paths.graphs_dir_for(request.task_id) / "composite.txt",
+            **layers_for(canvas),
+        )
+
+    composite_request = request_for(profile)
     # 720P 保底档：正常档编码失败时换它再试一次（§04.2.8.6）。
     # 配置里没有这个档 ⇒ 不做回退并记一句 warn，而不是把"配置缺项"升级成"出不了片"——
     # 那正是这条降级链想避免的事。
@@ -496,6 +598,7 @@ def produce_video(
             composite_request,
             fallback_profile=fallback_profile,
             fallback_output=fallback_output,
+            replan=request_for,
             on_progress=on_progress,
         )
         composite = delivery.composite
@@ -528,6 +631,7 @@ def produce_video(
         voice_ms=voice_ms,
         watermark_enabled=composite.watermark_applied,
         watermark_skipped_reason=watermark.skipped_reason,
+        stickers=stickers,
         profile_name=profile_name,
         subtitle=subtitle,
         timeline=timeline,
@@ -552,6 +656,7 @@ def produce_video(
         size_bytes=composite.size_bytes,
         watermark_enabled=composite.watermark_applied,
         watermark_skipped_reason=watermark.skipped_reason,
+        stickers=stickers,
         profile_name=profile_name,
         manifest=manifest,
         timeline=timeline,
@@ -607,6 +712,7 @@ def _write_manifest(
     voice_ms: int,
     watermark_enabled: bool,
     watermark_skipped_reason: str | None,
+    stickers: tuple[StickerPlan, ...],
     profile_name: str,
     subtitle: SubtitlePlan,
     timeline: Path,
@@ -646,6 +752,9 @@ def _write_manifest(
             "enabled": watermark_enabled,
             "skipped_reason": watermark_skipped_reason,
         },
+        # 贴图留**每一层**的结论（含被跳过的）：与水印不同，贴图是"若干层"，
+        # 只写一个总开关答不出"第 2 层为什么没贴上"—— 而那正是配错时第一个要问的问题。
+        "stickers": [item.to_dict() for item in stickers],
         "subtitle": subtitle.to_dict(),
         "timeline": timeline.as_posix(),
         # 两个响度**都要留**，它们的名字必须能一眼分清：

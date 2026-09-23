@@ -114,6 +114,11 @@ class RenderConsoleResponse(BaseModel):
     #: 字幕这次烧不烧（同上：字体缺失时会被跳过，得让面板说得出来）
     subtitle_enabled: bool
     subtitle_hint: str | None
+    #: 人物贴图这次会贴上**哪几层**（槽位名）。空列表 ⇒ 一层都不贴。
+    #: 与水印不同，这里给的是**名单**而不是一个布尔：贴图是若干层，
+    #: "开了三层只上了一层"是必须一眼看得见的状态。
+    stickers_applied: list[str]
+    stickers_hint: str | None
 
 
 class RenderJobRequest(BaseModel):

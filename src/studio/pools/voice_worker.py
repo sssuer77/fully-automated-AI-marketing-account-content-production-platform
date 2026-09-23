@@ -96,6 +96,7 @@ from studio.tts.fallback import (
     action_note,
 )
 from studio.tts.faults import wrap_engine
+from studio.tts.refprint import voice_fingerprint
 from studio.tts.sentence import (
     SapiEngine,
     SentenceEngine,
@@ -437,6 +438,12 @@ class VoiceSentenceHandler:
                 cache=self._cache,
                 engine=engine,
                 voice=voice,
+                # 参考音指纹进缓存键：``voice`` 只是**名字**，而用户换参考音时名字
+                # 不变（删掉重传 / 勾「覆盖同名」重传，裁定 381）—— 只按名字记的话，
+                # 换了嗓子之后每一句都命中旧音频，而库里写着「换音色成功」。
+                # 这里逐句算：``refprint`` 内部按 (大小, mtime) 记忆化，实际只在
+                # 参考音真的变了之后重哈希一次。
+                voice_fingerprint=voice_fingerprint(self._paths.voice_src_dir, voice or ""),
                 # 简化重试：去 emotion、语速回正、换一个**确定性**的 seed。
                 # 换 seed 不是仪式 —— 它进缓存键，不换的话"重试"会命中上一次那段
                 # 坏音频（`RETRY_SIMPLIFIED` 于是变成"读一遍缓存再失败一次"）。

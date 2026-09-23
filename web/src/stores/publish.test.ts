@@ -17,6 +17,8 @@ import {
   PUBLISH_POLL_MS,
   actionBody,
   activeWork,
+  calibrationBadge,
+  calibrationDetail,
   configurePublishApi,
   enqueueBody,
   enqueueText,
@@ -151,6 +153,8 @@ function platforms(overrides: Partial<PublishPlatformsView> = {}): PublishPlatfo
         accounts: ["acc_main"],
         selectable: true,
         note: "真平台：要登录态，发出去不可撤销",
+        calibration: "calibrated",
+        calibration_note: "已真机校准（2026-09-23）",
       },
       {
         code: "other",
@@ -160,6 +164,8 @@ function platforms(overrides: Partial<PublishPlatformsView> = {}): PublishPlatfo
         accounts: ["_rehearsal"],
         selectable: true,
         note: "本地演练台：发到本机靶页，不是真平台（发完照样能采数、沉淀）",
+        calibration: "n/a",
+        calibration_note: "本地靶页：没有「真机校准」这回事",
       },
       {
         code: "xiaohongshu",
@@ -168,7 +174,10 @@ function platforms(overrides: Partial<PublishPlatformsView> = {}): PublishPlatfo
         rehearsal: false,
         accounts: [],
         selectable: false,
-        note: "平台未启用（§06.2.1 · Q9）⇒ 投了会被跳过",
+        note: "平台未启用（config/publish.yaml → platforms.xiaohongshu.enabled: false）⇒ 投了会被跳过",
+        calibration: "uncalibrated",
+        calibration_note:
+          "选择器**没在真机上验过**（CSS 是照着抖音那份的形状猜的） —— 先跑 `studio publish calibrate --platform xiaohongshu`",
       },
     ],
     default_platforms: ["douyin"],
@@ -373,6 +382,33 @@ describe("纯函数", () => {
     expect(optionText({ ...disabled, accounts: [] })).toContain("没有启用的账号");
   });
 
+  it("平台选项那行字：**选择器校准过没有**必须写在上面（T5.14）", () => {
+    const [douyin, rehearsal, uncalibrated] = platforms().items ?? [];
+    // 抖音那份是真机校准过的 ⇒ 不加噪音（校准过就该看起来像校准过）
+    expect(calibrationBadge(douyin)).toBe("");
+    expect(optionText(douyin)).not.toContain("未校准");
+    // 未校准的平台必须**看得见**：它在屏幕上本来与抖音长得一模一样，而它投出去
+    // 大概率发不出去（七份 pack 里六份的 CSS 是猜的）
+    expect(calibrationBadge(uncalibrated)).toContain("未校准");
+    expect(optionText(uncalibrated)).toContain("选择器未校准");
+    // 演练台不适用（靶页没有"真机校准"这回事）⇒ 也不加噪音
+    expect(calibrationBadge(rehearsal)).toBe("");
+    expect(optionText(rehearsal)).not.toContain("未校准");
+  });
+
+  it("校准的详细那句：未校准要说清**怎么办**；已知缺口不分校准与否都要说", () => {
+    const [douyin, , uncalibrated] = platforms().items ?? [];
+    expect(calibrationDetail(uncalibrated)).toContain("没在真机上验过");
+    expect(calibrationDetail(uncalibrated)).toContain("studio publish calibrate");
+    // 抖音那份校准过，但它的数据回收那几条**没验过**（要一条真发出去过的作品）
+    // —— 那也是一条"已知没做完"，只显示"已校准"会让人以为这个平台全通了。
+    const calibratedWithGap = { ...douyin, known_gaps: ["数据回收那五条没验过"] };
+    expect(calibrationDetail(calibratedWithGap)).toContain("已知缺口");
+    expect(calibrationDetail(calibratedWithGap)).toContain("数据回收那五条没验过");
+    // 两样都没有 ⇒ 空串（面板那一行干脆不画）
+    expect(calibrationDetail({ ...calibratedWithGap, known_gaps: [] })).toBe("");
+  });
+
   it("投递的结论：投出几条 + 目标；跳过的那几条必须点名（0 条不等于按钮坏了）", () => {
     expect(enqueueText(enqueueReport())).toBe("投出 1 条 · 目标 other");
     const skipped = enqueueText(
@@ -514,6 +550,72 @@ describe("usePublishStore", () => {
     expect(markManualDone).toHaveBeenCalledWith(row.id, { actor: "user", reason: "已在平台上手工发布" });
     expect(store.reasonFor).toBeNull();
     expect(store.reasonDraft[row.id]).toBeUndefined();
+  });
+
+  it("人工过验证：结论留下，等完之后那一条不再挂着（转圈要停）", async () => {
+    const assistPublication = vi.fn(async () => ({
+      publication: publication({ status: "published", url: "https://example.invalid/v/1" }),
+      action: "assist",
+      message: "已发出去了：https://example.invalid/v/1",
+      waited_sec: 183.4,
+    }));
+    configurePublishApi({ assistPublication });
+    const store = usePublishStore();
+    const row = publication({ status: "manual_required" });
+
+    const ok = await store.assist(row);
+
+    expect(ok).toBe(true);
+    // 理由由前端给（这一下是人在面板上按的，后端也会在缺省时写同一句）。
+    expect(assistPublication).toHaveBeenCalledWith(row.id, {
+      actor: "user",
+      reason: "面板上点了「人工过验证」",
+    });
+    expect(store.notice).toBe("已发出去了：https://example.invalid/v/1");
+    expect(store.error).toBeNull();
+    expect(store.assistFor).toBeNull();
+  });
+
+  it("人工过验证：跑着的时候等待挂在**这一条**上（十几分钟里得看得见在等什么）", async () => {
+    let release: (value: unknown) => void = () => undefined;
+    const pending = new Promise((resolve) => {
+      release = resolve;
+    });
+    configurePublishApi({ assistPublication: vi.fn(() => pending as never) });
+    const store = usePublishStore();
+    const row = publication({ status: "manual_required" });
+
+    const running = store.assist(row);
+    await Promise.resolve();
+
+    expect(store.assistFor).toBe(row.id);
+    expect(store.busy).toBe(true);
+
+    release({
+      publication: publication({ status: "published" }),
+      action: "assist",
+      message: "已发出去了",
+      waited_sec: 12.0,
+    });
+    await running;
+
+    expect(store.assistFor).toBeNull();
+    expect(store.busy).toBe(false);
+  });
+
+  it("人工过验证：失败 ⇒ 报后端那句话（不冒充成功）", async () => {
+    configurePublishApi({
+      assistPublication: vi.fn(async () => {
+        throw new ApiError("发布池正在发这个账号（douyin/acc_main），等它跑完再来", 422, null);
+      }),
+    });
+    const store = usePublishStore();
+
+    const ok = await store.assist(publication({ status: "manual_required" }));
+
+    expect(ok).toBe(false);
+    expect(store.error).toContain("发布池正在发这个账号");
+    expect(store.assistFor).toBeNull();
   });
 
   it("交付包：没预览过就导出 ⇒ 拦住（先看一眼包里缺什么）", async () => {

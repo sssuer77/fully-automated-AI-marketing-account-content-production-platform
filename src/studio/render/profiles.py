@@ -31,6 +31,7 @@ from typing import Any, Final
 
 from studio.core.config import EncodingProfileConfig, OutputsConfig
 from studio.core.errors import ConfigError, ErrorCode
+from studio.render.sticker import StickerPlan, plan_stickers
 from studio.render.watermark import WatermarkPlan, plan_watermark
 
 __all__ = [
@@ -260,11 +261,18 @@ class RenderProfileReport:
     profile: CompositeProfile
     profiles: tuple[CompositeProfile, ...]
     watermark: WatermarkPlan
+    #: 人物贴图每一层的结论（含被跳过的）。空元组 ⇒ 配置里一层都没有。
+    stickers: tuple[StickerPlan, ...]
 
     @property
     def watermark_enabled(self) -> bool:
         """这一档 profile 下，成片会不会带上水印。"""
         return self.watermark.enabled
+
+    @property
+    def stickers_applied(self) -> tuple[str, ...]:
+        """这一档 profile 下**真的会贴上去**的贴图槽位名（按叠放顺序）。"""
+        return tuple(item.spec.name for item in self.stickers if item.applied)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -273,6 +281,7 @@ class RenderProfileReport:
             "profile": self.profile.to_dict(),
             "profiles": [item.to_dict() for item in self.profiles],
             "watermark": self.watermark.to_dict(),
+            "stickers": [item.to_dict() for item in self.stickers],
         }
 
 
@@ -283,9 +292,10 @@ def build_render_profile_report(
     home: Path,
     name: str | None = None,
 ) -> RenderProfileReport:
-    """组装 `--show` 的报告：profile + 水印实测 + 摆放（贴 / 跳过）。
+    """组装 `--show` 的报告：profile + 水印/贴图实测 + 摆放（贴 / 跳过）。
 
-    水印的判断只在 :func:`studio.render.watermark.plan_watermark` 一处，
+    两层的判断分别只在 :func:`studio.render.watermark.plan_watermark` 与
+    :func:`studio.render.sticker.plan_stickers` 一处，
     所以"CLI 说会贴"与"渲染真的贴了"不可能对不上。
     """
     profile = resolve_profile(outputs, name)
@@ -296,6 +306,12 @@ def build_render_profile_report(
         profiles=tuple(_to_composite(key, value) for key, value in outputs.profiles.items()),
         watermark=plan_watermark(
             outputs.watermark,
+            canvas_width=profile.width,
+            canvas_height=profile.height,
+            home=home,
+        ),
+        stickers=plan_stickers(
+            outputs.stickers,
             canvas_width=profile.width,
             canvas_height=profile.height,
             home=home,

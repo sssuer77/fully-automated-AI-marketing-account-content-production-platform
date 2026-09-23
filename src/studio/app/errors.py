@@ -103,10 +103,21 @@ HTTP_STATUS_BY_CODE: Final[Mapping[ErrorCode, int]] = {
     # 「start < end」这种跨字段关系，422 只会让人去猜哪个框是红的。
     ErrorCode.SCHEDULE_INVALID: 400,
     ErrorCode.SCHEDULE_NOT_FOUND: 404,
+    # 发布账号（T6.4）：删/改一个**配置里已经没有**的账号 —— 请求本身没错，
+    # 是"你手上这一屏过时了" ⇒ 404，面板据此提示"刷新后重试"。
+    ErrorCode.PUBLISH_ACCOUNT_NOT_FOUND: 404,
+    # 「这个平台不支持这个动作」（未启用 / 靶页 / 没覆盖 ``login`` 的实现）是**服务端此刻的能力**
+    # 问题，不是请求写错了 ⇒ 503，与 `TTS_ENGINE_UNAVAILABLE` 同一条判据。
+    # 落成 500 的话，面板会把它显示成"我们崩了"，而用户该做的是换个平台 / 等适配器。
+    ErrorCode.PUBLISH_NOT_IMPLEMENTED: 503,
     # 数据报告（T5.7）：与定时计划同一条判据 —— 周期参数是**跨字段**的
     # （weekly 必须有 weekday），没有单个输入框可标红 ⇒ 400 而不是 422。
     ErrorCode.REPORT_INVALID: 400,
     ErrorCode.REPORT_NOT_FOUND: 404,
+    # 今日新闻（T5.12）：请求一个字都没错（点的是同一颗按钮），挂的是**外部源**
+    # 或本机出网 ⇒ 503，与 `TTS_ENGINE_UNAVAILABLE` 同一条判据。报成 200 + 空列表
+    # 会让人以为"今天没有值得写的新闻"——那是另一回事。
+    ErrorCode.NEWS_FETCH_FAILED: 503,
 }
 
 

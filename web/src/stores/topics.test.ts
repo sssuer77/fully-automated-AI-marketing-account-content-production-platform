@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   AnalyzeResult,
+  ClearTopicsResult,
   DirectionDeleteResult,
   DirectionEditResult,
   DirectionItem,
@@ -14,6 +15,7 @@ import type {
   ManualDirectionBody,
   ManualDirectionResult,
   ManualTopicResult,
+  NewsPullResult,
   OutlineItem,
   OutlineResult,
   OutlineView,
@@ -31,10 +33,13 @@ import {
   groupByDirection,
   hookLabel,
   isTopicEvent,
+  newsFacts,
   scoreTone,
   sortByScore,
+  summarizeClear,
   summarizeEdit,
   summarizeImport,
+  summarizeNews,
   summarizeSelect,
   topicStatusTone,
   useTopicsStore,
@@ -107,6 +112,7 @@ function directionDeleted(
     title: "方向 d1",
     deleted: true,
     cascaded_topics: 3,
+    detached_task_count: 0,
     ...overrides,
   };
 }
@@ -244,7 +250,13 @@ function hotResult(overrides: Partial<HotImportResult> = {}): HotImportResult {
 }
 
 function deleted(overrides: Partial<TopicDeleteResult> = {}): TopicDeleteResult {
-  return { topic_id: "tp1", title: "选题 tp1", deleted: true, ...overrides };
+  return {
+    topic_id: "tp1",
+    title: "选题 tp1",
+    deleted: true,
+    detached_task_id: null,
+    ...overrides,
+  };
 }
 
 function edited(overrides: Partial<TopicEditResult> = {}): TopicEditResult {
@@ -289,6 +301,33 @@ function outlineResult(overrides: Partial<OutlineResult> = {}): OutlineResult {
   };
 }
 
+function clearResult(overrides: Partial<ClearTopicsResult> = {}): ClearTopicsResult {
+  return {
+    dry_run: true,
+    directions: 4,
+    topics: 13,
+    detached_task_count: 1,
+    ...overrides,
+  };
+}
+
+function newsResult(overrides: Partial<NewsPullResult> = {}): NewsPullResult {
+  return {
+    ok: true,
+    source: "今日头条热榜",
+    fetched: 50,
+    evaluated: 25,
+    batch_id: "b1",
+    kept_count: 1,
+    kept: [direction("d9", { title: "新闻挑出来的方向" })],
+    skipped: [{ title: "某条没写稿价值的新闻", reason: "没有冲突，写不出钩子" }],
+    warnings: [],
+    error_code: null,
+    error_message: null,
+    ...overrides,
+  };
+}
+
 /** 装一整套假件（**每次都给全** ⇒ 上一个用例的覆盖不会漏到下一个）。 */
 function install(overrides: Partial<TopicsApi> = {}): TopicsApi {
   const fakes: TopicsApi = {
@@ -315,6 +354,8 @@ function install(overrides: Partial<TopicsApi> = {}): TopicsApi {
     deleteTopic: vi.fn(async () => deleted()),
     importHot: vi.fn(async () => hotResult()),
     submitHot: vi.fn(async () => hotResult()),
+    pullTodayNews: vi.fn(async () => newsResult()),
+    clearTopics: vi.fn(async () => clearResult()),
     ...overrides,
   };
   configureTopicsApi(fakes);
@@ -434,6 +475,42 @@ describe("结果小结", () => {
     expect(summarizeSelect(3, 0, 0)).toBe("已入队 3 条");
     expect(summarizeSelect(3, 0, 2)).toBe("已入队 3 条 · 其中 2 条已顺手写稿");
     expect(summarizeSelect(3, 1, 0)).toBe("已入队 3 条 · 失败 1 条（逐条原因见下）");
+  });
+
+  it("新闻小结把「评测了几条」与「留下几个方向」分开说（后者才是用户关心的）", () => {
+    expect(summarizeNews(newsResult({ skipped: [] }))).toBe(
+      "今日头条热榜：评测 25 条 · 留下 1 个方向",
+    );
+    expect(summarizeNews(newsResult({ kept_count: 0, kept: [], skipped: [] }))).toBe(
+      "今日头条热榜：评测 25 条 · 一条都没挑中",
+    );
+    expect(summarizeNews(newsResult({ source: "" }))).toBe(
+      "今日新闻：评测 25 条 · 留下 1 个方向 · 跳过 1 条",
+    );
+  });
+
+  it("「事件」只取新闻那一条依据（别的依据是出处，不是事实）", () => {
+    expect(
+      newsFacts([
+        { type: "hot", kind: "news", quote: "一家三口一氧化碳中毒身亡。" },
+      ]),
+    ).toBe("一家三口一氧化碳中毒身亡。");
+    // 账号定位 / 热点池 / 历史反馈都是**出处**，画在「事件」那一行会误导人
+    expect(
+      newsFacts([
+        { type: "persona", quote: "账号定位就是跑酷" },
+        { type: "hot", ref_id: "h1", quote: "某条热点" },
+        { type: "feedback", kind: "want", quote: "想看更多跑酷" },
+      ]),
+    ).toBe("");
+    // 多条事实之间换行（后端 direction_facts 也是这么拼给提示词的）
+    expect(
+      newsFacts([
+        { type: "hot", kind: "news", quote: "第一句" },
+        { type: "hot", kind: "news", quote: "第二句" },
+      ]),
+    ).toBe("第一句\n第二句");
+    expect(newsFacts([])).toBe("");
   });
 
   it("请求失败翻成人话：带状态码，status=0 是超时/取消", () => {
@@ -745,6 +822,63 @@ describe("输入源", () => {
   });
 });
 
+describe("一键拉取今日新闻", () => {
+  it("成功 ⇒ 小结当 notice、重拉一次（挑中的方向要当场出现在左栏）", async () => {
+    const store = useTopicsStore();
+    await store.pullNews();
+
+    expect(store.newsBusy).toBe(false);
+    expect(store.error).toBeNull();
+    expect(store.notice).toBe("今日头条热榜：评测 25 条 · 留下 1 个方向 · 跳过 1 条");
+    expect(store.lastNews?.kept_count).toBe(1);
+    expect(fakes.fetchDirections).toHaveBeenCalled();
+  });
+
+  it("评测没跑起来 ⇒ error 用后端那句话，notice 不冒充小结", async () => {
+    fakes = install({
+      pullTodayNews: vi.fn(async () =>
+        newsResult({
+          ok: false,
+          evaluated: 0,
+          kept_count: 0,
+          kept: [],
+          skipped: [],
+          error_message: "写作通道没配",
+        }),
+      ),
+    });
+    const store = useTopicsStore();
+    await store.pullNews();
+
+    expect(store.error).toBe("写作通道没配");
+    expect(store.notice).toBeNull();
+    expect(store.lastNews?.ok).toBe(false);
+  });
+
+  it("抓取失败（503）⇒ describeError 文案，闸要复位", async () => {
+    fakes = install({
+      pullTodayNews: vi.fn(async () => {
+        throw new ApiError("今天的新闻一条都没抓到", 503, null);
+      }),
+    });
+    const store = useTopicsStore();
+    await store.pullNews();
+
+    expect(store.error).toBe("今天的新闻一条都没抓到（HTTP 503）");
+    expect(store.newsBusy).toBe(false);
+  });
+
+  it("它自己一把闸：跑新闻时不把别的长任务按钮冻住", async () => {
+    const store = useTopicsStore();
+    const running = store.pullNews();
+
+    expect(store.newsBusy).toBe(true);
+    expect(store.busy).toBe(false);
+    await running;
+    expect(store.newsBusy).toBe(false);
+  });
+});
+
 describe("改选题 / 删选题", () => {
   it("小结把列名说成人话，认不出的列照原样显示", () => {
     expect(summarizeEdit(edited({ changed: ["hook_type", "weird"] }))).toBe("已改 钩子、weird");
@@ -780,21 +914,15 @@ describe("改选题 / 删选题", () => {
     expect(store.notice).toBe("已改 标题 · 与库内 1 条选题相似（最高 1.00）：老标题");
   });
 
-  it("后端拦下来（422 + 任务号）⇒ 原因原样摆出来，不动本地列表", async () => {
+  it("派生过任务也照删，小结里把那条任务号说清楚（删的是想法，不是活）", async () => {
     fakes = install({
-      deleteTopic: vi.fn(async () => {
-        throw new ApiError("已经派生过任务，不能直接删", 422, null);
-      }),
+      deleteTopic: vi.fn(async () => deleted({ detached_task_id: "t-tp1" })),
     });
     const store = useTopicsStore();
-    await store.refresh();
 
-    const ok = await store.removeTopic("tp1");
-
-    expect(ok).toBe(false);
-    expect(store.error).toBe("已经派生过任务，不能直接删（HTTP 422）");
-    expect(store.notice).toBeNull();
-    expect(fakes.fetchTopics).toHaveBeenCalledTimes(1); // 失败不重拉
+    expect(await store.removeTopic("tp1")).toBe(true);
+    expect(store.error).toBeNull();
+    expect(store.notice).toBe("已删除《选题 tp1》（任务 t-tp1 照跑，不受影响）");
   });
 
   it("删掉之后把它的勾选一并摘掉（不留一个指向已删行的 id）", async () => {
@@ -958,16 +1086,23 @@ describe("方向 · 删（级联）", () => {
     expect(store.checked).toEqual(["tp1"]);
   });
 
-  it("后端拦下（候选已派生任务）⇒ error 带上 422 与原因", async () => {
+  it("候选上已经派生过任务 ⇒ 照删，并在小结里说清那些任务照跑", async () => {
     fakes = install({
-      deleteDirection: vi.fn(async () => {
-        throw new ApiError("方向《x》下有 2 条候选已经派生了任务", 422, null);
-      }),
+      deleteDirection: vi.fn(async () => directionDeleted({ detached_task_count: 2 })),
     });
     const store = useTopicsStore();
 
-    expect(await store.removeDirection("d1")).toBe(false);
-    expect(store.error).toContain("已经派生了任务");
+    expect(await store.removeDirection("d1")).toBe(true);
+    expect(store.error).toBeNull();
+    expect(store.notice).toBe(
+      "已删除方向《方向 d1》（一并删掉 3 条候选） · 其中 2 条已有任务，照跑",
+    );
+  });
+
+  it("没有任务的小结不提任务（说了等于给一个不存在的东西留位置）", async () => {
+    const store = useTopicsStore();
+    await store.removeDirection("d1");
+    expect(store.notice).toBe("已删除方向《方向 d1》（一并删掉 3 条候选）");
   });
 });
 
@@ -992,6 +1127,82 @@ describe("方向 · 只跑这一个", () => {
     store.setPerDirection(Number.NaN);
     store.setPerDirection(0);
     expect(store.perDirection).toBe(6);
+  });
+});
+
+describe("一键清除所有选题", () => {
+  it("预览（dryRun=true）⇒ 只报三个数，**不重拉**（库里一个字节都没动）", async () => {
+    const store = useTopicsStore();
+    await store.refresh();
+
+    const preview = await store.clearAll(true);
+
+    expect(fakes.clearTopics).toHaveBeenCalledWith(true);
+    expect(preview?.dry_run).toBe(true);
+    expect(store.notice).toBe("会清掉：4 个方向 · 13 条选题（其中 1 条已派生任务，删了也照跑）");
+    expect(store.clearBusy).toBe(false);
+    // 预览不动数据 ⇒ 重拉一次只是白跑一趟（还会把面板闪一下）
+    expect(fakes.fetchTopics).toHaveBeenCalledTimes(1);
+  });
+
+  it("真删 ⇒ 用同一份读数说结果、重拉一次、**把勾选清空**", async () => {
+    const store = useTopicsStore();
+    await store.refresh();
+    fakes = install({ clearTopics: vi.fn(async () => clearResult({ dry_run: false })) });
+    store.toggleChecked("tp1");
+
+    const result = await store.clearAll(false);
+
+    expect(result?.dry_run).toBe(false);
+    expect(store.notice).toBe("已清空：4 个方向 · 13 条选题（其中 1 条已派生任务，任务照跑）");
+    expect(fakes.fetchTopics).toHaveBeenCalled();
+    // 被删掉的那些可能正被勾着：留着已不存在的 id，下一次"入队"就会报一串"选题不存在"
+    expect(store.checked).toEqual([]);
+  });
+
+  it("面板本来就空 ⇒ 不谎称「清掉了 0 个」（预览与真删两句不同）", async () => {
+    // 假件要**跟着请求回 dry_run**（与真端点同一条）：写死 true 的话，"真删"那一次
+    // 会被面板当成又一次预览，而那个 bug 只会在真机上出现。
+    fakes = install({
+      clearTopics: vi.fn(async (dryRun = true) =>
+        clearResult({ dry_run: dryRun, directions: 0, topics: 0, detached_task_count: 0 }),
+      ),
+    });
+    const store = useTopicsStore();
+
+    await store.clearAll(true);
+    expect(store.notice).toBe("面板上已经没有可清的东西");
+
+    await store.clearAll(false);
+    expect(store.notice).toBe("面板本来就是空的");
+  });
+
+  it("没有派生过任务的选题 ⇒ 不提任务（说了等于给一个不存在的东西留位置）", () => {
+    expect(summarizeClear(clearResult({ detached_task_count: 0, dry_run: false }))).toBe(
+      "已清空：4 个方向 · 13 条选题",
+    );
+  });
+
+  it("取消 ⇒ 预览收起来（下一次点还是先预览）", async () => {
+    const store = useTopicsStore();
+    await store.clearAll(true);
+    expect(store.lastClear).not.toBeNull();
+
+    store.dismissClear();
+    expect(store.lastClear).toBeNull();
+  });
+
+  it("被长任务守卫拦下（409）⇒ error 带后端那句话，闸要复位", async () => {
+    fakes = install({
+      clearTopics: vi.fn(async () => {
+        throw new ApiError("选题生成正在运行，请等它跑完", 409, null);
+      }),
+    });
+    const store = useTopicsStore();
+
+    expect(await store.clearAll(false)).toBeNull();
+    expect(store.error).toBe("选题生成正在运行，请等它跑完（HTTP 409）");
+    expect(store.clearBusy).toBe(false);
   });
 });
 

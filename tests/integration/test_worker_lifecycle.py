@@ -39,7 +39,8 @@ from studio.core.errors import ConfigError, ErrorCode, StudioError
 from studio.core.paths import StudioPaths
 from studio.db import JobStore, connect
 from studio.db.migrate import migrate
-from studio.pools.heartbeat import HeartbeatStore
+from studio.pools import worker_base
+from studio.pools.heartbeat import HeartbeatStore, WorkerIdentity
 from studio.pools.runner import (
     HANDLERS,
     handler_for,
@@ -53,6 +54,7 @@ from studio.pools.worker_base import (
     UnitAborted,
     UnitContext,
     UnitTimeout,
+    _Pulse,
     commit_partial,
 )
 
@@ -494,6 +496,93 @@ def test_unit_context_exposes_identity(rig: Rig) -> None:
     assert ctx.remaining_sec > 0
     assert ctx.lease_lost is False
     assert ctx.timed_out is False
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 常驻清扫：一行孤儿租约不得把整池堵死（真机 2026-09-23）
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_stale_renew_failure_does_not_blame_next_unit(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """上一句念完、下一句刚开跑的那一拍续租失败，**不算**新单元丢租约。
+
+    这一拍读到的 ``flight`` 是 **A**，而出锁之后才真去续租 —— 认领循环已经
+    ``begin_unit`` 换成 **B** 了，A 刚 ``succeed`` 过、租约自然不再是 ``claimed``。
+    旧实现把这个失败记到 B 头上 ⇒ B 的 handler 一 ``check_alive`` 就 abort、产物丢弃，
+    而 **B 那一行永远留在 claimed 没人收**（真机 2026-09-23：``voice`` 池
+    ``concurrency=1``，84 条待配音被这样一行孤儿堵死）。
+    """
+    pulse = _Pulse(
+        identity=WorkerIdentity(pool="draft", slot=1, pid=4242),
+        connection_factory=lambda: rig.connection,
+        version=None,
+        heartbeat_interval_sec=999.0,  # 心跳不是这条用例的对象
+    )
+    pulse.begin_unit(job_id="A", lease_sec=180, timeout_sec=60)
+    store = JobStore(rig.connection)
+
+    def renew(**_kwargs: Any) -> bool:
+        # 续租这一拍之间：A 收尾、B 开跑
+        pulse.begin_unit(job_id="B", lease_sec=180, timeout_sec=60)
+        return False
+
+    monkeypatch.setattr(store, "renew", renew)
+    pulse._tick(store, HeartbeatStore(rig.connection))
+
+    assert pulse.current_job_id == "B"
+    assert pulse.lease_lost is False, "续的是 A 的租约，不能把 B 判成丢租约"
+
+
+def test_renew_failure_on_current_unit_still_marks_lease_lost(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同一单元续租失败 = 真丢租约：语义不变（产物必须丢弃、不写 succeed）。"""
+    pulse = _Pulse(
+        identity=WorkerIdentity(pool="draft", slot=1, pid=4242),
+        connection_factory=lambda: rig.connection,
+        version=None,
+        heartbeat_interval_sec=999.0,
+    )
+    pulse.begin_unit(job_id="A", lease_sec=180, timeout_sec=60)
+    store = JobStore(rig.connection)
+    monkeypatch.setattr(store, "renew", lambda **_kwargs: False)
+
+    pulse._tick(store, HeartbeatStore(rig.connection))
+
+    assert pulse.lease_lost is True
+    assert pulse.current_job_id == "A"
+
+
+def test_idle_worker_reclaims_orphan_lease(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """崩溃/丢租约留下的**过期认领**必须被池自己收掉，否则整池停摆。
+
+    真机形态：``concurrency=1`` 的池里一行 ``claimed`` 的孤儿让
+    ``running_count >= concurrency`` 恒成立 ⇒ 认领永远返回 ``None``，待办全卡 ``pending``，
+    而心跳面板上一切“正常”。修复前 ``reclaim_expired`` 只被 ``pipeline run`` 空转时调过一次。
+
+    租约故意给 3s：**启动时的强制清扫**不该抢走还活着的租约，只能靠空转那几拍收掉它。
+    清扫间隔压到 50ms 只为跑得快；生产取 ``SWEEP_INTERVAL_SEC``。
+    """
+    job_id = _enqueue(rig, "u1")
+    # 别的 worker 认领了这条作业然后被强杀：租约到期，但没有任何人回收它
+    claimed = rig.store.claim(pool="draft", worker_id="draft#9@999", lease_sec=3)
+    assert claimed is not None and claimed.id == job_id
+    monkeypatch.setattr(worker_base, "SWEEP_INTERVAL_SEC", 0.05)
+
+    handler = FakeHandler()
+    worker = _worker(rig, handler, config=_pool_config(concurrency=1))
+    thread = _run_in_thread(worker, max_units=1)
+    try:
+        alive = _wait_for(lambda: rig.store.get(job_id).status == "succeeded")
+        assert alive, "过期租约没被回收 ⇒ 整池停摆（这正是真机 2026-09-23 的形态）"
+    finally:
+        worker.request_stop("test-teardown")
+        thread.join(15.0)
+
+    assert handler.calls == ["u1"]
+    job = rig.store.get(job_id)
+    assert job.status == "succeeded"
+    assert job.attempts == 2, "重做算第二次尝试（认领时 +1）"
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -158,13 +158,18 @@ const PREVIEW_LABELS: Record<string, string> = {
   running: "生成中…",
   ready: "试听",
   failed: "重新生成",
+  stale: "重新生成",
 };
 
 /**
- * 试听按钮上的字（四态各一句）。
+ * 试听按钮上的字（五态各一句）。
  *
  * `missing` 与 `failed` **必须分开**：前者点一下就行，后者再点一下大概率还是失败
  * —— 得先看那句话。都写成"试听"，用户会反复点一个注定失败的按钮。
+ *
+ * `stale`（盘上那份是上一版参考音念的）也写「重新生成」：它与 `ready` 都是
+ * "盘上有文件、能播"，但播出来是旧嗓子 —— 写成「试听」的话，用户点下去只会
+ * 听见一个不对的声音，而面板上没有任何东西提示"这份是旧的"。
  */
 export function previewLabel(state: string): string {
   return PREVIEW_LABELS[state] ?? "试听";
@@ -182,6 +187,8 @@ export function previewHint(state: string, engine: string | null): string {
       return engine === null ? "播这个音色的试听样本" : `试听样本（由 ${engine} 念的）`;
     case "running":
       return "正在生成试听样本（真机上一次十几秒）—— 好了会自动播";
+    case "stale":
+      return "盘上这份是上一版参考音念的（参考音换过）—— 点一下重新生成，别照它判断像不像";
     case "failed":
       return "上一次生成失败了，点一下重试；失败原因在下面那行红字里";
     default:

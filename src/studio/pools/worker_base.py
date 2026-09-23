@@ -52,6 +52,7 @@ from studio.pools.heartbeat import (
 
 __all__ = [
     "NON_RETRYABLE_CODES",
+    "SWEEP_INTERVAL_SEC",
     "PoolWorker",
     "UnitAborted",
     "UnitContext",
@@ -63,6 +64,9 @@ __all__ = [
 ]
 
 logger = get_logger("studio.pools.worker")
+
+#: 常驻清扫的间隔（秒）。§03.4.3 ③ 写的是"每 15s"，与心跳判死那条阈值同源。
+SWEEP_INTERVAL_SEC: Final[float] = 15.0
 
 #: 单元收尾结果（内部用字符串，避免为三个值引入一个枚举）
 _SUCCEEDED: Final[str] = "succeeded"
@@ -88,8 +92,10 @@ NON_RETRYABLE_CODES: Final[frozenset[ErrorCode]] = frozenset(
         ErrorCode.RENDER_BROLL_MISSING,
         ErrorCode.DB_SCHEMA_DRIFT,
         ErrorCode.PUBLISH_DISABLED,
-        # T5.2：一期只实现一线三个平台，二线的空实现**重试多少次都还是空实现**
-        # （§06.2.1 · Q9）。让它耗完 ``max_attempts`` 只是把"没做"拖成"试过了"。
+        # "这个平台没启用"**重试多少次都还是没启用** —— 它是配置问题，不是抖动。
+        # 让它耗完 ``max_attempts`` 只是把"配置写错了"拖成"试过了"（而且每试一次
+        # 都要开一次浏览器）。T5.2 的原始形态是"二线平台是空实现"；现在七个平台
+        # 都是真实现，但"未启用"这一条**语义没变**（见 ``_platform_config``）。
         ErrorCode.PUBLISH_NOT_IMPLEMENTED,
     }
 )
@@ -577,14 +583,31 @@ class _Pulse:
                     lease_sec=flight[1],
                     now=moment,
                 ):
+                    # 续租失败要**认准是哪一个单元**：上面那个 ``flight`` 是进这一拍时
+                    # 读的，而续租是出锁做的 —— 中途换过单元的话，这次失败属于**上一个**
+                    # 单元（它多半刚 ``succeed`` 过，租约自然不再是 ``claimed``）。
+                    # 把那种失败记到**新单元**头上，就是"上一句念完了，下一句被判丢租约"
+                    # ⇒ 新单元的产物被丢弃、而那行**留在 claimed 没人收**（真机 2026-09-23：
+                    # voice 池 concurrency=1，一行孤儿把 84 条待配音全堵死）。
                     with self._lock:
-                        self._lease_lost = True
-                    logger.warning(
-                        "worker.lease_lost",
-                        worker_id=self._identity.worker_id,
-                        job_id=flight[0],
-                        hint="租约已被回收或抢走；本单元产物必须丢弃，不写 succeed",
-                    )
+                        current = self._flight
+                        stale = current is None or current[0] != flight[0]
+                        if not stale:
+                            self._lease_lost = True
+                    if stale:
+                        logger.debug(
+                            "worker.renew_ignored",
+                            worker_id=self._identity.worker_id,
+                            job_id=flight[0],
+                            hint="这一拍续的是上一个单元（它已经收尾），不算丢租约",
+                        )
+                    else:
+                        logger.warning(
+                            "worker.lease_lost",
+                            worker_id=self._identity.worker_id,
+                            job_id=flight[0],
+                            hint="租约已被回收或抢走；本单元产物必须丢弃，不写 succeed",
+                        )
 
 
 # ── 运行报告 ────────────────────────────────────────────────────────────
@@ -682,6 +705,7 @@ class PoolWorker:
         self._stop_reason = "draining"
         self._empty_rounds = 0
         self._running = False
+        self._last_sweep: float | None = None
 
     # ── 只读 ────────────────────────────────────────────────────────────
     @property
@@ -738,6 +762,7 @@ class PoolWorker:
         store = JobStore(connection, auto_concurrency=self._auto_concurrency)
         units_done = units_failed = units_aborted = units_deferred = 0
         stop_reason = "draining"
+        self._sweep(store, force=True)
         self._pulse.start()
         logger.info("worker.started", worker_id=self.worker_id, pool=self.pool, pid=self._identity.pid)
         try:
@@ -753,6 +778,7 @@ class PoolWorker:
                     now=utc_now(),
                 )
                 if job is None:
+                    self._sweep(store)
                     self._empty_rounds += 1
                     if max_empty_rounds is not None and self._empty_rounds >= max_empty_rounds:
                         stop_reason = "idle"
@@ -800,6 +826,33 @@ class PoolWorker:
         return report
 
     # ── 内部 ────────────────────────────────────────────────────────────
+    def _sweep(self, store: JobStore, *, force: bool = False) -> None:
+        """常驻清扫（§03.4.3 ③）：回收过期租约 + 解锁依赖。
+
+        为什么必须常驻：``reclaim_expired`` 此前只被 ``pipeline run`` 在空转时调过一次
+        （且只有 ``voice`` 池）—— 崩溃或丢租约留下的一行 ``claimed`` 孤儿会一直占着
+        ``running_count``，而认领守卫是 ``running_count >= concurrency`` 就不认领。
+        并发为 1 的池，一行孤儿就是整池永久停摆（真机 2026-09-23：84 条待配音被一行
+        过期认领堵死，而面板上一切看起来正常）。
+
+        ``force`` 给进程启动用：先把上一次运行留下的尸首收了再开始干活。
+        """
+        if (
+            not force
+            and self._last_sweep is not None
+            and time.monotonic() - self._last_sweep < SWEEP_INTERVAL_SEC
+        ):
+            return
+        self._last_sweep = time.monotonic()
+        try:
+            store.reclaim_expired(pool=self.pool)
+        except StudioError as exc:
+            logger.warning("worker.reclaim_failed", worker_id=self.worker_id, error=str(exc))
+        try:
+            store.unlock_dependents(pool=self.pool)
+        except StudioError as exc:
+            logger.warning("worker.unlock_failed", worker_id=self.worker_id, error=str(exc))
+
     def _empty_delay_ms(self) -> int:
         """空池退避：以池配置 ``poll_ms`` 为基数做指数退避，封顶 2s（§03.4.2）。
 

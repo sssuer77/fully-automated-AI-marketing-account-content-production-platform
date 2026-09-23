@@ -28,6 +28,8 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+import struct
+import zlib
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -38,8 +40,10 @@ from fastapi.testclient import TestClient
 from studio.app.deps import AppState, build_state
 from studio.app.main import create_app
 from studio.core.clock import now_iso
+from studio.core.config import OutputsConfig, load_outputs_config
 from studio.core.paths import StudioPaths
 from studio.db.migrate import migrate
+from studio.render.sticker import plan_stickers
 from studio.services.metrics_service import ResourceSnapshot
 from studio.ws.hub import HubSettings
 
@@ -53,6 +57,9 @@ FALLBACK = "fallback_720x1280_v1"
 
 #: 水印 PNG 的**相对**路径（相对 STUDIO_HOME，与 `config/outputs.yaml` 的注释一致）
 WATERMARK_REL = "templates/douyin_9x16_default/assets/images/watermark.png"
+
+#: `hero` 那一层贴图的**相对**路径（同上）
+STICKER_HERO_REL = "templates/douyin_9x16_default/assets/images/stickers/hero.png"
 
 #: 一份**语法就是坏的** YAML（`default_profile: [` 让解析器直接炸）
 BROKEN_YAML = 'schema_version: "1.0"\ndefault_profile: [\n'
@@ -99,7 +106,10 @@ def home(tmp_path: Path) -> Path:
     shutil.copyfile(REPO_ROOT / "config" / "outputs.yaml", root / "config" / "outputs.yaml")
     watermark = root / WATERMARK_REL
     watermark.parent.mkdir(parents=True)
-    watermark.write_bytes(b"\x89PNG\r\n")
+    # 造一张**真** PNG（带 alpha）：水印卡片现在同时报 `exists` 与 `usable`，
+    # 写几个假字节会让"在盘上"为真、"渲染贴得上"为假 —— 那是另一条路径的输入，
+    # 由下面专门那几条用例负责，不混进基线。
+    watermark.write_bytes(_png_bytes())
     return root
 
 
@@ -121,6 +131,21 @@ def state(paths: StudioPaths) -> Iterator[AppState]:
         yield built
     finally:
         built.close()
+
+
+@pytest.fixture(scope="module")
+def tuned() -> OutputsConfig:
+    """仓库里那一份 `config/outputs.yaml` 的**解析结果**（夹具抄的就是它）。
+
+    为什么断言不写死数字：这份文件是**调参**用的 —— 水印宽占比、贴图高度占比、
+    开关状态都跟着真机上试出来的结果变。把 0.25 / 0.45 / enabled=false 写进用例，
+    每次调参都会红一片，而红的原因是"我改了配置"，不是"面板坏了"：假红会把真红
+    淹掉。所以这里把"文件里是什么"读出来，用例只钉**面板 == 文件**这件事。
+
+    反过来，**面板能改哪些字段**（`*_fields` 那几张表）是契约，照旧写死在用例里：
+    加一个字段就该有人来改一行，那是要看见的。
+    """
+    return load_outputs_config(REPO_ROOT / "config" / "outputs.yaml")
 
 
 @pytest.fixture
@@ -172,6 +197,31 @@ def _changed_lines(before: list[str], after: list[str]) -> list[int]:
     return [index for index, line in enumerate(before) if after[index] != line]
 
 
+def _png_bytes(*, width: int = 64, height: int = 128, color_type: int = 6) -> bytes:
+    """造一张**真的** PNG（只用 stdlib）。
+
+    与 `tests/unit/render/conftest.py::png_bytes` 同一手法，但**故意不跨目录 import**：
+    `tests/unit/**` 的 conftest 属于那一层的夹具，从集成用例反向依赖它会让"改一个单测
+    夹具"悄悄影响集成面的输入。这里要的只有一件事：一张 `probe_png` 认的图。
+    """
+    signature = b"\x89PNG\r\n\x1a\n"
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        crc = zlib.crc32(kind + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", crc)
+
+    channels = {0: 1, 2: 3, 4: 2, 6: 4}[color_type]
+    raw = b"".join(b"\x00" + bytes(channels * width) for _ in range(height))
+    return b"".join(
+        [
+            signature,
+            chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, color_type, 0, 0, 0)),
+            chunk(b"IDAT", zlib.compress(raw)),
+            chunk(b"IEND", b""),
+        ]
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════
 # ① 读 · 当前配置
 # ══════════════════════════════════════════════════════════════════════
@@ -206,14 +256,17 @@ def test_read_returns_profiles_watermark_subtitle_and_provenance(
     assert fallback["quality"] == 26
 
 
-def test_read_returns_the_watermark_with_pixel_width(client: TestClient) -> None:
+def test_read_returns_the_watermark_with_pixel_width(client: TestClient, tuned: OutputsConfig) -> None:
+    """面板下发的水印四项 == 文件里那几行；`width_px` 是**算出来的**那一列。"""
     watermark = client.get(OUTPUTS_URL).json()["watermark"]
+    spec = tuned.watermark
+    canvas_width = tuned.profiles[tuned.default_profile].width
     assert watermark["path"] == WATERMARK_REL
-    assert watermark["position"] == "bottom_right"
-    assert (watermark["margin_x"], watermark["margin_y"]) == (48, 420)
-    assert watermark["width_ratio"] == 0.25
-    assert watermark["width_px"] == 270, "1080 * 0.25"
-    assert watermark["opacity"] == 1.0
+    assert watermark["position"] == spec.position
+    assert (watermark["margin_x"], watermark["margin_y"]) == (spec.margin_x, spec.margin_y)
+    assert watermark["width_ratio"] == spec.width_ratio
+    assert watermark["width_px"] == spec.width_px_for(canvas_width), "面板与编译器同一口径（T3.2）"
+    assert watermark["opacity"] == spec.opacity
     assert watermark["exists"] is True
 
 
@@ -223,10 +276,12 @@ def test_read_returns_the_subtitle_style(client: TestClient) -> None:
     assert subtitle["font_size"] == 64
     assert subtitle["outline"] == 4
     assert subtitle["max_chars_per_line"] == 13
-    # margin_bottom 与 safe_area.bottom 取 max 之后才是 ASS 的 MarginV（§04.2.6）。
-    # 这一屏只下发**可编辑**的那几个字段；safe_area 的契约由
-    # `tests/unit/render/test_subtitle.py` 盯着（它直接断言 ASS 里的 MarginV）。
+    # 「距底」与「底部安全区」都在这一屏里（T3.5 追加 · 裁定 399）：真正生效的是
+    # 两者的 **max**，服务端把它算成 `margin_v` 一起下发 —— 面板不必自己再算一遍，
+    # 也就不会出现"面板说 300、成片渲 420"（这正是此前把它锁成只读的那条理由）。
     assert subtitle["margin_bottom"] == 420
+    assert subtitle["safe_area_bottom"] == 420
+    assert subtitle["margin_v"] == 420
 
 
 def test_read_ships_form_limits_and_the_position_enum(client: TestClient) -> None:
@@ -252,7 +307,20 @@ def test_read_ships_form_limits_and_the_position_enum(client: TestClient) -> Non
         "center",
     ]
     assert limits["subtitle"]["font_size"]["max"] == 200.0
-    assert limits["subtitle_fields"] == ["font_size", "outline", "max_chars_per_line"]
+    assert limits["subtitle_fields"] == [
+        "font_size",
+        "outline",
+        "margin_bottom",
+        "safe_area_bottom",
+        "max_chars_per_line",
+    ]
+    # 嵌套字段（`subtitle.safe_area.bottom`）的上下限同样**现取**自模型。
+    assert limits["subtitle"]["safe_area_bottom"] == {
+        "min": 0.0,
+        "max": 2000.0,
+        "exclusive_min": False,
+        "exclusive_max": False,
+    }
 
 
 def test_missing_watermark_png_is_reported_before_render(client: TestClient, paths: StudioPaths) -> None:
@@ -261,6 +329,145 @@ def test_missing_watermark_png_is_reported_before_render(client: TestClient, pat
     body = client.get(OUTPUTS_URL).json()
     assert body["watermark"]["exists"] is False
     assert body["stale"] is False, "水印不在与「配置读不出来」是两件事"
+
+
+def test_read_returns_the_sticker_layers_in_declaration_order(
+    client: TestClient, tuned: OutputsConfig
+) -> None:
+    """人物贴图是**若干层**：顺序 = YAML 的声明顺序（= 叠放顺序），面板照这个顺序往下列。
+
+    逐层**照着文件比**（`tuned` 就是夹具抄进临时家目录的那一份）。要钉的是"文件里每一层
+    的每一个可编辑字段，面板一个不落地如实转述" —— 少转述一个（比如 T6.5 那两个换图
+    字段），面板上就有一格是假的，而假的那一格恰恰是用户唯一会来看的地方。
+    """
+    layers = client.get(OUTPUTS_URL).json()["stickers"]
+    assert [layer["name"] for layer in layers] == list(tuned.stickers), "声明顺序 = 叠放顺序"
+    canvas_height = tuned.profiles[tuned.default_profile].height
+    for layer, spec in zip(layers, tuned.stickers.values(), strict=True):
+        assert layer["enabled"] == spec.enabled
+        assert layer["path"] == spec.path.as_posix()
+        assert layer["speaker"] == spec.speaker
+        assert layer["speaking_path"] == (
+            None if spec.speaking_path is None else spec.speaking_path.as_posix()
+        )
+        assert layer["position"] == spec.position
+        assert (layer["margin_x"], layer["margin_y"]) == (spec.margin_x, spec.margin_y)
+        assert layer["height_ratio"] == spec.height_ratio
+        assert layer["height_px"] == spec.height_px_for(canvas_height), "按**画布高**算，不是水印那条宽度占比"
+        assert layer["opacity"] == spec.opacity
+
+    hero = layers[0]
+    assert hero["path"] == STICKER_HERO_REL, "hero 那一层指的就是这张图"
+    assert hero["exists"] is False, "临时家目录里没造这张图 —— 与「贴不贴得上」是两件事"
+    assert hero["usable"] is False
+    assert hero["problem"] == "文件不存在"
+
+
+def test_a_sticker_that_exists_but_is_not_a_png_is_reported_as_unusable(
+    client: TestClient, paths: StudioPaths
+) -> None:
+    """★ 「在盘上」与「渲染真的会贴上」是**两件事** —— 面板必须把后者也说出来。
+
+    真机上踩到的就是这一条：`hero.png` / `guest.png` 其实是 WebP / JPEG（改过扩展名），
+    于是"开关开着、面板显示在盘上、渲染每一层都跳过"能同时成立，而面板一个字都不说。
+    `exists` 为真而 `usable` 为假，正是那句"我开了它、为什么片子上没有"的答案。
+    """
+    target = paths.home / STICKER_HERO_REL
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"RIFF\xfc\x1d\x00\x00WEBPVP8 ")  # WebP：扩展名叫 .png，字节不是
+
+    hero = client.get(OUTPUTS_URL).json()["stickers"][0]
+    assert hero["exists"] is True, "文件确实在盘上（所以只看 exists 的面板会亮绿灯）"
+    assert hero["usable"] is False
+    assert "不是 PNG" in hero["problem"]
+
+
+def test_a_sticker_without_alpha_is_unusable_but_a_real_one_is_not(
+    client: TestClient, paths: StudioPaths
+) -> None:
+    """没有透明通道的 PNG 会盖住一块实心画面 ⇒ 渲染跳过；带 alpha 的真 PNG ⇒ 会贴上。"""
+    target = paths.home / STICKER_HERO_REL
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(_png_bytes(color_type=2))  # 真彩、无 alpha
+    assert client.get(OUTPUTS_URL).json()["stickers"][0]["usable"] is False
+
+    target.write_bytes(_png_bytes(color_type=6))  # 真彩 + alpha
+    hero = client.get(OUTPUTS_URL).json()["stickers"][0]
+    assert hero["usable"] is True
+    assert hero["problem"] is None, "usable=True ⇒ 没有原因可说"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,  # 文件不在
+        b"RIFF\xfc\x1d\x00\x00WEBPVP8 ",  # 扩展名叫 .png 的 WebP
+        b"\x89PNG\r\n",  # 截断的 PNG
+    ],
+    ids=["missing", "webp", "truncated"],
+)
+def test_the_card_agrees_with_the_render_path(
+    client: TestClient, paths: StudioPaths, payload: bytes | None
+) -> None:
+    """★ 面板的 `usable` 与**渲染**的结论必须一致 —— 这是这条改动存在的全部理由。
+
+    只断言"面板报了个 false"是不够的：真正要钉住的是**两处判据同源**。所以这里同时问
+    两边 —— REST 卡片与 `plan_stickers`（渲染路径的**唯一**判断点），并断言它们对同一份
+    文件给出同一个答案。
+    """
+    target = paths.home / STICKER_HERO_REL
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if payload is None:
+        target.unlink(missing_ok=True)
+    else:
+        target.write_bytes(payload)
+
+    # 先像面板那样**真的把这一层打开**（关着的层渲染会走另一条分支："在配置里是关的"）。
+    opened = client.post(
+        OUTPUTS_URL,
+        json={
+            "stickers": {"hero": {"enabled": True}},
+            "source_sha256": client.get(OUTPUTS_URL).json()["sha256"],
+        },
+    )
+    assert opened.status_code == 200
+    body = client.get(OUTPUTS_URL).json()
+    hero = body["stickers"][0]
+    assert hero["enabled"] is True
+
+    config = load_outputs_config(paths.config_dir / "outputs.yaml")
+    plan = plan_stickers(
+        config.stickers,
+        canvas_width=config.profiles[config.default_profile].width,
+        canvas_height=config.profiles[config.default_profile].height,
+        home=paths.home,
+    )[0]
+    assert hero["usable"] is plan.applied, "面板与渲染报的必须是同一件事"
+    assert plan.applied is False
+    assert hero["problem"] in (plan.skipped_reason or ""), "面板那句话就是渲染跳过的那句话"
+
+
+def test_read_ships_the_sticker_limits(client: TestClient) -> None:
+    """贴图的上下限也现读配置模型 —— 高度占比上限是 **1.0**（水印那条 0.25 只管水印）。"""
+    limits = client.get(OUTPUTS_URL).json()["limits"]
+    assert limits["sticker_fields"] == [
+        "enabled",
+        "path",
+        "speaker",
+        "speaking_path",
+        "position",
+        "margin_x",
+        "margin_y",
+        "height_ratio",
+        "opacity",
+    ]
+    assert limits["sticker"]["height_ratio"] == {
+        "min": 0.0,
+        "max": 1.0,
+        "exclusive_min": True,
+        "exclusive_max": False,
+    }
+    assert limits["sticker"]["positions"] == limits["watermark"]["positions"], "位置枚举只有一份"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -330,7 +537,9 @@ def test_save_changes_one_line_and_leaves_a_trace(
     assert reread["sha256"] == outcome["sha256"], "面板拿到的必须是最新指纹（否则下次保存必 409）"
 
 
-def test_save_can_change_a_profile_and_the_default(client: TestClient, paths: StudioPaths) -> None:
+def test_save_can_change_a_profile_and_the_default(
+    client: TestClient, paths: StudioPaths, tuned: OutputsConfig
+) -> None:
     """①② 的合并面：改分辨率 / 帧率 / 质量，并把默认档换成 720P 保底档。"""
     body = client.get(OUTPUTS_URL).json()
     response = client.post(
@@ -356,7 +565,10 @@ def test_save_can_change_a_profile_and_the_default(client: TestClient, paths: St
     assert "crf: 18" in text
     reread = client.get(OUTPUTS_URL).json()
     assert reread["default_profile"] == FALLBACK
-    assert reread["watermark"]["width_px"] == 180, "水印像素宽跟着**默认档**的画布宽走"
+    fallback_width = tuned.profiles[FALLBACK].width
+    assert reread["watermark"]["width_px"] == tuned.watermark.width_px_for(fallback_width), (
+        "水印像素宽跟着**默认档**的画布宽走：换了默认档 ⇒ 同一个比例换个像素数"
+    )
 
 
 def test_save_updates_the_watermark(client: TestClient, paths: StudioPaths) -> None:
@@ -385,13 +597,93 @@ def test_save_updates_the_watermark(client: TestClient, paths: StudioPaths) -> N
     assert "# top_left | top_right | bottom_left | bottom_right" in text, "行尾注释必须还在"
 
 
+def test_save_updates_one_sticker_layer(client: TestClient, paths: StudioPaths, tuned: OutputsConfig) -> None:
+    """② 贴图一层：开关 / 换图 / 位置 / 边距 / 高度占比 / 透明度 —— **只动这一层**的那几行。"""
+    before = _read(paths).splitlines(keepends=True)
+    spec = tuned.stickers["hero"]
+    desired: dict[str, Any] = {
+        "enabled": True,
+        "path": "templates/douyin_9x16_default/assets/images/stickers/hero_v2.png",
+        "position": "top_left",
+        "margin_x": 64,
+        "margin_y": 64,
+        "height_ratio": 0.6,
+        "opacity": 0.9,
+    }
+    current: dict[str, Any] = {
+        "enabled": spec.enabled,
+        "path": spec.path.as_posix(),
+        "position": spec.position,
+        "margin_x": spec.margin_x,
+        "margin_y": spec.margin_y,
+        "height_ratio": spec.height_ratio,
+        "opacity": spec.opacity,
+    }
+    # `fields` 说的是"这次**按到**了哪几行"（面板提交了几个字段就是几个），而盘上真的
+    # 变了的行更少 —— 配置里开关本来就开着，再开一次写出来是同一个字节。两个数分开算：
+    # 写死"7 行"的用例会在调参之后为一件没发生的事报警（假红会淹掉真红）。
+    reported_fields = [f"stickers.hero.{name}" for name in desired]
+    written_lines = sum(1 for name, value in desired.items() if current[name] != value)
+
+    body = client.get(OUTPUTS_URL).json()
+    response = client.post(
+        OUTPUTS_URL,
+        json={"stickers": {"hero": desired}, "source_sha256": body["sha256"]},
+    )
+    assert response.status_code == 200
+    assert response.json()["fields"] == reported_fields
+
+    text = _read(paths)
+    assert "enabled: true" in text
+    assert "position: top_left" in text
+    assert "margin_x: 64" in text
+    assert "height_ratio: 0.6" in text
+    assert "opacity: 0.9" in text
+    guest_ratio = tuned.stickers["guest"].height_ratio
+    assert f"height_ratio: {guest_ratio}" in text, "guest 那一层一个字都不动"
+    assert "# 主讲人物。name 只是一个标识，不参与渲染。" in text, "槽位注释必须还在"
+
+    after = _read(paths).splitlines(keepends=True)
+    assert len(after) == len(before), "行级替换：行数不变（面板加不了层）"
+    assert len(_changed_lines(before, after)) == written_lines, "盘上真的变了的行数"
+
+    layers = client.get(OUTPUTS_URL).json()["stickers"]
+    hero = next(layer for layer in layers if layer["name"] == "hero")
+    assert hero["enabled"] is True
+    assert hero["height_ratio"] == 0.6
+    assert hero["height_px"] == 1152, "1920 * 0.6 —— 像素高跟着占比走"
+
+
+def test_a_sticker_path_is_written_with_forward_slashes(client: TestClient, paths: StudioPaths) -> None:
+    """`str(Path)` 在 Windows 上给的是反斜杠 —— 写盘必须转正斜杠。
+
+    不转的话，同一份配置在两种机器上写出两种字节，diff 里看着像"改了路径"，其实只是换了个
+    分隔符（`scalar_for_write` 那条规则就是这么来的）。
+    """
+    body = client.get(OUTPUTS_URL).json()
+    native = str(Path("templates/douyin_9x16_default/assets/images/stickers/hero_v2.png"))
+    response = client.post(
+        OUTPUTS_URL,
+        json={"stickers": {"hero": {"path": native}}, "source_sha256": body["sha256"]},
+    )
+    assert response.status_code == 200
+    line = next(row for row in _read(paths).splitlines() if "hero_v2.png" in row)
+    assert line.strip() == "path: templates/douyin_9x16_default/assets/images/stickers/hero_v2.png"
+
+
 def test_save_updates_the_subtitle(client: TestClient, paths: StudioPaths) -> None:
-    """③ 字幕三项：字号 / 描边 / 每行字数。"""
+    """③ 字幕五项：字号 / 描边 / 每行字数 / 距底 / 底部安全区。"""
     body = client.get(OUTPUTS_URL).json()
     response = client.post(
         OUTPUTS_URL,
         json={
-            "subtitle": {"font_size": 48, "outline": 6, "max_chars_per_line": 12},
+            "subtitle": {
+                "font_size": 48,
+                "outline": 6,
+                "max_chars_per_line": 12,
+                "margin_bottom": 300,
+                "safe_area_bottom": 260,
+            },
             "source_sha256": body["sha256"],
         },
     )
@@ -400,7 +692,28 @@ def test_save_updates_the_subtitle(client: TestClient, paths: StudioPaths) -> No
     assert "font_size: 48" in text
     assert "outline: 6" in text
     assert "max_chars_per_line: 12" in text
+    assert "margin_bottom: 300" in text
+    # 扁平名（`safe_area_bottom`）落到**嵌套**那一行（`subtitle.safe_area.bottom`）——
+    # 这一条就是"那份对照表真的接上了"的读数。
+    safe_line = next(row for row in text.splitlines() if row.strip().startswith("bottom:"))
+    assert safe_line.strip() == "bottom: 260"
     assert "shadow: 2" in text, "没改的字段一个字都不动"
+    reread = client.get(OUTPUTS_URL).json()["subtitle"]
+    assert (reread["margin_bottom"], reread["safe_area_bottom"]) == (300, 260)
+    assert reread["margin_v"] == 300, "两者取大：300 > 260"
+
+    # 再往下挪一点：两个数一起调小，生效值就跟着下来 —— 这是"往下移"唯一的路，
+    # 面板上那句提示说的正是它。
+    body = client.get(OUTPUTS_URL).json()
+    again = client.post(
+        OUTPUTS_URL,
+        json={
+            "subtitle": {"margin_bottom": 200, "safe_area_bottom": 200},
+            "source_sha256": body["sha256"],
+        },
+    )
+    assert again.status_code == 200
+    assert client.get(OUTPUTS_URL).json()["subtitle"]["margin_v"] == 200
 
 
 def test_saving_the_same_value_writes_nothing_and_leaves_no_trace(
@@ -441,6 +754,14 @@ def test_saving_the_same_value_writes_nothing_and_leaves_no_trace(
         ({"profiles": {DOUYIN: {"width": 1081}}}, f"profiles.{DOUYIN}"),
         ({"profiles": {"nope_v1": {"width": 720}}}, "profiles.nope_v1"),
         ({"default_profile": "nope_v1"}, "<root>"),
+        ({"stickers": {"hero": {"margin_x": 49}}}, "stickers.hero.margin_x"),
+        ({"stickers": {"hero": {"height_ratio": 1.5}}}, "stickers.hero.height_ratio"),
+        ({"stickers": {"nope": {"enabled": True}}}, "stickers.nope"),
+        # 嵌套字段的报错必须落在**面板认得**的那个框上（`safe_area_bottom`）：
+        # 文件里的路径是 `subtitle.safe_area.bottom`，照抄给前端就会出现"保存失败，
+        # 但哪一格都没红"（对照表在 `outputs_store._FIELD_ALIASES`）。
+        ({"subtitle": {"safe_area_bottom": 5000}}, "subtitle.safe_area_bottom"),
+        ({"subtitle": {"margin_bottom": 5000}}, "subtitle.margin_bottom"),
     ],
 )
 def test_invalid_forms_are_rejected_with_422_and_write_nothing(
@@ -472,6 +793,49 @@ def test_an_odd_canvas_is_rejected_with_a_readable_reason(client: TestClient, pa
     assert response.status_code == 422
     error = response.json()["context"]["field_errors"][0]["error"]
     assert "偶数" in error
+
+
+def test_an_unknown_sticker_layer_is_rejected_with_a_hint(
+    client: TestClient, paths: StudioPaths, connection: sqlite3.Connection
+) -> None:
+    """★ 面板**加不了层**（层是 YAML 里的命名块）：报错要说清"现有的是哪些"和"该怎么加"。
+
+    静默忽略的代价是：用户以为"第 3 层已经建好了"，而文件里根本没有那一块 —— 出片时那一层
+    自然不存在，且没有任何地方说得出来。
+    """
+    before = _bytes(paths)
+    body = client.get(OUTPUTS_URL).json()
+    response = client.post(
+        OUTPUTS_URL,
+        json={"stickers": {"extra": {"enabled": True}}, "source_sha256": body["sha256"]},
+    )
+    assert response.status_code == 422
+    payload = response.json()
+    assert payload["code"] == "OUTPUTS_INVALID"
+    assert payload["context"]["field_errors"] == [
+        {"field": "stickers.extra", "error": "没有这一层贴图：extra"}
+    ]
+    assert "hero" in payload["remediation"] and "guest" in payload["remediation"]
+    assert "config/outputs.yaml" in payload["remediation"]
+    assert _bytes(paths) == before
+    assert _audit(connection) == []
+
+
+def test_the_sticker_body_has_no_width_ratio(client: TestClient, paths: StudioPaths) -> None:
+    """贴图**没有** `width_ratio` 这个字段 —— 请求体这一层就拒了，比"写进文件再报错"更早。
+
+    守的是 T6.5 那处刻意的不对称：人物按**高度**定尺寸，水印那套宽度占比不该被顺手带过来
+    （1080 × 0.25 = 270px 做不了主体）。
+    """
+    before = _bytes(paths)
+    body = client.get(OUTPUTS_URL).json()
+    response = client.post(
+        OUTPUTS_URL,
+        json={"stickers": {"hero": {"width_ratio": 0.2}}, "source_sha256": body["sha256"]},
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "VALIDATION_FAILED"
+    assert _bytes(paths) == before
 
 
 # ══════════════════════════════════════════════════════════════════════

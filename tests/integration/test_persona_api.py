@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sqlite3
 from collections.abc import Iterator
@@ -34,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from studio.app.deps import AppState, build_state
@@ -172,6 +174,32 @@ def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
+#: YAML 里那一行 ``name:``（顶格、取第一条）
+_NAME_LINE = re.compile(r"^name: .*$", re.MULTILINE)
+
+
+def _active_name(paths: StudioPaths) -> str:
+    """盘上那份激活人物叫什么。
+
+    用例**不硬编码**出厂名：``config/persona.yaml`` 是面板会就地改写的那一份，当前名字
+    是操作员的运行期状态（真机 2026-09-23 从「熊大熊二·MC跑酷」改成了「熊大熊二」）。
+    硬编码的字面量会让一整片用例红在与它无关的地方 —— 看着像代码坏了，其实是配置变了。
+    """
+    loaded: Any = yaml.safe_load(_read(paths.persona_file))
+    return str(loaded["name"])
+
+
+def _rename(text: str, name: str) -> str:
+    """把 YAML 里那一行 ``name:`` 换成 ``name``。
+
+    **不按字面量替换**：写死旧名字的话，人一改名这条替换就静默变成"什么都没改"，
+    于是断言红在"事件没发出来"上 —— 而其实是替换根本没生效。
+    """
+    replaced, count = _NAME_LINE.subn(f"name: {name}", text, count=1)
+    assert count == 1, "persona.yaml 里找不到顶格那一行 name:"
+    return replaced
+
+
 # ══════════════════════════════════════════════════════════════════════
 # ① 读 · 激活人物
 # ══════════════════════════════════════════════════════════════════════
@@ -183,7 +211,7 @@ def test_read_returns_active_persona_with_provenance(client: TestClient, paths: 
     assert body["active_error"] is None
     active = body["active"]
     assert active["persona_id"] == "persona_default"
-    assert active["name"] == "熊大熊二·MC跑酷"
+    assert active["name"] == _active_name(paths)
     assert active["source"] == "active"
     assert active["version"] == 1
     assert active["stale"] is False
@@ -545,9 +573,7 @@ def test_hand_edit_broadcasts_too(client: TestClient, paths: StudioPaths) -> Non
     """
     _active(client)
     with client.websocket_connect(f"{WS_URL}?channels=system") as session:
-        _write(
-            paths.persona_file, _read(paths.persona_file).replace("name: 熊大熊二·MC跑酷", "name: 手改的名字")
-        )
+        _write(paths.persona_file, _rename(_read(paths.persona_file), "手改的名字"))
         client.get(PERSONA_URL)  # 下一次 `current()` 才发现
         frame = json.loads(session.receive_text())
     assert frame["data"]["kind"] == "system.persona_changed"

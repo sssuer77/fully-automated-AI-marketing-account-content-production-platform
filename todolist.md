@@ -1,6 +1,6 @@
 # 施工 Todolist · AI 全自动营销号制片台
 
-> 依据：`docs/spec/`（**v3.2 终版 · 需求已冻结**）｜ 生成日期：2026-09-13 ｜ 最近更新：2026-09-20（**T4.8 素材库按类别分菜单 + 分页 + 逐行编辑 ✅**）· 2026-09-18（**T5.7 数据报告与决策闭环 ✅ —— M5 只剩多账号**）（**T1.1–T1.12 全部 ✅** + **T4 已完成 14/14（T4 齐了）**：T4.1 前端脚手架 ✅ · T4.2 总览台 ✅ · T4.3 选题面板 ✅ · T4.4 稿件面板 + 确认闸 ✅ · **T4.6 渲染面板 ✅** · T4.7 合成配置面板 ✅ · **T4.8 素材库 ✅** · T4.9 实时日志 ✅ · T4.10 四池调度控制台 ✅ · T4.11 无人值守 ✅ · T4.12 观测/备份/交付 ✅ · T4.13 人物库面板 ✅ · **T4.5 配音面板 ✅** · **T4.14 四屏端到端串联 ✅**（T4 14/14 齐）** + **T2.5 文本归一化与切分 ✅（2026-09-15）** + **T2.6 按句合成流水线 + 句级缓存 ✅（2026-09-16）** + **T2.7 时长时间轴 ✅（2026-09-16）** + **T2.8 配音阶段编排与降级演练 ✅（2026-09-16）** + **T2.9 配音服务化操作接口 ✅（2026-09-16）** + **T4.5 配音面板 ✅（2026-09-16）** + **T4.14 四屏端到端串联 ✅（2026-09-16）** + **T5.2 发布适配层与 profile ✅（2026-09-16）**）
+> 依据：`docs/spec/`（**v3.2 终版 · 需求已冻结**）｜ 生成日期：2026-09-13 ｜ 最近更新：2026-09-23（**T5.12 追加：新闻扩源到五家、合并而不是降级 ✅**）· 2026-09-23（**T1.10 追加：文稿要立论、结尾不许提问 ✅**）· 2026-09-23（**T5.14 多平台铺开 + 选择器校准探针 ✅**）· 2026-09-23（**T6.5 追加：贴图开关当场写盘 + 面板判据与渲染同源 ✅**）· 2026-09-23（**T4.8 追加：删除孤儿目录 ✅**）· 2026-09-23（**T1.9 追加：选题里一直冒跑酷 ✅**）· 2026-09-23（**T2.4 追加：参考音指纹 —— 同名换参考音不再复用旧产物 ✅**）· 2026-09-22（**T2.4 追加：音色导入「覆盖 = 镜像 + 逐段可管」✅**）· 2026-09-22（**T2.4 追加：音色参考音「段数放开 + 多段真正参与合成」✅**）· 2026-09-22（**T6.5 人物贴图（多层 · 面板可编辑）✅**）· 2026-09-22（**T5.13 选题/方向「派生过任务也照删」✅**）· 2026-09-22（**T5.12 一键拉取今日新闻 ✅**）· 2026-09-22（**T6.3 侧边栏可拖动排序 ✅**）· 2026-09-20（**T4.8 素材库按类别分菜单 + 分页 + 逐行编辑 ✅**）· 2026-09-18（**T5.7 数据报告与决策闭环 ✅ —— M5 只剩多账号**）（**T1.1–T1.12 全部 ✅** + **T4 已完成 14/14（T4 齐了）**：T4.1 前端脚手架 ✅ · T4.2 总览台 ✅ · T4.3 选题面板 ✅ · T4.4 稿件面板 + 确认闸 ✅ · **T4.6 渲染面板 ✅** · T4.7 合成配置面板 ✅ · **T4.8 素材库 ✅** · T4.9 实时日志 ✅ · T4.10 四池调度控制台 ✅ · T4.11 无人值守 ✅ · T4.12 观测/备份/交付 ✅ · T4.13 人物库面板 ✅ · **T4.5 配音面板 ✅** · **T4.14 四屏端到端串联 ✅**（T4 14/14 齐）** + **T2.5 文本归一化与切分 ✅（2026-09-15）** + **T2.6 按句合成流水线 + 句级缓存 ✅（2026-09-16）** + **T2.7 时长时间轴 ✅（2026-09-16）** + **T2.8 配音阶段编排与降级演练 ✅（2026-09-16）** + **T2.9 配音服务化操作接口 ✅（2026-09-16）** + **T4.5 配音面板 ✅（2026-09-16）** + **T4.14 四屏端到端串联 ✅（2026-09-16）** + **T5.2 发布适配层与 profile ✅（2026-09-16）**）
 > 本文件是**唯一施工执行入口**：把规格书里 50 个原子任务拆成可勾选的子项。
 > 规格书回答"**为什么这样做**"，本文件回答"**现在做什么、怎么算做完**"。
 
@@ -45,7 +45,7 @@
 | E1 | 🔴 **MC 跑酷素材包**（≥60 条 / ≥30 分钟） | `data/assets/mc_parkour/` | **T3.1 开工前** | 缺失（`D:\MC` 空） |
 | E2 | 🔴 **水印 PNG**（1080×1920 适配，带透明通道） | `templates/<tid>/assets/images/watermark.png` | **T3.2 开工前** | 缺失 |
 | E3 | 🔴 **BGM 音乐库**（≥20 首授权曲） | `data/assets/bgm/` 或 WebUI 上传 | T3.6 开工前 | 缺失（`D:\MUSIC` 空） |
-| E4 | 🔴 **熊大熊二原声**（各 2–3 段，10–30s，**无 BGM**） | `data/voice_src/{bigbear,littlebear}/` | **T2.4 开工前** | 占位已就位（2026-09-17 · `scripts/seed_placeholder_assets.py`，**开箱即用**）· **正式原声仍缺** |
+| E4 | 🔴 **熊大熊二原声**（段数不限，单段 2–30s，**无 BGM**） | `data/voice_src/{bigbear,littlebear}/` | **T2.4 开工前** | 占位已就位（2026-09-17 · `scripts/seed_placeholder_assets.py`，**开箱即用**）· **正式原声仍缺** |
 | E5 | ✅ **CosyVoice 权重**（2–4 GB） | `models/` 或 `D:\ai_models` | **T2.1 开工前** | **已就位（2026-09-17）** —— `D:\ai_models\modelscope_cache\models\iic--CosyVoice2-0.5B\snapshots\master`，**21 文件 / 5.23 GB**（与远端清单逐条一致）；真机加载 **10.4s / 显存 2.38 GB** |
 | E6 | ✅ **LLM API Key**（[OI] 兼容） | `config/secrets.yaml` **或**环境变量 `STUDIO_LLM_API_KEY`（**env 优先**） | **T1.9 真机联调前** | **已可由面板配置（2026-09-17 · T6.1）** —— 打开「设置」面板填 key 即生效，**不改代码、不重启**；真 key 仍未填 ⇒ `studio llm probe` 报 `no_key`，其余施工照常 |
 | E7 | 🟡 **`config/persona.yaml`**（人设/口吻/受众/口癖/禁区） | `config/persona.yaml` | **随时**（不阻塞） | 缺失（**唯一人工必填**）· T1.9 / T1.10 均已用 `personas/persona_default.yaml` 现值开工；改人物文件即生效（阈值经 `ScriptRules.from_persona`），历史批次可按 `prompt_version` 追溯 |
@@ -606,7 +606,7 @@
 - ⚠️ 陷阱 #10 首句延迟 20s+ ⇒ 常驻服务 + `/warmup` + 空闲卸载
 - ⚠️ 陷阱 **162**（`tts/.venv` 缺 `tzdata` ⇒ `import studio.core.clock` 抛 `ZoneInfoNotFoundError`）· **163**（子环境没装 `studio` 包 ⇒ 启动器必须前置 `PYTHONPATH`）
 - **施工裁定（本轮新增 305–308）**：
-  - **305** 音色的**注册 / 注销不在推理服务上**（`POST|DELETE /voices` ⇒ **501**）：入库判定（四条硬拒 + R2 留痕）只在 T2.4 的 `AssetService.ingest` 有一份，服务上再实现一遍就是两份判定迟早对不上（与陷阱 #150 同族）
+  - **305** 音色的**注册 / 注销不在推理服务上**（`POST|DELETE /voices` ⇒ **501**）：入库判定（三条硬拒 + R2 留痕）只在 T2.4 的 `AssetService.ingest` 有一份，服务上再实现一遍就是两份判定迟早对不上（与陷阱 #150 同族）
   - **306** 常驻服务的并发**不按显存判，按吞吐增益判**：8 GB 卡上 2/3 路不 OOM，但吞吐只 +13%、RTF 涨 1.6–2.5 倍，且 render 池要共用这块卡 ⇒ 取 **1**。门槛写死在 `bench_tts.py: MIN_GAIN_RATIO = 0.4`（升一档至少拿到理想增益的 40%）
   - **307** `tts` 的「模块在不在」（`server_missing`）与「子环境在不在」（`env_missing`）**分开报**：模块不在 ⇒ 写代码，环境不在 ⇒ 建 venv；最糟的第三种结果是拉起来一个「活着、`/health` 回 200、每句都报 `no module named torch`」的进程（**真机复现过**：T2.2 落地前起的那个 `tts` 进程就是这个状态）
   - **308** 服务自己带 `concurrency` 时，标定脚本必须在**进程内**直驱引擎：打 HTTP 测到的是**排队**，不是显卡容量。`--from-json` 支持拿上次读数重出报告 —— 改措辞不必重跑 40 秒 GPU
@@ -737,7 +737,8 @@
 ### T2.4 原声入库与音色注册 · **P0** ✅ **已完成（2026-09-19 · 试听样本已补 · 非核心项已关闭）**
 - 依赖：T2.2 ｜ 里程碑：M2 ｜ 契约：§04.3.1 / R2
 - [x] 目录契约：`data/voice_src/{bigbear,littlebear}/` + `profile.json`
-- [x] 质量校验的**四条硬拒**：段数 2–3 / 单段 10–30s / 无削波（峰值 ≤ −1.0 dBFS）/ 采样率 ≥ 16 kHz
+- [x] 质量校验的**三条硬拒**：单段 2–30s / 无削波（峰值 ≤ −1.0 dBFS）/ 采样率 ≥ 16 kHz
+  —— 段数那条**已删**（裁定 379）：不设上下限，只给一段 ⇒ 一条 warning `single_ref`
 - ⛔ **已关闭（非核心）**：三条 `warn` 级质量校验（无 BGM / 有效语音占比 ≥ 70% / 单发言人） —— 裁定 287，见 §12-1
 - [x] 入库命令 `scripts/ingest_voice_src.py`：扫目录 → 体检 → 写 `voice_profiles`（判定不重写，见裁定 289）
 - [x] 零样本复刻注册 —— 已通（库里有行 ⇒ `usable_voices` 选得到；真机下拉框里 `bigbear` / `littlebear` 两行 `speakable=true`）
@@ -772,6 +773,84 @@
   - **345** 试听样本**独立目录 + 永不 GC + 不进配音缓存**（2026-09-19）：`output/voice_preview/` 与 `output/voice/`（24 小时 TTL）**必须**是两个目录 —— 混在一起，第二天所有试听按钮都会变回「还没生成」，而没有任何东西提示是被 GC 清的。缓存同理：缓存键含文本，样本那段**固定文本**会与稿子里恰好相同的一句**撞键**，症状是「换了参考音、试听放出来还是旧嗓子」（而且看起来一切正常）
   - **346** 试听**不退回兜底音色**（与裁定 314 **故意相反**）：配音那边「音色念不出来就退回进程音色」是对的（有声音 > 没声音），而试听的**全部意义**就是听这个嗓子 —— 退回兜底念出来的是**另一个人的声音**，面板上什么都不会说。所以这里如实 **503**，并把「能念的都有哪些」放进 `context.speakable`
   - **347** `TTS_ENGINE_UNAVAILABLE` 在 REST 面登记为 **503**（此前未登记 ⇒ 兜底 **500**）：请求一个字都没错（音色就在本机），错的是「这台引擎此刻念不出来」—— 换引擎 / 把常驻服务叫醒就会好。报 500 等于把它说成「我们崩了」，而用户该做的事是去总览看 tts 的就绪状态
+
+- ✅ **追加（2026-09-22 · 裁定 379 / 380）—— 段数放开 + 多段真正参与合成**：用户原话
+  **「段数上限放开，我说怎么配出来一点都不像」**。查下去发现两件事叠在一起：
+  ① 每音色最多 3 段（`VOICE_MAX_SEGMENTS`）是**我们自己定的**，上游没有任何段数判据；
+  ② **第 2、3 段从来没进过引擎** —— `VoiceRegistry.resolve` 只取 `wavs[0]`。
+  于是"最多 3 段"逼着人**把同一个文件复制一份凑数**（真机库里 `sunxiaochuan` 的
+  `ref_01` / `ref_02` sha256 完全相同，都是 2.978s），而 `xionger` 手里那段 **8.0 秒**原声
+  一直躺在盘上没被用过 —— 真正喂进引擎的是 **2.14 秒**的 `ref_01`。"一点都不像"由此有了直接的技术解释。
+  - **裁定 379 —— 段数不设上下限**：删 `VOICE_MIN_SEGMENTS` / `VOICE_MAX_SEGMENTS` 两个常量
+    与 `too_few_refs` / `too_many_refs` 两条 problem；只给一段 ⇒ 一条 warning `single_ref`
+    （"多给几段更稳"），**不是拒绝**。硬拒四条 ⇒ **三条**（单段 2–30s / 无削波 / 采样率）。
+  - **裁定 380 —— 多段按 `ref_01…` 顺序拼成一段 prompt 一起喂**（`tts/server.py::build_prompt`）：
+    单段**原样直传**（不复制、不过 ffmpeg，零开销）；多段用 ffmpeg 拼接，段间插 **300ms** 静音、
+    总长封在 **29 秒**（`VOICE_PROMPT_MAX_MS`，给上游那句 `<= 30s` 断言留余量），放不下的段
+    **整段丢弃**并进 `dropped_refs`（不截半句 —— prompt 文本必须与 prompt 音频逐字对应）。
+    §04.3.2 原写的"多段时按 seed 随机选一段"**作废**：每句挑一段会让音色**逐句抖**，
+    而"像不像"恰恰是稳定感。
+  - 为什么用 ffmpeg 不用 numpy：主 venv **没有 numpy**（只有 `tts/.venv` 有），而 `tts/server.py`
+    会被 API 进程与单测导入；ffmpeg 两边都有，`aformat` 还能统一各段不同的采样率 / 声道。
+    拼接走 `run_command`（项目自己的外部命令层，带进程树超时），`runner=` 是单测注入点。
+  - prompt 落 `data/tmp/tts_prompt/<voice_id>.wav`，**每次合成重写**（没有缓存失效问题）。
+  - **真机验收（2026-09-22）**：`POST /synth`（`voice_id=xionger`）⇒ `ref_wavs ==`
+    `["ref_01.wav","ref_02.wav","ref_03.wav"]`、`dropped_refs == []`；
+    `data/tmp/tts_prompt/xionger.wav` 实测 **12.9189s**（= 2.136 + 2.183 + 8.000 + 0.3×2）。
+    单段音色（临时目录 `_ab_single`）**不生成 prompt 文件**，直接用 `ref_01.wav` —— 单段这条路
+    与改前**逐字节相同**，所以"改前/改后"的差别只出在多段音色上。
+- ✅ **追加（2026-09-22 · 裁定 381）—— 音色导入「覆盖 = 镜像 + 逐段可管」**：用户原话
+  **「配音导入还是太难管理，并且同名覆盖策略似乎没有生效」**。后一句**用户读对了**：
+  「覆盖同名」只管同名的那几个文件，旧 `ref_03.wav` 原封不动留在盘上，扫盘又把它读回来。
+  - **裁定 381 之一 · 覆盖 = 镜像**（`assets/upload.py::prune_refs`）：勾了「覆盖同名」时，
+    这次没写到的 `ref_NN.*` **清掉**（只认 `ref_NN` + 音频后缀；`ref.txt` / `profile.json` /
+    用户自己的别的文件一个不动）。守卫两条：① 只有 `overwrite=true` 才清；② 只有这次
+    **确实写进去过**才清 —— 整批失败的上传不该把用户音色清空。清掉的逐条进 `UploadResult.removed`。
+  - **裁定 381 之二 · 回执说清对不上的地方**：没填文字稿而盘上已有 `ref.txt` ⇒ 回执 notes
+    明说「`ref.txt` 没动（上一次那 N 行），而这次写进去 M 段 —— 两者对不上」。
+  - **裁定 381 之三 · 逐段可管**：`GET /api/v1/assets/voice/{voice_id}/segments` 给逐段现状
+    （段号 / 文件名 / 时长 / 采样率 / 峰值 / **同一位置那行文本** / 该段自己的 problems）；
+    `DELETE …/segments/{name}` 删段 + **重编号**（`ref_03.wav ⇒ ref_02.wav`）+ 同步 `ref.txt`
+    同一行（**仅当行数与段数本来相等**，否则不动并如实 note）。最后一段 ⇒ 422（那两个动词是
+    「整条删除」与「覆盖重传」）。
+  - **位置即对应**：段号就是「它在 prompt 里的位置」，删中间那段后面必须重编号 —— 不重编号
+    就出现「第 2 段空着、第 3 段还在」的洞，而 prompt 是按下标顺序拼的。
+  - **真机验收（2026-09-22 · 重启 api 后）**：`GET segments`（xionger）⇒ 3 段
+    2136 / 2183 / 8000 ms + 三行文本；覆盖 3 段 ⇒ 2 段（`removed == ["ref_03.wav"]`，库与盘
+    同步 2 段）；删中间段 ⇒ `renamed == [{ref_03.wav ⇒ ref_02.wav}]`；删最后一段 ⇒ 422
+    `ASSET_INVALID`，remediation 指向「整条删除 / 覆盖重传」；临时探针音色 `probeov` 已用
+    `DELETE …?purge=true` 清掉。
+- ✅ **追加（2026-09-23 · 裁定 385 / 386）—— 参考音指纹：同名换参考音不再复用旧产物**：
+  用户原话 **「我删除再重添加音色库文件，因为同名就复用以前的试听样本，并且感觉配音也是复用的以前的」**
+  —— 两处都说中了，而它们是**同一个病**：音色的身份在这条链路上只有一个名字。
+  - **根因**：决定声音的是**参考音的内容**，而系统到处按**名字**记结论 —— 配音缓存键里有
+    `voice_id` 而没有参考音（换了嗓子照样命中旧音频）；试听样本的文件名只由音色 id 算出，
+    而 `get()` 的判据是"盘上有没有这个文件"（旧样本原地不动，照旧报 `ready`）。
+  - **裁定 385 —— 参考音指纹进身份**（新模块 `src/studio/tts/refprint.py`）：逐段
+    `(文件名, 内容 sha256, 该段逐字文本)` ⇒ sha256 前 12 位；**只算配得上文本的那几段**
+    （与 `VoiceRegistry.resolve` 同一条取舍）；系统音色 ⇒ 空串（与改前逐字节同键）；
+    按 `(名字, 大小, mtime_ns)` 记忆化。两处吃它：① `tts_cache_key` 多一个 `voice_fingerprint`；
+    ② 试听旁车记指纹，对不上 ⇒ 新状态 **`stale`**（面板写「重新生成」+ 说清为什么），
+    而不是假装 `ready`。
+  - **裁定 386 —— 删掉「盘上有非空产物就跳过」那条捷径**（`tts/synth.py`）：它判的是
+    "这个文件在不在"，不是"它是不是**这一轮要念的东西**" ⇒ 换了参考音/音色后重跑会把旧嗓子
+    照旧拼进母带，而日志全写着成功。现在每句都过缓存（键含指纹）：没变就是一次文件复制，
+    变了就真的重念。`VoiceResult.reused` 的口径跟着改成"一句引擎都没碰的句数"。
+  - **真机现况（2026-09-23）**：`xionger` 的试听样本旁车写着 `0:45:00`，而它的参考音文件是
+    `0:54:19` 写的 —— 样本比参考音早 9 分钟 ⇒ 面板上那份正是旧参考音念的（用户报的那条，
+    当场坐实）；`bigbear` / `littlebear` 的参考音已不存在，那两份样本一律判 `stale`。
+  - ⚠️ **库里 `sunxiaochuan` 那两段仍是同一个文件**（当年凑数留下的）：拼起来是"同一句话念两遍
+    + 第二行文本对不上那段音频" ⇒ 建议**删掉 `ref_02.wav`**（现在一段就够）或补一段真原声。
+- **验收命令（追加）**：
+  - `pytest tests/unit/tts/test_server.py tests/unit/assets/test_validate.py tests/integration/test_voice_profile.py -q` ⇒ **82 passed**（新增 `TestPromptBuild` 5 例 + `TestPromptBuildForReal`：真 ffmpeg 拼 2×1s ⇒ 时长 ≈ 2000 + 300ms、24kHz 单声道）
+  - `pytest tests/integration/test_assets_api.py tests/unit/services/test_asset_service.py tests/unit/assets tests/unit/tts tests/integration/test_voice_profile.py -q` ⇒ **600 passed**
+  - `uv run mypy src tests workers scripts` ⇒ **431 文件无问题**；`ruff format --check` / `ruff check` 全绿
+- **交付物（追加）**：`src/studio/tts/{server,cosyvoice}.py`、`src/studio/assets/validate.py`、
+  `src/studio/app/routers/assets.py`、`scripts/ingest_voice_src.py`、`web/src/stores/assets.ts`、
+  `web/src/api/endpoints/assets.ts`、`tests/unit/tts/test_server.py`、`tests/unit/assets/test_validate.py`、
+  `tests/integration/test_voice_profile.py`、`tests/integration/test_assets_api.py`、
+  `tests/unit/services/test_asset_service.py`、
+  `docs/spec/{02-project-layout,03-data-model,04-contracts,README,05-roadmap-checklist}.md`
 
 ### T2.5 文本归一化与切分 · **P0** ✅ **已完成（2026-09-15）**
 - 依赖：T1.10 ｜ 里程碑：M2 ｜ 契约：§04.3.6
@@ -1521,7 +1600,7 @@
 - ⚠️ **E2 水印 PNG 缺失 ⇒ 跳过水印层**（不再是硬门禁）—— 与素材库无关，但属于同一批外部依赖
 - ✅ **2026-09-20 补正：浏览器上传已落地**（`POST /api/v1/assets/upload` / `POST /api/v1/assets/voice`）。此前这一条写的是「一期不做真 multipart 上传，走『把文件丢进目录 + 点扫盘入库』」—— 那句话让**入库这件事在界面上没有入口**，用户只能开资源管理器往目录里丢（用户裁定 2026-09-20：「素材入库要在制片台界面有操作 UI」）。现在面板每一节都有「选择文件上传」+ 拖拽落点，**落盘与入库是同一个请求**（传上去就在库里，不用再点一次扫描）；一期**仍然不做**分片 / 断点续传 / 授权书文件表单（那是另一件事）
 - 📌 一期**不做帧哈希 / 感知哈希**：`broll_clips.phash` / `frame_hashes` 列已留，填充留到 T3；素材库只负责「这条能不能用」，「不重复用同一段」是 T3 的随机化策略
-- 📌 **音色目录契约**：`data/voice_src/<voice_id>/{ref_NN.<ext>, ref.txt, profile.json}`；参考音 **2–3 段**、每段 **10–30s**、采样率 **≥ 16 kHz**、峰值 **≤ −1.0 dBFS**；**0 段或 > 3 段 ⇒ 无效**；解析失败**明确报错、不回退默认音色**
+- 📌 **音色目录契约**：`data/voice_src/<voice_id>/{ref_NN.<ext>, ref.txt, profile.json}`；参考音**段数不限**、每段 **2–30s**、采样率 **≥ 16 kHz**、峰值 **≤ −1.0 dBFS**；**0 段 ⇒ 无效**；解析失败**明确报错、不回退默认音色**
 - 📌 缩略图落 `data/assets/.thumbs`（`paths.thumb_file()`）；**没有就 404，不临时现抽**（面板刷新不该触发 ffmpeg）
 
 ### T4.9 ⑧ 实时日志 · **P1** ✅ **已完成（2026-09-14）**
@@ -1761,7 +1840,7 @@
   - 抽象层 `src/studio/publish/base.py`（`Publisher` ABC + `PublisherContext` / `PublishRequest` / `PublishResult` / `PublishEvidence` / `PublishHealth` / `PublishMetrics` / `PublishStatus` / `PUBLISHERS` 注册表）
   - 通用实现 `src/studio/publish/playwright_publisher.py`（§06.5.3 八步）+ `browser.py`（`PageLike` Protocol + 持久化 profile 会话）
   - 选择器 `src/studio/publish/selectors.py` + `selectors/{douyin,kuaishou,shipinhao,fixture}.yaml`（**装配期**校验）
-  - 平台 `platforms/{douyin,kuaishou,shipinhao}.py`（一线真实现）· `platforms/{xiaohongshu,bilibili,xigua,weibo}.py`（二线空实现）· `platforms/fixture.py`
+  - 平台 `platforms/{douyin,kuaishou,shipinhao}.py`（一线真实现）· `platforms/{xiaohongshu,bilibili,xigua,weibo}.py`（二线，**T5.14 起为真实现**：同一套 `PlaywrightPublisher`，子类只声明 `platform`）· `platforms/fixture.py`
   - 演练靶 `publish/fixtures/upload_form.html`（`?logged_out=1` / `?expired=1` / `?eat=emoji` / `?eat=newlines` / `?reject=1`）
   - 纯函数 `src/studio/domain/publish.py`（幂等键 / 文案裁剪 / 话题拼装 / 回读比对）
   - 服务与 CLI `services/publish_service.py` 的 `dry_run` + `studio publish dry-run`
@@ -2194,6 +2273,76 @@
       结果行说的是"已排入 N 条作业"并把人指向发布面板 —— 自动跳走会让人以为"已经发完了"。
 - ⚠️ 陷阱 **205**（一行一条文件 ⇒ 勾哪一行结果都一样）
 
+### T5.12 选题面板「一键拉取今日新闻」（模型评测有写稿价值才留成方向）· **P1**（**已交付 2026-09-22**）
+- 依赖：T4.3, T6.1 ｜ 里程碑：M5（选题入口）｜ 契约：**§04.5.18（新增）**
+- **为什么做**：用户原话 **「在选题栏新增功能,一键拉取今日社会新闻,经模型评测有写稿价值就保留在选题方向里」**。
+  方向此前只有两个来源：人自己写、模型按输入源产。前者要人先看到新闻，后者要人先把新闻粘成
+  `data/hot/*.md` —— 两个来源都要求"人**先**知道今天发生了什么"。这一颗按钮补的就是那一步。
+- [x] `services/news_service.py`：`fetch_news`（**T5.12 原始形态**：今日头条热榜 JSON → 中新网滚动 RSS，**源内降级、
+      源间报错**）+ `parse_toutiao` / `parse_chinanews`（纯函数）+ `_with_refs`（`n01/n02…` 回抄锚点）
+- [x] `agents/news_scout.py` + `prompts/news_scout/{system.md,user.jinja}` +
+      `schemas/news_scout.schema.json`（逐条判 `keep` + `direction_title` + `rationale`），
+      提示词注册表已登记（`PromptLibrary.verify()` 无漂移）
+- [x] `domain/topics.py`：`NewsItemSpec` / `NewsBatch` / `NewsVerdict` / `NewsScoutResult`；
+      `services/topic_service.py`：`pull_news_directions`（抓 ⇒ 分块评测 ⇒ **只有 `keep` 才写库**）
+- [x] `POST /api/v1/topics/news-pull`（挂 `_RUN_GUARD` 长任务闸）+ `app/schemas/topics.py` 的
+      `NewsPullResult` / `NewsSkipItem`；`deps.py` 装配 `NewsScoutAgent` 与 `news_service.fetch_news`
+- [x] WebUI：`views/Topics.vue` 左栏顶部「一键拉取今日新闻」+ 折叠的**跳过清单**（为什么没挑中要
+      说出来）；`stores/topics.ts` 的 `pullNews` / `lastNews` / `newsBusy` / `summarizeNews`
+- ✅ `pytest tests/unit/services/test_news_service.py tests/contract/test_news_scout_schema.py
+      tests/integration/test_topics_news_api.py -q` ⇒ **40 passed**（解析 / 降级 / 全挂 / limit /
+      schema 双向拒同一批输入 / 7 条 REST 路径）；`web/src/stores/topics.test.ts` **61 ⇒ 68 例**
+- ✅ **真机**（应用内浏览器 · 真 API 8787 · 真库 · 真 LLM）：点「一键拉取今日新闻」⇒ 按钮转
+      禁用（跑完自己回来）⇒ 约 2 分钟后左栏顶部出现小结 **「今日头条热榜：评测 50 条 · 留下 3 个
+      方向 · 跳过 47 条」**，紧跟着是折叠的跳过清单，新方向当场出现在左栏（`#16`–`#18`，可改可删）；
+      方向总数 9 ⇒ 12。**验证用的三条方向已按面板的「删除」同一条路清掉**（`cascaded_topics=0`）
+- ⚠️ **裁定 373**：①**只有 `keep` 才写库**（拿不准不写 —— 反过来会让"值不值得写"这道判断悄悄
+      失效，而用户看到的是一列看起来很正常的方向）；②落点复用 `add_manual_direction` 那条路 ⇒
+      落进**当前批次**，与手写 / 模型产的方向排在一起（`actor="system"` + `actor_ref="news_scout"`，
+      不新造 actor 名、不改 DDL）；③抓取全挂 ⇒ 抛 `NEWS_FETCH_FAILED`（**503**），不回空列表；
+      ④不落盘 `data/hot/news-*.md`（否则会被下一次 Planner 当热点再消费一遍）
+- ⚠️ **真机第一版踩到的坑**：头条分享链接带着 400+ 字的埋点参数（`log_pb` / `style_id` …），
+      原样塞进方向卡片那一行 ⇒ **整行字全是一个 URL**，"这个方向是从哪条新闻来的"这条唯一线索
+      反而被淹掉。改：`_news_origin_url` 只留 **origin + path**（真机读数 903 ⇒ 115 字符），
+      库里那 6 条已按同一规则就地修正
+- ⚠️ 陷阱 **207**（抓不到新闻却回 200 空列表 ⇒ 用户看到的是一句系统没资格说的话）
+
+---
+
+### T5.13 选题/方向「派生过任务也照删」（删掉的是想法，不是活）· **P1**（**已交付 2026-09-22**）
+- 依赖：T4.3, T5.12 ｜ 里程碑：M5（选题入口）｜ 契约：§04.5.5（口径更新）
+- **为什么做**：用户原话 **「这种不再需要的方向应该直接删掉,即使已经派生任务,不然这里堆积太多内容会难以管理」**。
+  改前：方向 / 候选一旦派生出任务，`DELETE` 被 **422 `TOPIC_SELECT_INVALID`** 拦下（"不能级联删除"）——
+  用户看到的是左栏越堆越长，而**删不掉**。这条拦下的理由（"删了会让任务断链"）在改造后**已经不成立**，
+  而拦截还在（陷阱 210）。
+- [x] `services/script_service.py`：`draft()` 的 `topic` 允许为 `None` —— 给了 `task_id` 就按**任务自己带的**
+      那份继续（模块级 `_spec_from_task`：`tasks.title` + `payload_json` 的 `angle` / `hook_type`）；
+      既没选题行又没 `task_id` ⇒ 照旧 `TOPIC_NOT_FOUND`（这条没变）
+- [x] `services/topic_service.py`：`delete_topic` / `delete_direction` **删掉 422 拦截**，改成"删行 + 如实报
+      留下了什么"（`TopicDeleteOutcome.detached_task_id` / `DirectionDeleteOutcome.detached_task_count`）
+- [x] `app/schemas/topics.py`（两个结果模型加字段，**带默认值** ⇒ 老客户端不炸）、`app/routers/topics.py`
+      （两个 DELETE 的 docstring 改口径）、`db/repositories/topic_repo.py`（`delete()` docstring 里那句过时的话）
+- [x] WebUI：`stores/topics.ts` 的 `removeTopic` / `removeDirection` 小结改成
+      **「已删除方向《X》（一并删掉 N 条候选） · 其中 M 条已有任务，照跑」**；`views/Topics.vue` 二次确认文案
+      写明"已经派生过任务的那些任务照跑，不受影响"；顺带修掉面板上原样显示的字面 `**不经模型**`
+- ✅ `pytest tests/unit/services/test_script_service.py tests/unit/services/test_topic_service.py
+      tests/integration/test_topics_api.py tests/integration/test_topics_news_api.py
+      tests/integration/test_script_pipeline.py -q` ⇒ **88 passed**；`web:verify` ⇒ **724 passed / 26 文件**、
+      build OK、包体 **0.48 MB / 3.00 MB**
+- ✅ **真机**（应用内浏览器 · 真 API 8787 · 真库）：左栏 `#22【一次性验证】删方向不掉任务`（1 条候选已派生任务）
+      ⇒ 点「删除」⇒ 确认框写"已经派生过任务的那些任务照跑，不受影响" ⇒ 点「确认删除方向」⇒ 小结
+      **「已删除方向《【一次性验证】删方向不掉任务》（一并删掉 1 条候选） · 其中 1 条已有任务，照跑」**，
+      方向总数 16 ⇒ 15；查库：方向行 0 / 候选行 0（`ON DELETE CASCADE`）/ **任务仍在**（`pending`）；
+      审计 `direction.deleted` 带 `{"cascaded_topics": 1, "detached_task_count": 1}`
+- ⚠️ **裁定 376**：①**删掉的是想法，不是活** —— 选题 / 方向可以删，已派生的任务**照跑**；②**不引入级联删任务**
+      （那才是真断链：产物 / 发布 / 报告都挂在任务上）；③**不做二选一参数**（"删不删任务"这种开关一上线就没
+      人知道该选哪个）—— 语义唯一：删想法、留活，并把"留下了什么"如实报出来；④`reason` 只能给一句实话：
+      `TaskPayload`（§03.5.3 冻结契约）没有 `reason` 字段 ⇒ 退路里写「（这条选题已从选题池删除，按任务自己记
+      下的标题与角度继续）」，**不拿 `task.context` 兜**（那是渲染 / 配音的运行期上下文）
+- ⚠️ 陷阱 **210**（"删不掉的选题堆满左栏" ⇒ 拦下的理由在改造后已经不成立，而拦截还在）
+
+---
+
 > **>>> M5 门禁**：成片**定时/即时**自动发布（≥1 平台）+ 数据回流 + **报告生成与决策采纳** + 记忆沉淀闭环（`auto_*.md` 可被解析器消费）。
 
 ---
@@ -2238,6 +2387,180 @@
   - **320** 改提示词走**覆盖层**（`data/prompts/`），**不**动仓库文件；`prompt_version` 跟着覆盖走 ⇒ P5「同输入同产物」不需要谁记得 bump 版本号
   - **321** 保存前校验两件事（引用的变量必须在 `allowed_variables` 里 / 模板语法合法），**一个字节都不写**就报 422 —— 这两种错只会在**下一次生成**时炸，而那时人早忘了自己改过什么
   - **322** `allowed_variables` 从**仓库那份**读（不是生效那份）：否则"覆盖里新增一个 `{{新变量}}`"会把自己的名字算进允许集，校验必然通过，正好是这条校验要拦的那件事
+
+---
+
+### T6.3 侧边栏可拖动排序 · **P2**（**已交付 2026-09-22**）
+- 依赖：T4.1 ｜ 里程碑：—（显示偏好，不占一期工期）｜ 契约：**§04.5.17（新增）**
+- [x] `stores/ui.ts`：`DEFAULT_PANEL_ORDER` / `normalizePanelOrder` / `movePanel` /
+      `readPanelOrder` / `writePanelOrder`（四个纯函数）+ `panelOrder` / `orderedPanels` /
+      `isDefaultOrder` / `movePanelTo` / `resetPanelOrder`
+- [x] `App.vue`：`draggable` + `dragstart` / `dragover` / `drop` / `dragend`；落点插入线
+      （`--over-before` / `--over-after`）；顺序被改过才露出的「恢复默认顺序」
+- [x] `stores/ui.test.ts` **+18 例**（归一 / 拖动 / 读写存档 / store 四条路径）
+- ✅ `npm test` **691 例 / 25 文件**全绿 · `npm run build` + 体积门禁 **0.46 MB / 3.00 MB** OK
+- ⚠️ `npm run typecheck` 本轮**不是全绿**，但那一处**不在本任务的文件里**：`stores/topics.test.ts`
+      报 `pullTodayNews` 与 `TopicsApi` 不兼容 —— 是仓库里**并行施工的选题新闻**（`news_scout`）留下的
+      （`web/src/api/endpoints/topics.ts` / `web/src/stores/topics.ts` 都在改），本轮**没碰它**
+- ⚠️ **裁定 372**：顺序是**这个浏览器的显示偏好** —— 不落库、不进 `audit_ops`、不改 `PANELS`；
+      拖动**不切面板**、也不动 `pendingHandoff`；读 / 写存档都不抛
+- ⚠️ 陷阱 **206**（存档照画 ⇒ 新加的菜单永远不出现）
+
+---
+
+### T6.4 发布账号配置面板（多平台 · 多账号）· **P1**（**已交付 2026-09-22**）
+- 依赖：T5.5 / T5.8 / T5.10 ｜ 里程碑：—（不占一期工期）｜ 契约：**§06.2.4 / §06.12** · **§4.5.19（新增）**
+- 起因：用户一句「发布的账号配置,多平台,怎么配置」→「做到面板里面吧,更易配置一点」。
+  在此之前加一个号只能**手改 `config/publish.yaml`**：那份文件几乎每行都带注释、缩进敏感，
+  写歪了要等**下一次启动**才炸（`CONFIG_INVALID`）
+- [x] `core/config.py`：`parse_publish_account`（**先校验**）+ `write_publish_accounts`（**按行改写、保注释**、
+      写完立刻回读）+ `_publish_accounts_span` / `_publish_account_entries` / `_render_account_chunk` /
+      `_new_account_chunk` / `_render_scalar`（引号交给 PyYAML 判 —— 裸写 `display_name: yes` 读回来是布尔）
+- [x] `services/publish_accounts_service.py`：`read` / `save`（幂等替换，**没变就不写盘、不留痕**）/ `remove`；
+      `account_limits()` 从 `AccountConfig` 的 `Field(ge=…, le=…)` **现取**，不手抄（手抄的那份迟早分叉成
+      "面板让填、后端拒收"）
+- [x] REST：`GET /api/v1/publish/accounts` · `PUT|DELETE /api/v1/publish/accounts/{account_id}`；
+      新错误码 `PUBLISH_ACCOUNT_NOT_FOUND`（**404**）；`DELETE` 的 `reason` 走查询串（带 body 的 DELETE
+      在代理链路上会被静默丢掉）
+- [x] WebUI：`web/src/views/Publish.vue`「账号配置」区块 + `stores/publishAccounts.ts` + `api/endpoints/publish.ts`；
+      区块**不轮询**（账号只在本屏动手才会变），挂载时拉一次
+- ✅ 后端 `pytest tests/unit/core/test_config.py tests/integration/test_publish_accounts_api.py -q` ⇒ **9 + 13 例**；
+      `.\tasks.ps1 check` ⇒ **4330 passed / 32 skipped / 28 deselected**（ruff + mypy + 契约漂移 + pytest 全绿）；
+      前端 `npm run verify` ⇒ **714 例 / 26 文件** + 包体 **0.47 MB / 3.00 MB** OK
+- ⚠️ **裁定 374**：账号只写回 `config/publish.yaml` 的 `accounts:` 段（**段外一个字节不碰**），
+      且**删号不删 `data/browser_profile/<id>/`** —— 那是凭据（§02.5），面板不替人做销毁决定
+- ⚠️ **裁定 375**：面板上那一列 `profile_dir` 是**声明**（"登录态按账号隔离"的唯一性校验），
+      运行期真正用的是 `data/browser_profile/<account_id>/`；两者不一致时**当场标出来**，
+      否则就是"改了没效果"的静默失效
+- ⚠️ 陷阱 **208**（删光账号 ⇒ 写成光秃秃的 `accounts:` ⇒ 读回来是 `None`）
+
+**追加（同日 · 用户第二句：「不是你告诉我账号 id 怎么填，怎么登录，密码？扫码？」）**
+
+- [x] `publish/base.py`：`Publisher.login()`（**具体方法**，默认抛 `PUBLISH_NOT_IMPLEMENTED`
+      —— 加成第四个抽象方法会让二线平台与测试假件都得写一遍，而它们该给的是"我不支持"）
+- [x] `publish/playwright_publisher.py`：`login()` 开**可见**窗口、**只轮询不重新导航**、
+      超时返回一句 `hint` 而不是抛
+- [x] `services/publish_service.py`：`publisher_for()`（按账号装配）+ `health_payload()`
+      （面板与 CLI `--json` **同一份**形状）
+- [x] `services/publish_accounts_service.py`：`probe()` / `login()`；`PublisherBuilder` 注入点
+      （与 `AssetTools` 同一条：单测不该以"这台机器装没装 Chromium"为前提）
+- [x] REST：`POST /accounts/{id}/probe` · `POST /accounts/{id}/login?timeout_sec=`；
+      `PUBLISH_NOT_IMPLEMENTED` ⇒ **503**（能力问题，不是"我们崩了"）
+- [x] WebUI：每一行「扫码登录」/「检测登录态」+ **「怎么登录？—— 没有密码，是拿手机扫一次码」**
+      四步说明（默认展开）+ 「账号 id」改成**面板替你起一个**（`acc_douyin` / `acc_douyin_2`）
+- ✅ 后端 **+20 例**（集成 24 例 / `PlaywrightPublisher.login` 5 例 / `publisher_for` 3 例）；
+      前端 `stores/publishAccounts.test.ts` **18 ⇒ 27 例**；`npm run verify` **724 例** + 包体 **0.48 MB / 3.00 MB** OK
+- ⚠️ **裁定 376**：扫码登录**开在跑着服务的那台电脑上**、等待期间**只轮询不重新导航**
+      （登录页的码是一次性的，重新导航 = 换一张码 ⇒ "我明明扫了，它说没扫到"）；
+      超时之后**再无头探一次**（人可能真扫了、只是页面没跳转）—— 判据始终是平台页面那句话
+- ⚠️ 陷阱 **209**（日志级别写成 Python 那边的 `"warning"` ⇒ 写日志那一刻 CHECK 约束炸）
+
+**追加（2026-09-23 · 用户第三句：「扫码登录无法自动反应登录成功，检测登录状态返回超时错误」）**
+
+先取证再动手（**不是推测**）：`data/browser_profile/*/Default/Network/Cookies` 里
+`acc_douyin` 在 17:01:53、`acc_main` 在 17:04:25 都写进了 `sessionid` / `sid_tt` / `sid_guard`，
+`History` 里页面也从登录页跳到了 `/creator-micro/home` —— **两个号都真的扫上了**，
+而两次都被报成"等了 180 秒没等到扫码完成"。
+
+- [x] `publish/selectors/douyin.yaml`：`login_ok` / `login_required` **真机校准**
+      （旧的四个选择器在已登录 / 未登录**两侧都不存在** ⇒ `_logged_in()` 恒为 False）。
+      真实类名带哈希后缀（`avatar-wrapper-DIbwVi`）⇒ 一律 `[class*=...]` 子串匹配；
+      顺手把 `login_expired_text` 里的"扫码登录"去掉（那是登录页自己的按钮文案，两种状态都在）
+- [x] `publish/playwright_publisher.py`：`MARKER_WAIT_SEC`（8s）+ `_login_markers()` ——
+      `goto(domcontentloaded)` 那一刻 SPA 还没渲染完（实测 +0.1s 什么都没有、+1.0s 才有头像），
+      采样一次就把"还没渲染完"读成了"没登录"；两个标志**都没出现**时回 `unknown`
+      （"这页没渲染出可判断的东西"）而**不是**"你没登录"。`marker_wait_sec` 与
+      `settle_sec` / `upload_timeout_sec` 同一条：构造函数可注入，单测不用真等 8 秒
+- [x] `web/src/api/endpoints/publish.ts`：`PROBE_TIMEOUT_SEC = 120` —— 探测原先吃的是
+      `http.ts` 那个 **10s 默认超时**，于是"服务端探成功了、面板报 `/probe 超时（10000 ms）`"
+- ✅ 真机复核：`probe("acc_main")` ⇒ `ready=True`（2.9s）；现造一个空 profile ⇒
+      `ready=False` + "尚未登录，需人工扫码登录"；后端 **+2 例**（等首屏渲染 / 标志都没出现
+      时是 `unknown`），前端新增 `api/endpoints/publish.test.ts` **2 例**（钉住两个长动作的超时口径）
+- ⚠️ 陷阱 **212**（判据在两种状态下都存在 ⇒ 永远判成同一侧；同族：只验一侧的判据）
+
+**追加（2026-09-23 · 用户第四句：「我试了一下根本没发的出去啊」）**
+
+先取证：`jobs` 里那条 `publish/publish douyin:acc_douyin`（17:25 投的）`status=pending`、
+`attempts=2`、`error_code=VALIDATION_FAILED`、`error_message=平台 douyin 上没有启用的账号 acc_douyin`
+—— 而**同一时刻** `config/publish.yaml` 里那个号明明写着 `enabled: true`，面板上也显示"启用"。
+对照那条 `acc_main` 的老作业（08:03）：`PUBLISH_DISABLED / 发布开关是关的`。
+两个号、两条作业、两种错误码，根子是同一件事：**worker 读配置的时刻早于面板改配置的时刻**。
+
+- [x] `pools/publish_worker.py`：`PublishPlatformHandler._refresh_config()` —— 每条单元
+      认领前重读一次配置（`build_publish_handler` 注入 `config_loader`；显式传 `publish=`
+      的不注入，那是"钉住这一份"的表达）。用 `load_config` 而**不是** `load_publish_config`：
+      后者不含 `publish.local.yaml` 覆盖层，热重载会安静地丢掉它
+- [x] `web/src/views/Publish.vue`：`accountSubtitle` 把**总开关状态**写进「账号配置」的副标题
+      （`accounts.publishEnabled` 早就在 store 里 expose 了，只是没人用）—— 它是"配好了也发不出去"
+      的唯一原因，而面板上没有开关
+- [x] `services/publish_accounts_service.py`：那条"扫码时用 `--show-browser`"的提示改成指向
+      面板的「扫码登录」按钮（T6.4 之后它已经过时了）
+- ✅ 后端 `pytest tests/unit/pools/test_publish_worker.py -q` ⇒ **23 例**（新增 3 例：热重载生效 /
+      没 loader 时钉住 / 装配后改盘上配置要认）；`tests/unit/pools tests/unit/publish
+      tests/unit/services/test_publish_service.py tests/integration/test_publish_accounts_api.py
+      tests/contract -q` ⇒ **729 passed**；契约漂移 ✅；`ruff` / `mypy` 全绿
+- ⚠️ 顺带修掉一处**夹具脆性**：`test_publish_accounts_api.py` 的 `paths` 夹具直接抄本机那份
+      `config/publish.yaml`，而用例把账号清单写死成 `["acc_main", "_rehearsal"]` ——
+      于是"在面板上加了一个号"就会让 **7 个用例**整片红。夹具现在只把 `accounts:` 段收窄到
+      出厂那两个（走生产那条 `write_publish_accounts`，段外平台表与注释照旧）
+- ⚠️ 陷阱 **214**（面板能改、后台却钉着启动快照 ⇒ 一条永远不生效的设置）
+
+---
+
+### T6.5 人物贴图（多层 · 面板可编辑）· **P1**（**已交付 2026-09-22**）
+- 依赖：T3.2（PNG 实测 / 取偶对齐那两件通用事）/ T4.7（合成配置面板）｜ 里程碑：—（不占一期工期）｜
+  契约：**§4.2.8.8（新增）**
+- 起因：用户两句 —— 「这里我是想做成人物贴图放在视频上，应该怎么做」→「人物贴图可能不止一个，
+  做在面板里面可编辑」。**人物不用动**（静态蒙一层），所以**不做**动画 / 不做绿幕抠像 / 不做
+  说话人绑定（那是二期三层模板的 `sticker_bear.yaml`，§03.6.3）
+- [x] `core/config.py`：`StickerConfig`（`enabled` 默认 **false** · `path` · `position` ·
+      `margin_x` / `margin_y` 偶数 · **`height_ratio`（上限 1.0）** · `opacity`）+
+      `height_px_for()` —— 面板与编译器**都调它**，口径只此一处
+- [x] `render/png_probe.py`（新）：水印与贴图**共用**的 PNG 实测（在不在 / 多大 / 带不带透明通道）；
+      `render/alignment.py`（新）：`even_floor` —— 抄第二份的代价不是几十行，而是"同一张图在面板上
+      显示可用、在渲染路径里判不可用"
+- [x] `render/sticker.py`（新）：`resolve_sticker` / `place_sticker` / `plan_stickers`；
+      **每层各自判断**（关掉的 / 图不在盘上 / 没有透明通道 / 放不进画布 ⇒ 只跳过**这一层**），
+      原因写进该层的 `skipped_reason`；返回**全部**层的结论（"第 2 层为什么没贴上"必须能回答）
+- [x] `render/composite.py`：贴图层插在字幕**之前**（叠放固定「贴图 → 字幕 → 水印」）；
+      `render/hashing.py`：`input_digests` 加 `sticker:<name>`、`canonical_plan` 加 `plan["stickers"]`
+- [x] `render/degrade.py`：`deliver(..., replan=)` —— 换画布（720P 保底档）必须**重算像素坐标**，
+      否则 `overlay` 对越界**不报错**、只静默裁掉
+- [x] `core/outputs_store.py` + `services/outputs_service.py` + `app/schemas/outputs.py`：
+      `stickers` 段的读 / 写（`STICKER_FIELDS` **含 `path`** —— 贴图本来就会来回换图，与水印那份
+      刻意不对称；写盘统一转正斜杠）+ `StickerModel` / `StickerPatch`；未知层名 ⇒ **422** 并把
+      "现有的是哪些 / 该怎么加"写进 `remediation`
+- [x] `cli.py`：`render profile --show` 增加逐层表格（贴不贴、为什么）
+- [x] WebUI：`web/src/views/Outputs.vue`「人物贴图」面板（**一层一张卡片**：开关 / 换图 / 位置 /
+      边距 / 高度占比 / 不透明度 + "约 xxx px 高"实时换算）+ `stores/outputs.ts` 的贴图草稿与
+      `stickers.<层名>.<字段>` 错误槽位
+- ✅ 后端 `pytest tests/unit/render/test_sticker.py tests/integration/test_outputs_api.py -q` ⇒
+      **53 + 33 例**；前端 `npm run verify` ⇒ **729 例 / 27 文件** + 包体 **0.49 MB / 3.00 MB** OK
+- ⚠️ 全量门禁 `.\tasks.ps1 check` 本轮**不是全绿**：**4409 passed / 32 skipped / 28 deselected**，
+      4 条失败**都不在本任务的文件里** —— `test_config.py` 2 条（系统盘 / 路径覆盖）+
+      `test_settings.py` 1 条（系统盘）+ `tts/test_server.py` 1 条（`C:/evil.wav` 未按预期拒收）：
+      都是**本机盘符环境**相关、本轮之前就在红（与贴图无关）。`ruff format` / `ruff check` /
+      契约漂移 / `mypy`（431 文件）全绿
+- ⚠️ **裁定 377**：贴图按**画布高**定尺寸，不按宽度 —— 人物是竖长的，按水印那条 `width_ratio ≤ 0.25`
+      算，1080 宽的画布上只有 270px 宽，做不了主体（真机验证过）。`height_ratio` 上限 **1.0**
+- ⚠️ **裁定 378**：`stickers` 是**命名块**（与 `profiles` 同构），不是列表 —— 面板只逐行替换冒号
+      右边的标量，**加 / 删层只能在文件里做**；请求里出现文件里没有的层名 ⇒ 422 并指出该怎么加
+      （静默忽略会让人以为"第 3 层已经建好了"，而出片时那一层并不存在）
+- ⚠️ 陷阱 **211**（把新装饰层的尺寸口径复用了水印那条 ⇒ 人物被锁死在 270px）
+- ✅ **追加（2026-09-23 · 裁定 387 / 388）—— 贴图开关当场写盘 + 面板判据与渲染路径同源**：
+  用户报障原话 **「人物贴图按钮，只要一刷新网页就自动关掉，每次渲染都不生效」** —— 两件事
+  叠在一起、各自都不报错（详见 §10.15 / 陷阱 222 · 223）。
+  - **裁定 387 —— 开关当场写盘**：`stores/outputs.ts::saveToggle()` + `onStickerBool` 改
+    `async`（本地校验有意见就不提交，否则复用原来那条带 sha 守卫的 `save`）。判据：**长得像
+    开关的东西，它的效果必须当场发生** —— 以前那个勾只改内存草稿，刷新时草稿按盘上重建，
+    勾就"自己跳回去了"（审计里根本没有那次写）。
+  - **裁定 388 —— 面板判据与渲染路径同源**：`outputs_service._asset_exists`（只问
+    `is_file()`）换成 `_asset_probe()`（调渲染路径**同一个** `probe_png`），`usable` /
+    `problem` 进响应体与面板；水印那份 `watermarkMissing` 改名 `watermarkBroken`。真机那两张
+    "hero.png / guest.png"其实是 **WebP / JPEG**（改了扩展名没改字节）⇒ 面板绿灯、渲染每层跳过。
+  - **验收**：`tests/integration/test_outputs_api.py` ⇒ **38 passed**（含 ★ 参数化断言面板
+    `usable` == `plan_stickers().applied`）；前端 `npm run verify` ⇒ **751 例 / 28 文件** +
+    包体 **0.50 MB / 3.00 MB** OK。
 
 ---
 
@@ -2358,7 +2681,7 @@ T1.12 ✅             （一键启动）
 | **T3** 渲染（一期单遍合成） | 7 | **7**（T3.1 ✅ T3.2 ✅ **T3.3 ✅** **T3.4 ✅** T3.5 ✅ T3.6 ✅ T3.7 ✅ —— **T3 全绿**） | M3 | ✅ |
 | **T4** 操作台 + 四池 + 无人值守 | 14 | **14**（T4.1 ✅ T4.2 ✅ T4.3 ✅ T4.4 ✅ **T4.5 ✅** T4.6 ✅ T4.7 ✅ T4.8 ✅ T4.9 ✅ T4.10 ✅ T4.11 ✅ T4.12 ✅ T4.13 ✅ **T4.14 ✅** —— **T4 齐了**） | M4 | 🔶 |
 | **T5** 发布 + 定时 + 报告 | 8 | **8**（T5.1 ✅ T5.2 ✅ T5.3 ✅ **T5.4 ✅** **T5.5 ✅** **T5.6 ✅** **T5.7 ✅** **T5.8 ✅** —— **T5 全绿**） | M5 | ✅ |
-| **T6** 追加任务（设置面板 / 提示词面板） | 2 | **2**（T6.1 ✅ T6.2 ✅） | — | *不占一期工期* |
+| **T6** 追加任务（设置面板 / 提示词面板 / 侧边栏排序 / **发布账号配置** / **人物贴图**） | 5 | **5**（T6.1 ✅ T6.2 ✅ T6.3 ✅ **T6.4 ✅** **T6.5 ✅**） | — | *不占一期工期* |
 | **合计（一期）** | **50** | **50**（**一期任务全部收口**；非核心项按用户裁定关闭，清单见 §12） | — | — |
 | *T3-P1…T3-P4* | *4（二期）* | *0* | — | *不占一期工期 · ⏸ 二期再启* |
 
@@ -2372,7 +2695,7 @@ T1.12 ✅             （一键启动）
 > ⇒ **当前部分完成项为 0**：原先挂在 T3.1 / T3.3 / T2.4 上的缺口**全部是用户裁定的非核心项**，本轮已逐条关闭并移出任务清单（登记在 §12）。
 > 关闭**不等于**做完 —— §12 写清了每一项**关掉的是什么、为什么关、什么条件下该重新捡起来**，将来要恢复时按编号去那一节读，不要从头翻规格。
 > 二期 `T3-P1…T3-P4`（三层模板场景编排）**不占一期工期**，已标 ⏸ 而不是待办 —— 启动条件见 §3 二期小节（三者同时满足才启）。
-> `T2.4` 音色注册已收口为 **✅ 已完成（2026-09-19）**：目录契约 / 四条硬拒 / 入库命令 / 解耦 / 来源登记（真机跑通）+ **试听样本**（面板「试听 / 生成试听」那颗按钮走的就是它）；三条 `warn` 级检查按裁定 287 关闭（§12-1）。正式原声仍是 **E4**（你自备素材，见 §04.3.1 的替换路径），它是**外部输入**、不是代码缺口 ⇒ 不影响 T2.4 收口。
+> `T2.4` 音色注册已收口为 **✅ 已完成（2026-09-19）**：目录契约 / 三条硬拒 / 入库命令 / 解耦 / 来源登记（真机跑通）+ **试听样本**（面板「试听 / 生成试听」那颗按钮走的就是它）；三条 `warn` 级检查按裁定 287 关闭（§12-1）。正式原声仍是 **E4**（你自备素材，见 §04.3.1 的替换路径），它是**外部输入**、不是代码缺口 ⇒ 不影响 T2.4 收口。
 > 注 1：`T1.2` 含 **T1.2+ persona 可编辑改造**（人物库 / 热重载 / 一键切换 / 自动备份）。E7 现有 2 套可跑人物（`persona_default` 熊大熊二 · `solo_commentary` 快嘴单人），**口吻 / 受众 / 禁区仍待你定稿内容**（**可编辑性已就位**，见注 4）。
 >
 > 注 2：**M1 已算过（2026-09-19 真机复核）**。裁定 108 的验收口径 = 「`api` ready + 其余**如实报降级**且不阻塞」；
@@ -2398,7 +2721,7 @@ T1.12 ✅             （一键启动）
 > ⑩ ~~`T5.1` 快速封面 + 发布前二次校验~~ ⇒ **已完成（2026-09-16）**，见上方任务块。封面三层拆分（纯函数 / ffmpeg 合成 / Agent 文案）、
 > 三道门禁 + 禁区扫描全部落地；真机把「封面出图」与「门禁真的拦住」两条都验了（裁定 255–261，陷阱 130–134）。
 > ⑪ ~~`T5.2` 发布适配层与 profile~~ ⇒ **已完成（2026-09-16）**，见上方任务块。`Publisher` ABC + 通用八步
-> `PlaywrightPublisher` + 一线三平台子类 + 二线四个空实现 + 选择器集中化（yaml 可热修）+ 本地靶页 +
+> `PlaywrightPublisher` + 一线三平台子类 + 二线四个子类（**T5.14 起为真实现**）+ 选择器集中化（yaml 可热修）+ 本地靶页 +
 > `studio publish dry-run`。真机两条都验了（裁定 262–267，陷阱 135–139）。
 > ⑫ ~~`T5.3` 发布池 + 限频 + 失败转人工~~ ⇒ **已完成（2026-09-17）**，见上方任务块。`JobStore.defer`（顺延原语，
 > **不消耗 attempts**）+ `UnitDeferred` + `publish/ratelimit.py` + `publication_repo.py` + `publish_worker.py`
@@ -2836,7 +3159,36 @@ T1.12 ✅             （一键启动）
 | 203 | **导入一个音色之后点「开始配音」，55 句里每一句都写着「音色 sunxiaochuan 当前引擎念不出来 ⇒ 改用 bigbear」** | 池子手里的 `speakable` 是**装配那一刻**问到的（导入 `sunxiaochuan` **之前**那一份 `("bigbear", "littlebear")`），而它兜底用的 `status.voices[0]` = `bigbear` 刚好已被删掉（盘上目录空了、库里也没了）⇒ 每句都失败 ⇒ 熔断 ⇒ 18 句静音占位。面板的「可用音色」是**现问**的（所以能选到它），只有池子不认 —— 判据没分叉，**时效**分叉了 | `EnginePicker` 手里的清单加 **5 秒 TTL**（`VOICE_LIST_TTL_SEC`）：过期就重问一次 `active_resident`；**档位（常驻 / 系统语音包）与引擎对象都不换**（第 2 条纪律冻的是档位，不是清单；引擎的 `revision` 进了缓存键，中途换掉会让同一支片子前后两段的缓存键分属两个版本）；问不成（服务连不上）⇒ **手里的那一份照用**，不降档。**判据**：凡是「装配期问一次、之后再也不问」的外部事实，都要问一句它会不会变 | T2.9 |
 | 204 | **导入的音色念得出来、却被判「破音」**（`TTS_CLIP（RMS −15.7 dBFS / 峰值 −0.1 dBFS）`，重试三次后整条稿子降级成静音占位） | CosyVoice2 的零样本输出是**峰值归一化**的（参考音 −6.0 dBFS ⇒ 念出来 −0.1 dBFS），而句子级爆音门禁是「峰值 > −0.5 dBFS ⇒ `TTS_CLIP`」（§04.3.3）⇒ **每一句**都判破音。同一句文本 + 同一个音色，重试三次的输出当然一模一样 ⇒ 3 连败 ⇒ 熔断 ⇒ 后面每一句都只查缓存、查不到就静音占位 —— 用户看到的是一整条稿子「18 句跳过」，日志里一句人话都没有 | 判据没错（混音那一步要的是**有余量**的人声轨），错的是**引擎的输出电平**：它没有余量。落盘前压一个峰值上限 `OUTPUT_PEAK_CEILING_DBFS = −1.0`（`peak_trim_gain`，**只压不抬** —— 引擎自己念得轻是素材的事，抬电平会把底噪一起抬起来）。真机复测：−0.1 dBFS ⇒ −1.0 dBFS。**判据**：门禁量的是**产物**，而产物是别人的；把别人产物的电平原样交给门禁，门禁就成了那条链路的单点 | T2.2 / T2.9 | **上传回执写着「已落盘」，而这条素材其实永远用不了**（音色那栏是绿点，配音那天才发现挑不到） | 上传那条路只做两件事：判后缀 + 写盘，**不跑** `check_voice`。回执里那个「结局」说的是「字节写没写进盘」，而用户读成「这条素材能不能用」。真正的判据（段数 / 时长 / 采样率 / 峰值）要等点了「把这一类入库」、或翻到一屏之外的扫盘报告才看得见 | 上传回执**当场**带上入库的结论：面板把 `report` 里 `check.ok === false` 的那些（**只认这一次点到过的 id**）画成回执正下方的红带，逐条写清原因与提醒。**判据**：凡是「回执只描述过程、不描述结论」的地方，用户都会把它读成结论 | T4.8 |
 | 205 | **成片库按"文件"列行 ⇒ 勾哪一行结果都一样**（一条任务重出过三版就是三行，而三行发出去的是**同一支**片子） | 发布池认的是**任务号**：它自己拿 `resolve_final_video(task_id)` 去找成片（`manifest.json` 优先、目录兜底），**不认调用方指的那个文件**。按文件列时，"我明明选了新那一版"是一句两边都自洽、**没有任何地方会报错**的谎话 —— 排查的人会去查"为什么新那版没发出去"，而系统从头到尾没看过那个文件名 | 一行 = **一条任务**；`versions` 只当**信息**摆着（"它重出过几版"），不当选择。文件名 ⇒ 任务号那一步（`parse_task_id`）的 `.+` 必须是**贪婪**的：任务号自己可以含下划线，非贪婪会在任务号里遇到第一个 `_final` 就断，切出一个不存在的任务号 —— 同样是一句看起来完全正常的谎话 | T5.11 |
-> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 205 条见该处；跨文档引用按编号即可）。
+| 206 | **新加的一屏在菜单里永远不出现**，而菜单看着一切正常（也没有任何地方说"它被藏起来了"） | 侧边栏顺序存在浏览器里（`localStorage`），而**照着存档直接画**：存档是上一次的清单（`prompts` 是 2026-09-20 才加的）⇒ 不在存档里的那些**一屏都不画**。清单会变、存档不会自己变 —— 两者的差集就是那些"消失的菜单" | 存档**必须对齐当前清单**（`normalizePanelOrder`）：认不得的丢掉、**缺的补在最后**、重复只留第一次；读坏了 / 存不下都回出厂顺序。**判据**：凡是把用户偏好存起来的地方，读回来的那一刻都要问一句"清单要是变了，这条偏好会藏掉什么" | T6.3 |
+| 207 | **抓不到新闻却回 200 空列表** ⇒ 面板说"评测 0 条 · 一条都没挑中"，用户据此去调 persona、调选题口味 | 抓取失败（源改版 / 403 / 断网）与"抓到了但一条都不值得写"被压成同一个空响应。**空列表是一句系统没资格说的话**：它替用户断言了"今天没有值得写的东西"，而系统当时根本没见过今天的新闻 —— 排查的人会去查"模型今天为什么这么挑"，而链路从头到尾没通 | 抓取侧全挂 ⇒ 抛 `NEWS_FETCH_FAILED`（503，带每一家源的原因）；评测侧"一条没挑中" ⇒ 200 + `ok=True` + 空的 `kept`。`ok` 只描述**评测这一步**跑没跑通。**判据**：凡是"外部世界的现状"与"我对它的判断"两种失败共用一个返回值的地方，都要问一句"这句话系统有资格说吗" | T5.12 |
+| 208 | **把账号删光之后写成一个空的 `accounts:`，下一次启动读回来是 `None`** ⇒ 面板显示"清单为空、一切正常"，重启后 `studio doctor` / 发布面板直接报配置错（`accounts` 不是列表），而中间没有任何人改过别的东西 | 按行改写配置时，空清单渲染成裸 `accounts:`，而 YAML 里"键后面什么都没有"解析出来是 **`None`**，不是空列表。**"空"有两种写法，只有一种能被读回来** | 空清单写 `accounts: []`（行尾注释保留）；从空再回填时清掉头行的 `[]`。写盘器自带**往返回读**（写完立刻 `load_publish_config`）：写坏了要在写的那一刻炸。**判据**：凡是按行改写配置的写盘器，都要拿自己写出去的东西再读一遍 | T6.4 |
+| 209 | **"看一眼登录态"这个按钮，在"没登录"的那条路上直接 500** | 写日志时把级别写成 Python 那边的 `"warning"`，而 `system_logs.level` 的 CHECK 约束只认 `debug/info/warn/error/fatal` ⇒ 插库那一刻 `IntegrityError`。**最讽刺的是它只在失败路径上炸**：探测成功走 `info`（一切正常），没登录才走 `warn` —— 于是这条"最该安静走完"的路成了唯一会崩的路 | 级别常量跟**库里的取值**对齐（`"warn"`），不要跟 Python logging 对齐。**判据**：凡是"成功/失败两条路写不同取值"的地方，两条路都要有用例 —— 只测成功那条，等于没测 | T6.4 |
+| 210 | **删不掉的选题堆满左栏**（每个想删的方向都弹一句"不能级联删除"，于是改用"改标题成垃圾再放着"这类绕法 —— 而左栏一样长） | **拦下的理由在改造后已经不成立，而拦截还在**：那条 422 是当初"删了会让任务断链"时立的规矩；等 `ScriptService.draft` 改成"选题行不在就按任务自己带的 `title` / `angle` / `hook_type` 继续"之后，断链这件事**已经不存在了**，没人回头把那道门拆掉 | 删掉 422 拦截，改成"删行 + 如实报留下了什么"（`detached_task_id` / `detached_task_count` 进响应、进审计、进面板小结）。**判据**：凡是拦下用户一个动作的地方，都要问一句**它拦的那件事现在还在不在** —— 拦截是跟着**当时的**前提写的，而前提会变 | T5.13 |
+| 213 | **音色怎么配都不像**（用户原话「段数上限放开，我说怎么配出来一点都不像」）—— 而库里明明躺着 3 段参考音 | **收了用户的东西却没用**：`VoiceRegistry.resolve` 只取 `wavs[0]`，第 2、3 段从来没进过引擎；而「2–3 段」那条门槛又逼着人**把同一个文件复制一份**凑数（真机 `sunxiaochuan` 的 `ref_01` / `ref_02` sha256 完全相同），真正那段 **8.0 秒**原声（`xionger/ref_03`）一直躺在盘上没被用过 —— 喂进引擎的是 **2.14 秒**的 `ref_01` | 段数**不设上下限**（裁定 379：硬拒四条 ⇒ 三条，只给一段 ⇒ 一条 `single_ref` warning，不是拒绝）；多段按 `ref_01…` 顺序用 ffmpeg 拼成**一段 prompt** 一起喂（裁定 380：段间 300ms 静音、总长封 29s、放不下的段整段丢弃并进 `dropped_refs`）。**判据**：凡是**收了用户的东西却没用**的地方，都要问一句它到底进没进那条链路 | T2.4 |
+| 215 | **勾了「覆盖同名」，传完一看还是 3 段**（用户原话「同名覆盖策略似乎没有生效」） | **「覆盖同名」与「这份目录现在就是我传的这堆」是两件事**：覆盖只写同名的那几个文件，旧 `ref_03.wav` 原封不动留在盘上，扫盘又把它读回来 ⇒ 面板上段数照旧。用户读到的「没生效」**是准确描述**，不是误会 | 覆盖 ⇒ **镜像**（`assets/upload.py::prune_refs`：清掉这次没写到的 `ref_NN.*`，`ref.txt` / `profile.json` / 用户别的文件一个不动）；守卫「只在 `overwrite=true` **且这次确实写进去过**时才清」；清掉的进 `removed`、没动却该说的进 `notes`。**判据**：凡是让用户表达「这一份就是全部」的开关，都要问一句**多余的那些去哪了** | T2.4 |
+| 220 | **换了参考音（删掉重传 / 勾覆盖重传，目录名不变），配音照旧念旧嗓子、试听照旧放旧样本**（用户原话「同名就复用以前的试听样本，并且感觉配音也是复用的以前的」） | **音色的身份在这条链路上只有一个名字**，而决定声音的是参考音的内容：`tts_cache_key` 的字段里有 `voice_id`、没有参考音 ⇒ 名字没变就命中旧音频；`preview_slug(voice_id)` 只由 id 算文件名，而 `get()` 判的是「盘上有没有这个文件」⇒ 旧样本照旧报 `ready`。两处都不报错 | **参考音指纹进身份**（`tts/refprint.py`：逐段 `(文件名, 内容 sha256, 逐字文本)` 取前 12 位，只算配得上文本的段，系统音色 ⇒ 空串）：① 进 `tts_cache_key`；② 试听旁车记指纹，对不上 ⇒ 报 **`stale`**（面板「重新生成」+ 说清为什么）。**判据**：凡是用「名字」当身份的地方，都要问一句**名字背后的东西换了，这里会知道吗** | T2.4 |
+| 221 | **换了音色/参考音之后重跑出片，成片还是旧嗓子** —— 而每一步日志都写着成功 | 「**盘上有非空产物就跳过**」这条断点续传捷径判的是"这个文件在不在"，而不是"它是不是**这一轮要念的东西**"。文件是谁念的，没有任何地方记过 | 删掉那条捷径，每一句都过一遍缓存（键里含引擎、音色、**参考音指纹**与文本）：没变就是一次文件复制（毫秒级），变了就真的重念；`VoiceResult.reused` 改成"一句引擎都没碰的句数"。「别重念」仍有出口：`reuse_voice=True`。**判据**：凡是"跳过已有产物"的优化，都要问一句**这份产物是谁在什么条件下产出的** | T2.6 / T3.4 |
+| 222 | **贴图开关勾上之后，一刷新网页勾就自己跳回去、渲染也从来不生效**（用户原话「人物贴图按钮，只要一刷新网页就自动关掉，每次渲染都不生效」）—— 而面板上一切正常：绿灯亮着、写着"在盘上" | **两件事叠在一起，各自都不报错**：① 那个勾选框**只改内存草稿**，要人再点顶部「保存」才落盘 —— 而它长得就是个**开关**，人勾完直接去渲染了；刷新时草稿按盘上那份重建，勾就跳回去了。② 面板判的是 `exists`（`is_file()`），渲染路径判的是 `probe_png().usable`（PNG 签名 + 透明通道），而那两张"hero.png / guest.png"其实是 **WebP / JPEG**（改了扩展名、没改字节）⇒ 面板绿灯、渲染每一层都跳过 | ① 开关**当场写盘**（`saveToggle`：本地校验有意见就不提交，否则复用原来那条带 sha 守卫的 `save`）；② 面板判据换成**与渲染路径同一份** `usable`（`usable` / `problem` 进响应体），横幅逐层写出"开着、但这次渲染贴不上：<原因>"。**判据**：长得像开关的东西，它的效果必须当场发生 | T6.5 |
+| 223 | **面板写着"在盘上"、渲染却跳过它**（同一个文件，两处结论相反，而中间那句"为什么没贴上"没人回答） | 判据**不同源**：`outputs_service._asset_exists` 只问 `path.is_file()`，而 `sticker.py` / `watermark.py` 走 `png_probe.probe_png().usable`。"扩展名叫 .png 的 WebP"在盘上存在 ⇒ 面板报"在盘上"，渲染报"不是 PNG（文件头签名不匹配）" | 面板**照抄渲染那份事实**：`_asset_probe()` 调同一个 `probe_png`（`home is None` ⇒ 返回一份"判不了"的 `PngAsset`，**不假装可用**）；测试 `test_the_card_agrees_with_the_render_path` 参数化（缺文件 / WebP / 截断）断言**面板 `usable` == `plan_stickers().applied`**。**判据**：同一个问题在两条路径上各写一份判据，早晚会漂 —— 漂了之后就是"面板说没事、片子说没有" | T6.5 |
+| 224 | **文案明明填进去了，回读却说"不一致"，而差异在面板上、日志里都看不见** —— 重填两次之后整条发布判 `PUBLISH_UPLOAD_FAILED`（真机 2026-09-23） | 平台的富文本编辑器会在文案末尾塞一个**零宽空格**（U+200B）当哨兵 —— 它撑住空行、不改变任何人读到的东西，但**逐字比对看得见它**。于是"码也扫了、视频也传完了"的一条发布，卡在一个看不见的字符上（日志里那句是 `第 48 字符起：期望 '…下集更狠。' / 实际 '…下集更狠。​'`） | 比对**两遍**：先按原样比；不一致时把"纯排版控制符"（软连字符 / 零宽空格 / LRM / RLM / 双向嵌入与隔离 / 词连接符 / BOM）两边都去掉再比 —— 一样就判 `invisible_only` 并**放行**，同时把差异字符（`U+200B`）写进日志（`TOLERATED_READBACK_REASONS` 只有这一项，**不是**"差异小于 N 个字符就放行"：那是个会漂的阈值，而"看不见"是个可判定的性质）。⚠️ **刻意不收 U+200C / U+200D**：它们参与 emoji 与印度语系的字形组合，收进来等于顺手放行"emoji 被吞" —— 而那正是回读要抓的东西 | T5.3 |
+| 225 | **成片还在 0%，标题文案已经填完、发布按钮已经点下去了** —— 平台回一句"你还有上次未发布的视频，是否继续编辑？"，整条发布卡在 600s 单元超时上，库里那两条记录一直停在 `uploading`（真机 2026-09-23） | 上传完成的判据写成了"**现在看不到进度元素**"，而选完文件那一刻页面**还没渲染出**上传面板 ⇒ "看不到"被读成"传完了"。雪上加霜的是盘上那个进度选择器（`div.progress-bar, span.upload-percent`）在真页面上**一个都不存在**，于是这条判据**每次都成立** | 判据改成"**先看见、再消失（或走到 100%）**"：`seen` 之前看不到元素只当"还没渲染"；宽限 `PROGRESS_GRACE_SEC`（10s）之后仍没出现 ⇒ **退回干等一拍**（`UPLOAD_SETTLE_SEC`），**不当作传完**。干等不好，但它是一个明确的、可调的假设 —— 比"猜一个不存在的元素"好。真机上的进度元素是 `div[class*='upload-progress-inner']`，`text_content` 就是干净的 `14%`；⚠️ **不要再加更宽的备选**（`div[class*='upload-progress']`）：选择器列表取**文档序第一个**匹配，更宽的那个会命中外层面板（"文件名 + 上传中 + 已上传 182.1MB/182.1MB + 当前速度…"一整块） | T5.3 |
+| 226 | **发布成功也判不出来**：第 ⑦ 步一路等到 600s 超时（真机 2026-09-23） | `success_marker` 写成了 `div.success-page, text=发布成功` —— Playwright 只允许 `text=` 这类引擎前缀**单独**出现；一旦用逗号拼上第二个选择器，整条就走 CSS 解析器，直接抛 `Unexpected token "=" while parsing css selector`。而调用方把异常吞成"元素不在"，于是**配置写错**在现场表现为"发布成功也判不出来" | 要用文案就用 CSS 伪类 `:text('文案')`（可以安全地跟在逗号后面）。并且这条**在装配期就拦**：`load_selector_pack` 见到"值里有逗号 + 引擎前缀（`text=` / `xpath=` / `css=` / `id=` …）"直接拒（`PUBLISH_SELECTOR_MISS`），不等到真机超时 | T5.2 |
+| 227 | **点了发布什么都没发生** —— 表单被重置成"你还有上次未发布的视频"，真按钮一次都没被碰过，第 ⑦ 步一路等到超时（真机 2026-09-23） | `publish_button` 写的是 `button:has-text('发布')`（**包含**匹配），而左侧导航那一项叫「作品发布」，它在文档序里**排在真按钮前面** ⇒ 命中的是导航项，点下去只是切了个页面 | 用 `:text-is('发布')`（**全等**）钉住真按钮（真机那个是 `button-dhlUZE primary-cECiOJ fixed-J9O8Yw`）。装配期同样拦：`publish_button` 里出现 `:has-text(` / `text=` 直接拒 | T5.2 |
+| 228 | **一条已经发出去的内容，在 600s 之后被记成失败** —— 而那时人已经在平台上看到它了（真机 2026-09-23） | 抖音发布成功后**不发**"发布成功"这几个字，而是把页面跳到内容管理列表（`/creator-micro/content/manage`）。只认元素的结果页判据在这条路径上**永远不成立** | 结果页给**第二个**判据：`markers.success_url_contains` —— 地址里出现这个片段也算"平台收下了"（与元素判据并列，谁先成立都行）。**判据**：一个"成功"事件如果在平台上**没有必然留下的痕迹**，就不能只用一个判据去认它 | T5.3 |
+| 229 | **一条根本没发出去的内容被记成 `published`**（真机 2026-09-23） | `success_marker` 用了 `:text('发布成功')`，而 `:text()` 是**子串**匹配 —— 页面上有一句提示「视频发布成功**后**，价格将无法更改」，它里面就有"发布成功"四个字 ⇒ 在**发布之前**就判成了成功 | 结果页那三个标志（`success_marker` / `reject_marker` / `verify_marker`）一律用 `:text-is()`（**全等**），并在装配期校验（值里出现 `:text(` 直接拒）。判据要钉在"这一整块就是这几个字"上 —— 平台的提示句里几乎一定包含你要找的那个词 | T5.2 |
+| 230 | **点下发布之后面板上这条一直卡着直到 600s 超时** —— 而屏幕上明明写着一个框：「接收短信验证码」（真机 2026-09-23 · `acc_douyin`） | 判据里**没有这一档**。平台要求短信 / 人脸验证时，它是"自动这条路走完了、接下来等人"，而代码把它归进了"等不到结果页" | `verify_marker` 命中 ⇒ 报 `PUBLISH_FAILED` + **转 `manual_required`**（不是 `failed`），错误信息写成一句能照做的话（"平台要求短信验证：这一步要人来做，自动流程到此为止"），并把 `can_mark_done` 打开。**R13：不自动登录、也不替人过验证** —— 替人过验证既做不到，也会把"是谁在操作"这件事搞乱 | T5.3 |
+| 231 | **"点发布"这一步安静地耗掉一整分钟，然后才往下走**（真机 2026-09-23） | 第一次上传成片时平台会在右下角弹一个说明层，那个「我知道了」正好压在发布按钮的命中区上；Playwright 的 `click` 会**等**元素能收到指针事件（默认 60s） | 点发布之前先 `dismiss_overlay`（**尽力而为**：找不到、点不动都只是少做一步，真正的失败由后面那句 `click` 去报）。与 `cover_trigger` 同一条取舍：装饰性弹层不值得把一条能发的片子卡死在这里 | T5.3 |
+| 232 | **"平台要求短信验证"卡住发布，怀疑是浏览器不对，把发布换成真 Chrome 之后……照旧弹**（2026-09-23 实测） | 判据找错了层：UA 里那个 `Headless` 是 **`headless=True` 这一个布尔量**造成的，与"用哪个浏览器二进制"无关。实测四组：默认 chromium ⇒ `HeadlessChrome/153`；`channel="chrome"`（本机真 Chrome）⇒ `HeadlessChrome/153`；`channel="chromium"` ⇒ `HeadlessChrome/151`；**只有 `headless=False` ⇒ `Chrome/153`（不带 Headless）** | 想让它像人在用浏览器，只有一条路：**真的开一个可见窗口**（`headless=False`）—— 开窗口不是伪装。⚠️ **不要去改 UA**：那是反检测伪装，越过 R13 的合规底线，而且只骗得过最粗的那一层判据。**判据**：怀疑"指纹不对"时，先量一个**当场可量**的事实（这里就是 `navigator.userAgent`），别把两个不同的东西（浏览器二进制 / 有没有窗口）当成一件事 | T5.2 |
+| 233 | **面板上写着"平台要求短信验证"，而「重试」点了四次、弹了四次同一个框** —— 人手里根本没有地方可以输那个码（无头窗口他看不见、跑完就关）（真机 2026-09-23 · `acc_douyin`） | 把"要人输码"读成了"重试就能过去的一次性失败"。平台问的是"这台机器 / 这个出口 IP 是不是你本人"，那是个**一次性质询**：重试一百次只会弹一百次。而它**只能发生在那个浏览器窗口里** —— 无头窗口里没有人能过它 | 给一条**人在场**的路：`headless=False` + `await_manual_verify=True`，同一条八步、同一份选择器，第 ⑦ 步**继续等**。等**人**的上限（`MANUAL_VERIFY_WAIT_SEC=900s`）比等机器的 600s 长一个量级，而且是 `max` 不是替换。**判据**：**"这一步等的是人还是机器"必须分开写** —— 拿同一个数去卡两件事，症状是"我正输着呢，它说超时了" | T5.3 / T6.4 |
+| 234 | **一行“过期的认领”让整个池再也不认领任何东西**，而面板上一切正常（绿灯、worker `idle`、`0 dead`）—— 真机 2026-09-23：`voice` 池 84 条待配音停了一个半小时，用户那条任务 `0/50` 且**没有任何错误**（用户原话「这里配音卡住了检查」） | ① 脉冲线程**出锁之后**才续租，而认领循环中途换了单元 ⇒ 上一单元的续租失败被记到**新单元**头上（新单元 abort、产物丢弃，而那一行**留在 claimed 没人收**）；② `reclaim_expired` 一期只在 `pipeline run` 空转时被调过一次（且只有 voice 池）⇒ 没人收那行孤儿。而认领守卫是 `running_count >= concurrency`，**并发为 1 的池里一行孤儿就是永久停摆** | ① 续租失败**认准单元**（`current[0] != flight[0]` ⇒ 只 debug 日志、**不置** `_lease_lost`）；② **池自己常驻清扫**（`worker_base.SWEEP_INTERVAL_SEC=15s`：空转那一拍 `reclaim_expired` + `unlock_dependents`，进程启动再强制一次）。**判据**：凡是“某个计数 ≥ 上限就不干活”的守卫，都要问一句**这个计数会不会被一个已经死掉的东西永久占着** | T1.6 |
+| 235 | **逐平台校准探针一行都跑不了** —— 第一条命令就 `TypeError: replace() should be called on dataclass instances`（2026-09-23 · 新写的 `publish calibrate` 首次单测） | `dataclasses.replace(account, account_id=...)` 用在了**pydantic 模型**上（`AccountConfig`）。配置模型是 `_Base(BaseModel)`，不是 dataclass —— 而这两套 API 长得几乎一样（`Field` / `model_copy` / 冻结），看代码看不出来 | 用 `model_copy(update={...})`。**判据**："复制一个配置对象"里的"配置对象"是一个**有自己构造方式**的东西 —— 别拿标准库的同名函数去套。这一条是**单测**抓到的：探针此前没有用例，而它的**第一个动作**就是这一行 | T5.14 |
+| 236 | **给 `PageLike` 加一条方法，整个单测文件红了 10 处**（2026-09-23 · `query_selector_all` 加进协议之后） | `PageLike` / `BrowserSession` 是**结构化**协议：假页面少实现一条方法，它就不再是 `PageLike` ⇒ `FakeSession` 不再是 `BrowserSession` ⇒ 每一处 `session_factory=` 都过不了 mypy。而报错**离真正的原因很远**（10 条里没有一条提到"协议多了一条方法"） | 加协议方法时**同一轮**把假件补齐（哪怕那条方法在假件里永远不会被调用）。反过来也要注意：假件里的实现**要记动作**（`clicks` / `fills` / `uploads`），这样"探针有没有偷偷点发布"才是一条能断言的读数 | T5.14 |
+| 237 | **校准探针把"这个号没登录"读成了"选择器全错"**（2026-09-23 · 设计期就拦下的假结论） | 创作页的表单没渲染出来时，`upload_input` / `title_input` / `publish_button` 全是"命中 0 个" —— 而那与"这三条选择器写错了"在读数上**一模一样**。照着改，改的是三条其实好好的选择器（改完下次还得改回来） | 探针**先问登录态**：没登录就立刻收手，其余键全部标成"这一轮问不了（先在面板上扫码登录）"，并**故意**留一条 blocker。⚠️ 那一条 blocker 不是装饰：没有它，报告就是"一片绿"，而 CLI 会照着说"把 `calibrated` 改成 true" —— 可这一轮**什么都没验** | T5.14 |
+| 241 | **扩源扩了个寂寞** —— 加了四个源，抓回来还是原来那家的 50 条（设计期量出来的，2026-09-23） | "取前 N 条"与"多源合并"是两件**互相打架**的事：按源拼接成一份长清单、最后再截断到 50，截断结果就是**第一家那 50 条** —— 后四家一条都进不来。而这件事**不会报错**：条数还是 50，来源那一栏也还是那个熟悉的名字 | **轮转交错**（`_interleave`）：五家各取第 1 条、再各取第 2 条…… 于是同一份 `limit` 落在五家头上大致是每家的前 1/5（真机：11/11/10/9/9）。**判据**：凡是"取前 N 条"的地方，都要问一句**这 N 条是怎么排出来的** —— 排序决定了谁进得来，而它常常是别人随手写的 | T5.12 |
+| 242 | **面板上写着「今日头条热榜：评测 50 条」，而这一批其实是五家混的** —— 挂掉的那几家一个字都没提（2026-09-23 扩源时设计期拦下） | `source` 那一栏取的是 `items[0].source` —— 那是"首个成功即返回"时代的口径：一批只有一个来源，取第一条就等于取那一家。扩成**合并**之后，第一条只说明"它排在最前面"，而这一批是五家混着的；挂掉的源更是**彻底隐身**（用户会以为今天只抓了一家） | `source` 改成**实际答上来的源**按首次出现顺序去重拼接（`今日头条热榜、抖音热搜、…`）。挂掉的源不在 `items` 里 ⇒ **自然缺席**。**判据**：凡是"拿第一条代表整批"的地方，都要问一句**这批还同质吗** —— 异质之后，那条代表就成了谎话 | T5.12 |
+| 243 | **B站那一家永远报"改版了"** —— 而它其实只是把这次请求拒了（2026-09-23 实测 `code=-412`） | B站把"风控拦了"也回 **200**，只在响应体里写一个非零 `code`。`raise_for_status()` 看的是 HTTP 状态，于是 `data` 是 `None` ⇒ 报出来的是"响应里没有 `data.trending.list` 数组" —— 那句话会把人引去查**选择器/结构**，而真正的原因是"这次请求被拒了"。两种失败的处置完全不同 | 解析前先看 `code`，非零 ⇒ 抛 `ValueError` 并**把 code 与 message 带进那句话**。**判据**：HTTP 200 不等于"这一家给了我们要的东西" —— 凡是响应体里**还有一个自己的状态码**的源，那个状态码才是判据 | T5.12 |
+| 244 | **快手那一家的热度全是 `null`，还差点整家被判成"解析失败"**（2026-09-23 实测） | 快手的 `hotValue` 是**带单位的字符串**（`"1271.3万"`），而置顶的官方条目干脆是 `null`。拿 `int()` 硬转的话：第一条置顶条目就抛 `ValueError` ⇒ **整家源**被记成"解析失败"（而它明明把 50 条都给了） | 走 `_hot_count`：认 `万` / `亿` 后缀，读不出来就留 `None` —— **热度读不出来不是把条目（或整家源）判掉的理由**。**判据**：外部给的"数字"先当成**字符串**看，单位与空值是常态而不是异常 | T5.12 |
+> 本节是常用子集，**编号与 `docs/spec/05-roadmap-checklist.md` §5.7 完全一致**（完整 244 条见该处；跨文档引用按编号即可）。
 
 ---
 
@@ -2853,6 +3205,9 @@ T1.12 ✅             （一键启动）
     `POST /synth` ⇒ `ok=true`、出 4.48 秒音频、RTF 1.137、`ref_wav=ref_01.wav`。
   - 依据③（我们自己的代码）：`VoiceRegistry.resolve` 只取 **`wavs[0]`** + `ref.txt` 第一行
     ⇒ 第 2、3 段在合成时**根本不参与**。所以"2–3 段"是入库留痕的约定，不是引擎的要求。
+    ⚠️ **这一条当天没往下追**："不参与"被读成"引擎只吃一段，那就这样吧"就收了尾。
+    第二天用户说 **「段数上限放开，我说怎么配出来一点都不像」** —— 真正该做的不是放开门槛，
+    而是**让多段参与**（见 §10.9 / 裁定 379 · 380 / 陷阱 213）。
   - 改：`VOICE_SEGMENT_MIN_MS` 10_000 ⇒ 2_000（30s 上限保留 —— 那条是引擎的硬约束）；
     错误文案里的「下限 10s」不再硬编码（跟着常量走，改一次不会留下第二份旧数字）。
   - 代价：2–10 秒的参考音复刻稳定性会差一些。**这是用户的决定** ——
@@ -2964,6 +3319,1320 @@ T1.12 ✅             （一键启动）
 
 ---
 
+## 10.4 2026-09-22 · 侧边栏可拖动排序（裁定 372 / 陷阱 206）
+
+用户一句话：**「左侧菜单,我想拖动改变顺序」**。19 个菜单项按施工顺序排着，而人自己那一套
+顺序（总览台 → 选题 → 稿件 → 配音 → 渲染…）与施工顺序本来就没关系。
+
+- **裁定 372 —— 顺序是「这个浏览器的显示偏好」，不落库**
+  - 落点全在 `web/src/stores/ui.ts`：`panelOrder` / `orderedPanels` / `movePanelTo` /
+    `resetPanelOrder` + 四个纯函数（`normalizePanelOrder` / `movePanel` / `readPanelOrder` /
+    `writePanelOrder`），存档键 `studio.rail.order`（`localStorage`）。契约 §04.5.17。
+  - **不落库**：它不属于任何一屏、不影响任何一条任务，也不该进 `audit_ops`。为它加表 + REST +
+    迁移，换来的是"同一台机器换个浏览器打开，菜单是别人的样子"—— 而这份偏好没有跨端意义。
+  - **顺序与清单分开**：`PANELS` 仍是规格书那份清单（标签 / 施工任务号 / `ready`），
+    `orderedPanels` 只决定画序。拖一次不该把 `T4.9` 这种任务号改掉。
+  - **拖动不切面板**（也不动 `pendingHandoff`）：拖是"排位置"，不是"点进去"（§04.5.14 的
+    `selectPanel` 才是后者）。落点用**相对位置**（目标行的上 / 下半 ⇒ `before` / `after`）
+    而不是行号 —— 拖动过程中行号会变，相对位置不会。
+  - **读 / 写都不抛**：读坏了回出厂顺序，存不下（配额满 / 隐私模式）就只在内存里生效。
+    拿一个显示偏好去换一整屏，比例完全不对。
+  - 只有改过顺序才露出「恢复默认顺序」（侧边栏底部）—— 没改过时它不出现，不然那是个
+    点了没反应的按钮。
+- **陷阱 206 —— 存档照画 ⇒ 新加的菜单永远不出现**
+  - 清单会变（`prompts` 是 2026-09-20 才加的），而存档不会自己变。照着旧存档直接画，
+    差集里那几屏**一屏都不画**，屏幕上还没有任何信号 —— 静默失败。
+  - 改：`normalizePanelOrder` 把存档**对齐到当前清单**（认不得的丢掉、缺的补在最后、
+    重复只留第一次），读坏 / 存不下都回出厂顺序。
+- **验收**：`web/src/stores/ui.test.ts` **14 ⇒ 32 例**（新增 18 例：归一 / 纯函数 / 读写存档 /
+  store 四条路径）；`npm test` **691 例 / 25 文件**全绿（本轮读数）；`npm run build` +
+  体积门禁 **0.46 MB / 3.00 MB** OK。
+  `npm run typecheck` 只剩**一处与本次改动无关**的错（`stores/topics.test.ts` 的 `pullTodayNews` /
+  `TopicsApi`）—— 那是仓库里并行施工的**选题新闻**（`news_scout`）留下的，本轮没碰它。
+  **真机**（Edge · 1280×800 · 真 API 8787 · 真库）：把「实时日志」拖到「总览台」之前 ⇒
+  顺序当场变、`localStorage` 落盘、刷新后仍在、**面板没被带走**（顶栏还是「总览台」）；
+  点「恢复默认顺序」⇒ 回出厂顺序、按钮自己消失。
+
+**交付物**：`web/src/stores/ui.ts`、`web/src/App.vue`、`web/src/stores/ui.test.ts`、
+`docs/spec/04-contracts.md`、`docs/spec/05-roadmap-checklist.md`
+
+---
+
+## 10.5 2026-09-22 · 一键拉取今日新闻（裁定 373 / 陷阱 207）
+
+用户一句话：**「在选题栏新增功能,一键拉取今日社会新闻,经模型评测有写稿价值就保留在选题方向里」**。
+方向此前只有两个来源：人自己写、模型按输入源产 —— 两个来源都要求人**先**知道今天发生了什么。
+
+- **裁定 373 —— 新闻是一次性输入，产物是方向**
+  - 抓取（`services/news_service.py`）⇒ 评测（`agents/news_scout.py`）⇒ **只有 `keep` 才写库**。
+    评测没跑出来 / 模型漏了这条 / `ref` 对不上 ⇒ 那一条当没挑中，在 `skipped` 里如实报一句
+    （`ref` 对不上就**丢弃而不是猜**，与反馈分类同一条）。反过来（拿不准也写进去）会让"值不值得写"
+    这道判断悄悄失效，而用户看到的是一列看起来很正常的方向。
+  - **落点复用**：新闻挑出来的方向走 `add_manual_direction` 同一条路（`_insert_direction`）⇒
+    落进**当前批次**，与手写的、模型产的排在一起 —— 方向这一列是"这一批要做什么"，分两处存放
+    就再也看不全。留痕用 `actor="system"` + `actor_ref="news_scout"`（`audit_ops` 的 `actor` 只有
+    四个取值，为它改 DDL 不值当；"是谁干的"`actor_ref` 已经答得清清楚楚）。
+  - **抓不到就说抓不到**：两个源全挂 ⇒ 抛 `NEWS_FETCH_FAILED`（**503**），不回空列表。`ok` 说的是
+    "评测这一步跑通没有"，不是"留下几条" —— `ok=True` + 一条没挑中（不需要用户做任何事）与
+    `ok=False` + `error_code`（要他去配通道）是两件事。
+  - **不落盘**：不写 `data/hot/news-*.md`。写了它就会进 `hot_items`，被下一次 Planner 当热点再
+    消费一遍 —— 用户没要求过的副作用。
+  - **优先级不插队**：新闻方向的 `priority` 与模型产的**同一档 100**。偷偷给个更小的数，等于让人
+    以为"这批方向本来就是这么排的"。
+  - **锚点抓取侧生成**（`n01/n02…`）：标题会重复、URL 带查询串，让模型对着它们回抄，等于把"对齐"
+    赌在模型会不会改写字符串上。
+- **陷阱 207 —— 抓不到新闻却回 200 空列表**
+  - 现象：点「一键拉取今日新闻」⇒ 面板说"评测 0 条 · 一条都没挑中"。用户据此判断"今天的新闻都不
+    值得写"，于是去调 persona、调选题口味 —— 而真实原因是**链路没通**（源改版 / 403 / 断网）。
+  - 根因：抓取失败与"抓到了但一条都不值得写"被压成同一个空响应。**空列表是一句系统没资格说的
+    话**：它替用户断言了"今天没有值得写的东西"，而系统当时根本没见过今天的新闻。
+  - 改：抓取侧全挂 ⇒ 抛错（503 + 每一家源的原因）；评测侧"一条没挑中" ⇒ 200 + `ok=True`。面板上
+    这两种结局的长相也不同（红字 vs 小结）。**判据**：凡是"外部世界的现状"与"我对它的判断"两种
+    失败共用一个返回值的地方，都要问一句"这句话系统有资格说吗"。
+- **真机读数**（2026-09-22 · 应用内浏览器 · 真 API 8787 · 真 LLM）：点一下 ⇒ 按钮禁用约
+  2 分钟 ⇒ 小结「今日头条热榜：评测 50 条 · 留下 3 个方向 · 跳过 47 条」+ 折叠的跳过清单 +
+  新方向当场出现在左栏；第二次点（同一天）⇒ 留下 3 条，其中 2 条是**同一条新闻的新说法**
+  （去重是下游 Planner / 选题那一步的事，这里不替它拦）。**验证产生的方向已用面板的删除清掉**。
+- **验收**：后端 **40 例**（解析 / 源内降级 / 全挂 / limit / schema 双向拒同一批输入 / 7 条 REST
+  路径）；前端 `stores/topics.test.ts` **61 ⇒ 68 例**（小结三条 + 成功 / `ok:false` / 503 / 自己那把闸）。
+
+**交付物**：`src/studio/services/news_service.py`、`src/studio/agents/news_scout.py`、
+`prompts/news_scout/`、`schemas/news_scout.schema.json`、`src/studio/domain/topics.py`、
+`src/studio/services/topic_service.py`、`src/studio/app/{routers,schemas}/topics.py`、
+`src/studio/app/{deps,errors}.py`、`web/src/{views/Topics.vue,stores/topics.ts,api/endpoints/topics.ts}`、
+`docs/spec/04-contracts.md`、`docs/spec/05-roadmap-checklist.md`
+
+---
+
+## 10.6 2026-09-22 · 发布账号配置搬进面板（裁定 374 · 375 / 陷阱 208）
+
+用户一句话：**「发布的账号配置,多平台,怎么配置」** → **「做到面板里面吧,更易配置一点」**。
+在此之前，"加一个号"的唯一做法是手改 `config/publish.yaml`：那份文件几乎每行都带注释、
+缩进敏感，写歪了要等**下一次启动**才炸（`CONFIG_INVALID`）—— 而那时人早忘了自己改过什么。
+
+- **裁定 374 —— 只写回 `accounts:` 那一段，而且删号不删登录态目录**
+  - **按行改写**（与 `set_llm_profile_model` 同一手法）：段外的 `platforms:` / `precheck:` / 注释
+    **一个字节都不碰**；段内只做三件事 —— 改写已有条目的值（**行尾注释原样留着**）、追加新号、
+    丢弃不在清单里的条目（**连它上方那几行缩进 ≥ 条目的注释一起**删；只删条目的话，那段文字
+    就变成一段描述一个已经不存在的账号的悬空注释）。
+  - **删号不删 `data/browser_profile/<id>/`**：那是登录凭据（§02.5），面板不替人做销毁决定。
+    面板上明说"登录态目录没动，要清得自己去删"。
+  - **幂等**：同一个值存两次 ⇒ **不写盘、不留痕**（文件 mtime 白跳一次会让靠 mtime 判热重载的
+    进程重读一遍，审计里还会多出一行什么都没改的记录）。
+- **裁定 375 —— 面板上那一列 `profile_dir` 是"声明"，运行期用的是另一个目录**
+  - 运行期真正用的登录态目录永远是 `data/browser_profile/<account_id>/`
+    （`publish/base.py` 的 `PublisherContext.profile_dir`）；配置里那一列的作用是
+    "登录态必须按账号隔离"的**唯一性校验**。
+  - 两者不一致时**必须说出来**（`profile_dir_matches_runtime`）：不说的话，用户改了半天那个值、
+    发现毫无效果 —— 又是一次静默失效。
+  - 新号必须**人工扫码一次**（R13 不自动登录、不绕验证码），这句话写在每一行的 `note` 里，
+    而不是藏在文档里。
+- **陷阱 208 —— 把账号删光之后写成光秃秃的 `accounts:`，下一次启动读回来是 `None`**
+  - 现象：面板上删掉最后一个账号 ⇒ 面板显示"清单为空、一切正常"；重启进程后
+    `studio doctor` / 发布面板直接报配置错（`accounts` 不是列表），而中间没有任何人改过别的东西。
+  - 根因：写回时按行替换，空清单渲染成裸 `accounts:`；YAML 里"键后面什么都没有"解析出来是
+    **`None`**，不是空列表。**"空"有两种写法，只有一种能被读回来。**
+  - 改：空清单写 `accounts: []`（行尾注释保留）；从空再回填时把头行的 `[]` 清掉。写盘器自己带
+    **往返**（写完立刻 `load_publish_config` 回读）：写坏了要在写的那一刻炸，而不是等下一次发布
+    时才发现账号根本没进去。
+  - **判据**：凡是"按行改写配置"的写盘器，都要拿**自己写出去的东西**再读一遍；只断言字符串
+    长什么样的测试，正好漏掉这一类。
+- **验收**：后端 `tests/unit/core/test_config.py` **+9 例**（往返 / 注释保留 / 段外不碰 / 空清单 /
+  新号追加 / 删号带注释）+ `tests/integration/test_publish_accounts_api.py` **13 例**（三条路径 /
+  422 逐字段 / 400 冲突 / 404 不存在 / 幂等不写盘）；前端 `stores/publishAccounts.test.ts` **18 例**。
+  `.\tasks.ps1 check` ⇒ **4330 passed / 32 skipped / 28 deselected**；
+  `npm run verify` ⇒ **714 例 / 26 文件** + 包体 **0.47 MB / 3.00 MB** OK。
+
+**交付物**：`src/studio/core/{config,errors}.py`、`src/studio/services/publish_accounts_service.py`、
+`src/studio/app/{deps,errors}.py`、`src/studio/app/routers/publish.py`、`src/studio/app/schemas/publish.py`、
+`web/src/{views/Publish.vue,stores/publishAccounts.ts,api/endpoints/publish.ts}`、
+`docs/spec/{04-contracts,06-publication}.md`、`docs/runbook/publish_account.md`
+
+---
+
+## 10.7 2026-09-22 · 选题/方向「派生过任务也照删」（裁定 376 / 陷阱 210）
+
+用户一句话：**「这种不再需要的方向应该直接删掉,即使已经派生任务,不然这里堆积太多内容会难以管理」**。
+在此之前，方向 / 候选只要派生出过任务，`DELETE` 就被 **422 `TOPIC_SELECT_INVALID`** 拦下 ——
+用户看到的是左栏越堆越长，而**删不掉**。
+
+- **裁定 376 —— 删掉的是想法，不是活**
+  - **语义唯一，不给开关**：选题 / 方向可以删，已派生的任务**照跑**。不做"要不要连任务一起删"的二选一参数 ——
+    这种开关一上线就没人知道该选哪个，而它拦下的每一件事都得在两个分支上各验一遍。
+  - **不级联删任务**：那才是真断链 —— 产物 / 发布 / 报告都挂在任务上，删任务等于把已经做出来的东西一起扔掉。
+    "删想法"影响的是**以后从哪开始**，"删任务"影响的是**已经做完什么**，两件事不该共用一个动作。
+  - **断链之所以不再成立**：`ScriptService.draft` 改造 —— 选题行不存在时，按**任务自己带着的那份**继续
+    （`tasks.title` + `payload_json` 的 `angle` / `hook_type`，`_spec_from_task`）。任务的 payload 从建任务
+    那一刻起就是**自足**的；选题行只是"它从哪来"的线索，不是它能不能继续跑的前提。
+  - **`reason` 只能给一句实话**：`TaskPayload`（§03.5.3 冻结契约）**没有** `reason` 字段 ⇒ 退路里写
+    「（这条选题已从选题池删除，按任务自己记下的标题与角度继续）」。**不拿 `task.context` 兜** —— 那是渲染 /
+    配音的运行期上下文，塞一句写稿阶段的解释进去，下一个人读它的时候会以为那是渲染参数。
+  - **把"留下了什么"如实报出来**：`TopicDeleteOutcome.detached_task_id` / `DirectionDeleteOutcome.detached_task_count`
+    进响应、进审计、进面板小结（「（一并删掉 N 条候选） · 其中 M 条已有任务，照跑」）。字段**带默认值** ⇒
+    老客户端不炸。删了东西却不说留下了什么，用户下次看到那个任务还在跑，会以为是 bug。
+- **陷阱 210 —— "删不掉的选题堆满左栏"**
+  - 现象：左栏越堆越长，每个想删的方向都弹一句"不能级联删除"。用户据此判断"系统就是不让删"，于是改用"改标题
+    成垃圾再放着"这类绕法 —— 而左栏**一样长**。
+  - 根因：**拦下的理由在改造后已经不成立，而拦截还在**。这条 422 是当初"删了会断链"时立的规矩；等 `draft`
+    改成"按任务自己带的那份继续"之后，断链这件事**已经不存在了**，没人回头把那道门拆掉。
+  - 改：删掉 422 拦截，改成"删行 + 如实报留下了什么"。**判据**：凡是拦下用户一个动作的地方，都要问一句
+    **它拦的那件事现在还在不在** —— 拦截是跟着**当时的**前提写的，而前提会变。
+- **真机读数**（2026-09-22 · 应用内浏览器 · 真 API 8787 · 真库）：左栏 `#22【一次性验证】删方向不掉任务`
+  （1 条候选已派生任务）⇒ 点「删除」⇒ 确认框写"已经派生过任务的那些任务照跑，不受影响" ⇒ 点「确认删除方向」
+  ⇒ 小结 **「已删除方向《【一次性验证】删方向不掉任务》（一并删掉 1 条候选） · 其中 1 条已有任务，照跑」**，
+  方向总数 16 ⇒ 15；查库：方向行 0 / 候选行 0（`ON DELETE CASCADE`）/ **任务仍在**（`pending`）；
+  审计 `direction.deleted` 带 `{"cascaded_topics": 1, "detached_task_count": 1}`。**一次性夹具已清干净**。
+- **验收**：后端 **88 例**（`test_script_service.py` + `test_topic_service.py` + `test_topics_api.py` +
+  `test_topics_news_api.py` + `test_script_pipeline.py`）；前端 `stores/topics.test.ts` **69 例**
+  （删掉两条 422 用例，换成 3 条新用例：方向照删 + 报任务数 / 无任务不提 / 选题照删 + 报任务号）。
+
+**交付物**：`src/studio/services/script_service.py`、`src/studio/services/topic_service.py`、
+`src/studio/app/{routers,schemas}/topics.py`、`src/studio/db/repositories/topic_repo.py`、
+`web/src/{stores/topics.ts,views/Topics.vue,api/endpoints/topics.ts}`、`tests/integration/test_topics_api.py`、
+`tests/unit/services/test_script_service.py`、`web/src/stores/topics.test.ts`、`docs/spec/04-contracts.md`
+
+---
+
+## 10.8 2026-09-22 · 人物贴图搬进面板（多层 · 裁定 377 · 378 / 陷阱 211）
+
+用户两句话：**「这里我是想做成人物贴图放在视频上，应该怎么做」** → **「人物贴图可能不止一个，
+做在面板里面可编辑」**，并明确 **「人物不用动，只要贴图蒙在视频上面就行了，不需要搞那么复杂」**。
+于是这一轮**不做**动画 / 不做绿幕抠像 / 不做说话人绑定 —— 就是"一张透明 PNG 蒙在画面上，
+可以有好几层"。落点先复用已有的水印机制试了一版，确认可行之后才把参数面与面板补齐。
+
+- **裁定 377 —— 贴图按"画布高"定尺寸，不按宽度**
+  - 第一版直接复用水印的 `width_ratio`（≤ 0.25）：真机上 1080 宽的画布算出 **270px 宽**，
+    人物只有巴掌大 —— 水印是**角标**（"别挡住画面"），人物是**主体**（竖长、可以顶满画面），
+    两者约束的对象根本不是一回事。**口径被复用了，而它描述的是另一件事。**
+  - 改：`height_ratio`（占画布高的比例，上限 **1.0** = 顶满画面），宽度由**素材自己的宽高比**
+    推出来，两个方向都取偶。贴图**没有** `width_ratio` 这个字段 —— 请求体层面就拒
+    （`StickerPatch` 不含它），比"写进文件再报错"更早。
+  - **判据**：复用一个口径之前先问一句"这个数是在约束什么"。
+- **裁定 378 —— `stickers` 是命名块，加 / 删层只能在文件里做（而且要报得出来）**
+  - 面板保存只**逐行替换冒号右边的标量**（`core/yaml_lines.py`），它按设计改不了"多一行少一行"。
+    所以层在 YAML 里是 `名字 -> 参数` 的**命名块**（与 `profiles` 同构）：加一层 = 复制一段块，
+    之后面板能编辑它的每一个字段，而注释与缩进一个字节都不毁。
+  - 面板上**没有**「+ 新增一层」：与其画一个点了没反应的按钮，不如把"层数只能在文件里加"
+    写在提示里、把层名当标题而不是输入框。
+  - 请求里出现文件里**没有**的层名 ⇒ **422**，`remediation` 里写清"现有的是哪些 / 该怎么加"。
+    静默忽略会让人以为"第 3 层已经建好了"，而出片时那一层并不存在 —— 又是静默失效。
+  - **叠放顺序固定**「贴图 → 字幕 → 水印」（字幕是内容、水印是标识，都不该被人物盖住），
+    多层贴图之间按**声明顺序**（先声明的在下面）。
+  - **换画布必须重算**（`degrade.deliver(..., replan=)`）：摆放里存的是**像素字面量**，
+    1080×1920 的计划拿去 720P 保底档用，`overlay` 对越界**不报错**、只会静默裁掉。
+- **陷阱 211 —— 把新装饰层的尺寸口径复用了水印那条 ⇒ 人物被锁死在 270px**
+  - 现象：想给画面蒙一个人物，按水印那套参数配出来只有巴掌大；而面板上那个数字与眼睛看到的
+    尺寸对不上（改大占比 ⇒ 人物变**宽**，不是变高）。
+  - 根因：水印的 `width_ratio ≤ 0.25` 约束的是"**别挡住画面**"，人物的宽高比是素材定死的 ——
+    按宽度定尺寸时，"想让人物高一点"被翻译成"把人物变宽"。
+  - 改：另立一份参数（按高度），**判据**：复用一个口径之前先问一句"这个数是在约束什么"。
+- **验收**：后端 `tests/unit/render/test_sticker.py` **53 例**（位置枚举 / 边距偶数 / 高度上限 /
+  透明度 / 摆放取偶 / 多层顺序 / 每层各自的跳过原因 / `to_dict` 形状）+
+  `tests/integration/test_outputs_api.py` **33 例**（读回两层 + 上限 1.0 + 只动一层那 7 行 +
+  正斜杠 + 未知层名 422 + 请求体没有 `width_ratio`）；前端 `npm run verify` ⇒ **729 例 / 27 文件**
+  + 包体 **0.49 MB / 3.00 MB** OK；`tests/unit/render/test_composite.py` / `test_hashing.py` /
+  `test_cache.py` / `test_degrade.py` 与 `tests/unit/core`、`tests/unit/services` 全绿。
+
+**交付物**：`src/studio/core/{config,outputs_store}.py`、`src/studio/render/{sticker,png_probe,alignment,composite,hashing,profiles,degrade,watermark}.py`、
+`src/studio/services/{outputs_service,render_service}.py`、`src/studio/app/{schemas,routers}/{outputs,render}.py`、
+`src/studio/cli.py`、`config/outputs.yaml`、`templates/douyin_9x16_default/assets/images/stickers/`、
+`web/src/{views/Outputs.vue,stores/outputs.ts,api/endpoints/outputs.ts}`、
+`tests/unit/render/test_sticker.py`、`tests/integration/test_outputs_api.py`、
+`docs/spec/04-contracts.md`、`docs/spec/05-roadmap-checklist.md`
+
+## 10.9 2026-09-22 · 音色参考音「段数放开 + 多段真正参与合成」（裁定 379 · 380 / 陷阱 213）
+
+用户一句话：**「段数上限放开，我说怎么配出来一点都不像」**。这一句背后是**两个各自都说得通、
+叠起来就毁掉音色**的东西。
+
+- **现象**：`xionger` 手里有三段参考音（2.14s / 2.18s / **8.00s**），配出来"一点都不像"。
+- **根因（两层）**：
+  - ① `VOICE_MAX_SEGMENTS = 3` 是**我们自己定的**（原文 §04.3.1 写"2–3 段"）。上游
+    `cosyvoice/cli/frontend.py` 只有一句 `assert speech.shape[1] / 16000 <= 30`
+    —— **只挡长，没有任何段数判据**；`example.py` 的 `inference_zero_shot(文本, 参考文本, 参考wav)`
+    每次只吃一段。
+  - ② **第 2、3 段从来没进过引擎**：`VoiceRegistry.resolve` 只取 `wavs[0]` + `ref.txt` 第一行。
+    于是"最多 3 段"+"至少 2 段"合起来的效果是：**逼用户把同一个文件复制一份凑数**
+    （`sunxiaochuan/ref_01.wav` 与 `ref_02.wav` 的 sha256 **完全相同**，都是 2.978s），
+    而真正有信息量的那段 **8 秒**原声**一次都没被用过**。
+  - 判据：**凡是收了用户的东西却没用，都要问一句它到底进没进那条链路。**
+- **裁定 379 —— 段数不设上下限**：删 `VOICE_MIN_SEGMENTS` / `VOICE_MAX_SEGMENTS` 与
+  `too_few_refs` / `too_many_refs` 两条 problem；只给一段 ⇒ 一条 warning `single_ref`
+  （"多给几段更稳"），**不是拒绝**。硬拒四条 ⇒ 三条（单段 2–30s / 无削波 / 采样率）。
+- **裁定 380 —— 多段真正参与合成**（`tts/server.py::build_prompt`）：
+  - 单段**原样直传**（不复制、不过 ffmpeg，零开销 —— 单段那条路与改前逐字节相同）；
+  - 多段按 `ref_01…` 顺序用 ffmpeg 拼成**一段 prompt**，段间插 **300ms** 静音，
+    总长封在 **29 秒**（`VOICE_PROMPT_MAX_MS`，给上游那句 30s 断言留余量）；
+  - 放不下的段**整段丢掉**并进 `dropped_refs` —— **不截半句**：prompt 文本必须与 prompt 音频
+    逐字对应，截一半就是"文本说了一整句、音频只念了半句"；
+  - 上游 `frontend_zero_shot` 本来就是从 `prompt_text` / `prompt_wav` 提 `speech_token` +
+    `spk_embedding` ⇒ **把多段拼成一段 prompt 是上游支持的用法**（得到更长的说话人嵌入）；
+  - §04.3.2 原写的"多段时按 seed 随机选一段"**作废**：每句挑一段会让音色**逐句抖**，
+    而"像不像"恰恰是稳定感；
+  - 为什么用 ffmpeg 不用 numpy：主 venv **没有 numpy**（只有 `tts/.venv` 有），而 `tts/server.py`
+    会被 API 进程与单测导入；ffmpeg 两边都有，且 `aformat` 能统一各段不同的采样率 / 声道。
+    拼接走 `run_command`（项目自己的外部命令层，带进程树超时），`runner=` 是单测注入点。
+- **真机读数（2026-09-22 · 重启 api/tts 后）**：
+  - `POST http://127.0.0.1:8788/synth`（`voice_id=xionger`）⇒ `ref_wavs ==`
+    `["ref_01.wav","ref_02.wav","ref_03.wav"]`、`dropped_refs == []`、`duration_ms=5320`；
+  - `data/tmp/tts_prompt/xionger.wav` 实测 **12.9189s** = 2.136 + 2.183 + 8.000 + 0.3×2（正是设计值）；
+  - 改前同一个音色只吃 **2.14s**（`ref_01.wav`）—— 这就是"不像"的量化差距。
+- **验收**：后端 `tests/unit/tts/test_server.py` 新增 `TestPromptBuild` **5 例**（单段直传不复制 /
+  多段全进 + 断言 ffmpeg argv 里三个 `-i` 与 `concat=n=3` / 超限段丢弃并如实报 / 上限 < 30s 且留得下静音 /
+  缺文本的段不可用）+ `TestPromptBuildForReal`（真 ffmpeg 拼 2×1s ⇒ 时长 ≈ 2000 + 300ms、24kHz 单声道）；
+  `tests/unit/assets/test_validate.py` / `tests/integration/test_voice_profile.py` 改成"一段能入库（带 warning）"
+  与"6 段照收"；`pytest` 那一批 ⇒ **600 passed**；`uv run mypy src tests workers scripts` ⇒ **431 文件无问题**。
+
+**交付物**：`src/studio/tts/{server,cosyvoice}.py`、`src/studio/assets/validate.py`、
+`src/studio/app/routers/assets.py`、`scripts/ingest_voice_src.py`、
+`web/src/{stores/assets.ts,api/endpoints/assets.ts}`、
+`tests/unit/tts/test_server.py`、`tests/unit/assets/test_validate.py`、
+`tests/integration/{test_voice_profile,test_assets_api}.py`、`tests/unit/services/test_asset_service.py`、
+`docs/spec/{02-project-layout,03-data-model,04-contracts,README,05-roadmap-checklist}.md`
+
+---
+
+## 10.10 2026-09-22 · 音色导入「覆盖 = 镜像 + 逐段可管」（裁定 381 / 陷阱 215 · 216）
+
+用户一句话：**「配音导入还是太难管理，并且同名覆盖策略似乎没有生效」**。后一句**用户读对了**
+—— 而它读对的地方，恰好是这套界面里最不像 bug 的那一处。
+
+- **现象**：传 3 段 → 再传 2 段（勾了「覆盖同名」）⇒ 面板上还是 3 段；而逐段看不见、管不了
+  （想删掉念错的那一段，只能把整条音色删掉重传）。
+- **根因（两层）**：
+  - ① **「覆盖同名」与「这份目录现在就是我传的这堆」是两件事**。覆盖只写同名文件，旧
+    `ref_03.wav` 原封不动留在盘上 ⇒ 扫盘又把它读回来 ⇒ 段数照旧。用户说的「没生效」
+    **是准确描述**，而不是误会。
+  - ② 上传是**整目录一把梭**：写进去什么、旧文件有没有被清、`ref.txt` 与段数对不对得上，
+    全都没有逐段视图 —— 用户唯一能做的管理动作是「把整条删掉重传」。
+  - 判据：**凡是让用户表达「这一份就是全部」的开关，都要问一句多余的那些去哪了。**
+- **裁定 381 之一 —— 覆盖 = 镜像**（`assets/upload.py::prune_refs`）：`overwrite=True` 时，
+  这次没写到的 `ref_NN.*` **清掉**（只认 `ref_NN` + 音频后缀；`ref.txt` / `profile.json` /
+  用户自己的别的文件一个不动）。**守卫两条**：① 只有 `overwrite=true` 才清；② 只有这次
+  **确实写进去过**才清 —— 整批失败的上传不该把用户音色清空。清掉的逐条进 `UploadResult.removed`。
+- **裁定 381 之二 —— 回执必须说清对不上的地方**：没填文字稿而盘上已有 `ref.txt` ⇒ 回执
+  `notes` 明说「`ref.txt` 没动（上一次那 N 行），而这次写进去 M 段 —— 两者对不上」。
+- **裁定 381 之三 —— 逐段可管**：
+  - `GET /api/v1/assets/voice/{voice_id}/segments` ⇒ 段号 / 文件名 / 时长 / 采样率 / 峰值 /
+    **同一位置那行文本** / 该段自己的 problems（`ref_count` 与 `text_lines` 分开报：两者不等
+    就是「文本与参考音对不上」，面板要能一眼指出是哪一段）；
+  - `DELETE /api/v1/assets/voice/{voice_id}/segments/{name}` ⇒ 删段 + **重编号**
+    （`ref_03.wav ⇒ ref_02.wav`）+ 同步 `ref.txt` **同一行**（**仅当行数与段数本来相等**，
+    否则不动并如实 note）；最后一段 ⇒ 422 `ASSET_INVALID`（那两个动词是「整条删除」与
+    「覆盖重传」）；非 `ref_NN` 的名字 ⇒ 422；名字不存在 ⇒ 404 且 `context.refs` 列出盘上真有的；
+  - **位置即对应**：段号就是「它在 prompt 里的位置」，删中间那段后面必须重编号 —— 不重编号
+    就出现「第 2 段空着、第 3 段还在」的洞，而 prompt 是按下标顺序拼的。
+- **真机读数（2026-09-22 · 重启 api 后）**：
+  - `GET segments`（`xionger`）⇒ 3 段 **2136 / 2183 / 8000 ms** + 三行文本；
+  - 覆盖 3 段 ⇒ 2 段：`removed == ["ref_03.wav"]`，库与盘**同步** 2 段；
+  - 不填文字稿 ⇒ `notes` 如实报「`ref.txt` 还是上一次那几行」；
+  - 删中间段 ⇒ `renamed == [{ref_03.wav ⇒ ref_02.wav}]`；
+  - 删最后一段 ⇒ 422，remediation 指向「整条删除 / 覆盖重传」；
+  - 临时探针音色 `probeov` 用 `DELETE …?purge=true` 清掉，`data/voice_src/` 回到
+    `bigbear` / `littlebear` / `sunxiaochuan` / `xiongda` / `xionger`。
+- **顺带修掉的一件旧账（陷阱 216）**：全量跑一次才发现 **★主线那条端到端用例（文案 → 配音 →
+  MP4）从 T2.5 起一直是红的** —— 两个 `_stage_home` 只往隔离家目录拷了 `config/outputs.yaml`，
+  而 `synthesize_script` 从 T2.5 起要读 `prompts/shared/glossary.yaml` ⇒ 每条用例都在同一行
+  `CONFIG_MISSING` 上炸。补上 `prompts/` 之后 `test_render_pipeline.py` **8 passed**、
+  `test_render_pool.py` **2 passed**。
+- **验收**：`tests/integration/test_assets_api.py` + `tests/unit/services/test_asset_service.py`
+  + `tests/unit/assets` ⇒ **207 passed**；`uv run mypy src tests workers scripts` ⇒
+  **431 文件无问题**；`ruff format` / `ruff check` 绿；`web:gen` 已重生成；
+  `npm run verify` ⇒ **736 passed / 28 文件**，dist **0.49 MB / 3.00 MB** OK；
+  全量 `uv run pytest tests -q` ⇒ 剩下的失败**全部**在另一条在飞的线程里（`publish_pool` ×5 /
+  `persona_api` ×2 / `test_config` 的发布账号用例 ×1），与本轮无关（`publish_pool` 在 HEAD 上是绿的）。
+
+**交付物**：`src/studio/assets/{upload,validate}.py`、`src/studio/services/asset_service.py`、
+`src/studio/app/{routers,schemas}/assets.py`、
+`web/src/{api/endpoints/assets.ts,stores/assets.ts,views/Assets.vue}`、
+`tests/integration/{test_assets_api,test_render_pipeline,test_render_pool}.py`、
+`tests/unit/services/test_asset_service.py`、`web/src/stores/assets.test.ts`、
+`docs/spec/{03-data-model,04-contracts,05-roadmap-checklist,README}.md`
+
+---
+
+## 10.11 2026-09-23 · 选题里一直冒跑酷（裁定 382 / 陷阱 217）
+
+用户一句话：**「到底为什么生成文稿的第二级层面会一直有跑酷内容，跑酷只是对话背景和文稿无关，我在人物库提示词都没找到相关提示词，帮我筛查一下」**。三个判断**用户全对**：跑酷确实只是底片、确实与文稿无关、确实不在人物库里 —— 它藏在**另一条提示词**里，而且是被**教**进去的。
+
+- **现象**：`topic_candidates` 24 条，**22 条**标题/角度里带「跑酷 / MC / 血条 / 第几关」（21 `candidate` + 1 `queued`）。方向全是社会新闻（「张雪峰过劳猝死」「老楼装电梯 9000 部」「500 万的房月租 1 万」），选题却条条是游戏实况；带「跑酷」字样的标题已经有一批流进了 `scripts`。
+- **用户为什么找不到**：他翻的是 `config/persona.yaml`（人物库）—— 那里确实干净。源头在 `prompts/ideator/system.md`。
+- **根因（两条叠加，缺一不可）**：
+  - ① **提示词把"画面"写进了"内容"**。`prompts/ideator/system.md` 第 4 条原文是 `exec_feasible：3 分钟内能做完（跑酷素材循环 + 配音 + 字幕）就填 true` —— 模型读到的不是"画面随便挑"，而是"这个账号的片子是跑酷素材拼的"，于是顺着"跑酷"去编题材。
+  - ② **自强化**：喂给 Ideator 的 `【已有选题（不得重复）】`（`topic_service` 取 `list_for_dedup` 最近 60 条、**全部状态**）此时已经全是跑酷标题 ⇒ 模型"避免重复"的做法是**换一种跑酷说法**（换关卡 / 换机制 / 换数字），越写越出不来。
+  - 判据：**凡是提示词里出现"用某素材做某事"的例句，都要问一句这条素材到底是内容还是布景。**
+- **硬证据（这一步排除了"模型在学历史数据"）**：2026-09-20T10:48 那一批，方向「张雪峰过劳猝死」，**5 条候选 5 条带跑酷/MC**；而把 `topic_candidates` 按 `created_at` 排序，**最早的一条就是这一批** —— 在那个时刻库里**一条跑酷选题都还没有**，模型没有历史可学 ⇒ 只能是提示词教的。
+- **裁定 382 之一 —— 提示词里删掉"画面"**：
+  - `prompts/ideator/system.md`：第 4 条改成「3 分钟内能**讲完**（口播 + 配音 + 字幕）」；新增一段 **`【画面不参与选题】`**，点名 跑酷 / MC / 我的世界 / 地图 / 关卡 / 血条 / 体力条 / 方块 / 实况 / 游戏画面 不得出现在 title / angle / reason 里，说清画面是**渲染时随机挑的底片**，并明说"历史标题里也可能带这类字眼 —— **不要跟着学**"。
+  - `prompts/cover/system.md`：删掉「他这次跑酷的表现」这个例句。
+  - `prompts/writer/user.jinja`：注明大纲里每段的「画面」是**给渲染看的**，口播稿里一句画面词都别提。
+  - 三个文件都重算了 `prompts/manifest.yaml` 的 sha256（`prompts verify` 全绿）。
+- **裁定 382 之二 —— 加一条判据，但只 warn 不拦**：`domain/topics.py` 新增 `VISUAL_LEAK_WORDS` + `visual_leak_words()`（纯函数），`topic_service._ideate_one` 扫 `title + angle`，命中就 `_emit("warn", "选题《…》把画面词写进了内容：…")`，条数也带进「方向《…》产出 N 个选题」那条日志。
+  - **为什么 warn 不是丢**：一个比喻用歪了不代表题材不能做；拦掉会连带丢掉一条能用的选题，而 warn 让人**一眼看到该改哪个词**。判据要的是可见，不是静默。
+  - **词表只收高精度的词**：`地图` / `实况` 在民生选题里是正经词（"导航地图""直播实况"），收进来只会让这条判据被误报淹掉然后被无视。`MC` 单独走整词匹配（`(?<![A-Za-z0-9])MC(?![A-Za-z0-9])`），不然 `MCU` / `H.264` 会误报。
+- **验收**：`tests/contract/test_visual_leak_prompts.py`（15 例：owned 条目无漂移、「跑酷素材循环」不得回归、画面词只准出现在 `【画面不参与选题】` 标记**之后**、「不要跟着学」在、writer 模板说「给渲染看的」、扫描器抓得住也**不乱报**）+ `tests/unit/services/test_topic_service.py` 两例（命中 ⇒ warn 且选题**照常入库**；干净批 ⇒ 零 warn）⇒ **33 passed**；`tests/unit/domain/test_topics.py` + `tests/unit/services` + `tests/unit/agents` + `tests/contract` + `tests/integration/{test_topics_api,test_topic_pool,test_script_pipeline}` ⇒ **858 passed**；`ruff format` / `ruff check` 绿；`mypy src` ⇒ **241 文件无问题**。
+
+**交付物**：`prompts/{ideator/system.md,cover/system.md,writer/user.jinja,manifest.yaml}`、`src/studio/domain/topics.py`、`src/studio/services/topic_service.py`、`tests/contract/test_visual_leak_prompts.py`、`tests/unit/services/test_topic_service.py`、`docs/spec/{04-contracts,05-roadmap-checklist}.md`
+
+---
+
+## 10.12 2026-09-23 · 事件总结（防写稿幻觉）（裁定 383 / 陷阱 218）
+
+用户一句话：**「新闻评测同时要给出一个事件总结，防止后续写稿时大模型幻觉问题」**。
+
+- **现象**：一键拉新闻那一路，评测那一级**明明读过源站摘要**（中新网 RSS 的 `description` 就是
+  正文首段），读完就丢；往下走的事实只剩「标题 + 60 字 `rationale`」。于是写稿时模型手上
+  **没有这件事本身** —— 数字 / 地点 / 后果全靠它自己补，看起来像"写稿模型爱编"，其实是
+  **信息在链路中途掉了**。
+- **裁定 383 —— 事实与判断分两个字段，事实只走一条通道**
+  - **不塞进 `rationale`**：那是"为什么值得写"（判断），且上游契约只有 200 字
+    （`DirectionSpec.rationale`）—— 长标题一撞上限，这个方向**再也生成不出选题**。两样挤一行，
+    代价是整条方向报废，而报错点离真正的原因（上游多写了三十个字）很远。
+  - **落点是 `grounded_on`**（`type="hot"` + `kind="news"`，事实写进 `quote`）：依据本来就是
+    "这条方向从哪来"，新闻事实天然属于这里；而"方向 ⇒ 选题 ⇒ 写稿"的回读路径已经存在
+    （`topic.direction_id`），不需要新表、不需要新列。
+  - **源站摘要一起喂进评测**（`NewsItemSpec.summary` ⇒ `news_scout` 提示词）：这是事实**最硬**的
+    那一份，模型只要抄、不要它自己回忆。头条热榜**没有正文/摘要**（实测 `trending/<id>/` 返回
+    4883 字节的 JS 壳），那一路只能靠标题 —— 模型被明确要求"看不出发生了什么就填「信息不足」"。
+  - **「信息不足」不落成依据**（`topic_service._news_evidence`）：把"我看不出来"当一条事实写进去，
+    写稿时模型看到的是「【已知事实】信息不足」—— 那比**没有**事实更糟。
+  - **写稿侧按 `topic.direction_id` 回读**（`script_service._facts_for`）：`OutlineInput` /
+    `DirectorInput` / `WriterInput` 各多一个 `facts`（`FACTS_MAX=400`；空 ⇒ 渲染成
+    `FACTS_UNSET` 而不是空行 —— 空行会被模型读成"上游给了空事实"）。
+  - **提示词三层同时讲清**：`news_scout` 五条纪律（不补背景 / 不把疑问句改写成结论 / 不写
+    "据报道"式转述 / 看不出就填「信息不足」）；`outliner` / `director` / `writer` 新增
+    【已知事实】块 + 一条硬纪律 —— **事实不够撑字数就把它讲透，不许拿想象凑字数**。
+  - **面板上看得见**：方向卡片多一行「事件：」（`web/src/views/Topics.vue`，
+    `white-space: pre-line`）。
+- **陷阱 218 —— 上游没有事实层，幻觉在下游才现形**
+  - 现象：稿子里冒出没写过的数字 / 地点 / 后果，第一反应是"写稿那一级在编"。
+  - 根因：整条链路**没有任何一级**把事件本身传给下一级 —— 评测读了摘要就丢，往下只剩标题；
+    而写稿被要求写 600–800 字，缺的那部分它只能自己补。
+  - 改：源站摘要 ⇒ 评测产出 `event_summary` ⇒ 落进方向的依据 ⇒ 写稿按 `direction_id` 回读。
+  - **判据**：凡是"下游看起来在编"的地方，先问一句"这一级手上到底有没有这件事的事实"。
+- **真机读数（2026-09-23 · 重启 api 后 · 真 LLM）**：拉一次今日新闻 ⇒ 小结「评测 50 条 · 留下
+  3 个方向」；三条依据干净、没有"据报道"式前缀：
+  - `一名男子花4.5元网购“聚能环”，导致妻子和儿子身亡。`
+  - `网传“四川甘孜州街头出现棕熊”，经核实系AI伪造。`
+  - `一款29.9元的月饼卖出了200万单。`
+  面板「事件：」行正确换行；**第一次验证产生的 2 条重复方向已用面板删除清掉**。
+- **已知限制（如实记）**：头条热榜**没有正文/摘要**（实测），那一路的事实总结只能建立在标题上 ——
+  它比中新网 RSS 那一路弱。这是**源的**限制，不是提示词能补的。
+- **验收**：`tests/contract/test_news_scout_schema.py` + `tests/integration/test_topics_news_api.py`
+  + `tests/unit/services/test_news_service.py` + `tests/unit/services/test_script_service.py`
+  ⇒ **67 passed**（第 5 个字段 `event_summary` / 上限 200 / 源站摘要进提示词 / 热榜无摘要 /
+  `facts` 注入与 `FACTS_UNSET` / 面板回读）；`web/src/stores/topics.test.ts` 加 `newsFacts` 用例；
+  `ruff format --check` / `ruff check` / `mypy`（432 文件）/ `dump_web_contracts.py --check` 全过；
+  前端 `npm run verify` 全过。全量 `uv run pytest tests -q -m "not gpu and not slow and not net"`
+  ⇒ **4450 passed / 12 failed**，这 12 条**全部**落在别的线程正在动的地方（工作区里未提交的
+  `config/persona.yaml` 的 name、`config/publish.yaml` 多出的账号、以及本机 `ops` 脚本设的
+  `HF_HOME` / `STUDIO_DATA_DIR` 一类环境变量），与本节无关。
+
+**交付物**：`src/studio/domain/{topics,script}.py`、`schemas/news_scout.schema.json`、
+`prompts/news_scout/{system.md,user.jinja}`、
+`prompts/{outliner,director,writer}/{system.md,user.jinja}`、`prompts/manifest.yaml`、
+`src/studio/agents/{news_scout,outliner,director,writer}.py`、
+`src/studio/services/{news_service,topic_service,script_service}.py`、
+`src/studio/db/repositories/direction_repo.py`、`web/src/{stores/topics.ts,views/Topics.vue}`、
+`docs/spec/04-contracts.md`、`tests/contract/test_news_scout_schema.py`、
+`tests/integration/test_topics_news_api.py`、
+`tests/unit/services/{test_news_service,test_script_service}.py`、`web/src/stores/topics.test.ts`
+
+---
+
+## 10.13 2026-09-23 · 删除孤儿目录：盘上有、库里没有的东西以前删不掉（裁定 384 / 陷阱 219）
+
+用户一句话：**「删除孤儿目录」** —— 接上一轮「盘上数据 / 库中数据怎么管」。当时盘上躺着 `data/voice_src/{bigbear,littlebear}` 两个**空目录**：面板上永远挂着「盘上有 2 条还没入库」，点入库必然不合格（目录里没有 `ref_01.wav`），而**没有任何一颗按钮**能让那句话消失。
+
+- **现象**：`GET /api/v1/assets/list?kind=voice` 的 `pending` 里永远是那两条，而 `strays` 是**空的** —— 名字**是**合规的，它只是空的，所以连"改名再扫一次"那条路也走不通。
+- **根因**：这一屏的删除动词认的是**库里那一行**（`DELETE /assets/{id}`，裁定 369：默认删行、`purge=true` 才动盘上那份），而孤儿的定义就是**没有那一行** ⇒ `AssetService.delete()` 手上没有行，直接 404（`src/studio/services/asset_service.py:1161`）。于是「盘上有、库里没有」的东西在这套界面里**只有一条出路：去资源管理器里手工删** —— 而素材目录名是约定的一部分（音色的目录名就是它的 id），手工删很容易顺手删错一个。
+- **同族的下一层（这才是真正要修的）**：面板上一条**永远动不了的警告**，等于在教用户「这屏幕上的话可以不理」。判据：**凡是「用户看着一条动不了的提示」的地方，都要问一句这个动作缺的是哪个动词。**
+- **裁定 384 之一 —— 补一个动词，而不是给 `DELETE` 加参数**：新增 `POST /api/v1/assets/prune`（面板上「清掉不合格的孤儿」，点两下、第一下是 `dry_run` 预览）。不塞进 `DELETE` 的 `purge` 里，因为那会让**同一个动词在两条路上语义相反**（"删行顺带删文件" vs "只有文件、没有行"）—— 而那正是最难查的一类不一致。
+- **裁定 384 之二 —— 只清「本身不合格」的；合格的孤儿该入库，不是该删**：跑酷 / BGM 的未入库文件**出片照样挑得到**（`render/assets.py` 只列目录），删了等于凭空少一条底片。所以合格的进 `kept` 并带上理由，面板必须把那一段显示出来 —— 否则用户会以为"清了一遍，怎么还剩着"。
+- **裁定 384 之三 —— 判据不能是 `check.ok`（本轮最容易踩的那一脚）**：`check_broll` / `check_bgm` 会把「授权没填」算进 `problems`（`license_missing`），而**孤儿之所以是孤儿，正是因为它还没有库里那一行** —— 那一行才是存授权的地方。拿 `check.ok` 当判据，一条完好无损、只是还没登记的底片会被当成垃圾删掉，而且删完**没有任何地方报错**。所以把"登记状态"那几条（`_REGISTRATION_ONLY_CODES`，目前只有 `license_missing`）从阻塞项里摘出去：**它说的是库里的登记，不是盘上文件的毛病。**
+- **裁定 384 之四 —— 一条路径的删法只有一份**：`_purge_files`（删库里那条）与 `prune_orphans`（删孤儿）共用 `_purge_path`，路径守卫（解析后必须**严格在**根目录之下）不写第二遍 —— 这里漏一次的代价是 `shutil.rmtree` 删掉一个不该删的目录，且不可逆。`strays` 一个都不动（"认不出"不等于"没用"）。
+- **真机读数（2026-09-23）**：
+  - `prune {kind: voice, dry_run: true}` ⇒ `removed = [bigbear, littlebear]`（理由：目录里没有参考音），`kept` / `strays` 空，盘上**一个字节没动**；
+  - 真跑 ⇒ 两个目录清掉，`data/voice_src/` 回到 `sunxiaochuan` / `xiongda` / `xionger`；
+  - 三类 `pending` 全空（voice 那两条是当时唯一的孤儿）；
+  - 审计 `audit_ops` 一行：`action='asset.prune'`、`target_id='voice'`、`after={"removed":["bigbear","littlebear"],"kept":[]}`。
+- **验收**：`tests/unit/services/test_asset_service.py -k Prune` ⇒ **7 passed**（含★反例：完好但没入库的底片**一个字节都不动** —— 拿 `check.ok` 当判据这条就红）；`tests/integration/test_assets_api.py -k prune` ⇒ **7 passed**；`tests/unit/services/test_asset_service.py` + `tests/integration/test_assets_api.py` + `tests/contract` ⇒ **396 passed**；`web` 侧 `src/stores/assets.test.ts` ⇒ **63 passed**（+4）；`scripts/dump_web_contracts.py --check` ⇒ **Web 契约与后端一致 ✅**；`ruff format` / `ruff check` 绿；`mypy src` ⇒ **241 文件无问题**。
+
+- **补记（同日 · 追到更上一层）—— 那两个目录是 `scripts/env.ps1` **每次 dot-source 现造**的**：`$StudioEnvDirs`（「目录预建（幂等）」那一格）里写着 `voice_src\bigbear` / `voice_src\littlebear`，而 `data/voice_src/<音色 id>/` 的目录名**就是那条素材的 id**（§3.1）。于是**每一次 dot-source 环境闸门**（`ops/*.ps1`、`tasks.ps1`、任何按 §02.2 起手的会话）都把这两个空目录建回来 —— 手工删是白删，上面那两下`prune` 也是白清：**10:48 清掉、10:50 就长回来了**（`LastWriteTime` 抓到的就是这一下，`pending` 里又冒出那两条）。
+- **为什么这不是「顺手多建两个目录」**：它连的是《熊出没》占位音色的名字，而音色 id 与展现名是**解耦**的（R2，用户可换自录音色）—— 占位音色一退场，那两个目录就是两条**永远在报的假警报**。环境闸门是**部署面**，不该替内容层决定「这台机器上有哪几个音色」。
+- **改法（对齐，不是新增约定）**：`$StudioEnvDirs` 里那两条换成 `voice_src`（**只建父目录**）。Python 侧本来就是这么列的 —— `StudioPaths.runtime_dirs()` 只列 `voice_src_dir`，不列任何具体音色；这一改是把 PowerShell 那份骨架表**对齐到唯一真相**。
+- **验收（补）**：`tests/unit/core/test_paths.py::test_env_gate_pre_creates_container_dirs_but_never_a_concrete_asset_dir`（新增；拿 `HEAD:scripts/env.ps1` 跑这条断言会红 —— `['voice_src/bigbear', 'voice_src/littlebear']`）；`tests/unit/core/test_paths.py` ⇒ **10 passed**；真机 dot-source 一次 `scripts/env.ps1` ⇒ `data/voice_src/` 仍是 `sunxiaochuan` / `xiongda` / `xionger`，三类 `pending` / `strays` **全空**（broll 1 / voice 3 / bgm 1）；`ruff format` / `ruff check` 绿；`mypy tests/unit/core/test_paths.py` 无问题。
+
+**交付物**：`src/studio/services/asset_service.py`、`src/studio/app/{routers,schemas}/assets.py`、`web/src/api/endpoints/assets.ts`、`web/src/stores/assets.ts`、`web/src/views/Assets.vue`、`web/src/api/types.gen.ts`、`web/openapi.json`、`tests/unit/services/test_asset_service.py`、`tests/integration/test_assets_api.py`、`web/src/stores/assets.test.ts`、`docs/spec/{02-project-layout,04-contracts,05-roadmap-checklist}.md`、`scripts/env.ps1`、`tests/unit/core/test_paths.py`
+
+- **编号说明（并行线程）**：本节最初按「下一个空号」写成 §10.12 / 裁定 383 / 陷阱 218，落地时发现**另一条在飞的线程（今日新闻「事件总结」）已经占了 383 / 218**（见上面的 §10.12），所以让号：本节是 **§10.13 / 裁定 384 / 陷阱 219**。陷阱对照表里因此**空着 218 那一行** —— 那是新闻那条的号，等它自己补上；表头的「218 条」是**实际行数**（1–217 + 219）。
+
+---
+
+## 10.14 2026-09-23 · 参考音指纹：同名换参考音不再复用旧产物（裁定 385 · 386 / 陷阱 220 · 221）
+
+用户一句话：**「我删除再重添加音色库文件，因为同名就复用以前的试听样本，并且感觉配音也是复用的以前的」**。
+两处**都被用户说中了** —— 而它们其实是同一个病：**音色的身份在这条链路上一直只有一个名字**。
+
+- **现象**：
+  - 换了参考音（删掉重传 / 勾「覆盖同名」重传，目录名不变）之后，配音台那颗试听按钮照旧
+    显示「试听」——点下去放的是**上一版**参考音念的样本，而面板上一切正常；
+  - 重新配音时"感觉还是旧嗓子"。
+- **根因（一个，两个出口）**：决定声音的是**参考音的内容**，而系统到处按**名字**记结论：
+  - `tts_cache_key(...)` 的字段是 `engine | engine_revision | voice_id | text | speed | …`
+    —— 有 `voice_id`，没有参考音。名字没变 ⇒ 键没变 ⇒ **命中旧音频**，一句都不重念；
+  - `preview_slug(voice_id)` 只由**音色 id** 算出文件名，而 `VoicePreviewService.get()`
+    的判据是「盘上有没有这个文件」⇒ 旧样本原地不动，照旧报 `ready`。
+  - 判据：**凡是用"名字"当身份的地方，都要问一句「名字背后的东西换了，这里会知道吗」。**
+- **裁定 385 —— 参考音指纹进身份**（新模块 `src/studio/tts/refprint.py`）：
+  - `ref_fingerprint(root)` = 逐段 `(文件名, 内容 sha256, 该段逐字文本)` 拼串取 sha256 前 12 位；
+  - **只算"配得上文本的那几段"** —— 与 `VoiceRegistry.resolve` 同一条取舍（多出来的段压根
+    进不了引擎，把它们算进去会让"多丢一个文件"看起来像换了嗓子：键变、整篇重念、声音没变）；
+  - 系统音色（SAPI）没有参考音 ⇒ 空串，**与改前逐字节同键**；
+  - 记忆化按 `(名字, 大小, mtime_ns)`：改动真的发生时才重哈希（代价写在明处：`copy2` 保留了
+    时间戳的替换会被认成没换 —— 而用户的换法是"重传/覆盖"，走的是新 mtime）。
+  - **两处都吃它**：① `tts_cache_key` 多一个 `voice_fingerprint` 字段（`sentence.synthesize_sentence`
+    与配音池逐句传进去）；② 试听样本的旁车记下"这份是照着哪一版参考音念的"，`get()` 对不上
+    ⇒ 报**新状态 `stale`**（面板写「重新生成」+ 一句说清为什么），`ensure()` 照常重新生成。
+    `stale` **必须**与 `ready` 分开：两者都"盘上有文件、能播"，但前者播出来是旧嗓子 ——
+    合成一个状态，用户听到不像时会去查引擎、查模型，而真正的原因面板上一个字都没提。
+  - 顺带修掉一处顺序问题：`get()` 里 `running` 判在**文件之前** —— 重新生成一份 `stale` 样本时
+    旧文件还在（新的才写到一半），先判文件的话面板在生成期间会看到「重新生成」，于是它不再
+    轮询（store 只在 `running` 时轮询），那一次点击就白点了。
+- **裁定 386 —— 删掉「盘上有非空产物就跳过」那条捷径**（`tts/synth.py`）：
+  它判的是「这个文件在不在」，而不是「它是不是**这一轮要念的东西**」—— 换了参考音或换了
+  音色之后重跑，它会把旧嗓子照旧拼进母带，而每一步日志都写着成功。现在每一句都过一遍缓存：
+  键里含引擎、音色、参考音指纹与文本 ⇒ 没变就是一次文件复制（毫秒级），变了就真的重念。
+  `VoiceResult.reused` 的口径跟着改：从「盘上有文件就跳过」变成「**一句引擎都没碰**的句数
+  （缓存命中）」。「别重念」这个诉求仍然有出口 —— `reuse_voice=True`（一键出片与渲染面板
+  那个开关走的就是它）。
+- **真机现况（2026-09-23 · 查库与盘）**：
+  - `data/voice_src/`：`bigbear` / `littlebear` **空目录**（参考音早先被删掉了），
+    `sunxiaochuan`（2 段）、`xiongda`（3 段）、`xionger`（3 段）；
+  - `voice_profiles` 三行：`sunxiaochuan`(2 段 5956ms) / `xiongda`(3 段 11068ms) / `xionger`(3 段 12319ms)，都 `enabled`；
+  - 试听样本 5 份，其中 **`xionger_b506c1eb` 的旁车写着 `16:45:00Z`（本地 0:45:00），
+    而它的参考音文件是 **0:54:19** 写的 —— 样本比参考音**早 9 分钟** ⇒ 面板上那份正是
+    旧参考音念的**（这就是用户报的那一条，当场坐实）**；`bigbear` / `littlebear` 两份
+    样本对应的音色已经不存在了（旧版本写的旁车没有指纹字段 ⇒ 一律判 `stale`，不再假装 `ready`）；
+  - `data/cache/tts` 里那些旧键（不含指纹）**不会**再被命中 —— 它们会随 LRU 自然淘汰，
+    缓存本来就是"删掉只损失速度"的东西，不需要迁移。
+- **验收**：
+  - `tests/unit/tts/test_refprint.py`（**新** · 8 例）：同一份 ⇒ 同一指纹；同名换音频 ⇒ 指纹变；
+    改逐字文本 ⇒ 指纹变；**没有文本的段不算**；配上文本的第 2 段算；算不出来 ⇒ 空串；
+    `voice_fingerprint` 拒绝带路径分隔符的 id；
+  - `tests/unit/tts/test_cache.py`：逐字段那条从 8 项扩到 **9 项**（新增"同一个名字、换参考音
+    ⇒ 换键"一例）；`tests/unit/tts/test_sentence.py` 新增同名换指纹 ⇒ miss；
+  - `tests/unit/tts/test_synth.py`：「续跑不碰引擎」改成按**缓存**判（两次跑 ⇒ 引擎只被叫一次），
+    并新增 ★「同名换参考音 ⇒ 重念」；
+  - `tests/integration/test_voice_api.py` 新增 ★「上一版参考音的样本报 `stale`，重新生成后回 `ready`」；
+  - `web/src/stores/voice.test.ts` 新增两例（`stale` 的字与提示、`stale` 必须**去重新生成**
+    而不是拿旧样本当现成的播）；
+  - `uv run pytest tests/unit/tts tests/integration/test_voice_api.py` ⇒ **全绿**；
+    `uv run mypy src tests workers scripts` ⇒ **435 文件无问题**；`npm run test` ⇒ **739 passed / 28 文件**。
+
+**交付物**：`src/studio/tts/{refprint.py（新）, cache.py, sentence.py, synth.py}`、
+`src/studio/pools/voice_worker.py`、`src/studio/services/voice_preview.py`、
+`src/studio/app/schemas/voice.py`、`web/src/stores/{voice.ts, voice.test.ts}`、
+`tests/unit/tts/{test_refprint.py（新）, test_cache.py, test_sentence.py, test_synth.py, test_faults.py}`、
+`tests/integration/test_voice_api.py`、`docs/spec/{03-data-model,04-contracts,05-roadmap-checklist,README}.md`
+
+- **编号说明（并行线程）**：本节最初按「下一个空号」写成 §10.11 / 裁定 382 · 383 / 陷阱 217 · 218，
+  落地时发现**另一条在飞的线程已经占了这些号**（§10.11 跑酷 = 裁定 382 / 陷阱 217；§10.12 事件总结
+  = 裁定 383 / 陷阱 218；§10.13 孤儿目录 = 裁定 384 / 陷阱 219），所以让号：本节是
+  **§10.14 / 裁定 385 · 386 / 陷阱 220 · 221**。表头「218 条」= **实际行数**（1–217 + 219 + 220 + 221，
+  空着 218 那一行给新闻那条）。
+
+---
+
+## 10.15 2026-09-23 · 贴图开关「勾了就跳回去」+ 面板与渲染两套判据（裁定 387 · 388 / 陷阱 222 · 223）
+
+用户一句话：**「人物贴图按钮，只要一刷新网页就自动关掉，每次渲染都不生效」**，附面板截图
+（两层勾选框都空着，每层下面写着"这一层关着，完全不参与渲染"）。**这两句话说的是两件事**，
+而它们各自都不报错 —— 所以用户看到的是一屏"一切正常"。
+
+- **现象 / 根因（两层叠加）**：
+  - ① 那个勾选框**从来不写盘**：`onStickerBool` 只改内存草稿，要人再点顶部「保存」才落盘。
+    而它长得就是个**开关** —— 人勾完直接去渲染了；刷新时草稿按**盘上那份**重建，勾就"自己
+    跳回去了"。查 `audit_ops` + `data/logs/api.log` 坐实：昨天 13:50（hero=true）、13:55
+    （两层=true）成功保存过两次，14:08 又保存回 `false`，**此后到本轮之前再无任何
+    `POST /api/v1/outputs` 记录** —— 不是"保存没生效"，是**根本没保存**。
+  - ② 那两张"PNG"其实是**假 PNG**：`hero.png` 文件头是 `52 49 46 46 … WEBP`（WebP）、
+    `guest.png` 是 `FF D8 FF E0 … JFIF`（JPEG）—— 改了扩展名、没改字节。渲染路径的判据是
+    `probe_png().usable`（PNG 签名 + 透明通道）⇒ **每一层都被跳过**；而面板当时只报 `exists`
+    （`is_file()`）⇒ **绿灯 + "在盘上"**。于是"开了没反应，面板一个字都不说"。
+- **裁定 387 —— 开关当场写盘**：新增 `stores/outputs.ts::saveToggle(reason)`（本地校验有意见
+  就不提交，否则走原来那条 `save()`：sha 守卫 / 审计 / 回读全复用），`onStickerBool` 改成
+  `async` + `await`。**判据：长得像开关的东西，它的效果必须当场发生** —— 否则"我勾了"与
+  "系统记下了"之间隔着一个用户看不见的按钮。
+- **裁定 388 —— 面板判据与渲染路径同源**：`outputs_service._asset_exists`（只问 `is_file()`）
+  删掉，换成 `_asset_probe()`（调**渲染路径同一个** `probe_png`；`home is None` ⇒ 返回一份
+  "判不了"的 `PngAsset`，**不假装可用**）；`usable` / `problem` 进 `OutputsStickerCard` /
+  `OutputsWatermarkCard` 与响应体，面板的灯、横幅都看它。水印那份 `watermarkMissing` 一并
+  改名 `watermarkBroken`（判据从 `exists` 换 `usable`）。
+  - 灯的三态**必须分开**：关着 ⇒ `idle`（默认就是关的，是**故意的**）；开着且可用 ⇒ `ok`；
+    开着但贴不上 ⇒ `error`（**待办**）。水印没有开关 ⇒ 坏了是 `warn`（可选装饰，出片照常）。
+    把"关着"与"坏了"都画成黄色，默认状态会显得像出了问题。
+- **代价（写在明处）**：开关不再走"改草稿 → 点保存"那一道人工确认 —— 勾一下就是一次写盘
+  （带 sha 守卫与审计，与点保存走同一条路）。失败时草稿**留着**、横幅说清原因，勾不会悄悄
+  跳回去。
+- **真机读数（2026-09-23）**：
+  - 勾 hero ⇒ 立刻出现「已保存合成配置（1 项：stickers.hero.enabled）」+ `version=2`，
+    **不用点保存**；再勾 guest ⇒ `version=3`；**刷新页面后两个勾都还在**，灯写着"这一层会贴上"；
+  - `GET /api/v1/render/console` ⇒ `stickers_applied: {hero, guest}`、
+    `stickers_hint: 会贴上 hero、guest`；
+  - **真 ffmpeg 端到端**（走生产路径 `plan_stickers → CompositeRequest → run_composite`，
+    4 秒片段）：`stickers_applied=('hero','guest')` / `watermark_applied=True` /
+    `subtitle_applied=True` / `warnings=()`，抽帧里两只人物 + 字幕 + 水印都在。
+  - 那两张占位图是开发时随手存下来的（改了扩展名没改字节），**原始字节已不可复原**（按
+    manifest 里记的 sha256 全盘搜过，0 命中），已用纯标准库重画成 512×1024 / 8bit RGBA 的
+    真透明 PNG 占位。换成用户自己的图：**导出成带透明通道的 PNG**（不要只改扩展名），
+    路径写进 `config/outputs.yaml` 的 `stickers.<层名>.path`。
+- **验收**：
+  - `tests/integration/test_outputs_api.py` **38 例**（新增 4 条：WebP 冒充 PNG、无 alpha 的
+    PNG vs 真 PNG、★`test_the_card_agrees_with_the_render_path` 参数化断言面板 `usable` ==
+    `plan_stickers().applied`）；PNG 夹具改成**纯标准库写真 PNG**（不跨目录 import）；
+  - `web/src/stores/outputs.test.ts` 新增 `stickerTone` / `watermarkBroken`（含"文件在盘上但
+    贴不上"）/ `stickersBroken` / `saveToggle`（成功 + 本地判不过不提交）；
+    `web/src/views/outputsStickers.test.ts` 新增 3 条源码守卫（灯看 `usable`、横幅逐层报原因、
+    `onStickerBool` 走 `saveToggle`）；
+  - `uv run pytest tests/integration/test_outputs_api.py` ⇒ **38 passed**；`ruff format` / `check`
+    绿；`uv run mypy src` ⇒ **242 文件无问题**；`tests/contract/test_web_contracts.py` ⇒ 10 passed；
+    前端 `npm run verify` ⇒ **751 例 / 28 文件** + 包体 **0.50 MB / 3.00 MB** OK。
+
+**交付物**：`src/studio/services/outputs_service.py`、`src/studio/app/schemas/outputs.py`、
+`config/outputs.yaml`、`templates/douyin_9x16_default/assets/images/stickers/{hero,guest}.png`、
+`web/src/{stores/outputs.ts,stores/outputs.test.ts,views/Outputs.vue,views/outputsStickers.test.ts}`、
+`tests/integration/test_outputs_api.py`
+
+- **编号说明（并行线程）**：本节按"下一个空号"取 **§10.15 / 裁定 387 · 388 / 陷阱 222 · 223**
+  （落笔时全仓库最大是 386 / 221，且陷阱表里 194 / 195 / 218 三行本来就空着 —— 那是别的线程
+  的号）。若发现撞号，让号规则与 §10.13 / §10.14 同。
+
+## 10.16 2026-09-23 · 发布链路真机跑通（裁定 389–393 / 陷阱 224–233）
+
+用户三句话：**「enable打开,死信重投」**、**「扫码登录无法自动反应登录成功,检测登录状态返回
+超时错误」**（上一节已修，陷阱 #212）、**「我试了一下根本没发的出去啊」**。开关与重投两件
+当场办了；而"发出去"这件事，一路又修掉**七道坎**。
+
+### 一、开关与死信重投（用户指令那两件）
+
+- **`config/publish.yaml` 的 `enabled` 翻成 `true`**。⚠️ 这是**操作员的运行期状态**，不是新的
+  出厂值 —— HEAD 版本仍是 `false`（R14：发布不可逆）。改完**不用重启**：`publish_worker`
+  每条单元认领前重读一次配置（陷阱 #214 的落地）。
+- **死信重投**：`publish` 池里 3 条死信，重投 2 条（审计 `job.requeue` 02:07:20）。
+  第 3 条 `01M2SQ3MMATZG1HGJ96EA3PKWA`（09-18 的老任务）**没投** —— 盘上已经没有它的成片，
+  重投只会再失败一次。
+
+### 二、发布链路真机跑通：七道坎
+
+一路的收场几乎都是"**第 ⑦ 步一路等到 600s 超时**"，而**根因各不相同**，且**每一个在现场
+都看不出是哪一种**（逐条见陷阱 #224–#231）：
+
+| 坎 | 现象 | 根因 | 落地 |
+| --- | --- | --- | --- |
+| ① 回读 | 文案填进去了，回读说"不一致"，差异是一个看不见的 `U+200B` | 平台的富文本编辑器在文案末尾塞**零宽空格**当哨兵 | 比对**两遍**：原样比 → 去掉纯排版控制符再比 ⇒ 判 `invisible_only` 并**放行**（`TOLERATED_READBACK_REASONS`，**只此一项**） |
+| ② 上传 | 190MB 的成片还在 0%，标题已填完、发布按钮已点下去 | "**看不到进度条**"被读成"**传完了**"（选完文件那一刻上传面板还没渲染出来） | 判据改成"**先看见、再消失（或走到 100%）**"；宽限 `PROGRESS_GRACE_SEC` 内始终没出现 ⇒ 退回干等一拍，**不当作传完** |
+| ③ 结果页 | 发布成功也判不出来 | `div.success-page, text=发布成功` —— 引擎前缀拼进列表 ⇒ Playwright 抛解析错，被调用方吞成"元素不在" | 装配期校验：值里**有逗号 + 引擎前缀** ⇒ 当场拒 |
+| ④ 发布按钮 | 点了发布什么都没发生（表单被重置） | `button:has-text('发布')` 命中的是左侧导航「作品发布」（文档序排在真按钮前面） | `button:text-is('发布')`（**全等**）；装配期拦 `:has-text(` |
+| ⑤ 成功判据 | 一条**根本没发出去**的内容被记成 `published` | `:text('发布成功')` 是**子串** ⇒ 命中提示句「视频发布成功**后**，价格将无法更改」 | 三个结果页标志一律 `:text-is()`；装配期拦 `:text(` |
+| ⑥ 成功判据（补） | 一条**已经发出去**的内容在 600s 之后被记成失败 | 抖音发布成功后**不发**"发布成功"，而是把页面**跳走** | 第二个判据 `markers.success_url_contains`（元素 / 地址谁先成立都行） |
+| ⑦ 验证 | 卡到 600s 超时，而屏幕上写着「接收短信验证码」 | 判据里**没有这一档** | 转 `manual_required` + 一句能照做的话（**R13：不替人过验证**） |
+
+> ③④⑤ 是**同一类**错误：**yaml 语法合法、Playwright 也收下了，错的是"这条选择器描述的是
+> 哪一件事"** —— 而异常被吞成"元素不在"，于是**配置写错**在现场看起来像"平台改版了"。
+> 所以修法也一样：**把判据前移到装配期**（`load_selector_pack` 三条校验，见
+> `docs/runbook/publish_selector.md` §2.1）。
+
+- **裁定 389 —— 回读放行的白名单只有一项**：`TOLERATED_READBACK_REASONS = frozenset({"invisible_only"})`。
+  为什么不是"差异小于 N 个字符就放行"：那是个会随时间漂移的阈值，而"看不见"是个可判定的
+  性质。**刻意不收 U+200C / U+200D**：它们参与 emoji 与印度语系的字形组合，收进来等于顺手
+  放行"emoji 被吞" —— 而那正是回读要抓的东西。
+- **裁定 390 —— "传完了"的判据是"先看见、再消失"**，不是"现在看不见"。看不到进度元素 ⇒
+  宽限 `PROGRESS_GRACE_SEC`（10s）之后退回干等一拍（`UPLOAD_SETTLE_SEC`），**不当作传完**。
+  干等不好，但它是一个明确的、可调的假设 —— 比"猜一个不存在的元素"好。
+- **裁定 391 —— 结果页三条判据都钉在"全等"上，并且在装配期就拦**：`publish_button` /
+  `success_marker` / `reject_marker` / `verify_marker` 一律 `:text-is()`；`load_selector_pack`
+  见到"引擎前缀拼列表 / `:has-text(` / `:text(`"直接拒（`PUBLISH_SELECTOR_MISS`）。
+- **裁定 392 —— 平台要求短信 / 人脸验证 ⇒ 转 `manual_required`**（不是 `failed`）：报
+  `PUBLISH_FAILED` + 一句能照做的话 + 打开 `can_mark_done`。**R13：不自动登录、也不替人过
+  验证** —— 替人过验证既做不到，也会把"是谁在操作"这件事搞乱。
+
+- **验收**：
+  - `uv run pytest tests/unit/domain/test_publish.py tests/unit/publish tests/unit/pools/test_publish_worker.py tests/integration/test_publish_pool.py tests/integration/test_publish_accounts_api.py tests/integration/test_multi_account.py -q` ⇒ **444 passed**；
+  - 全量：`uv run pytest tests/unit tests/integration tests/contract -q` ⇒ **4534 passed / 2 failed / 32 skipped**（那 2 条红的是**并行线程**的贴图任务，见 §10.15，与本轮无关）；`ruff check src/studio tests/` 与 `ruff format --check` 绿；
+  - **真机**（2026-09-23 · `acc_douyin`）：上传 → 填标题文案 → 回读放行（日志出现「回读放行（只差不可见字符）：U+200B」）→ 点发布，一路跑到「接收短信验证码」⇒ `manual_required`。证据：`data/work/01M2Z9BP1CR70TBW0CJ05FQ12Z/publish/douyin/20260923-120612_99-failure.{png,html}`；选择器版本 `2026-09-23.4`。
+  - ⚠️ **副作用（要人去平台上确认）**：`publish_button: has-text` 那一版曾经误点导航「作品发布」，把表单重置成"你还有上次未发布的视频"；另有一次用真成片跑探针，**可能在该账号里留下了一条未发布的草稿**。当时内容管理页读到 0 条作品 —— 请在平台上确认 / 清理。
+- **还差的一步（人的活）**：抖音在点下发布后弹「接收短信验证码」（要人输 `131*****40` 收到的码）。
+  这是 **R13** 划出来的人工步骤，**不是 bug**。过它的入口是面板上的「人工过验证」（见第四节），
+  **不是**「重试」—— 重试只会再弹一次同一个框。
+- **`acc_main` 那条**：账号已被用户在面板上删掉（审计 `2026-09-23T02:11:51`），那条 job 已
+  `dead`（`VALIDATION_FAILED`）。要么把账号加回来，要么把这条发布记录取消。
+
+### 三、后续：短信验证那一步试过的两条路（都没走通，**记下来免得再试**）
+
+**① 把发布换成"本机真 Chrome"（`channel="chrome"`）—— 试过了，没用，已退回。**
+假设是"登录用真 Chrome、发布用 headless shell，两条路径共用一个 profile ⇒ 指纹跳变触发风控"。
+量了才知道**判据找错了层**（陷阱 #232）：
+
+| 启动方式 | `navigator.userAgent` |
+| --- | --- |
+| 默认 chromium | `… HeadlessChrome/153.0.0.0 …` |
+| `channel="chrome"`（真 Chrome） | `… HeadlessChrome/153.0.0.0 …` |
+| `channel="chromium"` | `… HeadlessChrome/151.0.0.0 …` |
+| **`headless=False`** | `… Chrome/153.0.0.0 …` ← 只有这一种不带 `Headless` |
+
+那个 `Headless` 是 **`headless=True` 这一个布尔量**造成的，与用哪个浏览器二进制无关 ⇒
+改了之后重试，验证框**照样弹**（真机复测：`20260923-125733_99-failure.png`）。
+改动已**完整退回**（`src/studio/publish/browser.py` 只剩本轮早先那个 `PageLike.url` 属性），
+理由写进陷阱 #232 与 `docs/runbook/publish_stuck.md`。
+
+**② 换网络 / 换出口 IP —— 没试（要人做）。** 这仍然是**最便宜**的一条。
+
+**顺带确认的两件事**：
+- **一条都没真发出去**：`SELECT COUNT(*) FROM publications WHERE platform='douyin' AND status='published'` ⇒ **0**。每一次都停在验证框。
+- 验证框**第一次出现是 12:01**，而那正是我们把发布按钮修对（`:text-is('发布')`）、
+  **第一次真正点下「发布」**的时刻 —— 之前 `:has-text('发布')` 点的是左侧导航，
+  发布按钮**一次都没被碰过**（陷阱 #227）。所以它不是"点太多次被风控"，而是
+  "这个浏览器第一次按发布" ⇒ 更像**新设备验证**（通常是**一次性**的：过掉一次，
+  这台设备就被信任了）。**这也是为什么下一步该做的是"人工过验证"，而不是继续换指纹。**
+
+> ⚠️ 本轮末尾把 `publish` 池**暂停**了（`paused_by=user`）：验证框没过去之前，重试只会
+> 反复重传 182MB 并撞同一个框。人工过完验证后到四池面板 **unpause** 即可。
+
+### 四、人工过验证：把"要人输码"那一步接回链路（裁定 393 / 陷阱 232 的后半）
+
+第三节的两条路都没走通之后，剩下的是**第三条**：不是绕过验证框，而是**让人真的去过它**。
+问题在于那时**没有地方可以过** —— 发布池的窗口是**无头**的、跑完就关，人既看不见它、
+也没地方填码；面板上只有「重试 / 取消 / 标记已处理」。
+
+**做法：同一个八步，只差"窗口前面有没有人"。**
+
+- `PublisherContext` 加 `await_manual_verify: bool = False`。它与 `headless` **互相独立**
+  （"窗口可见"与"窗口前面有人"是两件事：排障时人可能走开了）—— 两者都开才是这条路。
+- 第 ⑦ 步的**判据一条都没变**，变的是"弹验证框"这件事的读法：没人 ⇒ 照旧立刻收场转
+  `manual_required`（裁定 392）；**有人** ⇒ 那不是收场，是"轮到你了"，继续等，等到的仍是
+  驳回 / 成功元素 / 地址跳转那三条。**"框消失了"本身不算成功**（人可能只是点了取消）——
+  日志里因此分成三句：框一直在（超时）/ 框没了但没结果页 / 别的，超时文案与修复建议逐句不同。
+- 等**人**的上限是 `MANUAL_VERIFY_WAIT_SEC = 900s`（`max` 而不是替换 `publish_timeout_sec`：
+  调用方显式调长的超时不该被这一条又缩回去）。900s 与 600s 的差是"等机器"与"等人"的差。
+- **入口**：`POST /api/v1/publish/{publication_id}/assist`（`services/publish_assist_service.py`）
+  —— 开**可见**窗口、用**同一个 profile**、把片子重新传一遍、点下发布、**停在那儿等人**；
+  人输完码流程自己走完并落库。它**不碰作业队列**（结论直接落这条记录），成功落 `published`
+  （照写 `next_metric_at`），失败一律转 `manual_required` 并**留在原地** —— 这条路是人点的，
+  他就在机器前面，再排一次队只会让他等一个自己刚看完的过程。
+- **四种"这条路不该走"各拦一句**（都 422）：已发布（R14：再走一遍就是第二条）/ 已取消 /
+  演练登记（`dry_run` 的残留不能变成一条真作品）/ 发布池**正在发同一个账号**（两个浏览器抢
+  同一个登录态目录，最坏的结果不是报错，而是同一条内容发出去两遍）。
+- **"正在发"的判据要排除孤儿认领**（真机同日实测）：`publish#1@65928` 崩了之后，那条作业
+  在库里挂了一个多小时还写着 `claimed`（租约早过期），而池里一个在跑的进程都没有。拿它拦人，
+  等于让"上一次崩了"变成"这一次不许你修" —— 所以租约已过期的认领**不算"正在发"**。
+  ⚠️ 顺带发现：**`publish` 池的孤儿认领没有自动回收**（只有 voice 池那条路会
+  `reclaim_expired`），那条作业是手工收掉的。这是**已知缺口**，该由 pool runner 每轮做。
+  —— **本轮已补**（§10.17）：每个池自己常驻清扫（`SWEEP_INTERVAL_SEC=15s`）+ 进程启动强制一次。
+- **R13 一条都没动**：系统**不点**「获取验证码」、**不读**短信、**不填**码、不存任何凭据。
+  它做的只是**把窗口摆在人面前**，然后等人。开可见窗口**不是**伪装（没改 UA、没加任何反检测
+  参数）—— 第三节量过：去掉 UA 里那个 `Headless` 的唯一办法就是真的开一个窗口。
+- **为什么"重新发一遍"而不是"接着上次"**：上一次那个浏览器会话已经没了（窗口一关页面状态
+  就没了），能复用的是**登录态**（活在 profile 目录里），不是那次上传。代价是重新上传一遍成片；
+  换来的是"这条路径与自动发布跑的是同一份代码"，而不是一段只在人盯着时才走的旁路。
+
+**面板**：「待人工」那一行上多一个「人工过验证」按钮；错误信息里写着"短信验证"时，那一行会
+先把**怎么收码、在哪填**说清楚（码发到该账号绑定的手机；「获取验证码」必须由人点）。
+跑着的时候等待挂在那一条上（`assistFor`），并提醒**别在这一行上再点「重试」**。
+
+⚠️ **真机未验**：这一步会**真发一条**（R14 不可逆），要用户在场才能跑 —— 本轮的验收停在
+"代码与单测/契约全绿 + 面板可点"，真机那一条留给下一次有人的时候。
+
+**交付物**：`src/studio/domain/publish.py`、`src/studio/publish/playwright_publisher.py`、
+`src/studio/publish/selectors.py`、`src/studio/publish/selectors/{douyin,kuaishou,shipinhao}.yaml`、
+`src/studio/publish/browser.py`、`src/studio/pools/publish_worker.py`、`tests/support.py`、
+`tests/unit/publish/**`、`tests/unit/domain/test_publish.py`、
+`src/studio/services/publish_assist_service.py`（新）、`src/studio/app/{routers,schemas}/publish.py`、
+`src/studio/app/deps.py`、`web/src/api/endpoints/publish.ts`、`web/src/stores/publish.ts`、
+`web/src/views/Publish.vue`、`web/openapi.json`、`tests/unit/services/test_publish_assist_service.py`（新）、
+`tests/integration/test_publish_accounts_api.py`、
+`docs/runbook/{publish_stuck,publish_selector}.md`、`docs/spec/{04-contracts,06-publication}.md`。
+
+- **编号说明（并行线程）**：本节按"下一个空号"取 **§10.16 / 裁定 389–393 / 陷阱 224–233**
+  （落笔时全仓库最大是 388 / 223）。若发现撞号，让号规则与 §10.13 / §10.14 / §10.15 同。
+
+---
+
+## 10.17 2026-09-23 · 一行孤儿认领把整池堵死（裁定 394 / 陷阱 234）
+
+用户一句话：**「这里配音卡住了检查」**，附任务面板截图：`01M36FA9NWSX9HWPEJSS0GA543` 停在
+`voicing`、**已定局 0/50 · 待配 50**，全部“待配音”、无音频、**无任何错误**。而面板上一切正常
+（心跳绿灯、worker `idle`、死信 0）—— 这条链路已经**停了一个半小时**。
+
+### 一、现场（真机铁证）
+
+- `jobs` 里 `pool='voice'`：`pending 84 / claimed 1 / succeeded 237`，**0 dead**。
+- 那条 `claimed` 属于**另一条任务**：`job 01M3531Y1VVRG7PX7EJS1BP3GZ`、
+  `lease_owner=voice#1@56876`、`attempts=1`、`lease_expires_at=05:30:44Z`（**早过期**）。
+- `voice` 池 `concurrency=1`，认领守卫是 `running_count >= concurrency ⇒ 不认领`，而
+  `running_count` 只数 `status='claimed'` ⇒ **一行过期孤儿 = 整池永久停摆**。
+- `data/logs/voice.log` 最后一行是 05:29:20 的 `worker.unit_aborted error='[JOB_LEASE_LOST] …'`，
+  此后**再无日志**；而 worker `voice#1@56876` 心跳正常、`status=idle` —— **不是进程崩了**。
+
+### 二、两个根因（叠在一起，各自都不报错）
+
+| # | 根因 | 现场形态 |
+| --- | --- | --- |
+| A | 脉冲线程**丢租约误判** | `_Pulse._tick` 进锁读 `flight`、**出锁**才 `renew`。上一单元 `succeed` 之后认领循环立刻 `begin_unit` 换上新单元，这一拍续的却是**上一个** job_id ⇒ `renew` 的 `WHERE (id=? AND lease_owner=? AND status='claimed')` 不匹配 ⇒ 返回 `False` ⇒ 失败被记到**新单元**头上 ⇒ 新单元 abort、产物丢弃，而**那一行留在 claimed 没人收**。日志形态正是：`worker.lease_lost`(05:29:14.990) 紧接 `worker.unit_aborted`(05:29:20.766) —— “上一句刚念完、下一句被判丢租约” |
+| B | 一期**没有常驻 sweeper** | `reclaim_expired` 只被 `pipeline_service` 在 `pipeline run` 空转时调过一次（且只有 `voice` 池）⇒ 上面那行孤儿**没有任何人会收**。这正是 `docs/runbook/publish_stuck.md` 里记着的**已知缺口** |
+
+### 三、落地（裁定 394）
+
+- **续租失败要认准单元**（`worker_base._Pulse._tick`）：出锁续租失败后**重新进锁**比较
+  `self._flight`；与这一拍读到的不一致 ⇒ 只打 `worker.renew_ignored`（debug），**不置**
+  `_lease_lost`。同一单元续租失败 ⇒ 语义**不变**（真丢租约，产物必须丢弃、不写 succeed）。
+- **池自己常驻清扫**（`worker_base.PoolWorker._sweep`）：`SWEEP_INTERVAL_SEC = 15.0`，空转那一拍
+  做 `reclaim_expired(pool=…)` + `unlock_dependents(pool=…)`；**进程启动时强制扫一次**
+  （`force=True`）先把上一次运行留下的尸首收了。稳态**零日志**（`queue.reclaimed` 只在真回收/死信时打）。
+- **真机收尾**：四个池（`draft/voice/render/publish`）用**官方关停通道**（`data/logs/<name>.stop`
+  标志文件）优雅停掉 ⇒ api 守护进程按新代码拉起；`voice` 新进程启动第一行就是
+  `queue.reclaimed dead=0 requeued=1` ⇒ 84 条待配音立刻开始消化（用户那条任务 50 句随队）。
+
+**为什么是 15s**：与心跳判死那条阈值同源（§03.4.3 ③ 原文就写“每 15s”）。代价是“最坏多等 15 秒”，
+换来的是“**一行孤儿不再等于整池停摆**”。⚠️ `voice` / `render` / `publish` 三个池的 `concurrency` 都是 1，
+所以这三个池此前都站在同一个坑边上（`publish` 那条孤儿是上一轮**手工**收掉的）。
+
+**回归用例**（`tests/integration/test_worker_lifecycle.py`，3 例）：① 误判回归（续租失败发生在换单元那一拍
+⇒ 不得把新单元判成丢租约）；② 真丢租约**负控**（同一单元续租失败 ⇒ 仍置位）；③ 孤儿回收（过期认领被收掉、
+整池恢复认领）。①②③ 都在**旧代码上复现失败**（把源码临时改回旧写法跑过一遍），不是“写了就绿”。
+
+**交付物**：`src/studio/pools/worker_base.py`、`tests/integration/test_worker_lifecycle.py`、
+`docs/spec/03-data-model.md`、`docs/runbook/publish_stuck.md`。
+
+- **编号说明（并行线程）**：本节按“下一个空号”取 **§10.17 / 裁定 394 / 陷阱 234**
+  （落笔时全仓库最大是 §10.16 / 裁定 393 / 陷阱 232，而 §10.16 的表头已把 233 认领走）。
+  若发现撞号，让号规则与 §10.13 / §10.14 / §10.15 / §10.16 同。
+
+---
+
+## 10.18 2026-09-23 · 多平台铺开 + 选择器校准探针（裁定 395–398 / 陷阱 235 · 236 · 237）
+
+用户一句：**「抖音发布线路已跑通,现在增加平台,国内大部分短视频平台都做一遍」**。抖音那条
+线路在 §10.16 里真机跑通；这一节把**其余六个平台**（快手 / 视频号 / 小红书 / B站 / 西瓜 /
+微博）铺到同一套流程上 —— 但"接线"与"能发"是两件事，所以这一节真正交付的不是六份 yaml，
+而是**把这两件事分开的那套机制**。
+
+### 一、为什么不是"照抄抖音再写六份"
+
+抖音那份 pack 是**真机校准**出来的：里面每一条选择器背后都有一个踩过的坑（§10.16 那七道坎）。
+照着它的**形状**再写六份，得到的是"语法合法、语义可疑"的东西 —— 而它在面板上与抖音**长得
+一模一样**（同样能选、同样能投）。这正是 §10.16 那七道坎的教训：**配置写错与平台改版在现场
+读数相同**。所以这一轮先把判据补齐，再谈平台。
+
+- **装配期校验从三条扩成七条**（写法三条 + 判据四条，见 `docs/runbook/publish_selector.md` §2.1）：
+  ① `login_expired_text` 里出现「扫码登录」⇒ 拒（陷阱 #212：那是**登录页自己的按钮文案**，
+  两种登录状态下都在页面上 ⇒ 拿它当判据等于永远判"过期"）；② `success_marker` 与
+  `markers.success_url_contains` **都空** ⇒ 拒（一条内容发出去之后在平台上没有任何必然痕迹）；
+  ③ `metric_row` 有值但不含 `{post_id}` ⇒ 拒（四个计数会读**第一条**作品的行 = 别人的数）；
+  ④ `calibrated: true` 而 `calibrated_at` 空 ⇒ 拒（说了"校准过"却说不出什么时候）。
+- **pack 加三个字段**：`calibrated` / `calibrated_at` / `known_gaps`。七份里**只有抖音**是
+  `true`（2026-09-23）；其余六份 `false`，各自把**已知会挡路的地方**写进 `known_gaps`
+  （B 站三条：必选分区 / 16:9 模板 / 16:9 封面必填；西瓜一条；小红书与微博各自若干）。
+- **二线四个平台从空实现换成真实现**：`publish/platforms/second_tier.py` 那四个类改成
+  `PlaywrightPublisher` 子类，**只声明 `platform`** —— 与一线走同一份八步、同一份选择器加载
+  与校验。**没有第二套代码**，所以"多四个平台"的成本是四份 yaml，不是四份逻辑。
+- **面板多一列「校准状态」**：`calibrated` / `uncalibrated` / `broken` / `n/a`，**服务端算**
+  （`publish_service._calibration`）；能投但未校准 ⇒ 那一行的提示里追加 ⚠️ 与 `known_gaps`。
+  ⚠️ `broken`（选择器包装不起来）**不抛**：为它把整块面板打成 500，等于把一个平台的问题
+  变成"面板坏了"、其余六个平台跟着看不见。
+
+### 二、校准探针：`studio publish calibrate`
+
+"猜得对不对"必须变成一个**十分钟能做完**的动作，否则六份 yaml 会一直停在"大概能行"。
+
+- **三轮**：① **未登录那一侧**（拿一份**空 profile** 单独跑：`login_required` 必须命中、
+  `login_ok` 必须**不**命中 —— 只测已登录那一侧**测不出** `login_ok` 写宽了，陷阱 #212 就是
+  这么翻的车）；② 创作页（表单那几条）；③ 管理页（数据回收那一组，只报个数）。
+- **只读**（裁定 396）：不点发布、不填输入框、不往平台上送任何内容（R13 / R14）。用例直接
+  断言 `clicks` / `fills` / `uploads` **全空** —— 探针点一下发布，校准就成了演练，再往前
+  一步就是 R14 那条不可逆的发布。
+- **没登录就收手**（裁定 397 · 陷阱 237）：创作页的表单没渲染出来时，`upload_input` /
+  `title_input` / `publish_button` 全是"命中 0 个"，而那与"这三条选择器写错了"在读数上
+  **一模一样**。探针因此**先问登录态**：没登录 ⇒ 其余键全部标成"这一轮问不了"，并**故意**
+  留一条 blocker。⚠️ 那条 blocker 不是装饰：没有它，报告就是"一片绿"，而 CLI 会照着说
+  "把 `calibrated` 改成 true" —— 可这一轮**什么都没验**。有 blocker ⇒ 退出码 1。
+- 入口：`uv run studio publish calibrate --platform <code> [--account <id>] [--headless]
+  [--no-logged-out] [--json]`（`--no-logged-out` 只是快，但那一半正是最容易错的，默认跑）。
+
+### 三、裁定
+
+- **裁定 395 —— "实现接线 ≠ 能发"，两者必须在面板上分得开**：二线四个平台**接线了**
+  （真实现 + 真 pack），但那份 CSS 没在真机上验过 ⇒ 出厂仍是 `enabled: false`，且面板上带
+  ⚠️ + `known_gaps`。**顺序是"校准一个、开一个"**：反过来（先开再校准）会出现一个"能投、
+  但一定发不出去"的平台，而它在面板上与抖音长得一样 —— 空实现时代"没做"与"没校准"读数
+  相同，正是这一节要消灭的那种"看不出来"。
+- **裁定 396 —— 探针只读**（见 §二）。
+- **裁定 397 —— "没登录"与"选择器错了"必须分成两句**（见 §二）。
+- **裁定 398 —— 装配期的修复建议要自维护**：`load_selector_pack` 报错时列的候选平台，从
+  **写死的清单**改成 `selectors/*.yaml` 的 stem。写死的那份在新增平台后必然过时 ——
+  它会让报错说"只支持三个平台"，而仓库里有七个。**判据**：凡是"错误信息里列举了现状"的
+  地方，那个列举要么当场算出来，要么迟早说谎。
+
+**这一轮踩到的三条**（陷阱 235 · 236 · 237）：
+
+- **235** `dataclasses.replace()` 用在了 pydantic 模型上（`AccountConfig`）—— 探针的**第一个
+  动作**就抛 `TypeError`，而它是**单测**抓到的（探针此前没有用例）。**判据**：复制一个配置
+  对象，别拿标准库的同名函数去套。
+- **236** 给结构化协议 `PageLike` 加一条方法 ⇒ 假页面少一条就不再是 `PageLike`，10 处 mypy
+  报错里**没有一条**提到真正的原因。**判据**：加协议方法时**同一轮**补齐假件，且假件要
+  **记动作**（这样"探针有没有偷偷点发布"才是一条能断言的读数）。
+- **237** 见 §二"没登录就收手"。
+
+**验收**（本轮读数）：`pytest tests/unit/publish/test_calibrate.py -q` ⇒ **27 passed**
+（含只读守卫）；`pytest tests/unit/publish tests/contract -q` ⇒ **670 passed**；
+`pytest tests/unit/services/test_publish_service.py -q` ⇒ **40 passed**；
+`pytest tests/integration/test_publish_pool.py -q` ⇒ **10 passed**（面板那一列走 HTTP 验过）。
+⚠️ **真机校准未跑**：要用户在场 + 已登录的账号 —— 四份 pack 现在仍是 `uncalibrated`。
+
+**追加（同日 · 用户第二句：「修改拉取新闻审核的提示词，尽量选取民生、学历、就业、社会、生活等受关注的争议问题，这些私家遗产分配、被诈骗根本提取不出核心论点，无法建立哲学构思，就不要采取」）**
+
+- **现象**：拉一次今日新闻，留下的方向里有「父亲 6 亿遗产全归继母」「救命钱 7 分钟被刷 8 万」这类
+  **私家纠纷 / 个人不幸** —— 它们有事实、有数字、也有"争议"，但**提炼不出一个能被反驳的公共论点**，
+  下游走到 Outliner 那一级（要产 `core_argument`）就无话可说。
+- **改**（`prompts/news_scout/system.md`）：把选取判据从"有没有观点 / 够不够劲爆"换成**先过一道闸** ——
+  「这条新闻背后有没有一个**很多普通人有切身利害、而且吵得起来**的公共问题？」答不上来 ⇒ 不写。
+  并给出一条**当场可答的判据**：**当事人之外还有谁在局里**（只有当事人 ⇒ 纠纷 ⇒ 不写）。
+  正面清单明确成 民生 / 就业 / 学历与教育 / 住房 / 医疗与养老 / 消费与维权 / 劳动权益 / 婚育 /
+  代际与城乡；反面**第一条**就是私家纠纷与个人不幸（遗产怎么分 / 家庭矛盾 / 个人被骗 / 个人意外 /
+  个人恩怨），只留**一个**例外：这条个案本身就是普遍现象（同一类事已有一批人踩坑，且输入里明写了
+  平台 / 机构 / 规则的问题）—— 那时写的是**那个现象**，不是那个人的遭遇。`宁缺毋滥` 的期望值
+  随之从 3–8 收紧到 **2–6**，`rationale` 也要求把"只有当事人、没有公共议题"直接写出来。
+- **裁定 399 —— 选题的闸门要建在"能不能立论"上，而不是"够不够劲爆"**：`keep` 只有 true/false 两档，
+  而私家纠纷在**劲爆**这一维上得分很高（数字大、冲突强、标题党友好）—— 拿"劲爆"当判据，挑出来的
+  正是下游写不动的题。判据换成一个**在评测这一步就能回答**的问题，误差才会停在最便宜的那一级
+  （评测只看标题 + 摘要；写稿那几级要花几十倍的钱）。
+- **⚠️ 真正生效的是覆盖层**（这一条是排查时挖出来的）：运行期读的是 `data/prompts/news_scout/system.md`
+  那一份**覆盖**（面板上改提示词写在这里，不入库），而它当时**盖住了仓库那一份** —— 用户自己在面板上
+  加过「有争议点 / 能提炼出哲学观点」与「自然灾害伤亡报告等」，**改了却没效果**，因为改的与生效的
+  不是同一份。两份的差异只有那两处，**都已并入仓库那一份**（前者就是本节这道闸；后者回到反面清单
+  第 2 条），随后把覆盖**删掉**（即"还原"到仓库版）—— 留着一份陈旧的影子，下一次改仓库提示词又会静默失效。
+  ⚠️ 同类影子还在：`data/prompts/{outliner,writer}/system.md` 两份覆盖**仍然盖着**仓库里那两份
+  （并行线程正在改它们）—— 要不要一并还原，等那条线收口再说。
+- **读数**：`uv run studio prompts verify` ⇒ **全部与 `manifest.yaml` 一致**（`news_scout` =
+  `1+f82a7c3f8bda`）；`pytest tests/contract/test_news_scout_schema.py
+  tests/integration/test_topics_news_api.py tests/unit/services/test_news_service.py -q` ⇒ **48 passed**。
+- **交付物**：`prompts/news_scout/system.md`、`prompts/manifest.yaml`、`docs/spec/04-contracts.md`（§4.5.18 口径 6）。
+**交付物**：`src/studio/publish/selectors.py`、`src/studio/publish/selectors/*.yaml`（七份）、
+`src/studio/publish/platforms/second_tier.py`、`src/studio/publish/calibrate.py`（新）、
+`src/studio/publish/browser.py`、`src/studio/cli.py`、`src/studio/services/publish_service.py`、
+`src/studio/app/schemas/publish.py`、`web/src/stores/publish.ts`、`web/src/stores/publishAccounts.ts`、
+`web/src/views/Publish.vue`、`tests/unit/publish/{test_calibrate,test_selectors}.py`、
+`tests/unit/services/test_publish_service.py`、`tests/integration/test_publish_pool.py`、
+`docs/runbook/publish_selector.md`、`docs/spec/{01-tech-stack,02-project-layout,03-data-model,04-contracts,06-publication}.md`。
+
+- **编号说明（并行线程）**：本节按"下一个空号"取 **§10.18 / 裁定 395–398 / 陷阱 235–237**。
+  ⚠️ 落笔时 §10.17 已被并行线程认领（它的 234 是"一行孤儿认领把整池堵死"）；本节那三条
+  陷阱原写成 234–236，**已让位并整体上移一位**，同时把并行线程那条 234 **补进 §5.7 全表**
+  （它当时只写进了本文件的子集表）。
+
+---
+
+## 10.19 2026-09-23 · 文稿要立论、结尾不许提问（裁定 400 · 401 / 陷阱 238 · 239 · 240）
+
+用户一句：**「文稿生成问题,文稿绝对不能只是口水吵架,要输出核心哲学观点,不要在文稿最后给观众
+抛出问题,文稿的意义就是提出一个合适的观点,熊大输出正确观点,熊二提出假设,两人辩论」**。
+
+### 一、真机成稿长什么样（根因不是"模型这次不听话"）
+
+真机成稿 `01M36FA9NWSX9HWPEJSS0GA543`（汉堡月饼，692 字 / 50 句）两个症：
+
+- **口水吵架**：`排练啥呀？` / `你排练得还挺细。` / `说得俺口水都上来了，赶紧的。` /
+  `哎哥你别按俺手！` / `嘿嘿，哥你太懂俺了。` —— 50 句里没有一个观点。
+- **结尾提问**：cta = `评论区打俩字：牛肉还是五仁？俺俩看看哪边人多。想看下回俺们还拆啥，
+  点个关注别走丢。`
+
+**根因是文件，不是运气**：
+
+1. `config/persona.yaml` 的 `style_hint` **原文**写着「结尾用一句互动式提问收尾，引导评论」——
+   结尾那个问号是**照做**的结果。
+2. `prompts/writer/system.md` 只要求"对话体、别一个人讲完"，**没有任何"要立一个观点"的纪律**
+   ⇒ 模型的默认解就是闲聊。
+3. `prompts/director/system.md` 第 5 条只要求 cta「要具体」，没禁提问。
+
+### 二、改了什么
+
+- **提示词五条**（`outliner` / `director` / `writer` / `reviewer` / `editor`）：立论纪律 + 结尾禁提问
+  逐级落地 —— 大纲层拦（`check_outline`）、写稿层禁（分工固定 + 禁口水话 + 台词量大致相当）、
+  审稿层判（结尾提问 ⇒ 0–3 分 + 一条 `severity=block` 的 issue）、改稿层守。
+- **人设两处**：`config/persona.yaml`（运行期）与 `config/personas/persona_default.yaml`（出厂基线）
+  的 `role_desc` / `style_hint` —— `role_desc` 写死分工（熊大立论 / 熊二提出假设），`style_hint`
+  去掉"互动式提问收尾"、改成"结尾把观点钉死，不许向观众提问"。
+- **机器判据**（`domain/script.py`）：新增纯函数 `ending_asks_audience(cta)`（按 `split_sentences`
+  切句，句中含 `？` / `?` ⇒ 返回那句）与 `ENDING_QUESTION_PROBLEM`；`check_outline` 与
+  `check_script(cta=…)` 都接上；`build_draft` 把 `output.cta` 传进去。
+- **评分**（`domain/scoring.py`）：`ending_ok` 从 `bool(cta.strip())` 改成
+  `bool(cta.strip()) and ending_asks_audience(cta) is None` ⇒ 结尾项 10/0 自动生效。
+- **`writer._distance` 修了一个真 bug**（陷阱 238）：从"只比字数差"改成
+  `(还剩几项不合格, 字数差)` 的元组比较 —— 不然"把结尾提问修好了、字数没动"的那一版会被丢。
+
+### 三、真机暴露的两件事（都已修）
+
+1. **"看完这条，观众被说服了什么"被抄进了字段**（陷阱 239）：`outliner` 的字段说明里那句问话是
+   **给模型自己看的**，第一版真机成稿的 `core_argument` 直接写成「……看完这条，观众该被说服的
+   是：别数行数，看怎么读。」—— 那是**说明**不是**主张**，而三级会把它当论点照抄。改法：字段
+   说明里**明写不许抄**（"那是给你自己看的，观众看不到"）。改后重生成 ⇒ 「「配料表越短越干净」
+   是个站不住的假信条：……判断吃的东西看的是具体成分，不是配料表有几行。」
+2. **立论纪律把熊大推成了单口**（陷阱 240）：改完第一版真机成稿 `speaker_ratio:bigbear=0.72`
+   （阈值 0.7），读起来是"熊大讲、熊二捧"。改法：`writer/system.md` 的分工里补一条 ——
+   **两人台词量大致相当（熊大不超过六成）**。改后同批次成稿 `0.6615 / 0.3385`，warn 消失。
+
+### 四、读数
+
+- `uv run pytest tests/contract tests/unit/domain tests/unit/agents tests/integration/test_scoring.py
+  tests/integration/test_topics_api.py tests/integration/test_scripts_api.py -q` ⇒
+  **1338 passed / 32 skipped**。
+- **新增用例 4 条，全部在旧代码上复现失败**（临时回退 `_distance` / `ending_ok` / 两处判据各跑
+  一遍）：`TestCheckOutline::test_cta_question_is_rejected` ·
+  `TestCheckScript::test_ending_question_is_a_problem` ·
+  `TestEvaluateRuleChannel::test_cta_question_makes_ending_not_ok` ·
+  `TestRewrite::test_a_rewrite_that_only_fixes_the_ending_wins`。另加契约 `test_argument_prompts.py`
+  13 例（钉五条提示词 + 两份人设的落点 + 这五条的 sha256 不漂移）。
+- `ruff check` / `ruff format --check` / `mypy` 三个改动文件全绿。⚠️ 全仓库那 6 条 mypy 报错在
+  `app/schemas/outputs.py` 与 `core/outputs_store.py`，属并行线程，**未动**。
+- `prompts/manifest.yaml` 的 `sha256` 已按 `PromptLibrary.repo_digest` 重算（`outliner` /
+  `director` / `writer` / `reviewer` / `editor` 五条）。
+- **真机**（提示词与人设都是热读的，**没有重启**）：`01M36P6VCCF9S1E46CVAHGXVHM`（726 字 / 60 句）
+  与 `01M36PD8V78CPM51WFSN7C8EN1`（766 字 / 58 句）两条新稿都验到：① 有明确主张、② 熊大立论 /
+  熊二提出假设、③ 结尾无问号（`配料表那几行不是安全分，是含量从多到少的排队；看吃的别数行，
+  看具体写了啥。`）、④ 没有"嘿嘿 / 赶紧的"这类纯凑气氛的句子。审稿通道也给得对：那两条稿拿到
+  的 `RHYTHM_FLAT` / `UNSOURCED_CLAIM` 正好点在中后段推进不足与"已被指出"这句无出处上。
+
+**还没做完的（如实记下）**：两条新稿里仍偶有"那俺记下了"这类薄句，其中一条的 `cta` 之后还
+跟了一句熊二收尾。提示词里"做不到就删掉它"已经写了，**这一条留待再攒几条真机成稿再收紧** ——
+样本只有两条时调提示词是在拟合单例。
+
+### 五、交付物
+
+`prompts/{outliner,director,writer,reviewer,editor}/system.md`、`prompts/manifest.yaml`、
+`config/persona.yaml`、`config/personas/persona_default.yaml`、`src/studio/domain/script.py`、
+`src/studio/domain/scoring.py`、`src/studio/agents/writer.py`、`tests/unit/domain/test_script.py`、
+`tests/unit/domain/test_scoring.py`、`tests/unit/agents/test_writer.py`、
+`tests/contract/test_argument_prompts.py`（新）、`docs/spec/{03-data-model,04-contracts,05-roadmap-checklist}.md`。
+
+- **裁定 400 —— 结尾的职责是"把观点钉死"，不是"把问题踢回给观众"**：判据落在 `cta` 上（它同时
+  当发布文案），**不落在"最后一句口播"** —— 在 cta 里提问，等于把问题留在片尾又留在简介里。
+  执行分三层：大纲层拦（`check_outline`）、成稿层拦（`check_script`）、评分层扣（`ending_ok`）。
+- **裁定 401 —— "要立一个观点"必须写进提示词，不能指望模型自觉**：真机那 50 句的口水话不是
+  模型的随机抖动，是**提示词里没有这条纪律**。而"有没有观点"没法用规则判 ⇒ 它只能靠提示词
+  + 审稿通道（`NO_ARGUMENT` / `FILLER_TALK`）。契约测试 `test_argument_prompts.py` 把五条提示词
+  与两份人设的落点全钉住。
+- **陷阱 238 · 239 · 240** 已并入 `docs/spec/05-roadmap-checklist.md` §5.7（表头计数 237 ⇒ 240）。
+
+---
+
+## 10.21 2026-09-23 · 新闻扩源：从「谁先答就用谁」到五源合并（裁定 403–406 / 陷阱 241 · 242 · 243 · 244）
+
+用户一句：**「新闻拉取渠道再加上短视频平台热搜的社会问题,增加信息渠道的宽度」**。原先两个源
+（今日头条热榜 / 中新网滚动），语义是**降级** —— 第二家只在第一家挂掉时才被问一次。这一节
+把短视频平台热搜接进来，但真正的活不是"再加三个源"，而是**把降级改成合并**。
+
+### 一、先量再写：哪些源真的拿得到
+
+逐个实测（2026-09-23），**能拿到结构化数据的**才写进来：
+
+| 源 | 怎么拿 | 实测 |
+| --- | --- | --- |
+| 今日头条热榜 | GET JSON | ✅ 50 条 |
+| 中新网滚动 | GET RSS | ✅ 30 条（带正文首段） |
+| 抖音热搜 | GET JSON（`word_list`） | ✅ 50 条 |
+| B站热搜 | GET JSON（`data.trending.list`） | ✅ 50 条 |
+| 快手热榜 | **POST** graphql（GET 回 `400 GET query missing`） | ✅ 49 条 |
+
+拿不到的**照旧不写**：微博热搜 403、知乎热榜 401、小红书 404、抖音 web 版热搜接口回空体。
+抓一个"今天不一定还活着"的源，不如把这五个确定的写死。
+
+### 二、核心：合并，而不是"再加三个源"
+
+**如果只是往 `_SOURCES` 里再塞三个源，什么都不会变** —— 因为旧语义是"谁先答就用谁"，后四家
+永远轮不到。所以这一节真正改的是两件事（陷阱 241 / 242）：
+
+- **全问一遍再合并**（`fetch_news`）：顺序 = 优先级（同一条标题在多处上榜时靠前的胜出）。
+- **轮转交错**（`_interleave`）：五家各取第 1 条、再各取第 2 条…… 于是 `NEWS_LIMIT=50`
+  落在五家头上大致是每家的前 1/5。按源拼接再截断的话，截断结果就是"头条那 50 条"。
+  ⚠️ 这条**不会报错**：条数还是 50，来源那栏也还是那个熟悉的名字 —— 扩源扩了个寂寞，
+  而面板上一切正常。
+- **跨源去重**（`_dedupe`）：同一个事件在多处同时上榜是常态。判据与选题那套**同一份**
+  （§04.1.3：归一化完全命中 / 相似度 ≥ 0.85），命中时**留信息更多的那一条**（有摘要的
+  顶掉光标题的）⇒ 中新网那条会赢过抖音那条，事件总结就能站在源站写的正文上。
+  ⚠️ 刻意**不用** `hash_title`：它把数字折成 `#`（"5 个技巧"与"7 个技巧"同键），那是给
+  "选题模板"去重的；新闻标题里的数字是**事实**，折掉会把两件不同的事并成一件。
+- **单源失败只是"少一家"**：另外几家照常合并，逐条 `logger.warning` 留痕。面板那一栏
+  `source` 改成**实际答上来的源**按首次出现顺序拼接 —— 挂掉的源**自然缺席**，于是
+  "今天少了两家"是看得见的（陷阱 242：原来是 `items[0].source`，挂掉的源彻底隐身）。
+
+### 三、两个源自己埋的坑（真机实测）
+
+- **B站把"风控拦了"也回 200**（陷阱 243）：只在响应体里写一个非零 `code`（实测 `-412`）。
+  `raise_for_status()` 看的是 HTTP 状态 ⇒ `data` 是 `None` ⇒ 报出来的是"响应里没有
+  `data.trending.list` 数组"，那句话会把人引去查**结构**，而真因是"这次请求被拒了"。
+  改成解析前先看 `code`，非零就抛 `ValueError` 并把 code 与 message 带进那句话。
+- **快手的 `hotValue` 是带单位的字符串**（陷阱 244）：`"1271.3万"`，而置顶的官方条目是
+  `null`。拿 `int()` 硬转的话，第一条置顶条目就抛 ⇒ **整家源**被记成"解析失败"，而它明明
+  把 49 条都给了。改成认 `万` / `亿` 后缀，读不出来留 `None` —— 热度读不出来不是把条目
+  （或整家源）判掉的理由。
+
+### 四、裁定
+
+- **裁定 403 —— 扩源 = 合并，不是降级**：`_SOURCES` 的顺序从此是**优先级**（并列时谁胜出），
+  不是"谁先答就停"。判据：**凡是"第一个成功就收工"的链路，加源都不会变宽** —— 加之前先问
+  一句"新的那几个有没有机会被问到"。
+- **裁定 404 —— 宽度优先于深度**：一份 `limit` 摊到五个源头上，而不是让第一家吃满。理由是
+  用户要的就是宽度（"增加信息渠道的宽度"）；深度由"点第二次"来满足，而**同一批里五家都有**
+  是点多少次都换不来的。
+- **裁定 405 —— 跨源去重复用选题那套判据**（0.85 / 归一化命中），**不新造一套**。命中时
+  留信息更多的那条（有摘要 > 光标题）。**刻意不用 `hash_title`**：它的"数字折叠"是给选题
+  模板去重的，用在新闻上会把两件不同的事并成一件。
+- **裁定 406 —— 部分失败必须看得见**：`source` 那一栏由实际答上来的源拼成，挂掉的源缺席。
+  `logger.warning` 逐条留痕（`news.source_failed` / `news.source_empty`）。**但全挂仍抛
+  `NEWS_FETCH_FAILED`**（陷阱 #207 的判据不变）：那是"今天这条链路真的没通"，必须让人看见。
+
+### 五、读数与验收
+
+- **真机读数（2026-09-23）**：五家**全部**答上来，`candidates=229` ⇒ 去重砍掉 5 条 ⇒
+  合并成 50 条，来源分布 **11 / 11 / 10 / 9 / 9**。砍掉的 5 条逐条看过，全是真重复
+  （抖音与B站同日都上「今日秋分」；头条「央视中秋晚会阵容」与快手「央视中秋晚会阵容官宣」；
+  抖音「U23国足小组第一出线」与 B站「亚运U23国足小组第一出线」），**没有误杀**。
+- `pytest tests/unit/services/test_news_service.py -q` ⇒ **33 passed**（新增：五个解析器各一组
+  + 交错 + 跨源去重 + "有摘要的顶掉光标题的" + 单源挂掉 + 单源改版 + 全挂报 5 条原因 +
+  ref 在合并之后重编号）。
+- `pytest tests/integration/test_topics_news_api.py -q` ⇒ **11 passed**（新增：`source` 那一栏
+  要如实列出**每一个**答上来的渠道，重复出现的只写一次）。
+- `pytest tests/unit/services/test_news_service.py tests/integration/test_topics_news_api.py
+  tests/unit/services/test_topic_service.py -q` ⇒ **66 passed**。
+
+**交付物**：`src/studio/services/news_service.py`（重写）、`src/studio/services/topic_service.py`
+（`_news_sources_label`）、`tests/unit/services/test_news_service.py`（重写）、
+`tests/integration/test_topics_news_api.py`、`docs/spec/04-contracts.md`（§4.5.18）。
+
+- **编号说明（并行线程）**：本节按"下一个空号"取 **§10.21 / 裁定 403–406 / 陷阱 241–244**
+  （落笔时全仓库最大是 §10.20 / 裁定 402 / 陷阱 240）。
+  ⚠️ **发现一处需要收口的撞号**：`docs/spec/05-roadmap-checklist.md` §5.7 里
+  **238 / 239 / 240 各出现了两次**（并行线程的两个小节都认领了同一段号），
+  于是"跨文档引用按编号即可"这条前提当下**不成立**。我没有替它们改号（那要动它们小节
+  正文里的引用）—— 建议由**后落笔的那一节**让位，改成 245 往后。
+  本文件的子集表因此**跳过 238–240** 直接接 241（不把一处歧义抄成两处）。
+
+---
+## 10.22 2026-09-23 · 「提示词改了没用」：二级（视频标题 + 核心论点）在自动链路上**从来没跑过**（裁定 407 · 408 / 陷阱 245 · 246）
+
+用户一句：**「为什么我感觉提示词改了没用，我需要写稿深挖每个问题的内核，上升到价值观，不要表面叙事，
+没有价值，并且要求标题尽量和一级文稿的新闻标题一样，原标题已经够好了」**。两句诉求，一条根因。
+
+### 一、现场（库里的读数，不是猜的）
+
+- `topic_outlines`：**0 行**。
+- `llm_calls` 里 `agent='outliner'`：**全库一次**（2026-09-20T09:35）。
+- 同一张表上别的角色：planner 40 / ideator 39 / director 35 / writer 21 / reviewer 9。
+
+也就是说：这一级**在面板上被人手动点过一次**，此后每一次自动写稿都没经过它。
+
+### 二、两个根因（各自都不报错，叠在一起才致命）
+
+| # | 根因 | 现场形态 |
+| --- | --- | --- |
+| A | **写稿这条路没装配 Outliner** | `pools/draft_worker.build_draft_services` 建 `ScriptService` 时只接了 director / writer / reviewer；接了 `OutlinerAgent` 的是 **API 那份**（`app/deps.py`）。而**写稿走的是池子**，不是 API 那条路 |
+| B | **`draft()` 只读不生成** | 二级产物要么在面板上手动点出来（`POST /topics/{id}/outline`），要么在 `PUT /outline` 手写；`draft()` 里没有"缺了就补"这一步。于是"二级"成了一个**只有手动动作才会发生**的东西 |
+
+### 三、后果（这才是用户看到的那两句）
+
+`ScriptService.draft` 把二级喂给 director / writer，缺位时填的是
+`OUTLINE_UNSET = （未定 —— 这一级还没定，你按选题自行发挥）`：
+
+- **`core_argument` 是「未定」** ⇒ 提示词里那句「围绕核心论点深挖、上升到价值观」**没有论点可围绕**，
+  模型只能对着选题写表面叙事。用户看到的"没有价值"就是这么来的，与提示词写得好不好无关。
+- **`outline_title` 是「未定」** ⇒ 成稿标题由 writer 自己起，与一级选题的新闻标题是两回事 ——
+  而用户要的恰恰是"标题尽量和一级一样"。
+- **改 `prompts/outliner/system.md` 一点效果都没有** —— 这一级压根没跑。用户"感觉改了没用"是**对的**。
+
+⚠️ 三条同源：**一个只被手动动作触发的东西，在自动链路上等于不存在**，而它的产物是下游的输入。
+
+### 四、落地（裁定 407 / 408）
+
+- **裁定 407 —— 二级改成「按需自动补」，标题兜底一级标题**（`services/script_service.py`）：
+  `draft()` 读到"没有二级产物"时**先补一次**（`_auto_outline`），拿到就锁定标题、当主线喂下去；
+  补不出来（没配 Key / 模型不给 / 调用失败）⇒ **退回一级选题标题**
+  （`locked_title = saved.title or spec.title`），正文照旧写。`_auto_outline` 是 **best-effort**：
+  `StudioError` 只记一行 `script.auto_outline_failed`，**绝不因此写不出稿** ——
+  与"少一张表不能变成写不出稿"是同一条口径。`outline()` 顺带多一个 `source` 参数
+  （`webui` / `worker`），留痕能分清"这是人点的还是写稿时自动补的"。
+- **裁定 408 —— worker 与 API 的装配必须补齐**（`pools/draft_worker.py`）：加上
+  `outliner=OutlinerAgent(gateway, prompts)`。两条装配路径各写一份是既有事实，那就**同一轮把两份都对上**；
+  只接一份的后果不是"少个功能"，是"面板上的提示词成了改不动的摆设"。
+
+### 五、回归用例
+
+- `tests/unit/services/test_script_service.py`：新增 `TestAutoOutline`（5 例）——①缺了就补并喂给下游；
+  ②补出来的会落库（下次不再重复补）；③**已有二级不重跑**（不白烧 token）；④没装 outliner ⇒ 标题兜底一级标题；
+  ⑤outliner 抛错 ⇒ **不阻塞写稿**。假件 `FakeOutliner` + `outline_output()` 工厂。
+- `tests/integration/test_topics_api.py`：6 处 `arm(...)` 补上 `outliner_reply()`（写稿这条路上现在**会**多一次调用），
+  另有一处**故意不动** —— 那个用例自己预存了二级产物，正是"有就不重跑"的负控。
+
+**验收读数**：`pytest tests/unit/services/test_script_service.py -q` ⇒ **24 passed**；
+`tests/integration/test_topics_api.py` + `tests/unit/services/test_script_service.py` ⇒ **66 passed**；
+`tests/integration/test_topics_api.py` + `test_script_pipeline.py` + `tests/unit/pools/test_draft_worker.py`
+⇒ **55 passed**；全量（`-m 'not gpu and not slow and not net'`）⇒ 4697 passed；`ruff` / `mypy`（`src`）干净。
+
+**交付物**：`src/studio/pools/draft_worker.py`、`src/studio/services/script_service.py`、
+`tests/unit/services/test_script_service.py`、`tests/integration/test_topics_api.py`、
+`docs/spec/04-contracts.md`、`docs/spec/05-roadmap-checklist.md`。
+
+- **编号说明（并行线程）**：本节落笔时取的是 §10.19 / 裁定 399 · 400 / 陷阱 238 · 239，
+  而这一轮**四条并行线程各自认领了一部分**：news_scout（裁定 399，在 §10.18 内）、
+  「文稿要立论」（§10.19 / 裁定 400 · 401 / 陷阱 238–240）、
+  「新闻扩源」（§10.21 / 裁定 403–406 / 陷阱 241–244）。
+  本节**两次让号**，最终落在 **§10.22 / 裁定 407 · 408 / 陷阱 245 · 246**
+  （与 §10.13–§10.18 同一套让号规则：落笔后若发现撞号，取当时的"下一个空号"整体上移）。
+
+---
+
+## 10.23 2026-09-23 · 字幕位置可以改了（裁定 409 · 410 / 陷阱 247）
+
+用户一句：**「修改字幕位置」** —— 截图指着面板上那句"每行 2 行封顶、距底 420 px、阴影 2 ——
+这三项一期**不可编辑**（改它们要动版式，属于二期）"。
+
+### 一、为什么它以前是只读的，以及那个理由为什么不再成立
+
+`config/outputs.yaml → subtitle` 里决定位置的其实是**两个**数：
+
+| 面板上的框 | 字段 | 含义 |
+| --- | --- | --- |
+| 距底 | `margin_bottom` | 我想把字幕放在离底多少像素 |
+| 底部安全区 | `safe_area.bottom` | 平台交互区有多高（抖音点赞/评论条 ~420px） |
+
+写进 ASS 的是两者的 **max**。于是"只放开 `margin_bottom`"会造出一个**改了没用**的框：
+填 300 而安全区是 420 ⇒ 面板说 300、成片渲 420。当初把这两个数一起锁成只读，躲的就是这件事。
+
+躲开它的正确做法不是不许改，而是**让"被抬上来"这件事看得见**：
+
+- `SubtitleConfig.margin_v` —— **唯一口径**（渲染路径与面板读的是同一个属性，不再各算一遍 max）；
+- 它跟着 `GET /api/v1/outputs` 一起下发（`subtitle.margin_v`）；
+- 面板在两者不一致时明说：「⚠️ 你填的 300 px 被底部安全区（420 px）抬上来了 ——
+  想再往下挪，把「底部安全区」一起调小」。
+
+于是：**往上挪**调大「距底」；**往下挪**两个一起调小。两个数都进了 `SUBTITLE_FIELDS`。
+
+### 二、裁定
+
+- **裁定 409 —— 生效值必须与「你填的数」一起下发**：面板不许自己再算一遍 max（那就有两份口径，
+  与裁定 161 同源）。凡是"配置说 A、实际做 B"的地方，B 要能被看见 —— 看见之后，只读就不再是保护，
+  只剩障碍。
+- **裁定 410 —— 面板名与文件路径用一份对照表**：面板上一个数一个框（`safe_area_bottom`），
+  文件里是 `subtitle.safe_area.bottom`。`core/outputs_store.SUBTITLE_NESTED` 是**唯一**的对照处，
+  预览（`_apply_section`）与写盘（`_edits_locked`）都读它；`tests/unit/core/test_yaml_lines.py` 那条
+  "每一个可编辑路径都是恒等变换"也读它 —— 于是"面板能改的字段"与"文件里被改的那一行"不可能漂开。
+
+### 三、踩到的一条（陷阱 247）
+
+**嵌套字段的报错落在了没有那个框的地方**：pydantic 的 `loc` 是**文件路径**
+（`subtitle.safe_area.bottom`），而面板上的输入框叫 `subtitle.safe_area_bottom` —— 照抄给前端，
+用户只会看到"保存失败"，哪一格都没红。落点是 `outputs_store.field_key()`（对照表 `_FIELD_ALIASES`）：
+`_format_field_errors` 与"文件里找不到这一行"两条错都走它。
+
+### 四、回归用例
+
+- `tests/unit/render/test_subtitle.py`：`margin_v` 与面板同源（往上挪 / 往下挪两个方向）。
+- `tests/integration/test_outputs_api.py`：读的一屏带 `safe_area_bottom` / `margin_v`；保存改两个数 ⇒
+  落到**嵌套**那一行；再往下挪（两个一起调小）⇒ `margin_v` 跟着下来；越界 422 的 `field_errors`
+  落在**扁平名**上（参数化表里两条）。
+- `tests/unit/core/test_yaml_lines.py`：可编辑路径的恒等变换覆盖嵌套那一行。
+- `web/src/stores/outputs.test.ts`：两个数各自成一条改动、上下限各报各的框。
+
+**验收读数**：`pytest tests/unit/core/test_yaml_lines.py tests/unit/render/test_subtitle.py
+tests/integration/test_outputs_api.py -q` ⇒ **78 passed / 4 failed**；
+`npx vitest run src/stores/outputs.test.ts` ⇒ **38 passed**；`ruff` / `mypy`（`src`）干净。
+
+⚠️ **那 4 条红的是另一件事，与本节无关**：工作区里的 `config/outputs.yaml` 把水印改成了
+`width_ratio: 0.1` / `opacity: 0.0`（人物贴图那一段同时把 `stickers.hero.enabled` 打开成 `true`），
+而 `test_outputs_api` / `test_profiles` 里那几个用例仍按 `0.25` / `1.0` / 默认关 断言 ——
+它们是**配置漂移**的红，不是代码的红（`git diff config/outputs.yaml` 就是证据）。改哪一边由你定：
+要么把水印调回 0.25 / 1.0，要么把那几条用例的期望值改成现在这份配置。
+
+**交付物**：`src/studio/core/config.py`、`src/studio/core/outputs_store.py`、`src/studio/render/subtitle.py`、
+`src/studio/app/schemas/outputs.py`、`src/studio/services/outputs_service.py`、`config/outputs.yaml`（注释）、
+`web/src/stores/outputs.ts`、`web/src/views/Outputs.vue`、`web/openapi.json` + `web/src/api/types.gen.ts`（重新生成）、
+`tests/unit/core/test_yaml_lines.py`、`tests/unit/render/test_subtitle.py`、`tests/integration/test_outputs_api.py`、
+`web/src/stores/outputs.test.ts`、`docs/spec/04-contracts.md`、`docs/spec/05-roadmap-checklist.md`。
+
+- **编号说明（并行线程）**：本节落笔时取的是 §10.20 / 裁定 401 · 402 / 陷阱 240，同一轮里有三条并行线程
+  先认领了 **§10.19 / §10.21 / 裁定 399–401 · 403–406 / 陷阱 238–244**，本节因此让到
+  **§10.23 / 裁定 409 · 410 / 陷阱 247**（§10.20 让给了写稿那条线、§10.22 让给了上一条二级自动补）。
+
+## 10.24 2026-09-23 · 「配置校验失败」的第一嫌疑人不该是配置文件（裁定 411 / 陷阱 248）
+
+用户一句：**「拉取和清除方向报错」** —— 截图红条 `配置校验失败：outputs.yaml（1 处问题）(HTTP 400)`，
+「一键拉取今日新闻」与「一键清除所有选题」两个按钮都点不动。
+
+### 一、诊断：盘上的配置是对的，坏的是"读它的那个进程"
+
+`POST /api/v1/topics/news-pull` 与 `POST /api/v1/topics/clear` 回的是**同一个** 400：
+
+```
+{"code":"CONFIG_INVALID","message":"配置校验失败：outputs.yaml（1 处问题）",
+ "context":{"file":"...\\config\\outputs.yaml",
+            "errors":[{"field":"cover","error":"Extra inputs are not permitted"}]}}
+```
+
+`cover` 这个键是**当天 17:38:35** 由另一条线加进 `config/outputs.yaml` 与 `core/config.py` 的
+（`OutputsConfig.cover: CoverConfig`）；而**跑着的 API 进程是 17:09:26 起的** —— 比这次改动早 29 分钟。
+它手里那份 `OutputsConfig` 还没有 `cover` 字段，而它是 `extra="forbid"` ⇒ 未知键直接报错。
+
+**当前代码读同一份文件是通的**（`cover = title_color 0xFFD400 / highlight 0xFFFFFF / outline 10 /
+scrim 0.0 / sticker ''`）—— 于是结论只有一个：**配置没写错，进程是旧的**。
+
+同一个进程里凡是读 outputs 的定时泵也在按 30–60s 的节奏刷同一个错
+（`metrics.recycle_failed`、`schedule.tick_failed`）—— **一条配置错误能让三个互不相干的子系统一起叫，
+这是"进程旧"的指纹**，不是"配置有毛病"的指纹。
+
+### 二、修复：重启，但 `stop_all` 这次没停掉它
+
+`ops/stop_all.ps1` 报了 `优雅退出：draft, voice, render, publish`，**API 却没死**。两件事叠在一起：
+
+1. 它由**另一个控制台**拉起 ⇒ `GenerateConsoleCtrlEvent` 跨控制台静默失效（裁定 102 说的那件事，
+   这次轮到 API 自己）；而 api 这个规格 `polls_stop_flag=False` ⇒ 标志文件那条主通道对它本来就不适用；
+2. 台账 `data/logs/api.pid` 指向 `.venv\Scripts\python.exe` —— uv 的 **trampoline**
+   （它 `CreateProcess` 出真正的 `D:\python\python.exe` 之后等在那里：两个 pid、一条命令行）。
+
+**这两条通道各有一处不成立，而事后已无法再从现场判定具体是哪一条放过了它** —— 能确定的只有
+观测事实：`stop` 的结论里 **api 一格都没出现**（既不在"优雅退出"、也不在"强制终止"、
+也不在"陈旧台账已清理"），而它**还活着、还占着 8787**。收尾是手工 `Stop-Process` 掉那一对 pid 才腾出来。
+**重启之后再验一次**：`uv run studio service stop --only api` ⇒ **155 ms 干净退出**、
+8787 立刻空出来（`service.stop_escalated_break services=['api']` 这次打出来了）
+⇒ **主通道没问题，坏的是"跨控制台 + 台账指向 trampoline"这一格**。
+
+### 三、陷阱与裁定
+
+- **陷阱 248 —— 「配置坏了」的第一嫌疑人不该是配置文件**：看到 `CONFIG_INVALID` 先做一件事 ——
+  比**进程启动时间**与 `config/*.yaml` / `core/config.py` 的 mtime。判据是**当前代码能不能
+  validate 同一份文件**（`OutputsConfig.model_validate(yaml.safe_load(...))`）：能 validate
+  就说明文件没坏，**别去改一份本来就对的 YAML** —— 改它只会把真问题埋得更深，
+  而真正的修法只有"把那个旧进程换掉"。
+- **裁定 411 —— 每个服务都该在健康面上自报 `pid` 与 `ready`**：`_takeover_unhealthy` 的四条判据
+  （自报 `ready`、自报 `pid`、pid 真活着、不是"睡着了"）**目前只有 `tts` 满足** ——
+  `/api/v1/health` 只回 `{ok, spec_version, db, latest_log_id, ws}`。于是启动器遇到旧 API 占着
+  8787 时只能记一句干巴巴的 `port_busy` 收工，人看到的是**"重启了也没用"**。
+  API 补上 `pid` / `ready` 之后，这一格会自己走"接管"分支（`_takeover_unhealthy`），而不是等人来查。
+
+### 四、验收读数（真机）
+
+- 重启前：`POST /api/v1/topics/news-pull` ⇒ **400**；`POST /api/v1/topics/clear` ⇒ **400**（同一根因）。
+- 重启后：`POST /api/v1/topics/clear {"dry_run": true}` ⇒ **200**
+  （`{"directions":6,"topics":0,"detached_task_count":0}`）；
+  `POST /api/v1/topics/news-pull` ⇒ **200**，`fetched=50 / evaluated=50 / kept=2`，
+  `source="中新网滚动、快手热榜、今日头条热榜、抖音热搜、B站热搜"`，`warnings=["repair:cloud:1"]`
+  —— 五源合并（§10.21）在真机上第二次跑通，新判据也照常生效
+  （skipped 里明写「八旬老人离世6亿遗产给再婚配偶 ⇒ 遗产归属属私家纠纷，当事人之外没人有份」）。
+- 进程：`uv run studio service status` ⇒ api（新起）+ draft / voice / render / publish 四个池全"存活"。
+  顺带一条旁证：`worker_heartbeats.pid` 记的是**真解释器**（69040 / 58812 / 69600 / 33216），
+  而 `data/logs/*.pid` 记的是 **trampoline**（66432 / 63000 / 57056 / 58384）——
+  同一对进程两个号，正是上面第 2 条的现场。
+
+---
+
 ## 11. 交付物清单（每阶段结束时必须齐备）
 
 | 类别 | 内容 |
@@ -2986,7 +4655,7 @@ T1.12 ✅             （一键启动）
 
 | # | 任务 | 关掉的项 | 为什么关 | 依据 | 什么条件下捡回来 |
 | --- | --- | --- | --- | --- | --- |
-| **12-1** | T2.4 | 三条 `warn` 级质量校验：无 BGM / 有效语音占比 ≥ 70% / 单发言人 | 四条**硬拒**（段数 / 时长 / 削波 / 采样率）已经挡住真正会毁掉音色的素材；`warn` 只影响"参考音干不干净"，而**试听样本**（T2.4 已交付）就是让人耳做最终判据的那一步 —— 机器判一遍再让人听一遍是重复劳动 | 裁定 287 | 出现"入库通过了、试听才发现参考音里混了 BGM"这类**反复**踩的素材时 |
+| **12-1** | T2.4 | 三条 `warn` 级质量校验：无 BGM / 有效语音占比 ≥ 70% / 单发言人 | 三条**硬拒**（时长 / 削波 / 采样率）已经挡住真正会毁掉音色的素材；`warn` 只影响"参考音干不干净"，而**试听样本**（T2.4 已交付）就是让人耳做最终判据的那一步 —— 机器判一遍再让人听一遍是重复劳动 | 裁定 287 | 出现"入库通过了、试听才发现参考音里混了 BGM"这类**反复**踩的素材时 |
 | **12-2** | T3.1 | ① pHash + 帧哈希 ② 黑帧段落自动排除 ③ `studio assets ingest` / `stats` CLI ④ `tests/integration/test_broll_ingest.py` | ① 用户裁定非核心（2026-09-17）② 同上 ③ 入库的**图形化入口**是 T4.8 的素材库面板，再写一套 CLI 等于把同一件事写两遍（判据分叉风险）④ 该文件**从不存在**，能力由 `test_asset_service.py`（51 例）+ `test_assets.py`（19 例）覆盖 | 用户裁定 2026-09-17 | ① 素材库涨到几百条、sha256 挡不住"改过一帧的搬运"时 ② 手头素材本身有黑场片头/片尾时 ③ 需要无人值守批量入库（现在面板够用） |
 | **12-3** | T3.3 | ① 语法预检（`ffmpeg -filter_complex_script … -f null -`）② 节点守卫 / 分块降级（`estimated_nodes > 60`）③ `studio render plan --out plan.json` ④ `tests/golden/test_filtergraph.py` | ① 只是"快速失败"的**优化**：失败信息 ffmpeg 一样会给，且不影响出片 ② 一期是**单底片**合成，整张滤镜图实测十来二十个节点、离 60 差得远 —— 现在写分块就是写一段**永远不会被执行、因而永远不会被验证**的代码（理由已写进 `src/studio/render/degrade.py` 模块 docstring）③ `render_app` 只有 `profile` / `make`，滤镜图已落盘 `graphs/` 供手工重跑 ④ 中文 / 空格 / 盘符冒号的转义由 `test_composite.py` 直接断言 `filter_path_arg()` 覆盖 | 规格 §04.2.8.2 / §04.2.8.6；R8 | **二期三层模板**（多场景 / 转场 / 多段镜头）落地时 —— 那时节点数才会真的爆，也才知道该按什么切 |
 | **12-4** | T3.6 | BGM 预对齐（按 `bgm_tracks.loudness_lufs` 先归一） | 两遍 `loudnorm` 已经把**成品**响度归到目标；再按素材响度预对齐是**二次补偿** —— 调两次只会让"为什么响度是这个数"更难查 | §01.5.3 | 出现"某些 BGM 一进来就把人声压没"这类**素材级**问题，且调 `bgm_gain_db` 解决不了时（落点是混音前，不是改这条链） |

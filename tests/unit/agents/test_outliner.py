@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 from studio.agents.base import AgentResult
-from studio.agents.outliner import OutlinerAgent
+from studio.agents.outliner import TITLE_RETRIES, OutlinerAgent
 from studio.agents.prompts import PromptLibrary
 from studio.core.paths import StudioPaths
 from studio.db import connect, migrate
@@ -100,7 +100,7 @@ class TestHappyPath:
         assert result.data.title == TITLE
         assert result.data.core_argument == ARGUMENT
         assert result.warnings == []
-        # 这一级没有规则重试：一条合格回复就该只用掉一次调用
+        # 标题闸只在标题带说话人标签时才重试：一条合格回复就该只用掉一次调用
         assert len(transport.calls) == 1
         assert result.prompt_version  # 溯源：落 ``topic_outlines.prompt_version`` 用
 
@@ -126,6 +126,55 @@ class TestHappyPath:
         user = user_message(transport)
         assert "调用方给的角度" in user
         assert "只讲那一跳" not in user
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 标题闸（T1.10 追加 · 观众可见字段里不许出现"谁在说"）
+# ══════════════════════════════════════════════════════════════════════
+
+#: 真机那条（2026-09-23）：二级标题在一级标题前面挂了个「熊大：」
+LABELLED = "老人登记遗体捐献被拒收，熊大：凉的不是他一个人的心"
+
+
+class TestTitleGate:
+    async def test_a_labelled_title_is_rewritten(
+        self, paths: StudioPaths, connection: sqlite3.Connection
+    ) -> None:
+        transport = ScriptedTransport(
+            replies=[
+                Reply(text=outliner_json(title=LABELLED)),
+                Reply(text=outliner_json(title="退休捐献被拒收：制度别凉了心")),
+            ]
+        )
+        agent = build(transport, paths, connection)
+        result = await run(agent)
+        assert result.ok and result.data is not None
+        assert result.data.title == "退休捐献被拒收：制度别凉了心"
+        assert len(transport.calls) == 2
+        assert "标题" in transport.calls[1][1][-1].content
+
+    async def test_a_stubborn_title_degrades_with_a_warning(
+        self, paths: StudioPaths, connection: sqlite3.Connection
+    ) -> None:
+        """重写用尽仍带标签 ⇒ 照样返回（不整批失败），但**留痕**。"""
+        transport = ScriptedTransport(replies=[Reply(text=outliner_json(title=LABELLED))])
+        agent = build(transport, paths, connection)
+        result = await run(agent)
+        assert result.ok and result.data is not None
+        assert len(transport.calls) == 1 + TITLE_RETRIES
+        assert any(item.startswith("outline_title:") for item in result.warnings)
+
+    async def test_a_clean_title_costs_one_call(
+        self, paths: StudioPaths, connection: sqlite3.Connection
+    ) -> None:
+        """一级标题那种写法（正文：正文）**不是**标签 —— 不能为它白烧一轮。"""
+        transport = ScriptedTransport(
+            replies=[Reply(text=outliner_json(title="退休捐献被拒收：制度别凉了心"))]
+        )
+        agent = build(transport, paths, connection)
+        result = await run(agent)
+        assert result.ok and result.warnings == []
+        assert len(transport.calls) == 1
 
 
 # ══════════════════════════════════════════════════════════════════════

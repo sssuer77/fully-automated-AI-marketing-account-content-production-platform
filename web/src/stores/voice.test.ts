@@ -699,12 +699,17 @@ function previewSample(overrides: Partial<VoicePreview> = {}): VoicePreview {
 }
 
 describe("试听：纯函数", () => {
-  it("四态各有各的字：`missing` 与 `failed` 不能都写成「试听」", () => {
+  it("五态各有各的字：`missing` / `failed` / `stale` 不能都写成「试听」", () => {
     expect(previewLabel("missing")).toBe("生成试听");
     expect(previewLabel("running")).toBe("生成中…");
     expect(previewLabel("ready")).toBe("试听");
     expect(previewLabel("failed")).toBe("重新生成");
     expect(previewLabel("whatever")).toBe("试听");
+  });
+
+  it("`stale` 写「重新生成」：盘上那份是上一版参考音念的，点它不该直接播", () => {
+    expect(previewLabel("stale")).toBe("重新生成");
+    expect(previewHint("stale", "cosyvoice2")).toContain("参考音");
   });
 
   it("提示里必须写出「这一份是哪台引擎念的」——换个引擎是另一个人的嗓子", () => {
@@ -730,6 +735,23 @@ describe("试听：动作", () => {
     expect(url).toBe(previewSample().url);
     expect(createVoicePreview).not.toHaveBeenCalled();
     expect(store.previewError).toBeNull();
+  });
+
+  it("`stale`（盘上那份是上一版参考音念的）：**要**重新生成，不能拿它当现成的播", async () => {
+    // 后端把「同名换了参考音」报成 `stale`（而不是 `ready`）：盘上有文件、能播，
+    // 但那是旧嗓子。前端要是照 `ready` 处理，用户点一下就听见一个不对的声音，
+    // 而面板上没有任何东西提示「这份是旧的」。
+    fetchVoicePreview = vi.fn(async () => previewSample({ status: "stale" }));
+    createVoicePreview = vi.fn(async () => previewSample());
+    configureVoiceApi({ fetchVoicePreview, createVoicePreview });
+    const store = useVoiceStore();
+    store.setTaskId(TASK_ID);
+    await store.reload();
+
+    const url = await store.previewVoice(HUIHUI);
+
+    expect(createVoicePreview).toHaveBeenCalledWith(HUIHUI);
+    expect(url).toBe(previewSample().url);
   });
 
   it("没有样本：点生成 → 轮询 → 拿到 url，并把状态写回下拉框那一行", async () => {

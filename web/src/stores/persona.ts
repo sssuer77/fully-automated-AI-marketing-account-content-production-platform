@@ -58,6 +58,7 @@ export interface PersonaDraft {
   audience: string;
   catchphrases: string[];
   forbidden: string[];
+  speaker_names: string[];
   style_hint: string;
   target_chars_min: number;
   target_chars_max: number;
@@ -102,6 +103,7 @@ export function draftFrom(config: PersonaConfig): PersonaDraft {
     audience: config.audience,
     catchphrases: [...config.catchphrases],
     forbidden: [...config.forbidden],
+    speaker_names: [...config.speaker_names],
     style_hint: config.style_hint,
     target_chars_min: config.target_chars_min,
     target_chars_max: config.target_chars_max,
@@ -127,6 +129,9 @@ export function dirtyChanges(draft: PersonaDraft, config: PersonaConfig): Person
   if (draft.audience !== config.audience) body.audience = draft.audience;
   if (!sameList(draft.catchphrases, config.catchphrases)) body.catchphrases = [...draft.catchphrases];
   if (!sameList(draft.forbidden, config.forbidden)) body.forbidden = [...draft.forbidden];
+  if (!sameList(draft.speaker_names, config.speaker_names)) {
+    body.speaker_names = [...draft.speaker_names];
+  }
   if (draft.style_hint !== config.style_hint) body.style_hint = draft.style_hint;
   if (draft.target_chars_min !== config.target_chars_min) {
     body.target_chars_min = draft.target_chars_min;
@@ -185,6 +190,15 @@ export function localErrors(draft: PersonaDraft, limits: PersonaLimits): Record<
     errors.forbidden = `禁区最多 ${limits.forbidden.max} 条`;
   } else if (draft.forbidden.some((item) => item.trim() === "")) {
     errors.forbidden = "禁区不能有空行";
+  }
+
+  // 角色名可以留空（留空 = 不查这一条），所以只查条数与空行，不查下限。
+  if (draft.speaker_names.length > limits.speaker_names.max!) {
+    errors.speaker_names = `角色名最多 ${limits.speaker_names.max} 个`;
+  } else if (draft.speaker_names.some((item) => item.trim() === "")) {
+    errors.speaker_names = "角色名不能有空行";
+  } else if (draft.speaker_names.some((item) => [...item].length > 16)) {
+    errors.speaker_names = "每个角色名不超过 16 个字";
   }
 
   const min = limits.target_chars_min;

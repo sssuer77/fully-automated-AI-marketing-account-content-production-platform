@@ -1,40 +1,84 @@
 # ── 快手创作者平台 · 选择器（T5.2 · §06.5.2「选择器集中化」· R13 可热修）─────────────
-# ⚠️ **未实测初稿**：结构（要哪些键）可信，具体 CSS 值待**真机校准**（§06.2.2 把
-#    "实测校准"写成了 T5.2 的现场动作，而它需要一个已登录的真实账号）。
+#
+# ⚠️⚠️ **未校准**（``calibrated: false``）—— 本文件里的 CSS **一条都没在真机上验过**。
+#
+#    它是照着 ``douyin.yaml`` 那份**校准过的** pack 的**形状**重写的：下面每条
+#    "为什么这样写"都是抖音真机踩出来的**同类坑**（那些教训跨平台通用，每条都注明
+#    了陷阱号），但**具体的类名与文案是初稿**，真机上大概率还要改掉几条。
+#
+#    校准：``studio publish calibrate --platform kuaishou``
+#      · 开一个**可见**窗口，把本文件里每条选择器在真页面上逐条跑一遍，报"命中几个 / 0 个"；
+#      · 未登录那一侧用**空 profile** 单独验一遍（``login_required`` 必须命中、
+#        ``login_ok`` 必须**不**命中 —— 陷阱 #212 就是这么翻的车）；
+#      · 它**只读**：不点发布、不发任何东西（R13 / R14）。
+#    校完把 ``version`` 改掉（它会进 ``publications.evidence_json``），再把 ``calibrated``
+#    改成 true 并写上 ``calibrated_at`` —— 面板上"校准"那一列看的就是这两个值。
+#
 #    改法见 docs/runbook/publish_selector.md —— 只改本文件，**不改代码**。
-#    改完顺手把 version 改掉：它会被写进 publications.evidence_json，
-#    事后靠它回答"这条是哪个版本的选择器发的"。
 platform: kuaishou
-version: "2026-09-18"
+version: "2026-09-23.1"
+calibrated: false
 
 urls:
   upload: "https://cp.kuaishou.com/article/publish/video"
   manage: "https://cp.kuaishou.com/article/manage/video"
 
 selectors:
-  login_ok: "div.user-info, span.nickname"
-  login_required: "div.login-dialog, div.qr-code"
+  # ── 登录态的两个标志（**未校准初稿**）─────────────────────────────────
+  # ⚠️ 抖音的教训（陷阱 #212）：这两个标志必须**两种状态各验一次**（已登录 / 未登录）。
+  #    本文件上一版写的是 `div.user-info, span.nickname` 与 `div.login-dialog, div.qr-code`
+  #    —— 那种"精确类名"在抖音上四个全部命不中（类名带哈希后缀），于是
+  #    `_logged_in()` 恒为 False：人扫完码、页面已经换成创作中心，这里仍然报"没扫到"，
+  #    一路等到 180 秒超时。这里改成子串匹配，但**快手到底叫什么仍然没验过**。
+  login_ok: "div[class*='user-info'], div[class*='avatar-wrapper'], img[class*='avatar']"
+  login_required: "div[class*='login-container'], div[class*='login-box'], div[class*='qrcode']"
   upload_input: "input[type=file][accept*='video']"
-  title_input: "input[placeholder*='标题']"
+  title_input: "input[placeholder*='标题'], input[placeholder*='作品']"
   caption_input: "div[contenteditable=true], textarea[placeholder*='描述']"
-  upload_progress: "div.progress, span.percent"
-  cover_trigger: "div.cover-setting, span:has-text('设置封面')"
+  # ── 上传进度（**未校准初稿**）────────────────────────────────────────
+  # ⚠️ 抖音的教训（陷阱 #225）：**不要**写宽的备选（上一版写的 `div.progress, span.percent`
+  #    就偏宽）。选择器列表取**文档序第一个**匹配，而更宽的那个会命中外层的上传面板 ——
+  #    它的 `text_content` 是一整块（文件名 + 上传中 + 已上传 182MB/182MB + 速度…），
+  #    于是"到 100% 了吗"变成了在一个大段文字里找子串。
+  # ⚠️ 反过来的那一面同样致命：进度元素**命不中**时，`_wait_upload` 把"看不到进度"
+  #    读成了"已经传完" ⇒ 选完文件 ~1s 就往下走（190MB 的成片还在 0%）。所以这一条
+  #    是 calibrate 里**最要紧的几条之一**：它必须在真页面上真的命得中。
+  upload_progress: "div[class*='progress-inner'], span[class*='percent']"
+  cover_trigger: "span:has-text('设置封面'), div[class*='cover-upload']"
   cover_input: "input[type=file][accept*='image']"
-  publish_button: "button:has-text('发布')"
-  success_marker: "div.publish-success, text=发布成功"
-  reject_marker: "div.audit-fail, text=审核不通过"
+  # ── 发布按钮（**未校准初稿**）────────────────────────────────────────
+  # ⚠️ 抖音的教训（陷阱 #227）：**必须全等**（`:text-is()`），不能用 `:has-text()`。
+  #    左侧导航那一项叫「作品发布」，它在文档序里**排在真按钮前面** ——
+  #    `button:has-text('发布')` 命中的是导航项，点下去只是切了个页面、表单被重置，
+  #    真按钮一次都没被碰过。症状是"点了发布什么都没发生"，然后第 ⑦ 步一路等到超时。
+  #    装配期会**拒掉**用 `:has-text()` 的 `publish_button`。
+  publish_button: "button:text-is('发布')"
+  # 挡在发布按钮上的平台提示弹层（可选：找不到就算了）。抖音真机上是「我知道了」。
+  dismiss_overlay: "button:text-is('我知道了')"
+  # ── 结果页标志（**未校准初稿**）──────────────────────────────────────
+  # ⚠️ 陷阱 #226：不能用 `text=` 引擎前缀（Playwright 只允许它**单独**出现，拼进
+  #    选择器列表会抛 CSS 解析错，而调用方把异常吞成"元素不在"）。
+  # ⚠️ 陷阱 #229：不能用 `:text()`（**子串**）—— 页面上一句普通提示里就有这四个字，
+  #    于是在**发布之前**就判成了成功。两条都是抖音真机上翻过的车，装配期都拦。
+  success_marker: "div[class*='publish-success'], :text-is('发布成功')"
+  reject_marker: ":text-is('审核不通过')"
+  # ⚠️ **故意留空**（`""`）：没在真机上见过快手的验证框长什么样。猜一个的代价是
+  #    **反向**的 —— 猜错会把一次正常的发布误判成"要人工过验证"（转 manual_required），
+  #    而那条记录本来能自己发完。留空 ⇒ 真遇到验证时走 600s 超时那条路（如实报失败）。
+  #    真机上见到之后，照抖音那一版补一条 `:text-is('…')`。
+  verify_marker: ""
 
-  # ── 数据回收（T5.4 · §06.6）───────────────────────────────────────────
-  # ⚠️ 与上面那批一样是**未实测初稿**。`metric_row` 里的 `{post_id}` 会被换成
-  #    `publications.platform_post_id`；四个计数是**相对它**的后代选择器。
-  #    真机校准时最常改的就是这四个 —— 平台的数字元素没有稳定的类名。
+  # ── 数据回收（T5.4 · §06.6 · **未校准初稿**）─────────────────────────
+  # ⚠️ `metric_row` 里的 `{post_id}` 不是装饰：四个计数是**相对它**取的后代选择器。
+  #    少了它，选择器会命中**第一条**作品的行 —— 于是"这一条的数据"读的是别人的数，
+  #    而面板上两个数字都长得像正常的数（T5.4 最贵的一类错：错得看不出来）。
+  #    装配期会拒掉不含 `{post_id}` 的 `metric_row`。
   metric_row: "tr[data-id=\"{post_id}\"], div[data-post-id=\"{post_id}\"]"
   metric_views: ".metric-views, span[data-metric=views]"
   metric_likes: ".metric-likes, span[data-metric=likes]"
   metric_comments: ".metric-comments, span[data-metric=comments]"
   metric_shares: ".metric-shares, span[data-metric=shares]"
-  # 完播率（T5.9）。**未实测初稿**：真机校准时常改的就是这一类数字元素。
-  # 平台可能写 `42.3%`、也可能把 % 放在旁边的标签里（只给 `42.3`）——
+  # 完播率（T5.9）。平台可能写 `42.3%`、也可能把 % 放在旁边的标签里（只给 `42.3`）——
   # 两种写法 `parse_metric_ratio` 都认。
   metric_completion_rate: ""
 
@@ -43,5 +87,16 @@ readback:
   caption: text
 
 markers:
-  login_expired_text: ["登录已过期", "请重新登录", "扫码登录"]
+  # ⚠️ **不含"扫码登录"**（陷阱 #212）：那是**登录页自己的按钮文案**，两种状态
+  #    （从没登录过 / 登录过期）下都在页面上 —— 拿它当判据等于永远判成"过期"，
+  #    于是给一个"从来没登录过"的新号指了一条错路（该说"先扫一次"）。
+  #    本文件上一版正是这么写的；装配期现在会**拒掉**含这一句的 pack。
+  login_expired_text: ["登录已过期", "请重新登录"]
   review_rejected_text: ["审核不通过", "内容违规", "未通过审核"]
+  # ── 第 ⑦ 步的**第二个**成功判据（抖音真机教训 · 陷阱 #228）────────────
+  # 有些平台不发"发布成功"这几个字，而是把页面**跳走**。只认元素的话，一条
+  # **已经发出去**的内容会在 600s 之后被记成失败（R14 不可逆，重试就是第二条）。
+  # ⚠️ 这个片段是**猜的**，而它只会"少命中"不会"误命中"：命不中等于没写这一条；
+  #    真正危险的是写一个**发布前地址里也有**的片段（比如光写 `cp.kuaishou.com`），
+  #    那会在点下发布**之前**就判成成功。所以这里取的是**管理页路径**。
+  success_url_contains: ["article/manage/video"]

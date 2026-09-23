@@ -2,10 +2,14 @@
 
 为什么注册表在导入期就填满
 --------------------------
-"某个平台有没有实现"是一个**静态事实**，不该等到第一次发布才知道。所以七个平台
-（一线三个真实现 + 二线四个空实现 + 靶页）都在 import 时登记进
-:data:`studio.publish.base.PUBLISHERS`，而契约测试拿 ``config/publish.yaml`` 的
-``platforms`` 键去比对 —— 少一个、多一个都红灯。
+"某个平台有没有实现"是一个**静态事实**，不该等到第一次发布才知道。所以七个真平台
+加靶页都在 import 时登记进 :data:`studio.publish.base.PUBLISHERS`，而契约测试拿
+``config/publish.yaml`` 的 ``platforms`` 键去比对 —— 少一个、多一个都红灯。
+
+⚠️ 注册表回答的是"**实现**在不在"，**不是**"这个平台能不能用"：七家都是真实现，
+但只有抖音那份 pack 在真机上校准过（``calibrated: true``）。"能不能用"要看
+``selectors/<platform>.yaml`` 的 ``calibrated`` / ``known_gaps`` —— 面板上那一列
+显示的就是它们（见 ``publish_service.platform_options``）。
 
 ``REAL_PLATFORMS`` 是**从注册表里减掉非平台代号**得来的，不是手抄的清单：
 手抄的清单会在"加了平台但忘了改清单"时静默过期，而那个清单正是发布面板与

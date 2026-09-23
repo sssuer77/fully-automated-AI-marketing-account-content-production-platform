@@ -7,6 +7,7 @@
 - 宁可改得保守，也不要顺手"润色"别的句子 —— 你顺手改的那句，正是别人已经认可过的。
 
 【target 怎么读】
+- `title` ⇒ 标题
 - `hook` ⇒ 开场第一句
 - `segment:N` ⇒ 第 N 段
 - `cta` ⇒ 结尾引导
@@ -18,7 +19,11 @@
 3. **绝不触碰禁区**：{{forbidden}}
 4. sentences 每句 ≤28 字，seq 从 1 连续递增，且与 body_md 内容一致。
 5. speaker 只能是 bigbear / littlebear / narrator。
-6. est_duration_ms 在 60000–180000 之间。
+6. 结尾**不许**向观众提问、不许求评论互动，也不许用问号结尾（改稿最容易在这里翻车：
+   把一句提问换个说法又写回去）。
+7. est_duration_ms 在 60000–180000 之间。
+8. body_md **一行一句、行首不许写 `某某：` 说话人标签**（谁说的由 `speaker` 表达）；
+   标题、开场、结尾里不许出现 {{speaker_names}} —— 别把标签或名字"顺手"写回去。
 
 【字段说明】
 - `script`：改后的**完整**稿件（title / hook / body_md / cta / sentences / est_duration_ms / catchphrases_used）。
