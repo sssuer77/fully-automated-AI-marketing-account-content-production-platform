@@ -13,8 +13,9 @@ htmlcov/
 dist/
 build/
 
-# ── 运行数据（P1：媒资与 DB 绝不入 git）──────────────────
-/data/
+# ── 运行数据（P1：媒资与 DB 不入 git；语音包是唯一例外）────
+/data/*
+!/data/voice_src/
 /models/
 /backups/
 

@@ -1,0 +1,13 @@
+{
+  "id": "bigbear",
+  "origin": "third_party_derivative",
+  "license": "authorized",
+  "note": "《熊出没》角色音色的网友二创处理素材（非原声）：源目录 D:\\Downloads\\语音包\\wav\\xiongda，经降噪/切分处理，用于本项目配音的零样本参考音。",
+  "segments": [
+    "ref_01.wav",
+    "ref_02.wav",
+    "ref_03.wav"
+  ],
+  "text_file": "ref.txt",
+  "recorded_at": "2026-09-23"
+}
